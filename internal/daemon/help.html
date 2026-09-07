@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aiq · help</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --fg: #1a1d21; --muted: #6b7280; --card: #ffffff; --line: #e5e7eb;
+    --accent: #2563eb; --bad: #dc2626; --code: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --fg: #e5e7eb; --muted: #9ca3af; --card: #171a21; --line: #262a33; --code: #0b0d11; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 18px; font-weight: 650; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  main { max-width: 860px; margin: 0 auto; padding: 20px; }
+  h2 { font-size: 16px; margin: 28px 0 8px; }
+  h2:first-child { margin-top: 8px; }
+  p, li { color: var(--fg); }
+  .muted { color: var(--muted); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td:first-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; font-size: 12.5px; }
+  .toc { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; margin-bottom: 10px; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 10px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>aiq</h1>
+  <a href="/">← status</a>
+  <span class="muted" style="font-size:12px">help · usage</span>
+</header>
+<main>
+<nav class="toc">
+  <a href="#what">What it does</a>
+  <a href="#reading">Reading the status page</a>
+  <a href="#daily">Day to day</a>
+  <a href="#accounts">Accounts</a>
+  <a href="#long">Long-running sessions</a>
+  <a href="#scoring">How an account is picked</a>
+  <a href="#commands">Commands</a>
+  <a href="#trouble">Troubleshooting</a>
+  <a href="#config">Config</a>
+</nav>
+
+<h2 id="what">What it does</h2>
+<p>You have several paid Claude Code and Codex subscriptions. <code>aiq</code> puts a <code>claude</code> and a <code>codex</code> shim first on your <code>PATH</code>; every call (your interactive sessions, <code>claude -p</code> and <code>codex exec</code> workers, and the workers those agents spawn) is routed to the account that is about to waste the most quota, then the real CLI runs with that account's credential. Nothing in your prompts or scripts needs to know which subscription it is on.</p>
+<p>Each account is an <em>overlay home</em>: a <code>CLAUDE_CONFIG_DIR</code> or <code>CODEX_HOME</code> made of symlinks into your real <code>~/.claude</code> or <code>~/.codex</code>, so settings, plugins, sessions and history are shared and <code>--resume</code> works on any account. Only the credential and <code>.claude.json</code> are private per account.</p>
+
+<h2 id="reading">Reading the status page</h2>
+<div class="card">
+<p>One column per provider, one card per account, in the order set by <code>aiq account order</code> (the <code>[display] order</code> list in the config file). The pill in the corner says what routing thinks of it right now:</p>
+<table>
+<tr><td>#1 · 23.7/h</td><td>Eligible for workers; rank and score (percentage points that vanish per hour if idle). #1 is the next pick.</td></tr>
+<tr><td>no login</td><td>The overlay home has no credential yet. Run the command shown under the title: <code>aiq account login &lt;provider&gt;/&lt;name&gt;</code>.</td></tr>
+<tr><td>no poll grant … (red note)</td><td>A Claude account whose quota cannot be read yet: <code>aiq account authorize claude/&lt;name&gt;</code>.</td></tr>
+<tr><td>weekly window exhausted until …</td><td>A binding window is at 100%, or a worker was rejected with a usage limit. The account is skipped until that time.</td></tr>
+<tr><td>at worker cap (3) / weekly … ≤ reserve</td><td>Fine for interactive use, skipped for workers right now.</td></tr>
+<tr><td>disabled</td><td>You disabled it; <code>aiq account enable …</code> brings it back.</td></tr>
+</table>
+<p>Bars are usage; dim names are windows that do not bind (a model-scoped cap for a model that is not your default). Below the bars: reset countdowns, reset credits, and the last time telemetry arrived. Blue rows are live leases: <code>interactive</code> sessions and <code>worker</code> runs, with pid and working directory; <code>d1</code> means a nested call one level deep. The grey monospace lines are the score terms.</p>
+<p><strong>next pick</strong> shows the full ranking for each provider and mode, with every term, so a surprising choice can be traced. <strong>events</strong> is the audit log: launches, exits, limit hits, imports, overlay adoptions.</p>
+<p><strong>poll now</strong> asks the daemon to poll every account immediately instead of waiting for the next tick.</p>
+<p>For scripts, <code>aiq status --json</code> and <code>GET /api/state</code> return the same document (<code>schema_version</code> 1): per account <code>eligible</code>, <code>ineligible</code>, <code>exhausted</code>, <code>score</code>, <code>worker_slots</code>, windows with <code>used_pct</code> and <code>resets_at</code>; per provider <code>worker_capacity</code>, the number of workers a fleet can launch right now.</p>
+</div>
+
+<h2 id="daily">Day to day</h2>
+<p>Use <code>claude</code> and <code>codex</code> as before. On an interactive launch aiq prints one line, <code>aiq: using claude/work — 5h 43%, weekly 8%</code>, and the session keeps that account for this git checkout until a window crosses the switch threshold. Workers are silent on success.</p>
+<p>When a session hits its limit mid-conversation: quit, run the same command again, and aiq picks another account. Your transcript is shared, so <code>claude --resume</code> or <code>codex resume</code> continues where you were.</p>
+<pre><code>aiq status              # the same picture as this page, in the terminal
+aiq status --explain    # plus the full ranking with every term
+aiq top                 # live, refreshes every 5 s
+claude --next           # leave this checkout's current account
+claude --account personal  # force one account (once)
+AIQ_BYPASS=1 claude     # skip routing, run on your real ~/.claude</code></pre>
+<p><code>claude auth …</code>, <code>claude setup-token</code>, <code>claude update</code>, <code>codex login</code> and <code>codex logout</code> always run against your real home, unrouted.</p>
+
+<h2 id="accounts">Accounts</h2>
+<pre><code>aiq account list
+aiq account add claude work           # overlay home + Claude Code login + poll grant
+aiq account add codex work            # overlay home + codex login
+aiq account login claude/work         # redo the CLI login
+aiq account authorize claude/work     # redo the quota poll grant
+aiq account poll                      # poll every account now
+aiq account label claude/work "Claude · work"
+aiq account order claude/work claude/home codex/work
+aiq account enable|disable claude/work
+aiq account remove claude/work --purge
+aiq account use codex/work            # pin this checkout
+aiq account next codex                # rotate this checkout
+aiq account import                    # optional: adopt accounts from aiquota, if installed</code></pre>
+<p>Adding a Claude account takes two browser steps: the Claude Code login inside the account's home, then a second authorization that mints aiq's own token for reading quota (Claude Code's own credential is never read or copied). Sign in as the same account both times. Adding a Codex account is one browser login; quota is read through the Codex CLI itself, no extra step.</p>
+<p>Sign out of claude.ai or chatgpt.com first, or use a private window, or the browser hands back the account it is already signed in as; aiq warns when two accounts turn out to be the same login.</p>
+<p>Manual overrides when telemetry lags:</p>
+<pre><code>aiq mark codex/work exhausted --until 14:42   # or +2h, or RFC3339
+aiq mark codex/work ready
+aiq reset codex/work                          # spend an earned Codex reset credit</code></pre>
+
+<h2 id="long">Long-running sessions</h2>
+<p>A session that must survive for days (a QC loop, an orchestration overseer) is started with <code>aiq long claude</code> or <code>aiq long codex</code>. It lives in a tmux session named after the workspace, and the daemon watches its account. When the tightest window drops to <code>drain_pct</code> remaining, aiq's hooks (attached only to sessions launched this way) inject a wrap-up instruction at the next turn boundary: finish the current unit, stop background jobs and subagents, write a handoff note, end the turn. Then the daemon respawns the same pane on the next account: the same provider resumes the transcript, a different provider starts from the note plus the working tree. An idle session is moved without waiting; an account that is already blocked is moved at once; with no headroom anywhere the session waits for a reset.</p>
+<pre><code>aiq long claude              # start, or attach if it already runs here
+aiq long list                # lease, pane, drain state, idle/busy
+aiq long drain .             # move this workspace's session now
+aiq long attach
+aiq long stop .</code></pre>
+<p>Lease rows on the cards show <code>long</code> and the drain state (<code>requested</code>, <code>draining</code>, <code>ready</code>, <code>waiting</code>). Notes are written to <code>~/.local/share/aiq/handoff/</code>.</p>
+
+<h2 id="scoring">How an account is picked</h2>
+<p>For every binding window <em>w</em> of an account (5-hour and weekly, plus a model-scoped weekly cap for your default model):</p>
+<pre><code>remaining_w = 100 − used_w
+hours_w     = time until w resets   (floored at min_hours, default 15 min)
+perish_w    = min(remaining_w, remaining_weekly) / hours_w
+score       = Σ perish_w × weight_w  ÷  (1 + worker leases on the account)</code></pre>
+<p><code>perish_w</code> is the quota that evaporates per hour if the account sits idle. <code>weight_w</code> is 1 for the session window and <code>weekly_weight</code> (default 5) for weekly windows, since one weekly point is several session points' worth of tokens; that way an account whose week rolls over in a few hours with quota unspent gets the work well before the last hour. Highest score wins, so a session window with 57% left that resets in six minutes beats an account with far more weekly quota. Before scoring, accounts are filtered: exhausted (a binding window at 100%, or a recent limit hit), disabled, no login. Workers additionally skip accounts at the worker cap or with weekly remaining at or below the reserve, and prefer accounts that do not carry an interactive session. Interactive launches are sticky per git checkout until a window crosses <code>switch_pct</code>. Telemetry older than <code>stale_after_seconds</code> falls back to a neutral prior.</p>
+
+<h2 id="commands">Commands</h2>
+<table>
+<tr><th>command</th><th>does</th></tr>
+<tr><td>aiq status [--json] [--refresh] [--explain]</td><td>Pool state; <code>--refresh</code> polls first; <code>--explain</code> adds the ranking.</td></tr>
+<tr><td>aiq top</td><td>Live console view.</td></tr>
+<tr><td>aiq run &lt;provider&gt; [--account N] [--next] [--mode interactive|worker] [--model-scope M] [--wait D] -- args</td><td>What the shims call. <code>aiq claude …</code> / <code>aiq codex …</code> are shorthands. <code>--model-scope fable</code> skips accounts whose Fable cap is dry for this launch; <code>--wait 10m</code> makes a worker queue for a slot at the worker cap. Refusals exit 75 (nothing available now) or 78 (nothing to route to) with a stable <code>aiq: refused: &lt;token&gt;</code> line; child exit codes pass through.</td></tr>
+<tr><td>aiq account …</td><td>list, add, login, authorize, poll, label, order, enable, disable, remove, use, next, import.</td></tr>
+<tr><td>aiq mark &lt;id&gt; exhausted|ready</td><td>Manual bench / un-bench.</td></tr>
+<tr><td>aiq reset codex/&lt;name&gt;</td><td>Consume one earned Codex reset credit.</td></tr>
+<tr><td>aiq shim install|uninstall|path</td><td>Write or remove the PATH shims.</td></tr>
+<tr><td>aiq statusline install|uninstall|status</td><td>Claude status-line multiplexer: records live quota for routed sessions, then chains to your own status line.</td></tr>
+<tr><td>aiq daemon run|install|uninstall|status</td><td>This service (launchd on macOS, systemd --user on Linux).</td></tr>
+<tr><td>aiq doctor</td><td>Checks binaries, shims, PATH, statusline, aiquota, every account, the daemon.</td></tr>
+</table>
+
+<h2 id="trouble">Troubleshooting</h2>
+<table>
+<tr><td>aiq doctor</td><td>Start here. Each FAIL line names what to run.</td></tr>
+<tr><td>which claude</td><td>Must print the shim under <code>~/.local/share/aiq/shims/</code>. If not, the PATH line from <code>aiq shim install</code> is missing from your shell rc, or this shell predates it.</td></tr>
+<tr><td>no eligible account</td><td>Every account is exhausted, benched or logged out. <code>aiq status --explain</code> says why for each; <code>aiq mark … ready</code> lifts a stale bench.</td></tr>
+<tr><td>stale telemetry</td><td>The header shows the last poll and any per-account error; <code>aiq account poll</code> runs one by hand and prints each account's result. A Claude poll that says the grant was revoked needs <code>aiq account authorize</code> again.</td></tr>
+<tr><td>daemon log</td><td><code>~/.local/share/aiq/log/daemon.log</code>. Restart on macOS with <code>launchctl kickstart -k gui/$(id -u)/dev.aiq.daemon</code>.</td></tr>
+<tr><td>overlay backups</td><td>When a file the CLI rewrote inside an overlay is folded back into the real home, the displaced copy is kept next to it as <code>&lt;name&gt;.aiq-bak</code>, rotating up to <code>.aiq-bak.3</code>.</td></tr>
+<tr><td>state</td><td><code>~/.local/share/aiq/state.db</code> (SQLite: accounts, windows, leases, events; no credentials). Config: <code>~/.config/aiq/config.toml</code>.</td></tr>
+</table>
+
+<h2 id="config">Config</h2>
+<p>Everything has defaults; <code>~/.config/aiq/config.toml</code> is optional.</p>
+<pre><code>[providers.claude]
+binary = ""             # real CLI path; empty = walk PATH outside the shim dir
+model_scope = "auto"    # scoped weekly cap that binds; "auto" reads settings.json model
+
+[selection]
+interactive_policy = "sticky"   # sticky | score
+switch_pct = 95.0
+stale_after_seconds = 900
+weekly_reserve_pct = 5.0
+max_workers_per_account = 3
+max_depth = 3                   # nested claude → codex → claude … cap
+min_hours = 0.25
+weekly_weight = 5.0             # weekly points count 5× session points
+
+[worker]
+retry = true
+retry_max_seconds = 60.0
+
+[poll]
+interval_seconds = 300
+timeout_seconds = 60
+
+[display]
+order = ["claude/work", "claude/home", "codex/work"]
+[display.labels]
+"claude/work" = "Claude · work"
+
+[daemon]
+listen = "127.0.0.1:7379"
+
+[long]
+drain_pct = 4.0
+fallback = ["claude", "codex"]
+check_interval_seconds = 30
+idle_grace_seconds = 20</code></pre>
+</main>
+</body>
+</html>

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aiq</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --fg: #1a1d21; --muted: #6b7280; --card: #ffffff; --line: #e5e7eb;
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --accent: #2563eb; --track: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --fg: #e5e7eb; --muted: #9ca3af; --card: #171a21; --line: #262a33; --track: #262a33; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 18px; font-weight: 650; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header a.help { margin-left: auto; color: var(--accent); text-decoration: none; font-size: 13px; }
+  header button { margin-left: 8px; font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); cursor: pointer; }
+  main { padding: 16px 20px; display: grid; gap: 16px; grid-template-columns: 1fr; }
+  .columns { display: grid; gap: 16px; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); }
+  @media (max-width: 820px) { .columns { grid-template-columns: 1fr; } }
+  .column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .column h3 { margin: 0; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+  .card h2 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .card h2 .id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  .card h2 .plan { color: var(--muted); font-weight: 400; font-size: 12px; white-space: nowrap; }
+  .card h2 .who { color: var(--muted); font-weight: 400; font-size: 12px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { margin-left: auto; flex: none; font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .hint { margin-top: 6px; font-size: 12px; color: var(--bad); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .badge.rank1 { border-color: var(--accent); color: var(--accent); }
+  .badge.bad { border-color: var(--bad); color: var(--bad); }
+  .badge.off { opacity: .6; }
+  .win { display: grid; grid-template-columns: 110px 1fr 44px; gap: 8px; align-items: center; margin: 4px 0; }
+  .win .name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .win .name.dim { color: var(--muted); }
+  .bar { height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--ok); }
+  .bar i.warn { background: var(--warn); } .bar i.bad { background: var(--bad); }
+  .pct { font-variant-numeric: tabular-nums; text-align: right; font-size: 12px; }
+  .sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .leases { margin-top: 8px; font-size: 12px; }
+  .leases div { display: flex; gap: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .leases .mode { color: var(--accent); width: 82px; flex: none; }
+  .leases .mode.worker { color: var(--muted); }
+  .terms { margin-top: 6px; font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  section.wide { grid-column: 1 / -1; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  .err { color: var(--bad); }
+  .empty { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>aiq</h1>
+  <span class="meta" id="meta">loading…</span>
+  <a class="help" href="/help">help</a>
+  <button id="poll">poll now</button>
+</header>
+<main id="main"></main>
+<script>
+const fmtAgo = (ts) => { if (!ts) return 'never'; const s = Math.floor(Date.now()/1000 - ts); if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago'; return Math.floor(s/3600) + 'h ago'; };
+const fmtIn = (ts) => { if (!ts) return ''; const s = ts - Math.floor(Date.now()/1000); if (s <= 0) return 'due'; if (s < 3600) return 'in ' + Math.floor(s/60) + 'm'; if (s < 86400) return 'in ' + Math.floor(s/3600) + 'h' + String(Math.floor(s%3600/60)).padStart(2,'0') + 'm'; return 'in ' + (s/86400).toFixed(1) + 'd'; };
+const cls = (p) => p >= 95 ? 'bad' : p >= 80 ? 'warn' : '';
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function accountCard(a) {
+  const wins = a.windows.map(w => {
+    const p = w.used_pct < 0 ? null : Math.round(w.used_pct);
+    const label = w.label || w.key;
+    return `<div class="win" title="${esc(w.key)} · ${esc(w.source)} · seen ${fmtAgo(w.observed_at)}">
+      <span class="name ${w.binding ? '' : 'dim'}">${esc(label)}${w.scope && !w.binding ? '' : ''}</span>
+      <span class="bar"><i class="${cls(p ?? 0)}" style="width:${p ?? 0}%"></i></span>
+      <span class="pct">${p === null ? '–' : p + '%'}</span>
+    </div>`;
+  }).join('');
+  const resets = a.windows.filter(w => w.binding && w.resets_at).map(w => `${esc(w.label || w.key).toLowerCase()} ${fmtIn(w.resets_at)}`).join(' · ');
+  let badge, hint = '';
+  const loginCmd = `aiq account login ${a.id}`;
+  if (!a.enabled) badge = `<span class="badge off" title="aiq account enable ${esc(a.id)}">disabled</span>`;
+  else if (!a.has_credential) { badge = `<span class="badge bad" title="${esc(loginCmd)}">no login</span>`; hint = `<div class="hint">${esc(loginCmd)}</div>`; }
+  else if (a.exhausted) { const m = /until (.+)$/.exec(a.reason || ''); badge = `<span class="badge bad" title="${esc(a.reason || '')}">exhausted${m ? ' · ' + esc(m[1]) : ''}</span>`; }
+  else if (!a.eligible) badge = `<span class="badge">${esc(a.ineligible)}</span>`;
+  else badge = `<span class="badge ${a.rank === 1 ? 'rank1' : ''}">#${a.rank} · ${a.score.toFixed(1)}/h</span>`;
+  const leases = a.leases.map(l => `<div><span class="mode ${l.mode}">${l.mode}${l.drain ? ' · ' + esc(l.drain) : ''}${l.depth ? ' d' + l.depth : ''}</span><span>${l.pane || l.pid}</span><span title="${esc(l.args)}">${esc(l.workspace || l.cwd)}</span></div>`).join('');
+  return `<section class="card">
+    <h2><span class="id">${esc(a.id)}</span><span class="plan">${esc(a.plan || '')}</span><span class="who" title="${esc(a.identity || '')}">${esc(a.label || a.identity || '')}</span>${badge}</h2>
+    ${hint}
+    ${wins || '<div class="empty">no telemetry yet</div>'}
+    <div class="sub">${resets}${a.reset_credits ? ' · ' + a.reset_credits + ' reset credit(s)' : ''}${a.poll_error ? ' · <span class="err">' + esc(a.poll_error) + '</span>' : ''}${a.observed_at ? ' · seen ' + fmtAgo(a.observed_at) : ''}</div>
+    ${leases ? '<div class="leases">' + leases + '</div>' : ''}
+    ${a.terms && a.terms.length ? '<div class="terms">' + a.terms.map(esc).join('<br>') + '</div>' : ''}
+  </section>`;
+}
+
+function rankingTable(view) {
+  const rows = [];
+  for (const key of Object.keys(view.rankings).sort()) {
+    const list = view.rankings[key];
+    rows.push(`<tr><th colspan="3">${esc(key)}</th></tr>`);
+    list.forEach((r, i) => rows.push(`<tr><td class="mono">${i + 1}. ${esc(r.id)}</td><td class="mono">${r.eligible ? r.score.toFixed(1) + '/h' : ''}</td><td>${r.eligible ? esc(r.terms.join(' + ')) : '<span class="err">' + esc(r.reason) + '</span>'}</td></tr>`));
+  }
+  return `<section class="card wide"><h2>next pick</h2><table>${rows.join('')}</table></section>`;
+}
+
+function eventsTable(view) {
+  if (!view.events.length) return '<section class="card wide"><h2>events</h2><div class="empty">nothing yet</div></section>';
+  const rows = view.events.map(e => `<tr><td class="mono">${new Date(e.ts * 1000).toLocaleString()}</td><td class="mono">${esc(e.account)}</td><td>${esc(e.type)}</td><td>${esc(e.detail)}</td></tr>`).join('');
+  return `<section class="card wide"><h2>events</h2><table><tr><th>when</th><th>account</th><th>type</th><th>detail</th></tr>${rows}</table></section>`;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/state', { cache: 'no-store' });
+    const { daemon, view } = await r.json();
+    document.getElementById('meta').textContent =
+      `${view.hostname} · polled ${fmtAgo(daemon.last_poll)} every ${daemon.poll_interval}s` +
+      (daemon.polling ? ' · polling…' : '') + (daemon.last_error ? ' · ' + daemon.last_error : '') +
+      (view.model_scope.claude ? ` · claude scope: ${view.model_scope.claude}` : '');
+    // One column per provider (claude, codex, …), each in [display] order.
+    const byProvider = {};
+    for (const a of view.accounts) (byProvider[a.provider] ||= []).push(a);
+    const providers = Object.keys(byProvider).sort();
+    let html = `<div class="columns" style="--cols:${providers.length || 1}">` +
+      providers.map(p => `<div class="column"><h3>${esc(p)}</h3>${byProvider[p].map(accountCard).join('')}</div>`).join('') +
+      '</div>';
+    if (!view.accounts.length) html = '<section class="card wide"><div class="empty">no accounts — run <code>aiq account import</code></div></section>';
+    html += rankingTable(view) + eventsTable(view);
+    document.getElementById('main').innerHTML = html;
+  } catch (e) {
+    document.getElementById('meta').textContent = 'daemon unreachable: ' + e;
+  }
+}
+document.getElementById('poll').onclick = async () => { await fetch('/api/poll', { method: 'POST' }); setTimeout(refresh, 3000); };
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
