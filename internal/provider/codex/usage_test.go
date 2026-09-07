@@ -46,3 +46,17 @@ func TestIdentity(t *testing.T) {
 		t.Fatal("missing file should yield nothing")
 	}
 }
+
+// The argv an orchestrator uses for a review seat: `exec` first, prompt on
+// stdin, result written to a file. It must classify as a worker regardless
+// of the terminal.
+func TestIsWorkerOnOrchestratorArgv(t *testing.T) {
+	argv := []string{"exec", "--ephemeral", "-C", "/repo", "-s", "read-only", "-m", "gpt-6-astra",
+		"-c", "model_reasoning_effort=high", "--color", "never", "-o", "/out/last.md", "-"}
+	if !IsWorker(argv) {
+		t.Fatal("codex exec … - must be a worker")
+	}
+	if !IsWorker([]string{"--yolo", "exec", "x"}) {
+		t.Fatal("exec after a global flag is still a worker")
+	}
+}

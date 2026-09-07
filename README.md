@@ -243,8 +243,30 @@ rankings{"<provider>/<mode>": [{id, score, eligible, reason, terms}]}
 events[]: ts, provider, account, type, detail
 ```
 
-Size a batch fleet from `worker_capacity[provider]`; pick a provider per
-model tier from `accounts[].eligible` under the relevant `--model-scope`.
+Size a batch fleet from `worker_capacity_by_scope[provider][scope]`; pick a
+provider per model tier from the same map.
+
+**Example: a review fleet spawning Codex seats.** An orchestrator that runs
+inside a routed interactive `claude` session (depth 0) launches one process
+per seat, which spawns `codex` by bare name with the prompt on stdin and the
+result in a file:
+
+```text
+env:  AIQ_MODEL_SCOPE=<tier scope>  AIQ_WAIT=600     (inherited by the spawn)
+argv: codex exec --ephemeral -C <repo> -s read-only -m <model> \
+        -c model_reasoning_effort=<effort> --color never -o <result.md> -
+stdio: stdin ← prompt (written once, then closed); stdout ignored; stderr tail kept
+```
+
+What aiq does with it: the shim classifies it as a worker (`exec` first,
+stdout a pipe), routes it to an eligible account under that scope, forwards
+stdin unchanged, tees stderr and stdout for the usage-limit patterns, and
+reruns the same command on the next account if the provider rejected it
+early. Six seats launched at once on a one-account pool run three at a
+time with `AIQ_WAIT` set; without it, seats four to six exit 75
+`at-worker-cap` immediately. A timeout that signals the process group reaches
+both aiq and its child; aiq also forwards `SIGTERM`/`SIGHUP` to the child.
+Depth is 1, well under `max_depth`.
 
 ## Storage
 
