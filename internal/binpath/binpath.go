@@ -1,10 +1,14 @@
 // Package binpath finds the real provider CLI on PATH, skipping aiq's own
 // shims, aiq itself, and any candidate the caller has already tried.
 //
-// Wrappers that re-exec the bare command name (an IDE's injected shim, a
-// user's own script) are handled by the exec chain in cmd/aiq: each hop
-// records the path it exec'd, and a re-entry into `aiq run` from the same
-// pid resolves the next candidate that is not on that list.
+// Only PATH entries after the shim directory are candidates. A directory
+// ahead of the shims either has no such command or holds the wrapper that
+// the shell ran first and that delegated here; exec'ing it again would run
+// it twice (an IDE wrapper that injects flags then rejects its own
+// duplicates). Wrappers that sit after the shims and re-exec the bare
+// command name are handled by the exec chain in cmd/aiq: each hop records
+// the path it exec'd, and a re-entry into `aiq run` from the same pid
+// resolves the next candidate that is not on that list.
 package binpath
 
 import (
@@ -15,7 +19,8 @@ import (
 )
 
 // Resolve returns the preferred executable for name. configured (from the
-// config file) is used unless it is excluded; otherwise PATH is walked,
+// config file) is used unless it is excluded; otherwise PATH is walked from
+// the entry after skipDir (from the start when skipDir is not on PATH),
 // skipping skipDir, aiq itself, aiq's shim scripts and every path in exclude.
 func Resolve(name, configured, skipDir string, exclude []string) (string, error) {
 	excluded := map[string]bool{}
@@ -31,8 +36,17 @@ func Resolve(name, configured, skipDir string, exclude []string) (string, error)
 	self, _ := os.Executable()
 	selfReal := canon(self)
 	skipReal := canon(skipDir)
+	dirs := filepath.SplitList(os.Getenv("PATH"))
+	if skipReal != "" {
+		for i, dir := range dirs {
+			if dir != "" && canon(dir) == skipReal {
+				dirs = dirs[i+1:]
+				break
+			}
+		}
+	}
 	seenDir := map[string]bool{}
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+	for _, dir := range dirs {
 		if dir == "" {
 			continue
 		}

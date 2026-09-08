@@ -46,7 +46,9 @@ overlay, records a lease, and execs the real CLI. Nested calls carry
 runaway recursion. Wrappers other tools put on `PATH` are handled by an
 exec chain: a wrapper that bounces back into the shim with the same pid (or
 as the direct child of a shell holding that pid) is recognised and the next
-candidate on `PATH` is exec'd instead.
+candidate on `PATH` is exec'd instead. Only entries after the shim directory
+are candidates: a wrapper ahead of the shims has already run and delegated to
+them, and running it again would apply its flags twice.
 
 **Two kinds of launch.**
 
