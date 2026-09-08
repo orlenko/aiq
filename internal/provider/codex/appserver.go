@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/orlenko/aiq/internal/version"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -72,7 +73,7 @@ func (p *Provider) open(home string, native bool, timeout time.Duration) (*sessi
 	s.scanner = bufio.NewScanner(stdout)
 	s.scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	if _, err := s.call("initialize", map[string]any{"clientInfo": map[string]any{
-		"name": "aiq", "title": "aiq", "version": "0.3.0",
+		"name": "aiq", "title": "aiq", "version": version.Version,
 	}}); err != nil {
 		s.close()
 		return nil, fmt.Errorf("initialize: %w", err)

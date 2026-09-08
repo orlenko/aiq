@@ -6,6 +6,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	ver "github.com/orlenko/aiq/internal/version"
 	"os"
 
 	"os/exec"
@@ -18,7 +19,7 @@ import (
 	"github.com/orlenko/aiq/internal/state"
 )
 
-const version = "0.3.1"
+const version = ver.Version
 
 const usage = `aiq %s — quota-aware router for pooled Claude Code and Codex accounts
 
