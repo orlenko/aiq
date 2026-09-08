@@ -50,3 +50,25 @@ func TestSplitArgs(t *testing.T) {
 		t.Fatalf("fallback: %v", got)
 	}
 }
+
+func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
+	cases := []struct {
+		from, to string
+		in, want []string
+	}{
+		{"claude", "codex", []string{"--dangerously-skip-permissions", "--model", "opus"}, []string{"--dangerously-bypass-approvals-and-sandbox"}},
+		{"claude", "codex", []string{"--permission-mode", "bypassPermissions"}, []string{"--dangerously-bypass-approvals-and-sandbox"}},
+		{"claude", "codex", []string{"--permission-mode=bypassPermissions"}, []string{"--dangerously-bypass-approvals-and-sandbox"}},
+		{"codex", "claude", []string{"--yolo", "-m", "gpt-5"}, []string{"--dangerously-skip-permissions"}},
+		{"codex", "claude", []string{"--dangerously-bypass-approvals-and-sandbox"}, []string{"--dangerously-skip-permissions"}},
+		{"claude", "codex", []string{"--permission-mode", "acceptEdits"}, nil},
+		{"claude", "codex", []string{"--model", "opus"}, nil},
+		{"claude", "claude", []string{"--model", "opus"}, []string{"--model", "opus"}},
+	}
+	for _, c := range cases {
+		got := TranslateArgs(c.from, c.to, c.in)
+		if strings.Join(got, " ") != strings.Join(c.want, " ") {
+			t.Errorf("%s→%s %v: got %v, want %v", c.from, c.to, c.in, got, c.want)
+		}
+	}
+}

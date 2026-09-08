@@ -280,7 +280,7 @@ func cmdRun(provider string, args []string) error {
 				rest = []string{}
 			}
 			if enc, err := json.Marshal(rest); err == nil {
-				lease.Args = string(enc) // exact args, replayed on a same-provider takeover
+				lease.Args = string(enc) // exact args: replayed on a same-provider takeover, translated on a cross-provider one
 			}
 		}
 		leaseID, _ := a.st.AddLease(lease)

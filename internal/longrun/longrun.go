@@ -265,8 +265,12 @@ func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 			args = append(args, "--resume-session", l.SessionID)
 		}
 		args = append(args, "--nudge", TakeoverPrompt(l.Workspace, resume, l.Provider), "--")
-		if same && l.Args != "" {
-			args = append(args, splitArgs(l.Args)...)
+		if l.Args != "" {
+			if same {
+				args = append(args, splitArgs(l.Args)...)
+			} else {
+				args = append(args, TranslateArgs(l.Provider, acc.Provider, splitArgs(l.Args))...)
+			}
 		}
 		return tmux.Respawn(l.Pane, l.Workspace, tmux.Quote(args))
 	}
@@ -295,6 +299,40 @@ func fallbackOrder(l state.Lease, def []string) []string {
 		return strings.Split(l.Fallback, ",")
 	}
 	return append([]string{l.Provider}, def...)
+}
+
+// TranslateArgs carries across a cross-provider takeover the arguments that
+// mean the same thing on both CLIs. Today that is the permission bypass:
+// Claude's --dangerously-skip-permissions (or --permission-mode
+// bypassPermissions) and Codex's --dangerously-bypass-approvals-and-sandbox
+// (or --yolo). A model, a resume target, extra directories and a prompt are
+// provider-specific and dropped. Same provider returns args unchanged.
+func TranslateArgs(from, to string, args []string) []string {
+	if from == to {
+		return args
+	}
+	bypass := false
+	for i, a := range args {
+		switch a {
+		case "--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox", "--yolo",
+			"--permission-mode=bypassPermissions":
+			bypass = true
+		case "--permission-mode":
+			if i+1 < len(args) && args[i+1] == "bypassPermissions" {
+				bypass = true
+			}
+		}
+	}
+	if !bypass {
+		return nil
+	}
+	switch to {
+	case "claude":
+		return []string{"--dangerously-skip-permissions"}
+	case "codex":
+		return []string{"--dangerously-bypass-approvals-and-sandbox"}
+	}
+	return nil
 }
 
 // splitArgs decodes the JSON array a long lease records its args as.

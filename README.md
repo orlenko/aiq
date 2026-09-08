@@ -93,7 +93,10 @@ session named after the workspace and supervises it:
   provider's successor gets `--resume <session-id>` on the next account and
   keeps the whole conversation; the note is a supplement. A different
   provider (every Claude out, a Codex takes over, or the reverse) starts fresh
-  from the note plus the working tree. Fallback order is `long.fallback`.
+  from the note plus the working tree; the permission bypass carries over in
+  the successor's spelling (`--dangerously-skip-permissions` ↔
+  `--dangerously-bypass-approvals-and-sandbox`), every other flag is
+  provider-specific and dropped. Fallback order is `long.fallback`.
 - **Takeover in place.** The daemon `respawn-pane`s the same tmux pane with
   the successor, copies the project's trust entry between Claude accounts so
   no dialog blocks the restart, and nudges the successor with a first prompt.
