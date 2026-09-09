@@ -42,6 +42,9 @@
   .bar i.warn { background: var(--warn); } .bar i.bad { background: var(--bad); }
   .pct { font-variant-numeric: tabular-nums; text-align: right; font-size: 12px; }
   .sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .reset { font-weight: 500; }
+  .reset.avail { color: var(--ok); }
+  .reset.none { color: var(--muted); }
   .leases { margin-top: 8px; font-size: 12px; }
   .leases div { display: flex; gap: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .leases .mode { color: var(--accent); width: 82px; flex: none; }
@@ -89,11 +92,18 @@ function accountCard(a) {
   else if (!a.eligible) badge = `<span class="badge">${esc(a.ineligible)}</span>`;
   else badge = `<span class="badge ${a.rank === 1 ? 'rank1' : ''}">#${a.rank} · ${a.score.toFixed(1)}/h</span>`;
   const leases = a.leases.map(l => `<div><span class="mode ${l.mode}">${l.mode}${l.drain ? ' · ' + esc(l.drain) : ''}${l.depth ? ' d' + l.depth : ''}</span><span>${l.pane || l.pid}</span><span title="${esc(l.args)}">${esc(l.workspace || l.cwd)}</span></div>`).join('');
+  // Reset credits are a Codex concept: a green chip when one can be redeemed
+  // (aiq reset), a muted note when an exhausted Codex account has none so the
+  // absence is a fact, not a blank.
+  let resetNote = '';
+  if (a.reset_credits > 0) resetNote = `<span class="reset avail" title="redeem with: aiq reset ${esc(a.id)}">⟳ ${a.reset_credits} reset credit${a.reset_credits > 1 ? 's' : ''}</span>`;
+  else if (a.provider === 'codex' && a.exhausted) resetNote = '<span class="reset none">no reset credit</span>';
+  const sub = [resets, resetNote, a.poll_error ? `<span class="err">${esc(a.poll_error)}</span>` : '', a.observed_at ? 'seen ' + fmtAgo(a.observed_at) : ''].filter(Boolean).join(' · ');
   return `<section class="card">
     <h2><span class="id">${esc(a.id)}</span><span class="plan">${esc(a.plan || '')}</span><span class="who" title="${esc(a.identity || '')}">${esc(a.label || a.identity || '')}</span>${badge}</h2>
     ${hint}
     ${wins || '<div class="empty">no telemetry yet</div>'}
-    <div class="sub">${resets}${a.reset_credits ? ' · ' + a.reset_credits + ' reset credit(s)' : ''}${a.poll_error ? ' · <span class="err">' + esc(a.poll_error) + '</span>' : ''}${a.observed_at ? ' · seen ' + fmtAgo(a.observed_at) : ''}</div>
+    <div class="sub">${sub}</div>
     ${leases ? '<div class="leases">' + leases + '</div>' : ''}
     ${a.terms && a.terms.length ? '<div class="terms">' + a.terms.map(esc).join('<br>') + '</div>' : ''}
   </section>`;
