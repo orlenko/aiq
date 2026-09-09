@@ -72,3 +72,27 @@ func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
 		}
 	}
 }
+
+func TestReplayArgsDropsSessionSelection(t *testing.T) {
+	cases := []struct {
+		provider string
+		in, want []string
+	}{
+		{"codex", []string{"--yolo", "resume"}, []string{"--yolo"}},
+		{"codex", []string{"resume", "--last", "--yolo"}, []string{"--yolo"}},
+		{"codex", []string{"--yolo", "resume", "01a0", "do it"}, []string{"--yolo"}},
+		{"codex", []string{"fork", "01a0", "-m", "gpt-5"}, []string{"-m", "gpt-5"}},
+		{"codex", []string{"--yolo", "-c", "model=\"x\""}, []string{"--yolo", "-c", "model=\"x\""}},
+		{"claude", []string{"--dangerously-skip-permissions", "--resume", "abc"}, []string{"--dangerously-skip-permissions"}},
+		{"claude", []string{"--resume"}, nil},
+		{"claude", []string{"-c", "--model", "opus"}, []string{"--model", "opus"}},
+		{"claude", []string{"--session-id=abc", "-r"}, nil},
+		{"claude", []string{"--model", "opus"}, []string{"--model", "opus"}},
+	}
+	for _, c := range cases {
+		got := replayArgs(c.provider, c.in)
+		if strings.Join(got, " ") != strings.Join(c.want, " ") {
+			t.Errorf("%s %v: got %v, want %v", c.provider, c.in, got, c.want)
+		}
+	}
+}

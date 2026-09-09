@@ -267,7 +267,7 @@ func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 		args = append(args, "--nudge", TakeoverPrompt(l.Workspace, resume, l.Provider), "--")
 		if l.Args != "" {
 			if same {
-				args = append(args, splitArgs(l.Args)...)
+				args = append(args, replayArgs(l.Provider, splitArgs(l.Args))...)
 			} else {
 				args = append(args, TranslateArgs(l.Provider, acc.Provider, splitArgs(l.Args))...)
 			}
@@ -289,6 +289,11 @@ func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 			st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("resume of %s exited at once; starting fresh in pane %s", l.SessionID, l.Pane), time.Now())
 			if err := launch(false); err != nil {
 				st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("fresh respawn failed: %v", err), time.Now())
+				return
+			}
+			time.Sleep(8 * time.Second)
+			if _, running := tmux.PaneAlive(l.Pane); !running {
+				st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("fresh start exited at once too; pane %s left dead for inspection (aiq long attach)", l.Pane), time.Now())
 			}
 		}
 	}
@@ -299,6 +304,41 @@ func fallbackOrder(l state.Lease, def []string) []string {
 		return strings.Split(l.Fallback, ",")
 	}
 	return append([]string{l.Provider}, def...)
+}
+
+// replayArgs is the same-provider replay of a lease's launch arguments. A
+// session selection in the original command (Codex `resume`/`fork` with its
+// id, --last, --all or prompt; Claude --resume/-r, --continue/-c,
+// --session-id) was consumed by the session that ran: the successor gets its
+// own --resume-session or starts fresh, so those tokens are dropped.
+func replayArgs(provider string, args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch provider {
+		case "codex":
+			if a == "resume" || a == "fork" {
+				for i+1 < len(args) && (args[i+1] == "--last" || args[i+1] == "--all" || !strings.HasPrefix(args[i+1], "-")) {
+					i++
+				}
+				continue
+			}
+		case "claude":
+			switch {
+			case a == "--continue" || a == "-c":
+				continue
+			case a == "--resume" || a == "-r" || a == "--session-id":
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					i++
+				}
+				continue
+			case strings.HasPrefix(a, "--resume=") || strings.HasPrefix(a, "--session-id="):
+				continue
+			}
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // TranslateArgs carries across a cross-provider takeover the arguments that
