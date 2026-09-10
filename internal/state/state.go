@@ -187,6 +187,9 @@ type Lease struct {
 	TurnStartedAt int64
 	TurnEndedAt   int64
 	TakeoverOf    int64
+	// Launcher names the registered launcher this session runs under, so a
+	// takeover can start the successor the same way. Empty means bare.
+	Launcher string
 }
 
 // InTurn reports whether the agent is in the middle of a turn.
@@ -230,7 +233,8 @@ func Open(path string) (*Store, error) {
 	// Migrations for databases created before a column existed.
 	db.Exec(`ALTER TABLE usage ADD COLUMN exhausted_at INTEGER`)
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
-		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER"} {
+		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
+		"launcher TEXT"} {
 		db.Exec(`ALTER TABLE leases ADD COLUMN ` + col)
 	}
 	os.Chmod(path, 0o600)
@@ -468,10 +472,10 @@ func (s *Store) MarkReady(id string, now time.Time) error {
 func (s *Store) AddLease(l Lease) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO leases (account_id, pid, hostname, mode, cwd, depth, parent_account, root_id, args, started_at,
-		                     workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                     workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of, launcher)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		l.AccountID, l.PID, l.Hostname, l.Mode, l.Cwd, l.Depth, l.ParentAccount, l.RootID, l.Args, l.StartedAt,
-		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf)
+		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf, l.Launcher)
 	if err != nil {
 		return 0, err
 	}
@@ -493,14 +497,15 @@ func (s *Store) ReleaseLease(id int64) error {
 const leaseCols = `id, account_id, COALESCE(pid,0), COALESCE(hostname,''), COALESCE(mode,''), COALESCE(cwd,''),
 	depth, COALESCE(parent_account,''), COALESCE(root_id,0), COALESCE(args,''), COALESCE(started_at,0),
 	COALESCE(workspace,''), COALESCE(pane,''), COALESCE(session_id,''), COALESCE(provider,''), COALESCE(fallback,''),
-	COALESCE(drain,''), COALESCE(drain_at,0), COALESCE(turn_started_at,0), COALESCE(turn_ended_at,0), COALESCE(takeover_of,0)`
+	COALESCE(drain,''), COALESCE(drain_at,0), COALESCE(turn_started_at,0), COALESCE(turn_ended_at,0), COALESCE(takeover_of,0),
+	COALESCE(launcher,'')`
 
 func scanLease(row interface{ Scan(...any) error }) (Lease, error) {
 	var l Lease
 	err := row.Scan(&l.ID, &l.AccountID, &l.PID, &l.Hostname, &l.Mode, &l.Cwd,
 		&l.Depth, &l.ParentAccount, &l.RootID, &l.Args, &l.StartedAt,
 		&l.Workspace, &l.Pane, &l.SessionID, &l.Provider, &l.Fallback,
-		&l.Drain, &l.DrainAt, &l.TurnStartedAt, &l.TurnEndedAt, &l.TakeoverOf)
+		&l.Drain, &l.DrainAt, &l.TurnStartedAt, &l.TurnEndedAt, &l.TakeoverOf, &l.Launcher)
 	return l, err
 }
 

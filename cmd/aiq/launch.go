@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/orlenko/aiq/internal/config"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,9 +30,12 @@ import (
 // exec it with the environment untouched. No lease, no selection, no loop.
 const chainVar = "AIQ_CHAIN"
 
-// binaryVar carries the resolved CLI path to a wrapper that wants an exact
-// path instead of a PATH lookup.
+// binaryVar carries the resolved CLI path to a launcher that wants an exact
+// path instead of a PATH lookup. launcherVar names the launcher in use, for
+// a launcher serving several names and for the session hooks.
 const binaryVar = "AIQ_BINARY"
+
+const launcherVar = "AIQ_LAUNCHER"
 
 const chainSep = "\x1f"
 
@@ -118,15 +122,19 @@ func (a *app) resolveNext(provider string, c chain) (string, error) {
 	return bin, err
 }
 
-// wrapperFor returns the configured launcher for a provider, if any.
-func (a *app) wrapperFor(provider string) string {
-	switch provider {
-	case "claude":
-		return a.cfg.Providers.Claude.Wrapper
-	case "codex":
-		return a.cfg.Providers.Codex.Wrapper
-	}
-	return ""
+// expandEnv resolves $VAR / ${VAR} in a launcher's env value against the
+// environment being built, so a launcher can name the per-account variables
+// aiq sets ($CLAUDE_CONFIG_DIR, $CODEX_HOME) without knowing the account.
+func expandEnv(value string, env []string) string {
+	return os.Expand(value, func(name string) string {
+		prefix := name + "="
+		for _, kv := range env {
+			if strings.HasPrefix(kv, prefix) {
+				return strings.TrimPrefix(kv, prefix)
+			}
+		}
+		return ""
+	})
 }
 
 // withoutShims returns env with aiq's shim directory dropped from PATH.
@@ -141,11 +149,32 @@ func withoutShims(env []string) []string {
 	return out
 }
 
+// resolveLauncher finds a launcher's command. An absolute path is taken as
+// given; a bare name is looked up on a PATH without aiq's shim directory, so
+// a launcher named after the command it starts cannot resolve to its own
+// shim and exec itself forever.
+func resolveLauncher(name string, l config.Launcher) (string, error) {
+	if filepath.IsAbs(l.Command) {
+		if _, err := os.Stat(l.Command); err != nil {
+			return "", fmt.Errorf("launcher %q: %w", name, err)
+		}
+		return l.Command, nil
+	}
+	saved := os.Getenv("PATH")
+	os.Setenv("PATH", binpath.WithoutDir(saved, paths.ShimsDir()))
+	path, err := exec.LookPath(l.Command)
+	os.Setenv("PATH", saved)
+	if err != nil {
+		return "", fmt.Errorf("launcher %q: %w", name, err)
+	}
+	return path, nil
+}
+
 // execProvider replaces this process with the provider binary, extending
-// the chain. env must already be the environment the CLI should see. wrap
-// offers the launch to a configured wrapper, which only a session the user
-// sits in front of wants: workers, logins and probes pass false.
-func (a *app) execProvider(provider string, args []string, env []string, wrap bool) error {
+// the chain. env must already be the environment the CLI should see. When a
+// launcher was named, it is exec'd in the CLI's place and starts the CLI
+// itself; nothing is wrapped unless a name asked for it.
+func (a *app) execProvider(provider string, args []string, env []string, launcher string) error {
 	c, ok := inheritedChain(provider)
 	if !ok {
 		c = chain{provider: provider, pid: os.Getpid()}
@@ -156,19 +185,26 @@ func (a *app) execProvider(provider string, args []string, env []string, wrap bo
 		return err
 	}
 	c.paths = append(c.paths, bin)
-	env = append(proc.SanitizeEnv(env, chainVar, binaryVar), chainVar+"="+c.String())
-	if w := a.wrapperFor(provider); wrap && w != "" {
-		path, err := exec.LookPath(w)
-		if err != nil {
-			return fmt.Errorf("providers.%s.wrapper %q: %w", provider, w, err)
-		}
-		// The wrapper starts the CLI itself, usually by bare name, so the
-		// shim directory has to go before it looks.
-		env = append(withoutShims(env), binaryVar+"="+bin)
-		return syscall.Exec(path, append([]string{path}, args...), env)
+	env = append(proc.SanitizeEnv(env, chainVar, binaryVar, launcherVar), chainVar+"="+c.String())
+	if launcher == "" {
+		return syscall.Exec(bin, append([]string{bin}, args...), env)
 	}
-	argv := append([]string{bin}, args...)
-	return syscall.Exec(bin, argv, env)
+	l, ok := a.cfg.Launcher(launcher)
+	if !ok {
+		return configErr("no-launcher", "no launcher %q; see: aiq launcher list", launcher)
+	}
+	path, err := resolveLauncher(launcher, l)
+	if err != nil {
+		return configErr("no-launcher", "%v", err)
+	}
+	// The launcher starts the CLI itself, usually by bare name, so the shim
+	// directory has to go before it looks: otherwise it re-enters routing.
+	env = append(withoutShims(env), binaryVar+"="+bin, launcherVar+"="+launcher)
+	for k, v := range l.Env {
+		env = append(proc.SanitizeEnv(env, k), k+"="+expandEnv(v, env))
+	}
+	argv := append([]string{path}, append(append([]string{}, l.Args...), args...)...)
+	return syscall.Exec(path, argv, env)
 }
 
 // providerCommand builds a child process that runs the provider binary via
@@ -177,7 +213,7 @@ func (a *app) execProvider(provider string, args []string, env []string, wrap bo
 func providerCommand(provider string, args []string, env []string) *exec.Cmd {
 	self, _ := os.Executable()
 	cmd := exec.Command(self, append([]string{"__launch", provider, "--"}, args...)...)
-	cmd.Env = proc.SanitizeEnv(env, chainVar, binaryVar)
+	cmd.Env = proc.SanitizeEnv(env, chainVar, binaryVar, launcherVar)
 	return cmd
 }
 
@@ -191,5 +227,5 @@ func cmdLaunch(args []string) error {
 		return err
 	}
 	a.close()
-	return a.execProvider(args[0], args[2:], os.Environ(), false)
+	return a.execProvider(args[0], args[2:], os.Environ(), "")
 }

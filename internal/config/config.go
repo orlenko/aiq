@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -21,17 +23,69 @@ type Provider struct {
 	// "auto" reads the default model from the provider's own settings; ""
 	// ignores scoped limits.
 	ModelScope string `toml:"model_scope"`
-	// Wrapper is a launcher aiq execs instead of the CLI for interactive
-	// and long sessions: a sandbox, a recorder, a profiler. It receives the
-	// arguments the CLI would have received and is expected to start the
-	// CLI itself. aiq drops its own shim directory from PATH first, so a
-	// wrapper that runs the CLI by bare name reaches the real one instead
-	// of routing a second time, and exports AIQ_BINARY with the resolved
-	// path for a wrapper that wants an exact one. The account is already
-	// chosen when the wrapper runs: CLAUDE_CONFIG_DIR or CODEX_HOME names
-	// the overlay home it must let the CLI reach. Workers, logins,
-	// passthrough commands and telemetry probes are never wrapped.
-	Wrapper string `toml:"wrapper,omitempty"`
+}
+
+// Launcher is a named program that starts a provider CLI in an environment
+// of its own: a sandbox, a recorder, a profiler. Nothing is ever wrapped
+// unless its name is the word typed, so plain `claude` and `codex` stay
+// bare. The account is already chosen when a launcher runs, so
+// CLAUDE_CONFIG_DIR or CODEX_HOME names the overlay home it has to let the
+// CLI reach.
+type Launcher struct {
+	// Provider is the CLI this launcher starts: "claude" or "codex".
+	Provider string `toml:"provider"`
+	// Command is the program to exec. An absolute path is used as given; a
+	// bare name is looked up on PATH with aiq's shim directory excluded, so
+	// a launcher never resolves to its own shim.
+	Command string `toml:"command"`
+	// Args precede the CLI's own arguments.
+	Args []string `toml:"args,omitempty"`
+	// Env is added to the launch. A value may name the per-account
+	// variables aiq sets, $CLAUDE_CONFIG_DIR and $CODEX_HOME, which are
+	// expanded when the launcher runs.
+	Env map[string]string `toml:"env,omitempty"`
+	// Credential selects how the CLI finds its credential inside the
+	// launcher's environment. "" leaves the CLI's own lookup alone; "file"
+	// writes the account's credential into the overlay home first, for a
+	// launcher that cuts the CLI off from the system keychain.
+	Credential string `toml:"credential,omitempty"`
+	// Fallback names the launchers a long session may move to, in order,
+	// once its own account runs dry.
+	Fallback []string `toml:"fallback,omitempty"`
+}
+
+// launcherName is the shape a launcher name must have: it becomes both a
+// word after `aiq` and a file in the shim directory.
+var launcherName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// reservedNames are aiq's own words. A launcher may not take one: `aiq
+// <name>` resolves built-ins first, so such a launcher could never be
+// reached, and its shim would shadow a real command.
+var reservedNames = map[string]bool{
+	"run": true, "claude": true, "codex": true, "status": true, "top": true,
+	"account": true, "mark": true, "reset": true, "shim": true, "statusline": true,
+	"daemon": true, "doctor": true, "long": true, "launcher": true, "version": true,
+	"help": true, "__launch": true, "claude-hook": true, "codex-hook": true,
+	"claude-statusline": true,
+	// `aiq long <word>` has to tell these from a launcher name.
+	"list": true, "attach": true, "drain": true, "stop": true,
+}
+
+// ValidLauncherName reports whether name can be registered.
+func ValidLauncherName(name string) error {
+	if reservedNames[name] {
+		return fmt.Errorf("%q is an aiq command; pick another launcher name", name)
+	}
+	if !launcherName.MatchString(name) {
+		return fmt.Errorf("launcher name %q must be lowercase letters, digits, dot, dash or underscore, starting with a letter or digit", name)
+	}
+	return nil
+}
+
+// Launcher returns a registered launcher by name.
+func (c *Config) Launcher(name string) (Launcher, bool) {
+	l, ok := c.Launchers[name]
+	return l, ok
 }
 
 type Selection struct {
@@ -140,6 +194,9 @@ type Config struct {
 	Daemon    Daemon    `toml:"daemon"`
 	Long      Long      `toml:"long"`
 	Telemetry Telemetry `toml:"telemetry"`
+	// Launchers are named programs that start a CLI in an environment of
+	// their own, keyed by the name typed after `aiq`.
+	Launchers map[string]Launcher `toml:"launchers,omitempty"`
 }
 
 // DefaultLimitPatterns match the usage-limit rejections Claude Code and Codex
@@ -173,6 +230,7 @@ func Default() *Config {
 	c.Daemon.Listen = "127.0.0.1:7379"
 	c.Long = Long{DrainPct: 4, Fallback: []string{"claude", "codex"}, CheckIntervalSeconds: 30, IdleGraceSeconds: 20, TmuxPrefix: "aiq"}
 	c.Telemetry.ClaudeStatusline = true
+	c.Launchers = map[string]Launcher{}
 	return c
 }
 
@@ -187,8 +245,37 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := toml.Unmarshal(data, c); err != nil {
+	md, err := toml.Decode(string(data), c)
+	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", paths.ConfigFile(), err)
+	}
+	// providers.<p>.wrapper wrapped every session of that provider, which
+	// made a launcher the silent default. Launchers replaced it and are
+	// only ever used by name.
+	for _, key := range md.Undecoded() {
+		k := key.String()
+		if strings.HasPrefix(k, "providers.") && strings.HasSuffix(k, ".wrapper") {
+			p := strings.TrimSuffix(strings.TrimPrefix(k, "providers."), ".wrapper")
+			return nil, fmt.Errorf("%s: %s is no longer supported; register a launcher instead:\n  aiq launcher add <name> --provider %s -- <command>\nthen start it by name, and delete the %s line",
+				paths.ConfigFile(), k, p, k)
+		}
+	}
+	if c.Launchers == nil {
+		c.Launchers = map[string]Launcher{}
+	}
+	for name, l := range c.Launchers {
+		if err := ValidLauncherName(name); err != nil {
+			return nil, fmt.Errorf("%s: %w", paths.ConfigFile(), err)
+		}
+		if l.Provider != "claude" && l.Provider != "codex" {
+			return nil, fmt.Errorf("%s: launcher %q: provider must be claude or codex", paths.ConfigFile(), name)
+		}
+		if l.Command == "" {
+			return nil, fmt.Errorf("%s: launcher %q: command is required", paths.ConfigFile(), name)
+		}
+		if l.Credential != "" && l.Credential != "file" {
+			return nil, fmt.Errorf("%s: launcher %q: credential must be empty or \"file\"", paths.ConfigFile(), name)
+		}
 	}
 	if c.Selection.MinHours <= 0 {
 		c.Selection.MinHours = 0.25

@@ -21,7 +21,7 @@ import (
 // aiq long stop <lease-id|.>      end the session and its tmux session
 func cmdLong(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq long claude|codex [args...] | list | drain <id|.> | attach [.] | stop <id|.>")
+		return fmt.Errorf("usage: aiq long claude|codex|<launcher> [args...] | list | drain <id|.> | attach [.] | stop <id|.>")
 	}
 	a, err := openApp()
 	if err != nil {
@@ -30,7 +30,7 @@ func cmdLong(args []string) error {
 	defer a.close()
 	switch args[0] {
 	case "claude", "codex":
-		return a.longStart(args[0], args[1:])
+		return a.longStart(args[0], "", args[1:])
 	case "list":
 		return a.longList()
 	case "drain":
@@ -71,7 +71,12 @@ func cmdLong(args []string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("unknown long subcommand %q", args[0])
+	// A registered launcher supervises the same way, started under its own
+	// name: `aiq long <launcher> [args...]`.
+	if l, ok := a.cfg.Launcher(args[0]); ok {
+		return a.longStart(l.Provider, args[0], args[1:])
+	}
+	return fmt.Errorf("unknown long subcommand %q (not a provider or a registered launcher)", args[0])
 }
 
 func (a *app) longLeases() ([]state.Lease, error) {
@@ -115,7 +120,29 @@ func (a *app) longFind(ref string) (state.Lease, error) {
 	return state.Lease{}, fmt.Errorf("no long lease %d", id)
 }
 
-func (a *app) longStart(provider string, args []string) error {
+// launcherFallbackProviders is the provider order a launched long session
+// may move through: its own provider first, then the provider of each
+// launcher in the chain. A provider with no launcher in the chain is left
+// out, so a session never silently loses the launcher it asked for.
+func (a *app) launcherFallbackProviders(name string) []string {
+	l, ok := a.cfg.Launcher(name)
+	if !ok {
+		return nil
+	}
+	out := []string{l.Provider}
+	seen := map[string]bool{l.Provider: true}
+	for _, next := range l.Fallback {
+		nl, ok := a.cfg.Launcher(next)
+		if !ok || seen[nl.Provider] {
+			continue
+		}
+		seen[nl.Provider] = true
+		out = append(out, nl.Provider)
+	}
+	return out
+}
+
+func (a *app) longStart(provider, launcher string, args []string) error {
 	if !tmux.Available() {
 		return fmt.Errorf("tmux is required for long sessions (not found on PATH)")
 	}
@@ -136,13 +163,28 @@ func (a *app) longStart(provider string, args []string) error {
 	if err != nil {
 		return err
 	}
-	fallback := strings.Join(append([]string{provider}, a.cfg.Long.Fallback...), ",")
-	cmdArgs := append([]string{self, "run", provider, "--long", "--fallback", fallback, "--"}, args...)
+	order := append([]string{provider}, a.cfg.Long.Fallback...)
+	if launcher != "" {
+		order = a.launcherFallbackProviders(launcher)
+	}
+	fallback := strings.Join(order, ",")
+	cmdArgs := []string{self, "run", provider, "--long", "--fallback", fallback}
+	if launcher != "" {
+		cmdArgs = append(cmdArgs, "--launcher", launcher)
+	}
+	cmdArgs = append(append(cmdArgs, "--"), args...)
 	pane, err := tmux.NewSession(name, ws, tmux.Quote(cmdArgs))
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "aiq: long %s session started in tmux %s (pane %s) for %s\n", provider, name, pane, ws)
+	what := provider
+	if launcher != "" {
+		what = launcher + " (" + provider + ")"
+	}
+	fmt.Fprintf(os.Stderr, "aiq: long %s session started in tmux %s (pane %s) for %s\n", what, name, pane, ws)
+	if launcher != "" {
+		fmt.Fprintf(os.Stderr, "aiq: takeover order: %s\n", strings.Join(a.launcherFallbackProviders(launcher), " → "))
+	}
 	if term.IsTerminal(int(os.Stdout.Fd())) {
 		return tmux.Attach(name)
 	}
@@ -160,7 +202,7 @@ func (a *app) longList() error {
 		return nil
 	}
 	now := time.Now()
-	fmt.Printf("%-5s %-20s %-9s %-10s %-6s %-8s %s\n", "LEASE", "ACCOUNT", "PANE", "DRAIN", "TURN", "SINCE", "WORKSPACE")
+	fmt.Printf("%-5s %-20s %-12s %-9s %-10s %-6s %-8s %s\n", "LEASE", "ACCOUNT", "LAUNCHER", "PANE", "DRAIN", "TURN", "SINCE", "WORKSPACE")
 	for _, l := range leases {
 		drain := l.Drain
 		if drain == "" {
@@ -170,7 +212,11 @@ func (a *app) longList() error {
 		if l.InTurn() {
 			turn = "busy"
 		}
-		fmt.Printf("%-5d %-20s %-9s %-10s %-6s %-8s %s\n", l.ID, l.AccountID, l.Pane, drain, turn, fmtAgo(l.StartedAt, now), l.Workspace)
+		launcher := l.Launcher
+		if launcher == "" {
+			launcher = "-"
+		}
+		fmt.Printf("%-5d %-20s %-12s %-9s %-10s %-6s %-8s %s\n", l.ID, l.AccountID, launcher, l.Pane, drain, turn, fmtAgo(l.StartedAt, now), l.Workspace)
 	}
 	return nil
 }

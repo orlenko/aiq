@@ -21,6 +21,20 @@ import (
 
 const version = ver.Version
 
+// launcherByName looks a word up in the launcher registry. A bad config is
+// not an error here: the word simply is not a launcher, and the caller
+// reports it as an unknown command.
+func launcherByName(name string) (config.Launcher, bool) {
+	if config.ValidLauncherName(name) != nil {
+		return config.Launcher{}, false
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return config.Launcher{}, false
+	}
+	return cfg.Launcher(name)
+}
+
 const usage = `aiq %s — quota-aware router for pooled Claude Code and Codex accounts
 
 Launch (what the PATH shims call):
@@ -50,8 +64,17 @@ Pool:
   aiq mark <provider>/<name> ready
   aiq reset codex/<name>                   consume an earned Codex reset credit
 
+Launchers (a named program that starts the CLI in an environment of its own):
+  aiq launcher add <name> --provider claude|codex [--credential file]
+                          [--env K=V]... [--fallback a,b] -- <command> [args...]
+  aiq launcher list | remove <name>
+  aiq <name> [args...]             route, then start the CLI through that launcher
+  <name> [args...]                 same, via the shim that launcher add writes
+    plain claude and codex never use one: a launcher runs only when named.
+
 Long-running sessions (supervised, moved between accounts before they run dry):
-  aiq long claude|codex [args...]   start in a tmux session named after the workspace, or attach
+  aiq long claude|codex|<launcher> [args...]   start in a tmux session named after
+                                    the workspace, or attach
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
 Machine:
@@ -175,6 +198,8 @@ func main() {
 		err = cmdDoctor(args)
 	case "long":
 		err = cmdLong(args)
+	case "launcher":
+		err = cmdLauncher(args)
 	case "claude-hook":
 		cmdHook("claude", args)
 		return
@@ -190,6 +215,12 @@ func main() {
 	case "help", "--help", "-h":
 		fmt.Printf(usage, version)
 	default:
+		// A registered launcher runs under its own name. Built-in commands
+		// are matched first, and a launcher may not take one of their names.
+		if l, ok := launcherByName(cmd); ok {
+			err = cmdRun(l.Provider, append([]string{"--launcher", cmd, "--"}, args...))
+			break
+		}
 		fmt.Fprintf(os.Stderr, "aiq: unknown command %q\n\n", cmd)
 		fmt.Printf(usage, version)
 		os.Exit(2)

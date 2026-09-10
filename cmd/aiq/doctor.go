@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +34,22 @@ func cmdDoctor(args []string) error {
 	for _, provider := range pool.Providers {
 		bin, err := a.binary(provider)
 		check(err == nil, "%s binary: %s", provider, orErr(bin, err))
+	}
+
+	// Launchers: the command has to exist, and its shim has to be there for
+	// the name to work in a shell.
+	names := make([]string, 0, len(a.cfg.Launchers))
+	for n := range a.cfg.Launchers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		l := a.cfg.Launchers[n]
+		path, err := resolveLauncher(n, l)
+		check(err == nil, "launcher %s → %s", n, orErr(path, err))
+		if _, err := os.Stat(paths.ShimPath(n)); err != nil {
+			check(false, "launcher %s has no shim; run: aiq shim install", n)
+		}
 	}
 
 	shimDir := paths.ShimsDir()
@@ -80,6 +97,9 @@ func cmdDoctor(args []string) error {
 				_, err = os.Lstat(filepath.Join(acc.Home, "config.toml"))
 			}
 			check(err == nil, "%s: overlay synced", acc.ID)
+			if acc.Provider == "claude" && claude.CredentialDrifted(acc.Home) {
+				check(false, "%s: the credential file a launcher refreshed is newer than the keychain copy; run: aiq account login %s", acc.ID, acc.ID)
+			}
 		}
 	}
 

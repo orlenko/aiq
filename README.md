@@ -343,36 +343,69 @@ tmux_prefix = "aiq"
 claude_statusline = true
 ```
 
-## Wrapping the launch
+## Launchers
 
-`providers.<p>.wrapper` names a launcher aiq execs instead of the CLI: a
-sandbox, a recorder, a profiler, anything that wants to start the CLI in an
-environment of its own. Routing happens first, so the wrapper inherits a
-launch that already has an account.
+A launcher is a named program that starts the CLI in an environment of its
+own: a sandbox, a recorder, a profiler. Routing happens first, so the
+launcher inherits a session that already has an account.
+
+Nothing is ever wrapped unless its name is the word you typed. Plain
+`claude` and `codex` keep exec'ing the CLI directly.
+
+```bash
+aiq launcher add boxed --provider claude --credential file \
+  --env BOX_ALLOW='$CLAUDE_CONFIG_DIR' -- /usr/local/bin/boxed --profile strict
+```
+
+which registers
 
 ```toml
-[providers.claude]
-wrapper = "/path/to/your/launcher"
+[launchers.boxed]
+provider   = "claude"
+command    = "/usr/local/bin/boxed"
+args       = ["--profile", "strict"]
+credential = "file"
+fallback   = ["boxed-codex"]
+[launchers.boxed.env]
+BOX_ALLOW = "$CLAUDE_CONFIG_DIR"
+```
+
+and writes `~/.local/share/aiq/shims/boxed`, so all three of these start it:
+
+```text
+boxed [args...]            the shim
+aiq boxed [args...]        the same, spelled out
+aiq long boxed [args...]   supervised, with drain and takeover
 ```
 
 The contract:
 
-- The wrapper receives the arguments the CLI would have received, and starts
-  the CLI itself.
+- The launcher receives the CLI's arguments, after any `args` of its own,
+  and starts the CLI itself.
 - `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`) already names the chosen account's
-  overlay home. A wrapper that confines the CLI has to let it reach that
+  overlay home. A launcher that confines the CLI has to let it reach that
   directory, and the real `~/.claude` / `~/.codex` the overlay links into.
-- aiq drops its own shim directory from `PATH` first, so a wrapper that runs
-  `claude` or `codex` by bare name reaches the real CLI instead of routing a
-  second time. `AIQ_BINARY` holds the resolved path for a wrapper that wants
-  an exact one.
-- Only interactive sessions and `aiq long` are wrapped. Workers, logins,
-  passthrough commands and telemetry probes run unwrapped, because they are
-  not sessions a person is sitting in front of and some of them have no
-  terminal at all.
-- Every variable the wrapper reads can be set per launch, so one wrapper
-  serves several configurations: `MY_PROFILE=strict claude` reaches it
-  through aiq's environment untouched.
+  An `env` value may name those variables, as `BOX_ALLOW` does above; they
+  expand when the launcher runs.
+- aiq drops its own shim directory from `PATH` first, so a launcher that
+  starts `claude` or `codex` by bare name reaches the real CLI instead of
+  routing a second time. A launcher may therefore be named after the very
+  command it wraps. `AIQ_BINARY` holds the resolved path, `AIQ_LAUNCHER` the
+  name in use.
+- `credential = "file"` writes the account's credential into the overlay
+  home before the launch, for a launcher that cuts the CLI off from the
+  system credential store. Without it such a launcher gets a login prompt.
+  A token the CLI then refreshes stays in that file; `aiq doctor` says so
+  when the copy in the store has fallen behind.
+- Workers, logins, passthrough commands and telemetry probes never use a
+  launcher. They are not sessions a person is sitting in front of, and some
+  have no terminal at all.
+
+A long session started under a launcher keeps it across a takeover.
+`fallback` names the launchers it may move to, in order; the providers of
+those launchers are the only ones it moves between, so a session never
+quietly loses the launcher it was started with. `aiq long <name>` prints the
+order it will use.
 
 ## Scope
 

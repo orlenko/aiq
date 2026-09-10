@@ -92,6 +92,33 @@ type Supervisor struct {
 	Pool   *pool.Pool
 	Logf   func(format string, v ...any)
 	AiqBin string
+
+	// mutedLeases remembers the leases already reported as unsupervisable,
+	// so the daemon says it once instead of on every tick.
+	mutedLeases map[int64]bool
+}
+
+// launcherFor names the launcher a successor on provider should start
+// under. A lease with no launcher keeps none. A move to another provider
+// takes the first launcher in the chain that starts that provider; when
+// the chain has none, the session cannot move there at all.
+func (s *Supervisor) launcherFor(l state.Lease, provider string) string {
+	if l.Launcher == "" {
+		return ""
+	}
+	if l.Provider == provider {
+		return l.Launcher
+	}
+	own, ok := s.Pool.Cfg.Launcher(l.Launcher)
+	if !ok {
+		return ""
+	}
+	for _, name := range own.Fallback {
+		if nl, ok := s.Pool.Cfg.Launcher(name); ok && nl.Provider == provider {
+			return name
+		}
+	}
+	return ""
 }
 
 // Tick evaluates every long lease once.
@@ -183,6 +210,20 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 		// An idle session has nothing in flight; no need to wait for a
 		// wrap-up turn that will never come.
 		if l.Drain == state.DrainRequested && !l.InTurn() && now.Sub(time.Unix(l.DrainAt, 0)) > grace {
+			// A launched session whose hooks never reported looks idle
+			// whatever it is doing, because the turn timestamps come from
+			// those hooks. Moving it then would cut a turn in half.
+			if l.Launcher != "" && l.SessionID == "" {
+				if s.mutedLeases == nil {
+					s.mutedLeases = map[int64]bool{}
+				}
+				if !s.mutedLeases[l.ID] {
+					s.mutedLeases[l.ID] = true
+					st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
+						"lease %d: launcher %q reports no turns (hooks cannot reach the state database); waiting for a wrap-up instead of moving it", l.ID, l.Launcher), now)
+				}
+				return
+			}
 			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: idle, taking over", l.ID), now)
 			s.takeover(l, now)
 		}
@@ -248,6 +289,15 @@ func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 		return
 	}
 	same := acc.Provider == l.Provider
+	launcher := s.launcherFor(l, acc.Provider)
+	if l.Launcher != "" && launcher == "" {
+		if l.Drain != state.DrainWaiting {
+			st.SetLeaseDrain(l.ID, state.DrainWaiting, now)
+			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
+				"lease %d: no launcher for %s in the %q chain; waiting rather than starting unlaunched", l.ID, acc.Provider, l.Launcher), now)
+		}
+		return
+	}
 	old, _ := st.GetAccount(l.AccountID)
 	if same && acc.Provider == "claude" {
 		if err := claude.CopyProjectTrust(old.Home, old.Native, acc.Home, acc.Native, l.Workspace); err != nil {
@@ -261,6 +311,9 @@ func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 		args := []string{s.AiqBin, "run", acc.Provider, "--long", "--account", acc.Name,
 			"--takeover", fmt.Sprintf("%d", l.ID),
 			"--fallback", strings.Join(fallbackOrder(l, s.Pool.Cfg.Long.Fallback), ",")}
+		if launcher != "" {
+			args = append(args, "--launcher", launcher)
+		}
 		if resume {
 			args = append(args, "--resume-session", l.SessionID)
 		}

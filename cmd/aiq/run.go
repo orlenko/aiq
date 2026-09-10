@@ -38,6 +38,10 @@ type runFlags struct {
 	wait    time.Duration
 	waitErr error // a --wait value that did not parse (reported as bad-flags)
 
+	// launcher names a registered launcher to exec in the CLI's place.
+	// Empty means the CLI runs bare, which is what plain `claude`/`codex` do.
+	launcher string
+
 	// Long-session flags (set by `aiq long` and by the daemon's takeover).
 	long          bool
 	takeover      int64
@@ -80,6 +84,11 @@ func parseRunFlags(args []string) runFlags {
 			i++
 		case strings.HasPrefix(a, "--wait="):
 			f.wait, f.waitErr = parseWait(strings.TrimPrefix(a, "--wait="))
+		case a == "--launcher" && i+1 < len(args):
+			f.launcher = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--launcher="):
+			f.launcher = strings.TrimPrefix(a, "--launcher=")
 		case a == "--long":
 			f.long = true
 		case a == "--takeover" && i+1 < len(args):
@@ -154,7 +163,7 @@ func cmdRun(provider string, args []string) error {
 	// down PATH with the environment already prepared, no routing.
 	if _, ok := inheritedChain(provider); ok {
 		a.close()
-		return a.execProvider(provider, f.rest, os.Environ(), false)
+		return a.execProvider(provider, f.rest, os.Environ(), "")
 	}
 
 	// CLI self-management never routes.
@@ -164,7 +173,7 @@ func cmdRun(provider string, args []string) error {
 			fmt.Fprintf(os.Stderr, "aiq: `%s %s` acts on your real home, not on a pool account; pool logins are `aiq account login <provider>/<name>`\n", provider, f.rest[0])
 		}
 		a.close()
-		return a.execProvider(provider, f.rest, os.Environ(), false)
+		return a.execProvider(provider, f.rest, os.Environ(), "")
 	}
 	if _, err := a.binary(provider); err != nil {
 		return configErr("no-binary", "%v", err)
@@ -275,6 +284,7 @@ func cmdRun(provider string, args []string) error {
 		if mode == state.ModeLong {
 			lease.Workspace, lease.Provider, lease.Pane = workspace, provider, os.Getenv("TMUX_PANE")
 			lease.Fallback, lease.TakeoverOf = f.fallback, f.takeover
+			lease.Launcher = f.launcher
 			rest := f.rest
 			if rest == nil {
 				rest = []string{}
@@ -289,16 +299,27 @@ func cmdRun(provider string, args []string) error {
 		}
 		a.st.LogEvent(provider, acc.ID, "launch", mode+" "+lease.Args, now)
 
+		// A launcher asking for `credential = "file"` cuts the CLI off from
+		// the system keychain, so the account's credential is written into
+		// the overlay home the CLI is about to read.
+		if l, ok := a.cfg.Launcher(f.launcher); ok && l.Credential == "file" && provider == "claude" {
+			if wrote, err := claude.ExportCredential(acc.Home); err != nil {
+				fmt.Fprintln(os.Stderr, "aiq:", err)
+			} else if !wrote {
+				fmt.Fprintf(os.Stderr, "aiq: no stored credential for %s; if %s asks you to log in, run: aiq account login %s\n", acc.ID, f.launcher, acc.ID)
+			}
+		}
+
 		if mode == state.ModeLong {
 			env = append(env, "AIQ_LONG=1", "AIQ_LEASE="+strconv.FormatInt(leaseID, 10))
 			self, _ := os.Executable()
 			a.close()
-			return a.execProvider(provider, longArgs(provider, self, f), env, true)
+			return a.execProvider(provider, longArgs(provider, self, f), env, f.launcher)
 		}
 		if mode == state.ModeInteractive {
 			// exec keeps our pid, so the lease follows the CLI process.
 			a.close()
-			return a.execProvider(provider, f.rest, env, true)
+			return a.execProvider(provider, f.rest, env, f.launcher)
 		}
 
 		res, err := runner.RunWorker(providerCommand(provider, f.rest, env), a.limitPatterns())

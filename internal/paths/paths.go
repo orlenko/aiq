@@ -42,12 +42,15 @@ func ConfigFile() string {
 	return filepath.Join(home(), ".config", "aiq", "config.toml")
 }
 
-func StateDB() string        { return filepath.Join(DataDir(), "state.db") }
-func LocksDir() string       { return filepath.Join(DataDir(), "locks") }
-func LogDir() string         { return filepath.Join(DataDir(), "log") }
-func ShimsDir() string       { return filepath.Join(DataDir(), "shims") }
-func ClaudeHomesDir() string { return filepath.Join(DataDir(), "claude") }
-func CodexHomesDir() string  { return filepath.Join(DataDir(), "codex") }
+func StateDB() string  { return filepath.Join(DataDir(), "state.db") }
+func LocksDir() string { return filepath.Join(DataDir(), "locks") }
+func LogDir() string   { return filepath.Join(DataDir(), "log") }
+func ShimsDir() string { return filepath.Join(DataDir(), "shims") }
+
+// ShimPath is where the shim for a command name lives.
+func ShimPath(name string) string { return filepath.Join(ShimsDir(), name) }
+func ClaudeHomesDir() string      { return filepath.Join(DataDir(), "claude") }
+func CodexHomesDir() string       { return filepath.Join(DataDir(), "codex") }
 
 // EnsureDirs creates every directory aiq needs, mode 0700.
 func EnsureDirs() error {
