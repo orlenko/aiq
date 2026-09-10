@@ -297,10 +297,12 @@ version = 2
 [providers.claude]
 binary = ""              # discovered on PATH (outside the shim dir) when unset
 model_scope = "auto"     # scoped weekly cap that binds; "auto" reads settings.json model
+wrapper = ""             # launcher for interactive and long sessions (see below)
 
 [providers.codex]
 binary = ""
 model_scope = "auto"     # reads config.toml model
+wrapper = ""
 
 [selection]
 interactive_policy = "sticky"   # sticky | score
@@ -340,6 +342,37 @@ tmux_prefix = "aiq"
 [telemetry]
 claude_statusline = true
 ```
+
+## Wrapping the launch
+
+`providers.<p>.wrapper` names a launcher aiq execs instead of the CLI: a
+sandbox, a recorder, a profiler, anything that wants to start the CLI in an
+environment of its own. Routing happens first, so the wrapper inherits a
+launch that already has an account.
+
+```toml
+[providers.claude]
+wrapper = "/path/to/your/launcher"
+```
+
+The contract:
+
+- The wrapper receives the arguments the CLI would have received, and starts
+  the CLI itself.
+- `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`) already names the chosen account's
+  overlay home. A wrapper that confines the CLI has to let it reach that
+  directory, and the real `~/.claude` / `~/.codex` the overlay links into.
+- aiq drops its own shim directory from `PATH` first, so a wrapper that runs
+  `claude` or `codex` by bare name reaches the real CLI instead of routing a
+  second time. `AIQ_BINARY` holds the resolved path for a wrapper that wants
+  an exact one.
+- Only interactive sessions and `aiq long` are wrapped. Workers, logins,
+  passthrough commands and telemetry probes run unwrapped, because they are
+  not sessions a person is sitting in front of and some of them have no
+  terminal at all.
+- Every variable the wrapper reads can be set per launch, so one wrapper
+  serves several configurations: `MY_PROFILE=strict claude` reaches it
+  through aiq's environment untouched.
 
 ## Scope
 

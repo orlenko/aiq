@@ -78,6 +78,25 @@ func Resolve(name, configured, skipDir string, exclude []string) (string, error)
 	return "", fmt.Errorf("%s not found on PATH (outside aiq's shims and %d wrapper(s) already tried); set providers.%s.binary in the config", name, len(exclude), name)
 }
 
+// WithoutDir returns a PATH value with every entry naming dir removed. A
+// wrapper that starts the CLI by bare name must not reach aiq's shim: the
+// shim would route a second time, and a wrapper that confines the CLI may
+// not even be able to read it.
+func WithoutDir(pathValue, dir string) string {
+	if dir == "" {
+		return pathValue
+	}
+	want := canon(dir)
+	var keep []string
+	for _, d := range filepath.SplitList(pathValue) {
+		if d == "" || canon(d) == want {
+			continue
+		}
+		keep = append(keep, d)
+	}
+	return strings.Join(keep, string(filepath.ListSeparator))
+}
+
 func canon(p string) string {
 	if p == "" {
 		return ""

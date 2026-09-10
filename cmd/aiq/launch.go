@@ -29,6 +29,10 @@ import (
 // exec it with the environment untouched. No lease, no selection, no loop.
 const chainVar = "AIQ_CHAIN"
 
+// binaryVar carries the resolved CLI path to a wrapper that wants an exact
+// path instead of a PATH lookup.
+const binaryVar = "AIQ_BINARY"
+
 const chainSep = "\x1f"
 
 type chain struct {
@@ -114,9 +118,34 @@ func (a *app) resolveNext(provider string, c chain) (string, error) {
 	return bin, err
 }
 
+// wrapperFor returns the configured launcher for a provider, if any.
+func (a *app) wrapperFor(provider string) string {
+	switch provider {
+	case "claude":
+		return a.cfg.Providers.Claude.Wrapper
+	case "codex":
+		return a.cfg.Providers.Codex.Wrapper
+	}
+	return ""
+}
+
+// withoutShims returns env with aiq's shim directory dropped from PATH.
+func withoutShims(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			kv = "PATH=" + binpath.WithoutDir(strings.TrimPrefix(kv, "PATH="), paths.ShimsDir())
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // execProvider replaces this process with the provider binary, extending
-// the chain. env must already be the environment the CLI should see.
-func (a *app) execProvider(provider string, args []string, env []string) error {
+// the chain. env must already be the environment the CLI should see. wrap
+// offers the launch to a configured wrapper, which only a session the user
+// sits in front of wants: workers, logins and probes pass false.
+func (a *app) execProvider(provider string, args []string, env []string, wrap bool) error {
 	c, ok := inheritedChain(provider)
 	if !ok {
 		c = chain{provider: provider, pid: os.Getpid()}
@@ -127,7 +156,17 @@ func (a *app) execProvider(provider string, args []string, env []string) error {
 		return err
 	}
 	c.paths = append(c.paths, bin)
-	env = append(proc.SanitizeEnv(env, chainVar), chainVar+"="+c.String())
+	env = append(proc.SanitizeEnv(env, chainVar, binaryVar), chainVar+"="+c.String())
+	if w := a.wrapperFor(provider); wrap && w != "" {
+		path, err := exec.LookPath(w)
+		if err != nil {
+			return fmt.Errorf("providers.%s.wrapper %q: %w", provider, w, err)
+		}
+		// The wrapper starts the CLI itself, usually by bare name, so the
+		// shim directory has to go before it looks.
+		env = append(withoutShims(env), binaryVar+"="+bin)
+		return syscall.Exec(path, append([]string{path}, args...), env)
+	}
 	argv := append([]string{bin}, args...)
 	return syscall.Exec(bin, argv, env)
 }
@@ -138,7 +177,7 @@ func (a *app) execProvider(provider string, args []string, env []string) error {
 func providerCommand(provider string, args []string, env []string) *exec.Cmd {
 	self, _ := os.Executable()
 	cmd := exec.Command(self, append([]string{"__launch", provider, "--"}, args...)...)
-	cmd.Env = proc.SanitizeEnv(env, chainVar)
+	cmd.Env = proc.SanitizeEnv(env, chainVar, binaryVar)
 	return cmd
 }
 
@@ -152,5 +191,5 @@ func cmdLaunch(args []string) error {
 		return err
 	}
 	a.close()
-	return a.execProvider(args[0], args[2:], os.Environ())
+	return a.execProvider(args[0], args[2:], os.Environ(), false)
 }

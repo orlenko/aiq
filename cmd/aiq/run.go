@@ -154,7 +154,7 @@ func cmdRun(provider string, args []string) error {
 	// down PATH with the environment already prepared, no routing.
 	if _, ok := inheritedChain(provider); ok {
 		a.close()
-		return a.execProvider(provider, f.rest, os.Environ())
+		return a.execProvider(provider, f.rest, os.Environ(), false)
 	}
 
 	// CLI self-management never routes.
@@ -164,7 +164,7 @@ func cmdRun(provider string, args []string) error {
 			fmt.Fprintf(os.Stderr, "aiq: `%s %s` acts on your real home, not on a pool account; pool logins are `aiq account login <provider>/<name>`\n", provider, f.rest[0])
 		}
 		a.close()
-		return a.execProvider(provider, f.rest, os.Environ())
+		return a.execProvider(provider, f.rest, os.Environ(), false)
 	}
 	if _, err := a.binary(provider); err != nil {
 		return configErr("no-binary", "%v", err)
@@ -293,12 +293,12 @@ func cmdRun(provider string, args []string) error {
 			env = append(env, "AIQ_LONG=1", "AIQ_LEASE="+strconv.FormatInt(leaseID, 10))
 			self, _ := os.Executable()
 			a.close()
-			return a.execProvider(provider, longArgs(provider, self, f), env)
+			return a.execProvider(provider, longArgs(provider, self, f), env, true)
 		}
 		if mode == state.ModeInteractive {
 			// exec keeps our pid, so the lease follows the CLI process.
 			a.close()
-			return a.execProvider(provider, f.rest, env)
+			return a.execProvider(provider, f.rest, env, true)
 		}
 
 		res, err := runner.RunWorker(providerCommand(provider, f.rest, env), a.limitPatterns())

@@ -21,6 +21,17 @@ type Provider struct {
 	// "auto" reads the default model from the provider's own settings; ""
 	// ignores scoped limits.
 	ModelScope string `toml:"model_scope"`
+	// Wrapper is a launcher aiq execs instead of the CLI for interactive
+	// and long sessions: a sandbox, a recorder, a profiler. It receives the
+	// arguments the CLI would have received and is expected to start the
+	// CLI itself. aiq drops its own shim directory from PATH first, so a
+	// wrapper that runs the CLI by bare name reaches the real one instead
+	// of routing a second time, and exports AIQ_BINARY with the resolved
+	// path for a wrapper that wants an exact one. The account is already
+	// chosen when the wrapper runs: CLAUDE_CONFIG_DIR or CODEX_HOME names
+	// the overlay home it must let the CLI reach. Workers, logins,
+	// passthrough commands and telemetry probes are never wrapped.
+	Wrapper string `toml:"wrapper,omitempty"`
 }
 
 type Selection struct {

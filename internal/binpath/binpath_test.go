@@ -107,3 +107,34 @@ func TestResolveShimDirRepeated(t *testing.T) {
 		t.Fatalf("got %s, want %s", got, real)
 	}
 }
+
+func TestWithoutDir(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	root := t.TempDir()
+	shims := filepath.Join(root, "shims")
+	other := filepath.Join(root, "bin")
+	if err := os.MkdirAll(shims, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every occurrence goes, including a trailing-slash spelling of it.
+	got := WithoutDir(strings.Join([]string{shims, other, shims + "/"}, sep), shims)
+	if got != other {
+		t.Fatalf("got %q, want %q", got, other)
+	}
+	// A PATH without the directory is returned intact.
+	if got := WithoutDir(other, shims); got != other {
+		t.Fatalf("got %q, want %q", got, other)
+	}
+	// An empty directory is a no-op, and empty entries are dropped.
+	if got := WithoutDir(other+sep, ""); got != other+sep {
+		t.Fatalf("empty dir must not rewrite: %q", got)
+	}
+	// Removing the only entry leaves an empty PATH rather than a stray sep.
+	if got := WithoutDir(shims, shims); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
