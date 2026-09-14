@@ -2,5 +2,6 @@
 /ap
 /dist/
 *.test
+__pycache__/
 initial-convo.html
 initial-convo_files/

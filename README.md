@@ -208,13 +208,44 @@ neutral prior. `aiq status --explain` prints the ranking with every term.
 
 ## Install
 
+For a first install on macOS or Ubuntu, install Git and Go (the version in
+`go.mod` or newer), then clone and run:
+
+```bash
+git clone https://github.com/orlenko/aiq.git
+cd aiq
+./install-or-update.sh
+```
+
+For updates, run the same script from your existing checkout, from any directory:
+
+```bash
+~/code/aiq/install-or-update.sh       # use your checkout's actual path
+```
+
+The script fast-forwards the checkout's tracking branch, builds and atomically
+installs `~/.local/bin/aiq`, refreshes provider and launcher shims, and installs
+or restarts the current user's daemon (launchd on macOS, systemd on Ubuntu).
+Run it as your regular user, without `sudo`. It refuses to pull over local
+changes. Use `--no-pull` to install the current working tree, or `--no-daemon`
+to install only the CLI and shims. On Ubuntu, daemon installation needs a
+running systemd user manager. Add the printed shim directory and `~/.local/bin`
+to your shell's `PATH`; the script does not edit shell startup files.
+
+Alternatively, install manually:
+
 ```bash
 go install github.com/orlenko/aiq/cmd/aiq@latest   # or: go build -o ~/.local/bin/aiq ./cmd/aiq
 aiq shim install                 # then add the printed PATH line to your shell rc
+aiq daemon install               # launchd (macOS) or systemd --user (Linux)
+```
+
+After either installation method, add your first accounts:
+
+```bash
 aiq account add claude work      # Claude Code login + quota poll grant (two browser steps)
 aiq account add claude home
 aiq account add codex work       # codex login (one browser step)
-aiq daemon install               # launchd (macOS) or systemd --user (Linux)
 aiq doctor
 ```
 
