@@ -15,6 +15,7 @@ import (
 	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/overlay"
 	"github.com/orlenko/aiq/internal/pool"
+	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/runner"
@@ -25,6 +26,9 @@ import (
 // runFlags are aiq's own flags, taken from before the "--" separator (or
 // from the front of the args when no separator is present).
 type runFlags struct {
+	modelTier      *int
+	effort         int
+	flagsErr       error
 	account        string
 	next           bool
 	mode           string
@@ -56,6 +60,26 @@ func parseRunFlags(args []string) runFlags {
 	for ; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case a == "--model-tier" || a == "--effort" || strings.HasPrefix(a, "--model-tier=") || strings.HasPrefix(a, "--effort="):
+			key, value, equals := strings.Cut(a, "=")
+			if !equals && i+1 < len(args) {
+				i++
+				value = args[i]
+			}
+			n, err := strconv.Atoi(value)
+			if key == "--model-tier" {
+				if err != nil || n < 0 || n > 3 {
+					f.flagsErr = fmt.Errorf("--model-tier must be 0–3")
+				} else {
+					f.modelTier = &n
+				}
+			} else {
+				if err != nil || n < 1 || n > 6 {
+					f.flagsErr = fmt.Errorf("--effort must be 1–6")
+				} else {
+					f.effort = n
+				}
+			}
 		case a == "--":
 			i++
 			f.rest = append(f.rest, args[i:]...)
@@ -150,8 +174,27 @@ func envInt(name string) int {
 
 func cmdRun(provider string, args []string) error {
 	f := parseRunFlags(args)
-	if provider != "claude" && provider != "codex" {
+	auto := provider == "auto"
+	var request autoRequest
+	if auto {
+		var err error
+		f, request, err = parseAutoFlags(args)
+		if err != nil {
+			return configErr("bad-flags", "%v", err)
+		}
+	}
+	if f.flagsErr != nil {
+		return configErr("bad-flags", "%v", f.flagsErr)
+	}
+	if !auto && provider != "claude" && provider != "codex" {
 		return fmt.Errorf("unknown provider %s", provider)
+	}
+	if !auto {
+		var err error
+		f, err = modelFlags(provider, f)
+		if err != nil {
+			return configErr("bad-flags", "%v", err)
+		}
 	}
 	a, err := openApp()
 	if err != nil {
@@ -175,8 +218,10 @@ func cmdRun(provider string, args []string) error {
 		a.close()
 		return a.execProvider(provider, f.rest, os.Environ(), "")
 	}
-	if _, err := a.binary(provider); err != nil {
-		return configErr("no-binary", "%v", err)
+	if !auto {
+		if _, err := a.binary(provider); err != nil {
+			return configErr("no-binary", "%v", err)
+		}
 	}
 
 	mode := f.mode
@@ -187,7 +232,7 @@ func cmdRun(provider string, args []string) error {
 		mode = os.Getenv("AIQ_MODE")
 	}
 	if mode == "" {
-		isWorker := (provider == "claude" && claude.IsWorker(f.rest)) || (provider == "codex" && codex.IsWorker(f.rest))
+		isWorker := (auto && request.print) || (provider == "claude" && claude.IsWorker(f.rest)) || (provider == "codex" && codex.IsWorker(f.rest))
 		if isWorker {
 			mode = state.ModeWorker
 		} else {
@@ -197,7 +242,10 @@ func cmdRun(provider string, args []string) error {
 	if mode != state.ModeWorker && mode != state.ModeInteractive && mode != state.ModeLong {
 		return configErr("bad-flags", "--mode must be interactive or worker")
 	}
-	if f.modelScope == "" {
+	if auto && (mode == state.ModeLong || (mode == state.ModeWorker) != request.print) {
+		return configErr("bad-flags", "auto worker mode requires -p; auto interactive mode must omit -p")
+	}
+	if f.modelScope == "" && f.modelTier == nil {
 		f.modelScope = os.Getenv("AIQ_MODEL_SCOPE")
 	}
 	if f.waitErr != nil {
@@ -231,9 +279,23 @@ func cmdRun(provider string, args []string) error {
 	attempts := 0
 	deadline := time.Now().Add(f.wait)
 	waiting := false
+	baseFlags := f
 	for {
+		f := baseFlags
 		attempts++
-		acc, notes, err := a.selectAccount(provider, mode, f, workspace, tried)
+		var acc state.Account
+		var notes []string
+		var err error
+		if auto {
+			acc, notes, err = a.selectAutoAccount(mode, f, tried)
+			if err == nil {
+				provider = acc.Provider
+				f.rest = request.args(provider)
+				f, err = modelFlags(provider, f)
+			}
+		} else {
+			acc, notes, err = a.selectAccount(provider, mode, f, workspace, tried)
+		}
 		// A worker asked to wait keeps polling for a slot until the deadline,
 		// but only when the cause is the worker cap: an exhausted pool does
 		// not free up by waiting.
@@ -267,11 +329,15 @@ func cmdRun(provider string, args []string) error {
 			return err
 		}
 		env := a.launchEnv(provider, acc, f.inheritAuthEnv, depth)
+		if provider == "claude" && f.effort > 0 {
+			// An explicit numeric flag takes precedence over inherited effort.
+			env = proc.SanitizeEnv(env, "CLAUDE_CODE_EFFORT_LEVEL")
+		}
 		summary := a.usageSummary(provider, acc.ID)
 		if summary != "" {
 			summary = " — " + summary
 		}
-		if mode != state.ModeWorker || attempts > 1 {
+		if auto || mode != state.ModeWorker || attempts > 1 {
 			fmt.Fprintf(os.Stderr, "aiq: using %s%s\n", acc.ID, summary)
 		}
 

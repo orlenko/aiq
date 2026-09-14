@@ -14,14 +14,14 @@ import (
 	"github.com/orlenko/aiq/internal/tmux"
 )
 
-// aiq long <provider> [args...]   start (or attach to) a supervised session
+// aiq long <provider> [--account <name>] [--] [args...] starts or attaches.
 // aiq long list                   long sessions and their drain state
 // aiq long drain <lease-id|.>     ask a session to wrap up and move now
 // aiq long attach [.]             attach to this workspace's session
 // aiq long stop <lease-id|.>      end the session and its tmux session
 func cmdLong(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq long claude|codex|<launcher> [args...] | list | drain <id|.> | attach [.] | stop <id|.>")
+		return fmt.Errorf("usage: aiq long claude|codex|<launcher> [--account <name>] [--] [args...] | list | drain <id|.> | attach [.] | stop <id|.>")
 	}
 	a, err := openApp()
 	if err != nil {
@@ -143,6 +143,10 @@ func (a *app) launcherFallbackProviders(name string) []string {
 }
 
 func (a *app) longStart(provider, launcher string, args []string) error {
+	account, args, err := parseLongArgs(args)
+	if err != nil {
+		return err
+	}
 	if !tmux.Available() {
 		return fmt.Errorf("tmux is required for long sessions (not found on PATH)")
 	}
@@ -172,6 +176,9 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 	if launcher != "" {
 		cmdArgs = append(cmdArgs, "--launcher", launcher)
 	}
+	if account != "" {
+		cmdArgs = append(cmdArgs, "--account", account)
+	}
 	cmdArgs = append(append(cmdArgs, "--"), args...)
 	pane, err := tmux.NewSession(name, ws, tmux.Quote(cmdArgs))
 	if err != nil {
@@ -190,6 +197,31 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 	}
 	fmt.Printf("attach with: tmux attach -t %s   (or: aiq long attach)\n", name)
 	return nil
+}
+
+// Like run, long consumes its own leading options and stops at -- or the
+// first provider argument. Everything after that boundary belongs to the CLI.
+func parseLongArgs(args []string) (account string, rest []string, err error) {
+	for len(args) > 0 {
+		switch {
+		case args[0] == "--":
+			return account, args[1:], nil
+		case args[0] == "--account":
+			if len(args) < 2 || args[1] == "" || strings.HasPrefix(args[1], "-") {
+				return "", nil, fmt.Errorf("--account requires an account name")
+			}
+			account, args = args[1], args[2:]
+		case strings.HasPrefix(args[0], "--account="):
+			account = strings.TrimPrefix(args[0], "--account=")
+			if account == "" || strings.HasPrefix(account, "-") {
+				return "", nil, fmt.Errorf("--account requires an account name")
+			}
+			args = args[1:]
+		default:
+			return account, args, nil
+		}
+	}
+	return account, args, nil
 }
 
 func (a *app) longList() error {

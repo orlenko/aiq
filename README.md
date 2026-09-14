@@ -112,7 +112,75 @@ aiq long attach                     re-attach
 aiq long stop .                     end it
 ```
 
+Choose the initial account with `aiq long codex --account bjola -- --yolo`
+(or `--account=bjola`). This also works with Claude and named launchers.
+Put `--account` before CLI arguments; `--` ends aiq's options. The daemon
+can still move the session to another account later. If a long session already
+exists for the workspace, the command attaches to it instead of changing its account.
+
 Handoff notes live in `~/.local/share/aiq/handoff/`.
+
+## Automatic provider and model selection
+
+```bash
+aiq run auto -p "do this thing"
+aiq run auto --model-tier 0 --effort 6 -p "analyze this design"
+aiq run auto --model-tier 2 --effort 2 --yolo -p "fix the failing test"
+aiq run auto --model-tier 1             # interactive session
+```
+
+`auto` ranks eligible Claude and Codex accounts together using the quota score,
+worker reserve and concurrency limits. It skips providers whose CLI is missing.
+Selection uses stored telemetry, as ordinary routing does; unknown or stale
+telemetry cannot guarantee remaining quota. An early worker quota rejection
+can retry on another account, including the other provider, under the existing
+worker retry policy. Interactive sessions choose once at launch.
+
+`-p` translates to Claude's print mode or Codex's `exec` command. The prompt is
+preserved as one literal argument. Without `-p`, `auto` opens an interactive
+session; add `-- "initial prompt"` to start it with a prompt. `--yolo` explicitly
+enables each provider's permission bypass. Native provider options require
+`aiq run claude` or `aiq run codex`; `auto` does not translate arbitrary flags,
+resume sessions, named launchers, or forced accounts. `--wait` and `--mode`
+remain available, with worker mode requiring `-p`.
+
+| Tier | Claude | Codex |
+| --- | --- | --- |
+| 0 | Fable (`fable`) | Astra (`gpt-6-astra`) |
+| 1 (default for auto) | Opus (`opus`) | Sol (`gpt-5.6-sol`) |
+| 2 | Sonnet (`sonnet`) | Terra (`gpt-5.6-terra`) |
+| 3 | Haiku (`haiku`) | Luna (`gpt-5.6-luna`) |
+
+The requested tier stays fixed during retries; aiq never silently downgrades it.
+Model-scoped quota windows bind only the selected model, so an exhausted Fable
+cap does not disqualify an otherwise eligible Opus account.
+
+| Effort | Claude | Codex |
+| --- | --- | --- |
+| 1 | low | low |
+| 2 | medium | medium |
+| 3 | high | high |
+| 4 | xhigh | xhigh |
+| 5 | max | max |
+| 6 | ultracode | ultra |
+
+Effort is optional; omission preserves the CLI default. Claude's sixth setting
+means `xhigh` plus dynamic workflows, rather than a sixth model reasoning level;
+it requires Claude Code 2.1.203 or later. See the
+[Claude CLI reference](https://code.claude.com/docs/en/cli-reference).
+Model and client support still apply to each setting.
+
+Both shared options also work with an explicit provider, before `--`:
+
+```bash
+aiq run claude --model-tier 0 --effort 6 -- -p "review this design"
+aiq run codex --model-tier 2 --effort 3 -- exec "fix the failing test"
+```
+
+Explicit providers keep their configured model when no tier is supplied.
+Do not combine a tier with `--model-scope` or a native model override; the tier
+sets both the model and its quota scope. Pass native named effort values after
+`--`, for example `aiq run claude -- --effort high -p "review this"`.
 
 ## Scoring: spend what is about to vanish
 

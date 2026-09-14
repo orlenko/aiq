@@ -39,8 +39,12 @@ const usage = `aiq %s — quota-aware router for pooled Claude Code and Codex ac
 
 Launch (what the PATH shims call):
   aiq run claude [--account <name>] [--next] [--mode interactive|worker]
+                 [--model-tier 0..3] [--effort 1..6]
                  [--model-scope <name>] [--wait <duration>] -- [claude args...]
   aiq run codex  [same flags] -- [codex args...]
+  aiq run auto [--model-tier 0..3] [--effort 1..6] [-p <prompt>] [--yolo]
+    auto chooses across both pools; tier defaults to 1, effort to the CLI default.
+    -p runs a worker (Claude print / Codex exec); omit it for an interactive session.
     exit 75: no eligible account (pool dry, at cap, wait expired); 78: nothing to route to;
     any other code is the child's own
   aiq claude [args...]            same as: aiq run claude -- args
@@ -73,7 +77,8 @@ Launchers (a named program that starts the CLI in an environment of its own):
     plain claude and codex never use one: a launcher runs only when named.
 
 Long-running sessions (supervised, moved between accounts before they run dry):
-  aiq long claude|codex|<launcher> [args...]   start in a tmux session named after
+  aiq long claude|codex|<launcher> [--account <name>] [--] [args...]
+                                    start in a tmux session named after
                                     the workspace, or attach
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
