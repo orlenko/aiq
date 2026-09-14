@@ -35,9 +35,9 @@ func TestAutoArguments(t *testing.T) {
 					if effort == 6 {
 						level = "ultracode"
 					}
-					want = []string{"--model", tierModels[provider][tier], "--effort", level, "-p", "--", r.prompt}
+					want = []string{"--model", tierModels[provider][tier], "--effort", level, "-p", "--dangerously-skip-permissions", "--", r.prompt}
 				} else {
-					want = []string{"exec", "--model", tierModels[provider][tier], "-c", "model_reasoning_effort=" + level, "--", r.prompt}
+					want = []string{"exec", "--model", tierModels[provider][tier], "-c", "model_reasoning_effort=" + level, "--yolo", "--", r.prompt}
 				}
 				if !reflect.DeepEqual(got.rest, want) {
 					t.Fatalf("%s tier %d effort %d: %q != %q", provider, tier, effort, got.rest, want)
@@ -57,6 +57,20 @@ func TestAutoArguments(t *testing.T) {
 	} {
 		if _, _, err := parseAutoFlags(args); err == nil {
 			t.Errorf("accepted invalid args %q", args)
+		}
+	}
+}
+
+func TestAutoImplicitYolo(t *testing.T) {
+	for _, input := range [][]string{nil, {"--yolo"}} {
+		_, request, err := parseAutoFlags(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for provider, flag := range map[string]string{"claude": "--dangerously-skip-permissions", "codex": "--yolo"} {
+			if got := request.args(provider); !reflect.DeepEqual(got, []string{flag}) {
+				t.Fatalf("%s interactive args: %q", provider, got)
+			}
 		}
 	}
 }

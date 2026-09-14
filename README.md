@@ -125,7 +125,7 @@ Handoff notes live in `~/.local/share/aiq/handoff/`.
 ```bash
 aiq run auto -p "do this thing"
 aiq run auto --model-tier 0 --effort 6 -p "analyze this design"
-aiq run auto --model-tier 2 --effort 2 --yolo -p "fix the failing test"
+aiq run auto --model-tier 2 --effort 2 -p "fix the failing test"
 aiq run auto --model-tier 1             # interactive session
 ```
 
@@ -138,8 +138,10 @@ worker retry policy. Interactive sessions choose once at launch.
 
 `-p` translates to Claude's print mode or Codex's `exec` command. The prompt is
 preserved as one literal argument. Without `-p`, `auto` opens an interactive
-session; add `-- "initial prompt"` to start it with a prompt. `--yolo` explicitly
-enables each provider's permission bypass. Native provider options require
+session; add `-- "initial prompt"` to start it with a prompt. **Auto always
+enables permission bypass**: `--dangerously-skip-permissions` for Claude or
+`--yolo` for Codex, including workers and cross-provider retries. An explicit
+`--yolo` is still accepted but is redundant. Native provider options require
 `aiq run claude` or `aiq run codex`; `auto` does not translate arbitrary flags,
 resume sessions, named launchers, or forced accounts. `--wait` and `--mode`
 remain available, with worker mode requiring `-p`.

@@ -42,9 +42,10 @@ Launch (what the PATH shims call):
                  [--model-tier 0..3] [--effort 1..6]
                  [--model-scope <name>] [--wait <duration>] -- [claude args...]
   aiq run codex  [same flags] -- [codex args...]
-  aiq run auto [--model-tier 0..3] [--effort 1..6] [-p <prompt>] [--yolo]
+  aiq run auto [--model-tier 0..3] [--effort 1..6] [-p <prompt>]
     auto chooses across both pools; tier defaults to 1, effort to the CLI default.
     -p runs a worker (Claude print / Codex exec); omit it for an interactive session.
+    auto always enables YOLO: Claude --dangerously-skip-permissions / Codex --yolo.
     exit 75: no eligible account (pool dry, at cap, wait expired); 78: nothing to route to;
     any other code is the child's own
   aiq claude [args...]            same as: aiq run claude -- args

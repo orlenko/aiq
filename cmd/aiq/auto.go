@@ -81,7 +81,6 @@ type autoRequest struct {
 	print     bool
 	prompt    string
 	hasPrompt bool
-	yolo      bool
 }
 
 func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
@@ -97,7 +96,7 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 			i++
 			r.print, r.hasPrompt, r.prompt = true, true, args[i]
 		case arg == "--yolo":
-			r.yolo = true
+			// Accepted for compatibility; auto always enables permission bypass.
 		case arg == "--":
 			if r.hasPrompt || len(args[i+1:]) != 1 {
 				return runFlags{}, r, fmt.Errorf("auto accepts one literal prompt after --")
@@ -145,12 +144,10 @@ func (r autoRequest) args(provider string) []string {
 			args = append(args, "exec")
 		}
 	}
-	if r.yolo {
-		if provider == "claude" {
-			args = append(args, "--dangerously-skip-permissions")
-		} else {
-			args = append(args, "--yolo")
-		}
+	if provider == "claude" {
+		args = append(args, "--dangerously-skip-permissions")
+	} else {
+		args = append(args, "--yolo")
 	}
 	if r.hasPrompt {
 		args = append(args, "--", r.prompt)
