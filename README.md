@@ -184,6 +184,76 @@ Do not combine a tier with `--model-scope` or a native model override; the tier
 sets both the model and its quota scope. Pass native named effort values after
 `--`, for example `aiq run claude -- --effort high -p "review this"`.
 
+## Recipes
+
+Two habits that make the pool disappear from day-to-day work.
+
+### Start a session without choosing anything
+
+```bash
+aiq run auto
+```
+
+When the question is "can I finish this session" rather than "which model
+do I want", let aiq decide. It picks the provider and account with the most
+quota about to expire, opens an interactive session on tier 1 (Opus or Sol)
+with permission bypass on, and stays there for the session. Pin the tier for
+the session with `--model-tier`:
+
+```bash
+aiq run auto --model-tier 0              # the strongest model that has quota
+aiq run auto --model-tier 2 --effort 2   # cheap and quick
+```
+
+Add `-- "initial prompt"` to open the session with a first message already
+sent.
+
+### `aip`: ask from the shell prompt
+
+A one-shot question should cost one line, with no quoting. This shell
+function turns everything after `aip` into a single `aiq run auto -p` prompt,
+and a line widget quotes the rest of the line at Enter so apostrophes,
+question marks, globs and `!` history references pass through untouched:
+
+```zsh
+# ~/.zshrc
+aip() {
+  aiq run auto -p "$*"
+}
+
+# Shorthands whose arguments get passed verbatim when typed at the prompt.
+verbatim_cmds=(aip)
+
+_verbatim_accept_line() {
+  local name rest
+  for name in $verbatim_cmds; do
+    [[ $BUFFER == "$name "* ]] || continue
+    rest=${BUFFER#"$name "}
+    # Skip lines already quoted, e.g. recalled from history.
+    [[ $rest == "${(qq)${(Q)rest}}" ]] || BUFFER="$name ${(qq)rest}"
+    break
+  done
+  zle .accept-line
+}
+zle -N accept-line _verbatim_accept_line
+```
+
+Then:
+
+```text
+$ aip how do I run a command on a remote machine over ssh without a tty?
+$ aip what's the git command to drop the last commit but keep its changes?
+$ aip why does !ls fail on this box?
+```
+
+Each call is a worker: scored per call, kept off accounts that carry an
+interactive session when another is available, and retried on the next
+account if the provider rejects it with a usage limit. The widget rewrites
+the buffer before it is accepted, so the quoting is visible on the line as
+it runs, history keeps the quoted form, and recalling a line does not quote
+it twice. Add other functions to
+`verbatim_cmds` to give them the same treatment.
+
 ## Scoring: spend what is about to vanish
 
 For every *binding* window `w` of an account (the 5h and weekly windows,
