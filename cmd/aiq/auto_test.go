@@ -14,12 +14,13 @@ import (
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/tier"
 )
 
 func TestAutoArguments(t *testing.T) {
-	for tier := 0; tier <= 3; tier++ {
+	for tr := 0; tr <= 3; tr++ {
 		for effort := 1; effort <= 6; effort++ {
-			f, r, err := parseAutoFlags([]string{"-p", "do this 'thing'\n--effort", "--model-tier", fmt.Sprint(tier), "--effort=" + fmt.Sprint(effort)})
+			f, r, err := parseAutoFlags([]string{"-p", "do this 'thing'\n--effort", "--model-tier", fmt.Sprint(tr), "--effort=" + fmt.Sprint(effort)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -35,12 +36,12 @@ func TestAutoArguments(t *testing.T) {
 					if effort == 6 {
 						level = "ultracode"
 					}
-					want = []string{"--model", tierModels[provider][tier], "--effort", level, "-p", "--dangerously-skip-permissions", "--", r.prompt}
+					want = []string{"--model", tier.Models[provider][tr], "--effort", level, "-p", "--dangerously-skip-permissions", "--", r.prompt}
 				} else {
-					want = []string{"exec", "--model", tierModels[provider][tier], "-c", "model_reasoning_effort=" + level, "--yolo", "--", r.prompt}
+					want = []string{"exec", "--model", tier.Models[provider][tr], "-c", "model_reasoning_effort=" + level, "--yolo", "--", r.prompt}
 				}
 				if !reflect.DeepEqual(got.rest, want) {
-					t.Fatalf("%s tier %d effort %d: %q != %q", provider, tier, effort, got.rest, want)
+					t.Fatalf("%s tier %d effort %d: %q != %q", provider, tr, effort, got.rest, want)
 				}
 			}
 		}
@@ -53,7 +54,7 @@ func TestAutoArguments(t *testing.T) {
 		{"--model-tier", "4"}, {"--model-tier=-1"}, {"--model-tier"},
 		{"--effort", "0"}, {"--effort=7"}, {"--effort=high"}, {"--effort"},
 		{"-p"}, {"-p", "a", "-p", "b"}, {"--account", "test"},
-		{"--launcher", "test"}, {"--long"}, {"--model-scope", "fable"}, {"--unknown"},
+		{"--launcher", "test"}, {"--long", "--", "task"}, {"--long", "-p", "task"}, {"--model-scope", "fable"}, {"--unknown"},
 	} {
 		if _, _, err := parseAutoFlags(args); err == nil {
 			t.Errorf("accepted invalid args %q", args)

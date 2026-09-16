@@ -68,7 +68,7 @@ var reservedNames = map[string]bool{
 	"resume": true, "help": true, "__launch": true, "claude-hook": true, "codex-hook": true,
 	"claude-statusline": true,
 	// `aiq long <word>` has to tell these from a launcher name.
-	"list": true, "attach": true, "drain": true, "stop": true,
+	"list": true, "attach": true, "drain": true, "stop": true, "auto": true,
 }
 
 // ValidLauncherName reports whether name can be registered.

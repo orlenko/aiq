@@ -56,13 +56,20 @@ func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
 		from, to string
 		in, want []string
 	}{
-		{"claude", "codex", []string{"--dangerously-skip-permissions", "--model", "opus"}, []string{"--dangerously-bypass-approvals-and-sandbox"}},
+		{"claude", "codex", []string{"--dangerously-skip-permissions", "--model", "opus"}, []string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-sol"}},
 		{"claude", "codex", []string{"--permission-mode", "bypassPermissions"}, []string{"--dangerously-bypass-approvals-and-sandbox"}},
 		{"claude", "codex", []string{"--permission-mode=bypassPermissions"}, []string{"--dangerously-bypass-approvals-and-sandbox"}},
 		{"codex", "claude", []string{"--yolo", "-m", "gpt-5"}, []string{"--dangerously-skip-permissions"}},
 		{"codex", "claude", []string{"--dangerously-bypass-approvals-and-sandbox"}, []string{"--dangerously-skip-permissions"}},
 		{"claude", "codex", []string{"--permission-mode", "acceptEdits"}, nil},
-		{"claude", "codex", []string{"--model", "opus"}, nil},
+		{"claude", "codex", []string{"--model", "claude-opus-5"}, nil},
+		{"claude", "codex", []string{"--model", "opus"}, []string{"--model", "gpt-5.6-sol"}},
+		{"claude", "codex", []string{"--model=fable", "--effort", "ultracode", "--dangerously-skip-permissions"},
+			[]string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-6-astra", "-c", "model_reasoning_effort=ultra"}},
+		{"codex", "claude", []string{"--model", "gpt-5.6-luna", "-c", "model_reasoning_effort=high", "--yolo"},
+			[]string{"--dangerously-skip-permissions", "--model", "haiku", "--effort", "high"}},
+		{"codex", "claude", []string{"-m", "gpt-5.6-terra", "--config=model_reasoning_effort=\"low\""}, []string{"--model", "sonnet", "--effort", "low"}},
+		{"claude", "codex", []string{"--", "--model", "opus"}, nil},
 		{"claude", "claude", []string{"--model", "opus"}, []string{"--model", "opus"}},
 	}
 	for _, c := range cases {

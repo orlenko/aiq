@@ -14,7 +14,7 @@ func TestValidLauncherName(t *testing.T) {
 		}
 	}
 	// An aiq command, and the words `aiq long` has to tell from a launcher.
-	for _, bad := range []string{"status", "long", "claude", "codex", "list", "attach", "launcher"} {
+	for _, bad := range []string{"status", "long", "claude", "codex", "list", "attach", "launcher", "auto"} {
 		if err := ValidLauncherName(bad); err == nil {
 			t.Errorf("%q must be refused: it would shadow a command", bad)
 		}

@@ -9,12 +9,8 @@ import (
 
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/tier"
 )
-
-var tierModels = map[string][4]string{
-	"claude": {"fable", "opus", "sonnet", "haiku"},
-	"codex":  {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
-}
 
 // modelFlags translates shared controls only after a provider is chosen.
 func modelFlags(provider string, f runFlags) (runFlags, error) {
@@ -23,20 +19,13 @@ func modelFlags(provider string, f runFlags) (runFlags, error) {
 		if f.modelScope != "" {
 			return f, fmt.Errorf("--model-tier determines quota scope; omit --model-scope")
 		}
-		model := tierModels[provider][*f.modelTier]
-		prefix = append(prefix, "--model", model)
+		prefix = append(prefix, "--model", tier.Models[provider][*f.modelTier])
 		// Explicitly override the user's default scoped cap for this model.
-		f.modelScope = model
-		if provider == "codex" {
-			f.modelScope = []string{"astra", "sol", "terra", "luna"}[*f.modelTier]
-		}
+		f.modelScope = tier.Scopes[provider][*f.modelTier]
 	}
 	if f.effort > 0 {
-		level := []string{"low", "medium", "high", "xhigh", "max", "ultra"}[f.effort-1]
+		level := tier.Efforts[provider][f.effort-1]
 		if provider == "claude" {
-			if f.effort == 6 {
-				level = "ultracode"
-			}
 			prefix = append(prefix, "--effort", level)
 		} else {
 			prefix = append(prefix, "-c", "model_reasoning_effort="+level)
@@ -122,8 +111,13 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 	if len(f.rest) > 0 {
 		return f, r, fmt.Errorf("unsupported auto argument %q; use -p for a task, or select claude/codex for native options", f.rest[0])
 	}
-	if f.account != "" || f.launcher != "" || f.next || f.long || f.takeover != 0 || f.fallback != "" || f.resumeSession != "" || f.nudge != "" || f.modelScope != "" {
+	if f.account != "" || f.launcher != "" || f.next || f.takeover != 0 || f.fallback != "" || f.resumeSession != "" || f.nudge != "" || f.modelScope != "" {
 		return f, r, fmt.Errorf("auto supports --model-tier, --effort, --mode, --wait, --inherit-auth-env, -p, and --yolo; account, launcher, and session controls require a provider")
+	}
+	// A takeover replays the launch arguments, so a first prompt would be
+	// sent again to every successor.
+	if f.long && r.hasPrompt {
+		return f, r, fmt.Errorf("a long auto session takes no prompt; type it in the session")
 	}
 	if os.Getenv("AIQ_BYPASS") == "1" {
 		return f, r, fmt.Errorf("auto requires routing; unset AIQ_BYPASS or select a provider")
@@ -223,7 +217,11 @@ func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) 
 		if err != nil {
 			return state.Account{}, notes, err
 		}
-		policy := a.pool.Policy(provider, mode, now)
+		policyMode := mode
+		if policyMode == state.ModeLong {
+			policyMode = state.ModeInteractive
+		}
+		policy := a.pool.Policy(provider, policyMode, now)
 		policy.ModelScope = mf.modelScope
 		policies[provider] = policy
 	}

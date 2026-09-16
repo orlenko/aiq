@@ -242,8 +242,8 @@ func cmdRun(provider string, args []string) error {
 	if mode != state.ModeWorker && mode != state.ModeInteractive && mode != state.ModeLong {
 		return configErr("bad-flags", "--mode must be interactive or worker")
 	}
-	if auto && (mode == state.ModeLong || (mode == state.ModeWorker) != request.print) {
-		return configErr("bad-flags", "auto worker mode requires -p; auto interactive mode must omit -p")
+	if auto && ((mode == state.ModeWorker) != request.print || (mode == state.ModeLong && request.hasPrompt)) {
+		return configErr("bad-flags", "auto worker mode requires -p; auto interactive and long modes must omit -p")
 	}
 	if f.modelScope == "" && f.modelTier == nil {
 		f.modelScope = os.Getenv("AIQ_MODEL_SCOPE")
@@ -291,6 +291,9 @@ func cmdRun(provider string, args []string) error {
 			if err == nil {
 				provider = acc.Provider
 				f.rest = request.args(provider)
+				if mode == state.ModeLong {
+					f.fallback = a.longFallback(provider)
+				}
 				f, err = modelFlags(provider, f)
 			}
 		} else {

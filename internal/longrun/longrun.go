@@ -22,6 +22,7 @@ import (
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/tier"
 	"github.com/orlenko/aiq/internal/tmux"
 )
 
@@ -395,37 +396,69 @@ func replayArgs(provider string, args []string) []string {
 }
 
 // TranslateArgs carries across a cross-provider takeover the arguments that
-// mean the same thing on both CLIs. Today that is the permission bypass:
-// Claude's --dangerously-skip-permissions (or --permission-mode
-// bypassPermissions) and Codex's --dangerously-bypass-approvals-and-sandbox
-// (or --yolo). A model, a resume target, extra directories and a prompt are
-// provider-specific and dropped. Same provider returns args unchanged.
+// mean the same thing on both CLIs: the permission bypass (Claude's
+// --dangerously-skip-permissions or --permission-mode bypassPermissions,
+// Codex's --dangerously-bypass-approvals-and-sandbox or --yolo), a model
+// named by an aiq tier (opus ↔ gpt-5.6-sol), and an effort level (Claude
+// --effort, Codex -c model_reasoning_effort). Any other model, a resume
+// target, extra directories and a prompt are provider-specific and dropped.
+// Same provider returns args unchanged.
 func TranslateArgs(from, to string, args []string) []string {
 	if from == to {
 		return args
 	}
-	bypass := false
-	for i, a := range args {
-		switch a {
-		case "--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox", "--yolo",
-			"--permission-mode=bypassPermissions":
+	bypass, model, effort := false, -1, 0
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() string {
+			if i+1 < len(args) {
+				i++
+				return args[i]
+			}
+			return ""
+		}
+		switch {
+		case a == "--":
+			i = len(args)
+		case a == "--dangerously-skip-permissions", a == "--dangerously-bypass-approvals-and-sandbox", a == "--yolo",
+			a == "--permission-mode=bypassPermissions":
 			bypass = true
-		case "--permission-mode":
-			if i+1 < len(args) && args[i+1] == "bypassPermissions" {
-				bypass = true
+		case a == "--permission-mode":
+			bypass = bypass || next() == "bypassPermissions"
+		case a == "--model" || (from == "codex" && a == "-m"):
+			model = tier.Of(from, next())
+		case strings.HasPrefix(a, "--model="):
+			model = tier.Of(from, strings.TrimPrefix(a, "--model="))
+		case from == "claude" && a == "--effort":
+			effort = tier.EffortOf(from, next())
+		case from == "claude" && strings.HasPrefix(a, "--effort="):
+			effort = tier.EffortOf(from, strings.TrimPrefix(a, "--effort="))
+		case from == "codex" && (a == "-c" || a == "--config" || strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "--config=")):
+			value := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(a, "--config="), "-c"), "=")
+			if a == "-c" || a == "--config" {
+				value = next()
+			}
+			if key, level, ok := strings.Cut(value, "="); ok && strings.TrimSpace(key) == "model_reasoning_effort" {
+				effort = tier.EffortOf(from, strings.Trim(strings.TrimSpace(level), `"'`))
 			}
 		}
 	}
-	if !bypass {
-		return nil
+	var out []string
+	if bypass {
+		out = append(out, map[string]string{"claude": "--dangerously-skip-permissions", "codex": "--dangerously-bypass-approvals-and-sandbox"}[to])
 	}
-	switch to {
-	case "claude":
-		return []string{"--dangerously-skip-permissions"}
-	case "codex":
-		return []string{"--dangerously-bypass-approvals-and-sandbox"}
+	if model >= 0 {
+		out = append(out, "--model", tier.Models[to][model])
 	}
-	return nil
+	if effort > 0 {
+		level := tier.Efforts[to][effort-1]
+		if to == "claude" {
+			out = append(out, "--effort", level)
+		} else {
+			out = append(out, "-c", "model_reasoning_effort="+level)
+		}
+	}
+	return out
 }
 
 // splitArgs decodes the JSON array a long lease records its args as.

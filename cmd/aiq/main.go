@@ -81,6 +81,12 @@ Long-running sessions (supervised, moved between accounts before they run dry):
   aiq long claude|codex|<launcher> [--account <name>] [--] [args...]
                                     start in a tmux session named after
                                     the workspace, or attach
+  aiq long auto [--model-tier 0..3] [--effort 1..6]
+                                    the same on the account auto picks from both
+                                    pools, with YOLO; no prompt, type it in the session
+  aiq long auto resume [--model-tier N] [--effort N] [--all] [--launcher <name> | --bare] [<id>]
+                                    browse this directory's sessions; r resumes the
+                                    pick as a long session (tier defaults to 1)
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
 Sessions in this directory (Claude and Codex transcripts):

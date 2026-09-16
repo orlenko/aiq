@@ -95,10 +95,13 @@ session named after the workspace and supervises it:
   provider's successor gets `--resume <session-id>` on the next account and
   keeps the whole conversation; the note is a supplement. A different
   provider (every Claude out, a Codex takes over, or the reverse) starts fresh
-  from the note plus the working tree; the permission bypass carries over in
+  from the note plus the working tree. The permission bypass carries over in
   the successor's spelling (`--dangerously-skip-permissions` ↔
-  `--dangerously-bypass-approvals-and-sandbox`), every other flag is
-  provider-specific and dropped. Fallback order is `long.fallback`.
+  `--dangerously-bypass-approvals-and-sandbox`), and so do a tier model
+  (`--model opus` ↔ `--model gpt-5.6-sol`, see the tier table below) and an
+  effort level (`--effort high` ↔ `-c model_reasoning_effort=high`). Every
+  other flag is provider-specific and dropped. Fallback order is
+  `long.fallback`.
 - **Takeover in place.** The daemon `respawn-pane`s the same tmux pane with
   the successor, copies the project's trust entry between Claude accounts so
   no dialog blocks the restart, and nudges the successor with a first prompt.
@@ -108,6 +111,8 @@ session named after the workspace and supervises it:
 
 ```text
 aiq long claude [claude args...]   start or attach
+aiq long auto [--model-tier 0]      start on whichever pool auto picks, or attach
+aiq long auto resume [<id>]         pick a session here and resume it as a long one
 aiq long list                       leases, pane, drain state, idle/busy
 aiq long drain .                    move this workspace's session now
 aiq long attach                     re-attach
@@ -119,6 +124,23 @@ Choose the initial account with `aiq long codex --account bjola -- --yolo`
 Put `--account` before CLI arguments; `--` ends aiq's options. The daemon
 can still move the session to another account later. If a long session already
 exists for the workspace, the command attaches to it instead of changing its account.
+
+`aiq long auto` chooses the first account the way `aiq run auto` does:
+across both pools, at the requested tier (default 1), with YOLO. Its
+takeover order is the chosen provider first, so a successor resumes the same
+transcript while that pool has headroom, then the other provider. It takes no
+prompt, because a takeover replays the launch arguments; type the task in the
+session.
+
+`aiq long auto resume` opens the `aiq resume` browser for this directory;
+`r` on a session reopens it in a long session instead of the current
+terminal (or give the id: `aiq long auto resume 3f2a`). The transcript fixes
+the provider; the account is routed, the model tier and effort apply as for
+`auto`, and the bypass is on. As with `aiq resume`, a session that ran under a
+launcher resumes through it (`b` or `--bare` skips it), and then gets the
+bypass only if its earlier launch passed it. A session already running in
+`aiq long` is attached. The pane starts in the current directory, so the CLI
+finds the transcript.
 
 Handoff notes live in `~/.local/share/aiq/handoff/`.
 
@@ -187,8 +209,10 @@ enables permission bypass**: `--dangerously-skip-permissions` for Claude or
 `--yolo` for Codex, including workers and cross-provider retries. An explicit
 `--yolo` is still accepted but is redundant. Native provider options require
 `aiq run claude` or `aiq run codex`; `auto` does not translate arbitrary flags,
-resume sessions (use `aiq resume`), named launchers, or forced accounts. `--wait` and `--mode`
-remain available, with worker mode requiring `-p`.
+resume sessions (use `aiq resume`, or `aiq long auto resume`), named launchers,
+or forced accounts. `--wait` and `--mode` remain available, with worker mode
+requiring `-p`. For a supervised session that moves between accounts, use
+`aiq long auto` (see Long-running sessions).
 
 | Tier | Claude | Codex |
 | --- | --- | --- |
