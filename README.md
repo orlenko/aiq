@@ -254,7 +254,7 @@ sets both the model and its quota scope. Pass native named effort values after
 
 ## Recipes
 
-Two habits that make the pool disappear from day-to-day work.
+Habits that make the pool disappear from day-to-day work.
 
 ### Start a session without choosing anything
 
@@ -275,6 +275,47 @@ aiq run auto --model-tier 2 --effort 2   # cheap and quick
 
 Add `-- "initial prompt"` to open the session with a first message already
 sent.
+
+### Leave a long job running
+
+```bash
+aiq long auto
+```
+
+For work that will outlast one account's quota (an overnight refactor, a QC
+loop, an overseer that babysits PRs), start it as a long session instead. aiq
+picks the account as `aiq run auto` does and opens the CLI in a tmux session
+named after the repository. Type the task there, then detach (tmux prefix,
+then `d`; `Ctrl-b d` by default). The session keeps running after you close
+the terminal or drop an SSH connection. When the account runs low, the daemon
+has the agent write a handoff note and restarts it on another account in the
+same pane.
+
+```bash
+aiq long list      # which accounts your long sessions are on, busy or idle
+aiq long attach    # from anywhere in the repository: back into its session
+aiq long drain .   # move it to another account now
+aiq long stop .    # end it
+```
+
+`aiq long auto --model-tier 0` keeps the strongest model, on whichever
+provider it moves to. Run `aiq long auto` again in the same repository and it
+attaches to the running session rather than starting a second one.
+
+### Turn a session into a long one
+
+A session started with `aiq run auto` sometimes turns into hours of work.
+Exit it (`/exit`), then:
+
+```bash
+aiq long auto resume
+```
+
+The browser from `aiq resume` opens on this directory's sessions. Pick the
+one you left and press `r`: the same conversation reopens in a supervised
+tmux session, on an account aiq picks. It continues on other accounts, as in
+the previous recipe. If you already know the id, skip the browser:
+`aiq long auto resume 3f2a`.
 
 ### `aip`: ask from the shell prompt
 
