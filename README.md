@@ -14,7 +14,9 @@ $ codex exec "review the diff" # worker: scored per call, silent on success
 ```
 
 A small daemon keeps telemetry fresh and serves a status page on
-`http://127.0.0.1:7379/`. Works on macOS and Linux.
+`http://127.0.0.1:7379/`. When you come back to a directory, `aiq resume`
+lists the sessions that ran there, shows what each turn asked and answered,
+and resumes the one you pick. Works on macOS and Linux.
 
 ## How it works
 
@@ -171,7 +173,7 @@ enables permission bypass**: `--dangerously-skip-permissions` for Claude or
 `--yolo` for Codex, including workers and cross-provider retries. An explicit
 `--yolo` is still accepted but is redundant. Native provider options require
 `aiq run claude` or `aiq run codex`; `auto` does not translate arbitrary flags,
-resume sessions, named launchers, or forced accounts. `--wait` and `--mode`
+resume sessions (use `aiq resume`), named launchers, or forced accounts. `--wait` and `--mode`
 remain available, with worker mode requiring `-p`.
 
 | Tier | Claude | Codex |
@@ -484,6 +486,7 @@ Depth is 1, well under `max_depth`.
 | State (accounts, windows, leases, affinity, events; no credentials) | `~/.local/share/aiq/state.db` |
 | Daemon log | `~/.local/share/aiq/log/daemon.log` |
 | Config | `~/.config/aiq/config.toml` |
+| Session transcripts `aiq resume` reads (never writes) | `~/.claude/projects/`, `~/.codex/sessions/`, plus any unsynced copies in the overlay homes |
 | Service | `~/Library/LaunchAgents/dev.aiq.daemon.plist` or `~/.config/systemd/user/aiq.service` |
 
 `AIQ_DATA_DIR` and `AIQ_CONFIG` relocate the data directory and the config
