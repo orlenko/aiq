@@ -145,6 +145,7 @@ func (s *Server) housekeeping() {
 		time.Sleep(interval)
 		s.pool.St.PruneLeases(pool.Hostname(), proc.Alive)
 		s.pool.St.TrimEvents(2000)
+		s.pool.St.TrimLaunches(50000)
 		sup.Tick()
 	}
 }

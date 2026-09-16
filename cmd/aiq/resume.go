@@ -17,17 +17,19 @@ import (
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
-const resumeUsage = `usage: aiq resume [--all] [--print] [--launcher <name>] [<session-id>] [-- extra CLI args]
+const resumeUsage = `usage: aiq resume [--all] [--print] [--launcher <name> | --bare] [<session-id>] [-- extra CLI args]
   no id, on a terminal: browse this directory's sessions, read their turns, press r to resume
   <session-id>          resume that session (a unique prefix is enough)
   --print               print the sessions (or, with an id, that session's turns) and exit
   --all                 include worker sessions (claude -p, codex exec)
-  --launcher <name>     resume through a registered launcher`
+  --launcher <name>     resume through this launcher instead of the one the session ran under
+  --bare                resume without a launcher, even if the session ran under one`
 
 type resumeOpts struct {
 	all      bool
 	print    bool
 	launcher string
+	bare     bool
 	id       string
 	extra    []string
 }
@@ -44,6 +46,8 @@ func parseResumeArgs(args []string) (resumeOpts, error) {
 			o.all = true
 		case a == "--print" || a == "-p":
 			o.print = true
+		case a == "--bare":
+			o.bare = true
 		case a == "--launcher":
 			if i+1 >= len(args) {
 				return o, fmt.Errorf("--launcher requires a name")
@@ -61,6 +65,9 @@ func parseResumeArgs(args []string) (resumeOpts, error) {
 		default:
 			return o, fmt.Errorf("one session id at a time\n%s", resumeUsage)
 		}
+	}
+	if o.bare && o.launcher != "" {
+		return o, fmt.Errorf("--bare and --launcher contradict each other")
 	}
 	return o, nil
 }
@@ -82,25 +89,23 @@ func cmdResume(args []string) error {
 	if err != nil {
 		return err
 	}
+	defer a.close()
 	if o.launcher != "" {
 		if _, ok := a.cfg.Launcher(o.launcher); !ok {
-			a.close()
 			return configErr("no-launcher", "no launcher %q; see: aiq launcher list", o.launcher)
 		}
 	}
 	dir, err := os.Getwd()
 	if err != nil {
-		a.close()
 		return err
 	}
 	roots := transcript.DefaultRoots(paths.RealClaudeHome(), paths.RealCodexHome(), paths.ClaudeHomesDir(), paths.CodexHomesDir())
 	sessions, err := transcript.List(roots, dir)
 	if err != nil {
-		a.close()
 		return err
 	}
 	live := a.liveSessions()
-	a.close()
+	origins := a.loadOrigins(dir, sessions)
 
 	if o.id != "" {
 		s, err := findSession(sessions, o.id)
@@ -108,28 +113,32 @@ func cmdResume(args []string) error {
 			return err
 		}
 		if o.print {
-			fmt.Print(renderTurnsPlain(s))
+			fmt.Print(renderTurnsPlain(s, origins))
 			return nil
 		}
-		return resumeSession(s, live[s.ID], o)
+		return a.resumeSession(s, origins, live[s.ID], o)
 	}
 	if o.print || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		shown := sessions
 		if !o.all {
 			shown = interactiveOnly(sessions)
 		}
-		fmt.Print(renderSessionsPlain(dir, shown, live))
+		fmt.Print(renderSessionsPlain(dir, shown, live, origins))
 		if hidden := len(sessions) - len(shown); hidden > 0 {
 			fmt.Printf("(%d worker session%s hidden; --all shows %s)\n", hidden, plural(hidden), map[bool]string{true: "it", false: "them"}[hidden == 1])
 		}
 		return nil
 	}
 	b := newBrowser(dir, sessions, live, o.all)
+	b.origins = origins
 	pick, err := b.run()
 	if err != nil || pick == nil {
 		return err
 	}
-	return resumeSession(*pick, live[pick.ID], o)
+	if b.bare {
+		o.bare, o.launcher = true, ""
+	}
+	return a.resumeSession(*pick, origins, live[pick.ID], o)
 }
 
 // liveSessions gathers the sessions running right now: open Claude
@@ -179,19 +188,19 @@ func findSession(list []transcript.Session, prefix string) (transcript.Session, 
 	return transcript.Session{}, fmt.Errorf("%q matches %d sessions; give more of the id", prefix, len(hits))
 }
 
-// resumeArgs is the CLI command line that reopens s. A session that ran
-// with the permission bypass gets it again.
-func resumeArgs(s transcript.Session, extra []string) []string {
+// resumeArgs is the CLI command line that reopens s, with the permission
+// bypass when bypass is set.
+func resumeArgs(s transcript.Session, bypass bool, extra []string) []string {
 	var args []string
 	switch s.Provider {
 	case "claude":
-		if s.Bypass {
+		if bypass {
 			args = append(args, "--dangerously-skip-permissions")
 		}
 		args = append(args, extra...)
 		args = append(args, "--resume", s.ID)
 	case "codex":
-		if s.Bypass {
+		if bypass {
 			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 		}
 		args = append(args, extra...)
@@ -200,25 +209,38 @@ func resumeArgs(s transcript.Session, extra []string) []string {
 	return args
 }
 
-func resumeSession(s transcript.Session, live liveNote, o resumeOpts) error {
+// resumeSession closes the app and hands the terminal to the resumed CLI.
+func (a *app) resumeSession(s transcript.Session, origins map[string]origin, live liveNote, o resumeOpts) error {
 	if live.tmux != "" && tmux.HasSession(live.tmux) {
 		fmt.Fprintf(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, live.note)
 		return tmux.Attach(live.tmux)
 	}
+	var org *origin
+	if g, ok := origins[sessionKey(s)]; ok {
+		org = &g
+	}
+	launcher, why, err := resumeLauncher(a.cfg, s, org, o)
+	if err != nil {
+		return err
+	}
 	if live.pid > 0 {
 		fmt.Fprintf(os.Stderr, "aiq: note: session %s is also %s\n", s.ID, live.note)
 	}
-	run := []string{}
-	if o.launcher != "" {
-		l, _ := launcherByName(o.launcher)
-		if l.Provider != s.Provider {
-			return configErr("bad-flags", "launcher %s starts %s, but session %s is a %s session", o.launcher, l.Provider, s.ID, s.Provider)
-		}
-		run = append(run, "--launcher", o.launcher)
+	run := []string{"--mode", state.ModeInteractive}
+	if launcher != "" {
+		run = append(run, "--launcher", launcher)
 	}
-	args := resumeArgs(s, o.extra)
-	fmt.Fprintf(os.Stderr, "aiq: resuming %s session %s: %s %s\n", s.Provider, s.ID, s.Provider, strings.Join(args, " "))
-	return cmdRun(s.Provider, append(append(run, "--mode", state.ModeInteractive, "--"), args...))
+	args := resumeArgs(s, resumeBypass(s, org, launcher), o.extra)
+	how := s.Provider
+	if launcher != "" {
+		how = launcher
+	}
+	fmt.Fprintf(os.Stderr, "aiq: resuming %s session %s: %s %s\n", s.Provider, s.ID, how, strings.Join(args, " "))
+	if why != "" {
+		fmt.Fprintf(os.Stderr, "aiq: %s\n", why)
+	}
+	a.close()
+	return cmdRun(s.Provider, append(append(run, "--"), args...))
 }
 
 // whenLabel is a compact local timestamp: the time today, the weekday this
@@ -267,7 +289,7 @@ func homeRel(dir string) string {
 	return dir
 }
 
-func renderSessionsPlain(dir string, list []transcript.Session, live map[string]liveNote) string {
+func renderSessionsPlain(dir string, list []transcript.Session, live map[string]liveNote, origins map[string]origin) string {
 	var b strings.Builder
 	if len(list) == 0 {
 		fmt.Fprintf(&b, "no sessions in %s\n", dir)
@@ -280,6 +302,9 @@ func renderSessionsPlain(dir string, list []transcript.Session, live map[string]
 		if n, ok := live[s.ID]; ok {
 			label = "[" + n.note + "] " + label
 		}
+		if tag := originTag(originOf(origins, s)); tag != "" {
+			label = "[" + tag + "] " + label
+		}
 		if s.Worker {
 			label = "[worker] " + label
 		}
@@ -289,9 +314,13 @@ func renderSessionsPlain(dir string, list []transcript.Session, live map[string]
 	return b.String()
 }
 
-func renderTurnsPlain(s transcript.Session) string {
+func renderTurnsPlain(s transcript.Session, origins map[string]origin) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s session %s · %s · %s\n", s.Provider, s.ID, agentLabel(s), truncate(transcript.Clean(s.Label()), 100))
+	agent := agentLabel(s)
+	if tag := originTag(originOf(origins, s)); tag != "" {
+		agent += " · " + tag
+	}
+	fmt.Fprintf(&b, "%s session %s · %s · %s\n", s.Provider, s.ID, agent, truncate(transcript.Clean(s.Label()), 100))
 	for i, t := range s.Turns {
 		fmt.Fprintf(&b, "\n## Turn %d · %s · %s · %d tools\n\n", i+1, t.Started.Local().Format("2006-01-02 15:04"), durationLabel(t.Ended.Sub(t.Started)), t.Tools)
 		fmt.Fprintf(&b, "> %s\n\n", strings.ReplaceAll(t.Prompt, "\n", "\n> "))
@@ -309,4 +338,11 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+func originOf(origins map[string]origin, s transcript.Session) *origin {
+	if g, ok := origins[sessionKey(s)]; ok {
+		return &g
+	}
+	return nil
 }

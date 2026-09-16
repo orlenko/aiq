@@ -363,6 +363,24 @@ func cmdRun(provider string, args []string) error {
 		if lease.RootID == 0 {
 			env = append(env, "AIQ_ROOT="+strconv.FormatInt(leaseID, 10))
 		}
+		// Record how this session starts, so `aiq resume` can reopen it the
+		// same way (through the same launcher) after the lease is gone.
+		// aiq writes this itself: a sandboxed CLI may not reach the database.
+		userArgs := append([]string{}, f.rest...)
+		sessionID := ""
+		switch {
+		case mode == state.ModeWorker:
+		case mode == state.ModeLong && f.resumeSession != "":
+			sessionID = f.resumeSession
+		case provider == "claude":
+			sessionID, f.rest = claude.Session(f.rest)
+		case provider == "codex":
+			sessionID = codex.Session(f.rest)
+		}
+		a.st.AddLaunch(state.Launch{
+			StartedAt: now, Hostname: hostname(), Provider: provider, AccountID: acc.ID,
+			Launcher: f.launcher, Cwd: lease.Cwd, Mode: mode, SessionID: sessionID, LeaseID: leaseID, Args: userArgs,
+		})
 		a.st.LogEvent(provider, acc.ID, "launch", mode+" "+lease.Args, now)
 
 		// A launcher asking for `credential = "file"` cuts the CLI off from

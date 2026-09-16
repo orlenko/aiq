@@ -5,6 +5,7 @@ package state
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -88,6 +89,22 @@ CREATE TABLE IF NOT EXISTS affinity (
     updated_at          INTEGER,
     PRIMARY KEY(provider, workspace)
 );
+
+CREATE TABLE IF NOT EXISTS launches (
+    id                  INTEGER PRIMARY KEY,
+    started_at_ms       INTEGER NOT NULL,
+    hostname            TEXT,
+    provider            TEXT,
+    account_id          TEXT,
+    launcher            TEXT,
+    cwd                 TEXT,
+    mode                TEXT,
+    session_id          TEXT,
+    lease_id            INTEGER,
+    args                TEXT
+);
+CREATE INDEX IF NOT EXISTS launches_cwd ON launches(cwd, started_at_ms);
+CREATE INDEX IF NOT EXISTS launches_session ON launches(session_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id                  INTEGER PRIMARY KEY,
@@ -237,6 +254,7 @@ func Open(path string) (*Store, error) {
 		"launcher TEXT"} {
 		db.Exec(`ALTER TABLE leases ADD COLUMN ` + col)
 	}
+	db.Exec(`ALTER TABLE launches ADD COLUMN args TEXT`)
 	os.Chmod(path, 0o600)
 	return &Store{db: db}, nil
 }
@@ -536,9 +554,13 @@ func (s *Store) GetLease(id int64) (Lease, error) {
 }
 
 // SetLeaseSession records the CLI session id (from a SessionStart hook or
-// the status line) so the session can be resumed on another account.
+// the status line) so the session can be resumed on another account. The
+// launch that started the lease learns the id too, if it did not know it.
 func (s *Store) SetLeaseSession(id int64, sessionID string) error {
 	_, err := s.db.Exec(`UPDATE leases SET session_id = ? WHERE id = ?`, sessionID, id)
+	if err == nil && sessionID != "" {
+		s.db.Exec(`UPDATE launches SET session_id = ? WHERE lease_id = ? AND COALESCE(session_id,'') = ''`, sessionID, id)
+	}
 	return err
 }
 
@@ -655,4 +677,97 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// --- launches ---
+
+// Launch records how aiq started a CLI session: on which account, through
+// which launcher, in which directory. It outlives the lease, so a session
+// can later be resumed the way it ran. SessionID is empty when aiq could
+// not know it at launch (a Codex session, claude --continue).
+type Launch struct {
+	ID        int64
+	StartedAt time.Time
+	Hostname  string
+	Provider  string
+	AccountID string
+	Launcher  string
+	Cwd       string
+	Mode      string
+	SessionID string
+	LeaseID   int64
+	// Args are the CLI arguments the user gave, before aiq added any.
+	Args []string
+}
+
+func (s *Store) AddLaunch(l Launch) (int64, error) {
+	res, err := s.db.Exec(
+		`INSERT INTO launches (started_at_ms, hostname, provider, account_id, launcher, cwd, mode, session_id, lease_id, args)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.StartedAt.UnixMilli(), l.Hostname, l.Provider, l.AccountID, l.Launcher, l.Cwd, l.Mode, l.SessionID, l.LeaseID, encodeArgs(l.Args))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// ListLaunches returns the launches on hostname in any of cwds, or with one
+// of sessionIDs, oldest first.
+func (s *Store) ListLaunches(hostname string, cwds, sessionIDs []string) ([]Launch, error) {
+	if len(cwds)+len(sessionIDs) == 0 {
+		return nil, nil
+	}
+	var conds []string
+	args := []any{hostname}
+	if len(cwds) > 0 {
+		conds = append(conds, `cwd IN (`+placeholders(len(cwds))+`)`)
+		for _, c := range cwds {
+			args = append(args, c)
+		}
+	}
+	if len(sessionIDs) > 0 {
+		conds = append(conds, `session_id IN (`+placeholders(len(sessionIDs))+`)`)
+		for _, id := range sessionIDs {
+			args = append(args, id)
+		}
+	}
+	rows, err := s.db.Query(`SELECT id, started_at_ms, COALESCE(hostname,''), COALESCE(provider,''), COALESCE(account_id,''),
+		COALESCE(launcher,''), COALESCE(cwd,''), COALESCE(mode,''), COALESCE(session_id,''), COALESCE(lease_id,0), COALESCE(args,'')
+		FROM launches WHERE hostname = ? AND (`+strings.Join(conds, " OR ")+`) ORDER BY started_at_ms, id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Launch
+	for rows.Next() {
+		var l Launch
+		var ms int64
+		var args string
+		if err := rows.Scan(&l.ID, &ms, &l.Hostname, &l.Provider, &l.AccountID, &l.Launcher, &l.Cwd, &l.Mode, &l.SessionID, &l.LeaseID, &args); err != nil {
+			return nil, err
+		}
+		l.StartedAt = time.UnixMilli(ms)
+		if args != "" {
+			json.Unmarshal([]byte(args), &l.Args)
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// TrimLaunches keeps only the newest keep launches.
+func (s *Store) TrimLaunches(keep int) {
+	s.db.Exec(`DELETE FROM launches WHERE id NOT IN (SELECT id FROM launches ORDER BY id DESC LIMIT ?)`, keep)
+}
+
+func encodeArgs(args []string) string {
+	if args == nil {
+		args = []string{}
+	}
+	b, _ := json.Marshal(args)
+	return string(b)
+}
+
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }

@@ -28,8 +28,10 @@ type browser struct {
 	dir     string
 	all     []transcript.Session
 	live    map[string]liveNote
+	origins map[string]origin
 	workers bool
 	now     time.Time
+	bare    bool // the pick resumes without its launcher (b)
 
 	list []transcript.Session // what the session screen shows
 	view int
@@ -39,8 +41,9 @@ type browser struct {
 	ttop int
 	dtop int // first line of the turn screen
 
-	confirm string // a pending "press r again" question
-	w, h    int
+	confirm     string // the key a pending "press it again" question waits for
+	confirmText string
+	w, h        int
 }
 
 func newBrowser(dir string, all []transcript.Session, live map[string]liveNote, workers bool) *browser {
@@ -64,6 +67,17 @@ func (b *browser) filter() {
 			b.sel = i
 		}
 	}
+}
+
+func (b *browser) origin(s *transcript.Session) *origin {
+	return originOf(b.origins, *s)
+}
+
+func (b *browser) launcherOf(s *transcript.Session) string {
+	if org := b.origin(s); org != nil {
+		return org.launch.Launcher
+	}
+	return ""
 }
 
 func (b *browser) hiddenWorkers() int {
@@ -197,15 +211,21 @@ func (b *browser) handle(k keypress) (pick *transcript.Session, done bool) {
 	if k.code == keyQuit || k.r == 'q' {
 		return nil, true
 	}
-	if k.r == 'r' || k.r == 'R' {
+	if k.r == 'r' || k.r == 'R' || k.r == 'b' {
 		s := b.current()
 		if s == nil {
 			return nil, false
 		}
-		if n, ok := b.live[s.ID]; ok && n.tmux == "" && confirm == "" {
-			b.confirm = fmt.Sprintf("this session is %s — press r again to open a second copy", n.note)
+		bare := k.r == 'b'
+		if bare && b.launcherOf(s) == "" {
+			return nil, false // nothing to leave out
+		}
+		if n, ok := b.live[s.ID]; ok && n.tmux == "" && confirm != string(k.r) {
+			b.confirm = string(k.r)
+			b.confirmText = fmt.Sprintf("this session is %s — press %c again to open a second copy", n.note, k.r)
 			return nil, false
 		}
+		b.bare = bare
 		return s, true
 	}
 	page := b.h - 5
@@ -333,7 +353,7 @@ func (b *browser) render() []line {
 		head, body, foot = b.renderTurn()
 	}
 	if b.confirm != "" {
-		foot = []line{{" " + b.confirm, sgrYellow + sgrBold}}
+		foot = []line{{" " + b.confirmText, sgrYellow + sgrBold}}
 	}
 	rows := b.h - len(head) - len(foot)
 	if rows < 0 {
@@ -384,6 +404,9 @@ func (b *browser) renderSessions() (head, body, foot []line) {
 			style = sgrGreen
 		}
 		label := transcript.Clean(s.Label())
+		if tag := originTag(b.origin(&s)); tag != "" {
+			label = "[" + tag + "] " + label
+		}
 		if s.Worker {
 			label = "[worker] " + label
 		}
@@ -393,7 +416,7 @@ func (b *browser) renderSessions() (head, body, foot []line) {
 		}
 		body = append(body, line{text, style})
 	}
-	keys := " ↑↓ move · enter turns · r resume · a " + map[bool]string{true: "hide", false: "show"}[b.workers] + " workers · q quit"
+	keys := " ↑↓ move · enter turns · " + b.resumeKeys() + " · a " + map[bool]string{true: "hide", false: "show"}[b.workers] + " workers · q quit"
 	foot = []line{{}, {keys, sgrDim}}
 	if s := b.current(); s != nil {
 		if n, ok := b.live[s.ID]; ok {
@@ -401,6 +424,18 @@ func (b *browser) renderSessions() (head, body, foot []line) {
 		}
 	}
 	return head, body, foot
+}
+
+// resumeKeys names the resume keys for the selected session.
+func (b *browser) resumeKeys() string {
+	s := b.current()
+	if s == nil {
+		return "r resume"
+	}
+	if l := b.launcherOf(s); l != "" {
+		return "r resume via " + l + " · b resume bare"
+	}
+	return "r resume"
 }
 
 func (b *browser) sessionHeader(s *transcript.Session) []line {
@@ -413,6 +448,9 @@ func (b *browser) sessionHeader(s *transcript.Session) []line {
 	}
 	if s.Bypass {
 		meta = append(meta, "bypass")
+	}
+	if tag := originTag(b.origin(s)); tag != "" {
+		meta = append(meta, tag)
 	}
 	meta = append(meta, fmt.Sprintf("%s → %s", whenLabel(s.Started, b.now), whenLabel(s.Updated, b.now)))
 	meta = append(meta, fmt.Sprintf("%d turn%s, %d tool%s", len(s.Turns), plural(len(s.Turns)), s.Tools(), plural(s.Tools())))
@@ -449,7 +487,7 @@ func (b *browser) renderTurns() (head, body, foot []line) {
 			line{"     ‹ " + reply, ""},
 		)
 	}
-	foot = []line{{}, {" ↑↓ move · enter read · r resume · esc back · q quit", sgrDim}}
+	foot = []line{{}, {" ↑↓ move · enter read · " + b.resumeKeys() + " · esc back · q quit", sgrDim}}
 	return head, body, foot
 }
 
@@ -482,7 +520,7 @@ func (b *browser) renderTurn() (head, body, foot []line) {
 	if len(text) > rows {
 		pos = fmt.Sprintf(" · %d%%", min(100, (b.dtop+rows)*100/len(text)))
 	}
-	foot = []line{{}, {" ↑↓ scroll · ←→ turn · r resume · esc back · q quit" + pos, sgrDim}}
+	foot = []line{{}, {" ↑↓ scroll · ←→ turn · " + b.resumeKeys() + " · esc back · q quit" + pos, sgrDim}}
 	return head, body, foot
 }
 

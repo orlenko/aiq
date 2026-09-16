@@ -132,6 +132,7 @@ aiq resume                  browse this directory's sessions
 aiq resume --all            include workers (claude -p, codex exec)
 aiq resume <id>             resume one directly (a unique prefix is enough)
 aiq resume --print [<id>]   the same lists as plain text, for scripts and agents
+aiq resume --bare <id>      resume without the launcher the session ran under
 ```
 
 The first screen lists every Claude and Codex session whose working directory
@@ -141,9 +142,22 @@ with the agent's final reply for that turn. Enter on a turn shows it in full,
 and ←/→ move between turns. `r` resumes the selected session on an account
 the pool picks, with `claude --resume <id>` or `codex resume <id>`.
 
-- A session that ran with the permission bypass is resumed with it again.
-  Anything after `--` is added to the CLI's arguments;
-  `--launcher <name>` resumes through a launcher.
+- A session is resumed through the launcher it ran under, so a `safe-claude`
+  session goes back into the same nono sandbox. aiq records every launch
+  (account, launcher, directory, arguments) in `state.db` before the CLI
+  starts. For a new Claude session it chooses the id itself
+  (`--session-id`), so the match is exact. Codex cannot be given an id, so a
+  new Codex thread is matched to the latest aiq launch in the same directory
+  before it; the list marks such a guess with `?` (`[via safe-codex?]`).
+  Once a session has run under a launcher, it keeps resuming there:
+  `b` in the browser, or `--bare`, resumes it without one, for that time
+  only. `--launcher <name>` picks another launcher. Sessions from before this
+  record existed, and anything started without aiq, resume bare.
+- A bare resume adds the permission bypass if the transcript shows the
+  session ran with it. Through a launcher, aiq adds it only if you passed it
+  to that launcher yourself: the safe-* wrappers add it on their own, and
+  Codex refuses the flag twice. Anything after `--` is added to the CLI's
+  arguments.
 - A session still running in `aiq long` is attached, not started a second
   time. For a Claude session that is open in another terminal (● in the
   list), `r` asks once more before it opens a second copy.
@@ -389,7 +403,7 @@ aiq mark <provider>/<name> exhausted [--until 14:42|+2h|RFC3339]
 aiq mark <provider>/<name> ready
 aiq reset codex/<name>               consume an earned Codex reset credit
 
-aiq resume [--all] [--print] [--launcher <name>] [<id>] [-- args]
+aiq resume [--all] [--print] [--launcher <name> | --bare] [<id>] [-- args]
                                      this directory's sessions: browse turns, resume one
 
 aiq shim install|uninstall|path
@@ -483,7 +497,7 @@ Depth is 1, well under `max_depth`.
 |---|---|
 | Overlay homes (credential, poll grant, `.claude.json` private; everything else symlinked) | `~/.local/share/aiq/claude/<name>/`, `~/.local/share/aiq/codex/<name>/` |
 | Shims | `~/.local/share/aiq/shims/` |
-| State (accounts, windows, leases, affinity, events; no credentials) | `~/.local/share/aiq/state.db` |
+| State (accounts, windows, leases, affinity, launches, events; no credentials) | `~/.local/share/aiq/state.db` |
 | Daemon log | `~/.local/share/aiq/log/daemon.log` |
 | Config | `~/.config/aiq/config.toml` |
 | Session transcripts `aiq resume` reads (never writes) | `~/.claude/projects/`, `~/.codex/sessions/`, plus any unsynced copies in the overlay homes |

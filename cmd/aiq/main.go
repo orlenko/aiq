@@ -84,9 +84,10 @@ Long-running sessions (supervised, moved between accounts before they run dry):
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
 Sessions in this directory (Claude and Codex transcripts):
-  aiq resume [--all] [--launcher <name>] [<id>] [-- args]
+  aiq resume [--all] [--launcher <name> | --bare] [<id>] [-- args]
                                     browse sessions and their turns; r resumes
-                                    the selected one on a routed account
+                                    the selected one on a routed account, through
+                                    the launcher it ran under (b: without it)
   aiq resume --print [--all] [<id>] list sessions, or print one session's turns
 
 Machine:

@@ -38,7 +38,7 @@ func TestResumeArgs(t *testing.T) {
 		{transcript.Session{Provider: "codex", ID: "c1"}, []string{"-m", "gpt"}, []string{"-m", "gpt", "resume", "c1"}},
 	}
 	for _, c := range cases {
-		if got := resumeArgs(c.s, c.extra); !reflect.DeepEqual(got, c.want) {
+		if got := resumeArgs(c.s, c.s.Bypass, c.extra); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s %v: got %v, want %v", c.s.Provider, c.extra, got, c.want)
 		}
 	}
@@ -179,8 +179,8 @@ func TestBrowserNavigation(t *testing.T) {
 
 func TestBrowserConfirmsOpenSession(t *testing.T) {
 	b := browserFixture()
-	if pick, done := b.handle(keypress{r: 'r'}); done || pick != nil || !strings.Contains(b.confirm, "pid 42") {
-		t.Fatalf("first r should ask: %v %v %q", pick, done, b.confirm)
+	if pick, done := b.handle(keypress{r: 'r'}); done || pick != nil || !strings.Contains(b.confirmText, "pid 42") {
+		t.Fatalf("first r should ask: %v %v %q", pick, done, b.confirmText)
 	}
 	if pick, done := b.handle(keypress{r: 'r'}); !done || pick.ID != "open1111" {
 		t.Fatalf("second r resumes: %v %v", pick, done)
