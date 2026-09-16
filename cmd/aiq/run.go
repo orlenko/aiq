@@ -468,6 +468,7 @@ func longArgs(provider, aiqBin string, f runFlags) []string {
 		}
 	case "codex":
 		out = append(out, codex.HookArgs(aiqBin)...)
+		out = append(out, codex.UnattendedArgs...)
 		out = append(out, f.rest...)
 		if f.resumeSession != "" {
 			out = append(out, "resume", f.resumeSession)

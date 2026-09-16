@@ -86,6 +86,17 @@ func SendLine(pane, text string) error {
 	return err
 }
 
+// Capture returns the visible text of the pane.
+func Capture(pane string) (string, error) {
+	return run("capture-pane", "-p", "-t", pane)
+}
+
+// SendKeys presses keys in the pane (tmux key names, not literal text).
+func SendKeys(pane string, keys ...string) error {
+	_, err := run(append([]string{"send-keys", "-t", pane}, keys...)...)
+	return err
+}
+
 // Attach attaches the calling terminal to the session, switching clients
 // when already inside tmux.
 func Attach(name string) error {

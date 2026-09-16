@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"golang.org/x/term"
 
@@ -132,6 +133,27 @@ func DefaultModel() string {
 		return string(m[1])
 	}
 	return ""
+}
+
+// UnattendedArgs turn off the TUI popups that stop a long session with
+// nobody at the keyboard. Near a weekly limit Codex asks, after a turn,
+// whether to switch to a cheaper model, with the switch preselected; the
+// session sits on that menu until someone answers.
+var UnattendedArgs = []string{"-c", "notice.hide_rate_limit_model_nudge=true"}
+
+// rateLimitPrompt matches the model-switch menu as it renders at the bottom
+// of the pane. Option 2 is "Keep current model".
+var rateLimitPrompt = regexp.MustCompile(`(?m)^\s*Approaching rate limits\s*$[\s\S]*^\s*(?:› )?2\. Keep current model\s*$[\s\S]*^\s*Press enter to confirm or esc to go back\s*$`)
+
+// RateLimitPromptOpen reports whether a captured pane shows the model-switch
+// menu. Only the last lines count, so a transcript that quotes the menu does
+// not match.
+func RateLimitPromptOpen(screen string) bool {
+	lines := strings.Split(strings.TrimRight(screen, "\n "), "\n")
+	if len(lines) > 12 {
+		lines = lines[len(lines)-12:]
+	}
+	return rateLimitPrompt.MatchString(strings.Join(lines, "\n"))
 }
 
 // HookArgs renders the -c overrides that wire aiq's hooks into a long

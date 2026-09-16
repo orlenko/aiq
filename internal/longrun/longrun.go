@@ -20,6 +20,7 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/provider/claude"
+	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/tier"
@@ -185,6 +186,9 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: pane %s is gone, released", l.ID, l.Pane), now)
 			return
 		}
+		if l.Provider == "codex" {
+			s.dismissRateLimitPrompt(l, now)
+		}
 	}
 	remaining, until, blocked := s.headroom(l.AccountID, l.Provider, now)
 	drainPct := s.Pool.Cfg.Long.DrainPct
@@ -233,6 +237,21 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 	case state.DrainWaiting:
 		s.takeover(l, now)
 	}
+}
+
+// dismissRateLimitPrompt answers Codex's switch-to-a-cheaper-model menu with
+// "Keep current model" when it is open in the lease's pane. Sessions launched
+// with codex.UnattendedArgs never show it; this covers older ones.
+func (s *Supervisor) dismissRateLimitPrompt(l state.Lease, now time.Time) {
+	screen, err := tmux.Capture(l.Pane)
+	if err != nil || !codex.RateLimitPromptOpen(screen) {
+		return
+	}
+	if err := tmux.SendKeys(l.Pane, "2"); err != nil {
+		s.Logf("lease %d: dismiss rate-limit prompt: %v", l.ID, err)
+		return
+	}
+	s.Pool.St.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: kept the current model at Codex's rate-limit prompt", l.ID), now)
 }
 
 // successor picks the account a long lease moves to.
