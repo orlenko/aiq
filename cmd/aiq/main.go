@@ -83,6 +83,12 @@ Long-running sessions (supervised, moved between accounts before they run dry):
                                     the workspace, or attach
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
+Sessions in this directory (Claude and Codex transcripts):
+  aiq resume [--all] [--launcher <name>] [<id>] [-- args]
+                                    browse sessions and their turns; r resumes
+                                    the selected one on a routed account
+  aiq resume --print [--all] [<id>] list sessions, or print one session's turns
+
 Machine:
   aiq shim install|uninstall|path
   aiq statusline install|uninstall|status   Claude status-line multiplexer (live quota feed)
@@ -204,6 +210,8 @@ func main() {
 		err = cmdDoctor(args)
 	case "long":
 		err = cmdLong(args)
+	case "resume":
+		err = cmdResume(args)
 	case "launcher":
 		err = cmdLauncher(args)
 	case "claude-hook":

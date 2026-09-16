@@ -120,6 +120,34 @@ exists for the workspace, the command attaches to it instead of changing its acc
 
 Handoff notes live in `~/.local/share/aiq/handoff/`.
 
+## Picking up where the agents left off
+
+After a day of sessions in one directory, several of them run by `aiq long`,
+`aiq resume` shows what each agent did there before you start the next one.
+
+```text
+aiq resume                  browse this directory's sessions
+aiq resume --all            include workers (claude -p, codex exec)
+aiq resume <id>             resume one directly (a unique prefix is enough)
+aiq resume --print [<id>]   the same lists as plain text, for scripts and agents
+```
+
+The first screen lists every Claude and Codex session whose working directory
+is the current one, newest first, with the model, turn and tool counts, and
+the session's name or first prompt. Enter opens a session's turns: each prompt
+with the agent's final reply for that turn. Enter on a turn shows it in full,
+and ←/→ move between turns. `r` resumes the selected session on an account
+the pool picks, with `claude --resume <id>` or `codex resume <id>`.
+
+- A session that ran with the permission bypass is resumed with it again.
+  Anything after `--` is added to the CLI's arguments;
+  `--launcher <name>` resumes through a launcher.
+- A session still running in `aiq long` is attached, not started a second
+  time. For a Claude session that is open in another terminal (● in the
+  list), `r` asks once more before it opens a second copy.
+- Subagent transcripts are not listed. Their work appears in the parent
+  session's turns as tool calls.
+
 ## Automatic provider and model selection
 
 ```bash
@@ -358,6 +386,9 @@ aiq account import [id[=name]...]    adopt aiquota accounts, if you have aiquota
 aiq mark <provider>/<name> exhausted [--until 14:42|+2h|RFC3339]
 aiq mark <provider>/<name> ready
 aiq reset codex/<name>               consume an earned Codex reset credit
+
+aiq resume [--all] [--print] [--launcher <name>] [<id>] [-- args]
+                                     this directory's sessions: browse turns, resume one
 
 aiq shim install|uninstall|path
 aiq statusline install|uninstall|status   Claude status-line multiplexer

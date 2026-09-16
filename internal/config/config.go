@@ -65,7 +65,7 @@ var reservedNames = map[string]bool{
 	"run": true, "claude": true, "codex": true, "status": true, "top": true,
 	"account": true, "mark": true, "reset": true, "shim": true, "statusline": true,
 	"daemon": true, "doctor": true, "long": true, "launcher": true, "version": true,
-	"help": true, "__launch": true, "claude-hook": true, "codex-hook": true,
+	"resume": true, "help": true, "__launch": true, "claude-hook": true, "codex-hook": true,
 	"claude-statusline": true,
 	// `aiq long <word>` has to tell these from a launcher name.
 	"list": true, "attach": true, "drain": true, "stop": true,
