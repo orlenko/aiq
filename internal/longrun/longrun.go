@@ -47,13 +47,55 @@ func SessionName(prefix, workspace string) string {
 }
 
 // DrainInstruction is what the hook injects when the account is nearly out.
+// The agent keeps working: stopping early strands the task on an account
+// with quota left, and the move happens either way when it runs out.
 func DrainInstruction(workspace string, remaining float64, until string) string {
-	return fmt.Sprintf(`aiq: this account's quota is almost exhausted (%.0f%% left%s). Wrap up for a handoff now:
-1. Finish only the unit of work you are in the middle of; do not start new work.
-2. Stop background processes, servers and monitors you started; let running subagents finish or stop them.
-3. Write a handoff note to %s (create the directory if needed): objective, what is done, what is in progress, files and branches involved, unresolved problems, exact next steps, constraints and gotchas. Another agent, possibly a different model, resumes from this note plus the working tree.
-4. Then end your turn without further changes. aiq restarts the session on a fresh account and tells it to read the note.`,
+	return fmt.Sprintf(`aiq: this account's quota is running low (%.0f%% left%s). Keep working on your task; do not stop, pause, or hold back work to save quota. aiq manages quota for this session and moves it to a fresh account, at the end of a turn or when this one runs out.
+1. At the next natural break, write a handoff note to %s (create the directory if needed): objective, what is done, what is in progress, files and branches involved, unresolved problems, exact next steps, constraints and gotchas.
+2. Keep the note current as you go, updating it whenever the plan or state changes. The move can come mid-turn, and whoever picks up (you on a resumed transcript, or a different model starting fresh) relies on the note plus the working tree.`,
 		remaining, until, HandoffPath(workspace))
+}
+
+// IdleRotateDue says whether a quiet session on a nearly spent account
+// should move now. It is the case the drain misses: an agent that stops on
+// its own above drain_pct (a quota floor, nothing left it thinks it can
+// afford) never uses the rest, so the account never runs out and nothing
+// moves it. lastWrite is the newest write to its transcript or subagents;
+// zero means unknown, and an unknown session is left alone.
+func IdleRotateDue(l state.Lease, remaining float64, pct float64, idleFor time.Duration, lastWrite, now time.Time) bool {
+	if pct <= 0 || remaining > pct || l.InTurn() || l.TurnEndedAt == 0 || l.SessionID == "" || lastWrite.IsZero() {
+		return false
+	}
+	return now.Sub(time.Unix(l.TurnEndedAt, 0)) >= idleFor && now.Sub(lastWrite) >= idleFor
+}
+
+// LastWrite is the newest mtime of a transcript file and the directory the
+// CLI keeps beside it (Claude writes subagent and workflow transcripts
+// there). Zero when the transcript is unknown or missing.
+func LastWrite(transcript string) time.Time {
+	if transcript == "" {
+		return time.Time{}
+	}
+	fi, err := os.Stat(transcript)
+	if err != nil {
+		return time.Time{}
+	}
+	newest := fi.ModTime()
+	dir := strings.TrimSuffix(transcript, filepath.Ext(transcript))
+	seen := 0
+	filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if seen++; seen > 20000 {
+			return filepath.SkipAll
+		}
+		if info, err := d.Info(); err == nil && info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	return newest
 }
 
 // ArchiveNote moves a previous handoff note aside so a successor never reads
@@ -98,6 +140,9 @@ type Supervisor struct {
 	// mutedLeases remembers the leases already reported as unsupervisable,
 	// so the daemon says it once instead of on every tick.
 	mutedLeases map[int64]bool
+	// strandedLeases remembers idle leases already reported as having no
+	// account to move to, for the same reason.
+	strandedLeases map[int64]bool
 }
 
 // launcherFor names the launcher a successor on provider should start
@@ -206,7 +251,9 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 			ArchiveNote(l.Workspace, now)
 			st.SetLeaseDrain(l.ID, state.DrainRequested, now)
 			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: %.0f%% left%s, drain requested", l.ID, remaining, until), now)
+			return
 		}
+		s.rotateIfIdle(l, remaining, now)
 	case state.DrainRequested, state.DrainDraining:
 		if blocked {
 			s.takeover(l, now)
@@ -235,8 +282,39 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 	case state.DrainReady:
 		s.takeover(l, now)
 	case state.DrainWaiting:
+		// The agent keeps working while no account can take over. When one
+		// appears, move it at the end of a turn rather than in the middle,
+		// unless the account has run out.
+		if !blocked && l.InTurn() {
+			return
+		}
 		s.takeover(l, now)
 	}
+}
+
+// rotateIfIdle moves a quiet session off a nearly spent account when an
+// account with more headroom than the rotate threshold is free.
+func (s *Supervisor) rotateIfIdle(l state.Lease, remaining float64, now time.Time) {
+	cfg := s.Pool.Cfg.Long
+	idleFor := time.Duration(cfg.IdleRotateMinutes) * time.Minute
+	if l.Pane == "" || !IdleRotateDue(l, remaining, cfg.IdleRotatePct, idleFor, LastWrite(l.Transcript), now) {
+		return
+	}
+	acc, err := s.successorAbove(l, now, cfg.IdleRotatePct)
+	if err != nil {
+		if s.strandedLeases == nil {
+			s.strandedLeases = map[int64]bool{}
+		}
+		if !s.strandedLeases[l.ID] {
+			s.strandedLeases[l.ID] = true
+			s.Pool.St.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
+				"lease %d: idle at %.0f%% left, no account above %.0f%% to move it to", l.ID, remaining, cfg.IdleRotatePct), now)
+		}
+		return
+	}
+	s.Pool.St.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
+		"lease %d: idle %s at %.0f%% left, moving it to a fresh account", l.ID, now.Sub(time.Unix(l.TurnEndedAt, 0)).Round(time.Minute), remaining), now)
+	s.moveTo(l, acc, now)
 }
 
 // dismissRateLimitPrompt answers Codex's switch-to-a-cheaper-model menu with
@@ -256,6 +334,12 @@ func (s *Supervisor) dismissRateLimitPrompt(l state.Lease, now time.Time) {
 
 // successor picks the account a long lease moves to.
 func (s *Supervisor) successor(l state.Lease, now time.Time) (state.Account, error) {
+	return s.successorAbove(l, now, s.Pool.Cfg.Long.DrainPct)
+}
+
+// successorAbove picks the first eligible account in fallback order with
+// more than minRemaining left.
+func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining float64) (state.Account, error) {
 	order := strings.Split(l.Fallback, ",")
 	if l.Fallback == "" {
 		order = append([]string{l.Provider}, s.Pool.Cfg.Long.Fallback...)
@@ -283,7 +367,7 @@ func (s *Supervisor) successor(l state.Lease, now time.Time) (state.Account, err
 			}
 			// The successor must have real headroom, not just be eligible.
 			rem, _, _ := s.headroom(acc.ID, provider, now)
-			if rem <= s.Pool.Cfg.Long.DrainPct {
+			if rem <= minRemaining {
 				continue
 			}
 			return acc, nil
@@ -308,6 +392,12 @@ func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 		}
 		return
 	}
+	s.moveTo(l, acc, now)
+}
+
+// moveTo respawns the lease's pane on acc.
+func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
+	st := s.Pool.St
 	same := acc.Provider == l.Provider
 	launcher := s.launcherFor(l, acc.Provider)
 	if l.Launcher != "" && launcher == "" {

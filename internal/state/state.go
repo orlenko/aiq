@@ -207,6 +207,10 @@ type Lease struct {
 	// Launcher names the registered launcher this session runs under, so a
 	// takeover can start the successor the same way. Empty means bare.
 	Launcher string
+	// Transcript is the CLI's transcript file, as a hook reported it. Its
+	// mtime (and its subagents') tells a quiet session from one whose turn
+	// ended while background work still runs.
+	Transcript string
 }
 
 // InTurn reports whether the agent is in the middle of a turn.
@@ -251,7 +255,7 @@ func Open(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE usage ADD COLUMN exhausted_at INTEGER`)
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
 		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
-		"launcher TEXT"} {
+		"launcher TEXT", "transcript TEXT"} {
 		db.Exec(`ALTER TABLE leases ADD COLUMN ` + col)
 	}
 	db.Exec(`ALTER TABLE launches ADD COLUMN args TEXT`)
@@ -544,14 +548,14 @@ const leaseCols = `id, account_id, COALESCE(pid,0), COALESCE(hostname,''), COALE
 	depth, COALESCE(parent_account,''), COALESCE(root_id,0), COALESCE(args,''), COALESCE(started_at,0),
 	COALESCE(workspace,''), COALESCE(pane,''), COALESCE(session_id,''), COALESCE(provider,''), COALESCE(fallback,''),
 	COALESCE(drain,''), COALESCE(drain_at,0), COALESCE(turn_started_at,0), COALESCE(turn_ended_at,0), COALESCE(takeover_of,0),
-	COALESCE(launcher,'')`
+	COALESCE(launcher,''), COALESCE(transcript,'')`
 
 func scanLease(row interface{ Scan(...any) error }) (Lease, error) {
 	var l Lease
 	err := row.Scan(&l.ID, &l.AccountID, &l.PID, &l.Hostname, &l.Mode, &l.Cwd,
 		&l.Depth, &l.ParentAccount, &l.RootID, &l.Args, &l.StartedAt,
 		&l.Workspace, &l.Pane, &l.SessionID, &l.Provider, &l.Fallback,
-		&l.Drain, &l.DrainAt, &l.TurnStartedAt, &l.TurnEndedAt, &l.TakeoverOf, &l.Launcher)
+		&l.Drain, &l.DrainAt, &l.TurnStartedAt, &l.TurnEndedAt, &l.TakeoverOf, &l.Launcher, &l.Transcript)
 	return l, err
 }
 
@@ -589,6 +593,12 @@ func (s *Store) SetLeaseSession(id int64, sessionID string) error {
 	if err == nil && sessionID != "" {
 		s.db.Exec(`UPDATE launches SET session_id = ? WHERE lease_id = ? AND COALESCE(session_id,'') = ''`, sessionID, id)
 	}
+	return err
+}
+
+// SetLeaseTranscript records the transcript file a hook reported.
+func (s *Store) SetLeaseTranscript(id int64, path string) error {
+	_, err := s.db.Exec(`UPDATE leases SET transcript = ? WHERE id = ?`, path, id)
 	return err
 }
 

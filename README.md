@@ -88,9 +88,17 @@ session named after the workspace and supervises it:
   `SessionStart`, `UserPromptSubmit` and `Stop` hooks (per launch, via
   `--settings` for Claude and `-c hooks.…` for Codex); ordinary sessions are
   untouched. When the account's tightest binding window has `drain_pct` or
-  less remaining, the daemon flags the lease and the next hook injects the
-  wrap-up: finish the current unit, stop background jobs and subagents, write
-  a handoff note, end the turn.
+  less remaining, the daemon flags the lease and the next hook tells the
+  agent to keep working, write a handoff note at the next natural break and
+  keep it current. The session moves at its next turn end if another account
+  has headroom, or when the account runs out, whichever comes first; while no
+  account can take it, the agent spends what is left instead of idling.
+- **Idle sessions do not strand quota.** An agent can stop on its own above
+  `drain_pct` (a quota floor, nothing it thinks it can afford), and then the
+  account never runs out and nothing moves it. A long session that has been
+  idle for `idle_rotate_minutes`, with nothing written to its transcript or
+  its subagents' in that time, on an account with `idle_rotate_pct` or less
+  left, moves to an account with more than that.
 - **Resume, not summarize.** The overlay shares transcripts, so the same
   provider's successor gets `--resume <session-id>` on the next account and
   keeps the whole conversation; the note is a supplement. A different
@@ -667,10 +675,12 @@ order = ["claude/work", "claude/home", "codex/work"]
 listen = "127.0.0.1:7379"
 
 [long]
-drain_pct = 4.0                 # ask for a wrap-up at this much remaining
+drain_pct = 4.0                 # ask for a handoff note at this much remaining
 fallback = ["claude", "codex"]  # takeover order after the session's own provider
 check_interval_seconds = 30
 idle_grace_seconds = 20
+idle_rotate_pct = 15.0          # move a quiet session off an account this low (0 = off)
+idle_rotate_minutes = 15        # ...once it has been quiet this long
 tmux_prefix = "aiq"
 
 [telemetry]

@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/orlenko/aiq/internal/state"
 )
 
 func TestSessionNameAndHandoffPathAreStable(t *testing.T) {
@@ -101,5 +104,71 @@ func TestReplayArgsDropsSessionSelection(t *testing.T) {
 		if strings.Join(got, " ") != strings.Join(c.want, " ") {
 			t.Errorf("%s %v: got %v, want %v", c.provider, c.in, got, c.want)
 		}
+	}
+}
+
+func TestDrainInstructionKeepsTheAgentWorking(t *testing.T) {
+	d := DrainInstruction("/w", 3, "")
+	for _, want := range []string{"Keep working", "do not stop", "Keep the note current"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("missing %q in %s", want, d)
+		}
+	}
+	if strings.Contains(d, "end your turn") || strings.Contains(d, "do not start new work") {
+		t.Errorf("drain must not tell the agent to stop: %s", d)
+	}
+}
+
+func TestIdleRotateDue(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	idle := 15 * time.Minute
+	ended := now.Add(-20 * time.Minute)
+	quiet := endedAt(ended)
+	cases := []struct {
+		name      string
+		lease     state.Lease
+		remaining float64
+		pct       float64
+		lastWrite time.Time
+		want      bool
+	}{
+		{"quiet and low", quiet, 8, 15, ended, true},
+		{"plenty left", quiet, 40, 15, ended, false},
+		{"turned off", quiet, 8, 0, ended, false},
+		{"in a turn", func() state.Lease { x := quiet; x.TurnStartedAt = now.Unix(); return x }(), 8, 15, ended, false},
+		{"idle too briefly", endedAt(now.Add(-5 * time.Minute)), 8, 15, now.Add(-5 * time.Minute), false},
+		{"background work still writing", quiet, 8, 15, now.Add(-time.Minute), false},
+		{"transcript unknown", quiet, 8, 15, time.Time{}, false},
+		{"hooks never reported", func() state.Lease { x := quiet; x.SessionID = ""; return x }(), 8, 15, ended, false},
+		{"no turn yet", func() state.Lease { x := quiet; x.TurnStartedAt, x.TurnEndedAt = 0, 0; return x }(), 8, 15, ended, false},
+	}
+	for _, c := range cases {
+		if got := IdleRotateDue(c.lease, c.remaining, c.pct, idle, c.lastWrite, now); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func endedAt(ended time.Time) state.Lease {
+	return state.Lease{SessionID: "s", TurnStartedAt: ended.Add(-time.Minute).Unix(), TurnEndedAt: ended.Unix()}
+}
+
+func TestLastWriteSeesSubagents(t *testing.T) {
+	dir := t.TempDir()
+	tr := filepath.Join(dir, "abc.jsonl")
+	os.WriteFile(tr, []byte("{}\n"), 0o600)
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(tr, old, old)
+	if got := LastWrite(tr); !got.Equal(old) {
+		t.Fatalf("transcript only: got %v, want %v", got, old)
+	}
+	sub := filepath.Join(dir, "abc", "subagents", "workflows", "wf1")
+	os.MkdirAll(sub, 0o700)
+	os.WriteFile(filepath.Join(sub, "agent.jsonl"), []byte("{}\n"), 0o600)
+	if got := LastWrite(tr); time.Since(got) > time.Minute {
+		t.Fatalf("a fresh subagent write must count: %v", got)
+	}
+	if !LastWrite("").IsZero() || !LastWrite(filepath.Join(dir, "missing.jsonl")).IsZero() {
+		t.Fatal("unknown transcript must be zero")
 	}
 }

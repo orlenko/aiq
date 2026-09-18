@@ -36,6 +36,7 @@ func cmdHook(provider string, args []string) {
 	input, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 	var payload struct {
 		SessionID      string `json:"session_id"`
+		TranscriptPath string `json:"transcript_path"`
 		StopHookActive bool   `json:"stop_hook_active"`
 	}
 	json.Unmarshal(input, &payload)
@@ -52,6 +53,9 @@ func cmdHook(provider string, args []string) {
 	now := time.Now()
 	if payload.SessionID != "" && payload.SessionID != l.SessionID {
 		st.SetLeaseSession(l.ID, payload.SessionID)
+	}
+	if payload.TranscriptPath != "" && payload.TranscriptPath != l.Transcript {
+		st.SetLeaseTranscript(l.ID, payload.TranscriptPath)
 	}
 
 	switch event {

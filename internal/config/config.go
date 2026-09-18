@@ -166,6 +166,12 @@ type Long struct {
 	// IdleGraceSeconds: an idle session (no turn in progress) is respawned
 	// this long after a drain request without waiting for a wrap-up turn.
 	IdleGraceSeconds int64 `toml:"idle_grace_seconds"`
+	// IdleRotatePct and IdleRotateMinutes: a session that has sat idle this
+	// long, with nothing written to its transcript, on an account with this
+	// much or less remaining, moves to an account with more. It catches an
+	// agent that stops above drain_pct to save quota. 0 turns it off.
+	IdleRotatePct     float64 `toml:"idle_rotate_pct"`
+	IdleRotateMinutes int64   `toml:"idle_rotate_minutes"`
 	// TmuxPrefix names the tmux sessions: <prefix>-<workspace basename>.
 	TmuxPrefix string `toml:"tmux_prefix"`
 }
@@ -228,7 +234,8 @@ func Default() *Config {
 	c.Poll = Poll{IntervalSeconds: 300, TimeoutSeconds: 60}
 	c.Display.Labels = map[string]string{}
 	c.Daemon.Listen = "127.0.0.1:7379"
-	c.Long = Long{DrainPct: 4, Fallback: []string{"claude", "codex"}, CheckIntervalSeconds: 30, IdleGraceSeconds: 20, TmuxPrefix: "aiq"}
+	c.Long = Long{DrainPct: 4, Fallback: []string{"claude", "codex"}, CheckIntervalSeconds: 30, IdleGraceSeconds: 20,
+		IdleRotatePct: 15, IdleRotateMinutes: 15, TmuxPrefix: "aiq"}
 	c.Telemetry.ClaudeStatusline = true
 	c.Launchers = map[string]Launcher{}
 	return c
@@ -303,6 +310,9 @@ func Load() (*Config, error) {
 	}
 	if c.Long.IdleGraceSeconds <= 0 {
 		c.Long.IdleGraceSeconds = 20
+	}
+	if c.Long.IdleRotateMinutes <= 0 {
+		c.Long.IdleRotateMinutes = 15
 	}
 	if c.Long.TmuxPrefix == "" {
 		c.Long.TmuxPrefix = "aiq"
