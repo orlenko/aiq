@@ -5,7 +5,9 @@ import (
 	"log"
 	"os"
 
+	"github.com/orlenko/aiq/internal/binpath"
 	"github.com/orlenko/aiq/internal/daemon"
+	"github.com/orlenko/aiq/internal/paths"
 )
 
 func cmdDaemon(args []string) error {
@@ -39,6 +41,19 @@ func cmdDaemon(args []string) error {
 			return err
 		}
 		fmt.Printf("installed %s\nlog: %s\nui:  http://%s/\n", path, daemon.LogPath(), listen)
+		// Takeovers start the CLI with the service's PATH; say so now if
+		// that cannot find one, rather than when a successor dies.
+		servicePath := daemon.ServicePATH()
+		for _, provider := range []string{"claude", "codex"} {
+			saved := os.Getenv("PATH")
+			os.Setenv("PATH", servicePath)
+			_, err := binpath.Resolve(provider, "", paths.ShimsDir(), nil)
+			os.Setenv("PATH", saved)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: the daemon's PATH has no %s, so a long session cannot be moved onto it; "+
+					"reinstall from a login shell that has it, or set providers.%s.binary in the config\n", provider, provider)
+			}
+		}
 		return nil
 	case "uninstall":
 		path, err := daemon.Uninstall()

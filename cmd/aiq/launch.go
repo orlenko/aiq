@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/orlenko/aiq/internal/binpath"
 	"github.com/orlenko/aiq/internal/paths"
@@ -181,6 +182,18 @@ func (a *app) execProvider(provider string, args []string, env []string, launche
 	}
 	c.pid = os.Getpid()
 	bin, err := a.resolveNext(provider, c)
+	if err != nil && envHas(env, "AIQ_LONG", "1") {
+		// A takeover can land while the CLI updates itself (an npm
+		// reinstall removes the binary for a while). An unattended pane
+		// that gives up here is left dead, so wait it out.
+		for _, d := range resolveRetryDelays {
+			fmt.Fprintf(os.Stderr, "aiq: %v; retrying in %s (it may be updating)\n", err, d)
+			time.Sleep(d)
+			if bin, err = a.resolveNext(provider, c); err == nil {
+				break
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -228,4 +241,18 @@ func cmdLaunch(args []string) error {
 	}
 	a.close()
 	return a.execProvider(args[0], args[2:], os.Environ(), "")
+}
+
+// resolveRetryDelays spaces the provider lookups a long session makes
+// before giving up: about a minute in all.
+var resolveRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 30 * time.Second}
+
+// envHas reports whether env sets key to value.
+func envHas(env []string, key, value string) bool {
+	for _, kv := range env {
+		if kv == key+"="+value {
+			return true
+		}
+	}
+	return false
 }

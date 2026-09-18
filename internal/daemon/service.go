@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const launchdLabel = "dev.aiq.daemon"
@@ -21,9 +23,56 @@ func systemdUnit() string {
 	return filepath.Join(home, ".config", "systemd", "user", "aiq.service")
 }
 
+// ServicePATH is the PATH baked into the service: the current one, then
+// any entries only the user's interactive login shell adds. A takeover
+// respawns `aiq run` with the daemon's environment, so a PATH captured from
+// a bare ssh or cron shell (no nvm, no ~/.local/bin additions from .zshrc)
+// leaves every successor with "claude not found on PATH".
+func ServicePATH() string {
+	return mergePATH(os.Getenv("PATH"), loginShellPATH())
+}
+
+func mergePATH(first, extra string) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range []string{first, extra} {
+		for _, d := range filepath.SplitList(list) {
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return strings.Join(out, string(filepath.ListSeparator))
+}
+
+// loginShellPATH asks $SHELL, as an interactive login shell, for its PATH.
+// Markers fence the value off from whatever the rc files print.
+func loginShellPATH() string {
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, sh, "-lic", `printf '\n__AIQ_PATH__%s__AIQ_PATH__\n' "$PATH"`)
+	cmd.Stdin = nil
+	out, _ := cmd.Output()
+	_, rest, ok := strings.Cut(string(out), "__AIQ_PATH__")
+	if !ok {
+		return ""
+	}
+	value, _, ok := strings.Cut(rest, "__AIQ_PATH__")
+	if !ok {
+		return ""
+	}
+	return value
+}
+
 // Install registers the daemon as a user service (launchd on macOS,
-// systemd --user on Linux) and starts it. The service inherits the current
-// PATH so it can find aiquota and the provider CLIs.
+// systemd --user on Linux) and starts it. The service gets ServicePATH so
+// it, and every session it respawns, can find the provider CLIs.
 func Install(aiqPath string) (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
@@ -103,7 +152,7 @@ func installLaunchd(aiqPath string) (string, error) {
   <key>StandardErrorPath</key><string>%s</string>
 </dict>
 </plist>
-`, launchdLabel, xmlEscape(aiqPath), xmlEscape(os.Getenv("PATH")), xmlEscape(home), xmlEscape(LogPath()), xmlEscape(LogPath()))
+`, launchdLabel, xmlEscape(aiqPath), xmlEscape(ServicePATH()), xmlEscape(home), xmlEscape(LogPath()), xmlEscape(LogPath()))
 	if err := os.WriteFile(plist, []byte(content), 0o644); err != nil {
 		return "", err
 	}
@@ -131,7 +180,7 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, aiqPath, os.Getenv("PATH"))
+`, aiqPath, ServicePATH())
 	if err := os.WriteFile(unit, []byte(content), 0o644); err != nil {
 		return "", err
 	}
