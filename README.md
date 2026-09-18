@@ -110,7 +110,8 @@ session named after the workspace and supervises it:
   headroom the session waits and is moved when a window resets.
 
 ```text
-aiq long claude [claude args...]   start or attach
+aiq long claude [--account <name>] [--model-tier N] [--effort N] [-- claude args...]
+                                    start or attach
 aiq long auto [--model-tier 0]      start on whichever pool auto picks, or attach
 aiq long auto resume [<id>]         pick a session here and resume it as a long one
 aiq long list                       leases, pane, drain state, idle/busy
@@ -255,6 +256,43 @@ sets both the model and its quota scope. Pass native named effort values after
 ## Recipes
 
 Habits that make the pool disappear from day-to-day work.
+
+### Start from the menu
+
+```bash
+aiq
+```
+
+With no arguments on a terminal, aiq opens a start menu instead of the
+command list:
+
+```text
+ aiq 0.5.0 · ~/personal/aiq
+
+ › Session       New  Resume
+   Agent         Any  Claude  Codex  boxed
+   Length        Short  Long
+   More          model tier, effort, account, permissions
+
+   Start a new conversation in this directory.
+
+ $ aiq run auto
+```
+
+Three rows cover most starts: a new session or one of this directory's to
+resume, any agent or a named one (your launchers included), and short (this
+terminal) or long (supervised in tmux). `m` opens the rest: model tier,
+effort, a specific account, and the permission bypass. Rows that do not
+apply to the current choice dim and say why, and the line under the rows
+explains the focused choice, including which account a routed start would
+take right now.
+
+The bottom line is the ordinary aiq command the choices add up to. Enter
+prints it and runs it, so the menu doubles as a way to learn the commands.
+The menu remembers the last start, so Enter alone repeats it. When a long
+session already runs in the workspace, `a` attaches to it. `?` prints the
+full command list, which `aiq help` also prints; piped or scripted, bare
+`aiq` prints it too.
 
 ### Start a session without choosing anything
 
@@ -445,6 +483,7 @@ for anything else.
 ## Commands
 
 ```text
+aiq                                  start menu (on a terminal)
 aiq claude [args...]                 same as the shim: route and launch
 aiq codex  [args...]
 aiq run <provider> [--account <name>] [--next] [--mode interactive|worker] -- [args...]
@@ -459,6 +498,8 @@ aiq account authorize claude/<name>  redo the quota poll grant
 aiq account poll [<id>...]           poll now
 aiq account label <id> <text>        label shown on the status page
 aiq account order [<id>...]          display order within each provider column
+aiq account rename <id> <new-name> [--keep-home]
+                                     rename everywhere; moves the home and its login
 aiq account enable|disable|remove <provider>/<name> [--purge]
 aiq account use <provider>/<name>    pin this workspace
 aiq account next <provider>          rotate this workspace
@@ -476,6 +517,15 @@ aiq statusline install|uninstall|status   Claude status-line multiplexer
 aiq daemon run|install|uninstall|status
 aiq doctor
 ```
+
+`aiq account rename claude/claude4 fourth` carries the account's usage,
+leases, workspace pins, launch history, label and display order to the new
+name. An overlay home at the default path moves with it, along with the
+macOS keychain login Claude Code keeps for that path and any aiquota
+credential path inside it, so no new login is needed. `--keep-home` renames
+the account and leaves the home where it is; a native home never moves. A
+running session holds the old name in its environment, so the rename waits
+until no session is using the account.
 
 Launch flags for orchestrators (also as `AIQ_MODEL_SCOPE`, `AIQ_WAIT`,
 `AIQ_MODE` in the environment of a child):

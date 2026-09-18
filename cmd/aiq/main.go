@@ -11,6 +11,8 @@ import (
 
 	"os/exec"
 
+	"golang.org/x/term"
+
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
@@ -37,6 +39,10 @@ func launcherByName(name string) (config.Launcher, bool) {
 
 const usage = `aiq %s — quota-aware router for pooled Claude Code and Codex accounts
 
+On a terminal, aiq with no arguments opens the start menu: pick new or
+resume, any agent or a specific one, short or long, and it runs the
+matching command below. aiq help prints this list.
+
 Launch (what the PATH shims call):
   aiq run claude [--account <name>] [--next] [--mode interactive|worker]
                  [--model-tier 0..3] [--effort 1..6]
@@ -61,6 +67,7 @@ Pool:
   aiq account poll [<provider>/<name>...]  poll now
   aiq account label <provider>/<name> <text>
   aiq account order [<provider>/<name>...]  display order (per provider column)
+  aiq account rename <provider>/<name> <new-name> [--keep-home]
   aiq account enable|disable|remove <provider>/<name>
   aiq account use <provider>/<name>        pin this workspace
   aiq account next <provider>              rotate this workspace
@@ -78,7 +85,7 @@ Launchers (a named program that starts the CLI in an environment of its own):
     plain claude and codex never use one: a launcher runs only when named.
 
 Long-running sessions (supervised, moved between accounts before they run dry):
-  aiq long claude|codex|<launcher> [--account <name>] [--] [args...]
+  aiq long claude|codex|<launcher> [--account <name>] [--model-tier 0..3] [--effort 1..6] [--] [args...]
                                     start in a tmux session named after
                                     the workspace, or attach
   aiq long auto [--model-tier 0..3] [--effort 1..6]
@@ -181,6 +188,15 @@ func (a *app) codexProvider() (*codex.Provider, error) {
 
 func main() {
 	if len(os.Args) < 2 {
+		// On a terminal, bare aiq opens the start menu; anywhere else it
+		// prints the command list as it always has.
+		if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+			if err := cmdMenu(); err != nil {
+				fmt.Fprintln(os.Stderr, "aiq:", err)
+				os.Exit(1)
+			}
+			return
+		}
 		fmt.Printf(usage, version)
 		os.Exit(2)
 	}

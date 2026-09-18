@@ -18,6 +18,7 @@ func TestParseLongArgs(t *testing.T) {
 		name    string
 		args    []string
 		account string
+		flags   []string
 		rest    []string
 		wantErr bool
 	}{
@@ -30,11 +31,14 @@ func TestParseLongArgs(t *testing.T) {
 		{name: "missing name", args: []string{"--account"}, wantErr: true},
 		{name: "empty name", args: []string{"--account="}, wantErr: true},
 		{name: "separator is not a name", args: []string{"--account", "--", "--yolo"}, wantErr: true},
+		{name: "tier and effort", args: []string{"--model-tier", "0", "--account=x", "--effort=3", "--", "--yolo"}, account: "x", flags: []string{"--model-tier", "0", "--effort", "3"}, rest: []string{"--yolo"}},
+		{name: "tier out of range", args: []string{"--model-tier", "7"}, wantErr: true},
+		{name: "effort without value", args: []string{"--effort"}, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			account, rest, err := parseLongArgs(tt.args)
-			if (err != nil) != tt.wantErr || account != tt.account || !reflect.DeepEqual(rest, tt.rest) {
-				t.Fatalf("got (%q, %v, %v), want (%q, %v, error=%v)", account, rest, err, tt.account, tt.rest, tt.wantErr)
+			account, flags, rest, err := parseLongArgs(tt.args)
+			if (err != nil) != tt.wantErr || account != tt.account || !reflect.DeepEqual(flags, tt.flags) || !reflect.DeepEqual(rest, tt.rest) {
+				t.Fatalf("got (%q, %v, %v, %v), want (%q, %v, %v, error=%v)", account, flags, rest, err, tt.account, tt.flags, tt.rest, tt.wantErr)
 			}
 		})
 	}
@@ -93,7 +97,7 @@ esac
 			cfg.Long.Fallback = nil
 			cfg.Launchers = map[string]config.Launcher{"test-launcher": {Provider: "codex"}}
 			a := &app{cfg: cfg, st: st}
-			if err := a.longStart("codex", launcher, []string{"--account", "bjola", "--", "--yolo"}); err != nil {
+			if err := a.longStart("codex", launcher, []string{"--account", "bjola", "--model-tier", "1", "--", "--yolo"}); err != nil {
 				t.Fatal(err)
 			}
 			got, err := os.ReadFile(capture)
@@ -104,12 +108,12 @@ esac
 			if launcher != "" {
 				want = append(want, "--launcher", launcher)
 			}
-			want = append(want, "--account", "bjola", "--", "--yolo")
+			want = append(want, "--account", "bjola", "--model-tier", "1", "--", "--yolo")
 			if string(got) != tmux.Quote(want) {
 				t.Fatalf("tmux command = %s; want %s", got, tmux.Quote(want))
 			}
 			f := parseRunFlags(want[3:])
-			if f.account != "bjola" || !f.long || f.launcher != launcher || strings.Join(f.rest, " ") != "--yolo" {
+			if f.account != "bjola" || !f.long || f.launcher != launcher || f.modelTier == nil || *f.modelTier != 1 || strings.Join(f.rest, " ") != "--yolo" {
 				t.Fatalf("incorrect run flags: %+v", f)
 			}
 		})

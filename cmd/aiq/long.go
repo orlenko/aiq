@@ -17,7 +17,7 @@ import (
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
-// aiq long <provider> [--account <name>] [--] [args...] starts or attaches.
+// aiq long <provider> [--account <name>] [--model-tier N] [--effort N] [--] [args...] starts or attaches.
 // aiq long auto [--model-tier N] [--effort N]   the same across both pools
 // aiq long auto resume [<id>]     pick a session in this directory, resume it long
 // aiq long list                   long sessions and their drain state
@@ -26,7 +26,7 @@ import (
 // aiq long stop <lease-id|.>      end the session and its tmux session
 func cmdLong(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq long claude|codex|<launcher> [--account <name>] [--] [args...] | auto [--model-tier N] [--effort N] | auto resume [<id>] | list | drain <id|.> | attach [.] | stop <id|.>")
+		return fmt.Errorf("usage: aiq long claude|codex|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | auto resume [<id>] | list | drain <id|.> | attach [.] | stop <id|.>")
 	}
 	a, err := openApp()
 	if err != nil {
@@ -159,11 +159,12 @@ func (a *app) longFallback(provider string) string {
 }
 
 func (a *app) longStart(provider, launcher string, args []string) error {
-	account, args, err := parseLongArgs(args)
+	account, flags, args, err := parseLongArgs(args)
 	if err != nil {
-		return err
+		return configErr("bad-flags", "%v", err)
 	}
 	if provider == "auto" {
+		args = append(flags, args...)
 		// Fail here, not in a tmux pane that closes before it can be read.
 		if account != "" {
 			return configErr("bad-flags", "auto chooses the account; pick a provider to force one")
@@ -204,6 +205,7 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 		if account != "" {
 			cmdArgs = append(cmdArgs, "--account", account)
 		}
+		cmdArgs = append(cmdArgs, flags...)
 		cmdArgs = append(append(cmdArgs, "--"), args...)
 	}
 	what := provider
@@ -421,27 +423,42 @@ func (a *app) longAutoResume(args []string) error {
 
 // Like run, long consumes its own leading options and stops at -- or the
 // first provider argument. Everything after that boundary belongs to the CLI.
-func parseLongArgs(args []string) (account string, rest []string, err error) {
+// --model-tier and --effort come back in flags, for `aiq run` to translate.
+func parseLongArgs(args []string) (account string, flags, rest []string, err error) {
 	for len(args) > 0 {
+		arg := args[0]
 		switch {
-		case args[0] == "--":
-			return account, args[1:], nil
-		case args[0] == "--account":
+		case arg == "--":
+			return account, flags, args[1:], nil
+		case arg == "--account":
 			if len(args) < 2 || args[1] == "" || strings.HasPrefix(args[1], "-") {
-				return "", nil, fmt.Errorf("--account requires an account name")
+				return "", nil, nil, fmt.Errorf("--account requires an account name")
 			}
 			account, args = args[1], args[2:]
-		case strings.HasPrefix(args[0], "--account="):
-			account = strings.TrimPrefix(args[0], "--account=")
+		case strings.HasPrefix(arg, "--account="):
+			account = strings.TrimPrefix(arg, "--account=")
 			if account == "" || strings.HasPrefix(account, "-") {
-				return "", nil, fmt.Errorf("--account requires an account name")
+				return "", nil, nil, fmt.Errorf("--account requires an account name")
 			}
 			args = args[1:]
+		case arg == "--model-tier" || arg == "--effort" || strings.HasPrefix(arg, "--model-tier=") || strings.HasPrefix(arg, "--effort="):
+			key, value, equals := strings.Cut(arg, "=")
+			args = args[1:]
+			if !equals {
+				if len(args) == 0 {
+					return "", nil, nil, fmt.Errorf("%s requires a value", key)
+				}
+				value, args = args[0], args[1:]
+			}
+			if f := parseRunFlags([]string{key, value}); f.flagsErr != nil {
+				return "", nil, nil, f.flagsErr
+			}
+			flags = append(flags, key, value)
 		default:
-			return account, args, nil
+			return account, flags, args, nil
 		}
 	}
-	return account, args, nil
+	return account, flags, args, nil
 }
 
 func (a *app) longList() error {
