@@ -1,0 +1,434 @@
+{
+ "cc_compacting": {
+  "in_tokens": 867,
+  "latency": 0.3933119169960264,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.15,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.56,
+  "state": "working",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 1.0
+  }
+ },
+ "cc_edit_permission": {
+  "in_tokens": 873,
+  "latency": 0.35667666599329095,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.96,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.96,
+  "state": "blocked",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 1.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.0
+  }
+ },
+ "cc_exited_shell": {
+  "in_tokens": 984,
+  "latency": 0.3209808749961667,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.06,
+  "out_tokens": 108,
+  "safe_key": "none",
+  "safe_key_conf": 0.8,
+  "state": "exited",
+  "state_conf": 0.98,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.98,
+   "idle": 0.02,
+   "working": 0.0
+  }
+ },
+ "cc_idle_after_question": {
+  "in_tokens": 961,
+  "latency": 0.41354358299577143,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.95,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.83,
+  "state": "blocked",
+  "state_conf": 0.83,
+  "state_probs": {
+   "blocked": 0.88,
+   "exited": 0.0,
+   "idle": 0.12,
+   "working": 0.0
+  }
+ },
+ "cc_idle_prompt": {
+  "in_tokens": 958,
+  "latency": 0.3975397499889368,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.43,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.72,
+  "state": "blocked",
+  "state_conf": 0.88,
+  "state_probs": {
+   "blocked": 0.92,
+   "exited": 0.0,
+   "idle": 0.08,
+   "working": 0.0
+  }
+ },
+ "cc_permission_prompt": {
+  "in_tokens": 870,
+  "latency": 0.353882083989447,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.97,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.96,
+  "state": "blocked",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 1.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.0
+  }
+ },
+ "cc_quoted_menu_in_transcript": {
+  "in_tokens": 1005,
+  "latency": 0.3406392079923535,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.43,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.25,
+  "state": "idle",
+  "state_conf": 0.46,
+  "state_probs": {
+   "blocked": 0.4,
+   "exited": 0.0,
+   "idle": 0.59,
+   "working": 0.01
+  }
+ },
+ "cc_streaming_text": {
+  "in_tokens": 848,
+  "latency": 0.38206133399216924,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.13,
+  "out_tokens": 107,
+  "safe_key": "two",
+  "safe_key_conf": 0.32,
+  "state": "working",
+  "state_conf": 0.94,
+  "state_probs": {
+   "blocked": 0.04,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.96
+  }
+ },
+ "cc_thinking": {
+  "in_tokens": 833,
+  "latency": 0.3729565840039868,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.07,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.55,
+  "state": "working",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 1.0
+  }
+ },
+ "cc_tool_running": {
+  "in_tokens": 878,
+  "latency": 0.34369433400570415,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.06,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.72,
+  "state": "working",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 1.0
+  }
+ },
+ "cc_trust_dialog": {
+  "in_tokens": 1015,
+  "latency": 0.31366787500155624,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.97,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.99,
+  "state": "blocked",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 1.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.0
+  }
+ },
+ "cc_update_notice": {
+  "in_tokens": 987,
+  "latency": 0.4171752089896472,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.56,
+  "out_tokens": 107,
+  "safe_key": "enter",
+  "safe_key_conf": 0.93,
+  "state": "blocked",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 1.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.0
+  }
+ },
+ "cc_usage_limit": {
+  "in_tokens": 964,
+  "latency": 0.5221429160010302,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.81,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.65,
+  "state": "blocked",
+  "state_conf": 0.89,
+  "state_probs": {
+   "blocked": 0.91,
+   "exited": 0.01,
+   "idle": 0.06,
+   "working": 0.02
+  }
+ },
+ "cx_approval_prompt": {
+  "in_tokens": 853,
+  "latency": 0.5263151249964722,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.97,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.98,
+  "state": "blocked",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 1.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.0
+  }
+ },
+ "cx_crashed": {
+  "in_tokens": 867,
+  "latency": 0.32463612499122974,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.1,
+  "out_tokens": 108,
+  "safe_key": "none",
+  "safe_key_conf": 0.55,
+  "state": "exited",
+  "state_conf": 0.98,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.99,
+   "idle": 0.0,
+   "working": 0.01
+  }
+ },
+ "cx_exited": {
+  "in_tokens": 957,
+  "latency": 0.3391336670028977,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.11,
+  "out_tokens": 108,
+  "safe_key": "none",
+  "safe_key_conf": 0.62,
+  "state": "exited",
+  "state_conf": 0.97,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.98,
+   "idle": 0.02,
+   "working": 0.0
+  }
+ },
+ "cx_idle_asks_question": {
+  "in_tokens": 973,
+  "latency": 0.37577766699541826,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.93,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.98,
+  "state": "blocked",
+  "state_conf": 0.8,
+  "state_probs": {
+   "blocked": 0.85,
+   "exited": 0.0,
+   "idle": 0.14,
+   "working": 0.01
+  }
+ },
+ "cx_idle_prompt": {
+  "in_tokens": 982,
+  "latency": 0.558617165996111,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.1,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.66,
+  "state": "idle",
+  "state_conf": 0.77,
+  "state_probs": {
+   "blocked": 0.02,
+   "exited": 0.0,
+   "idle": 0.83,
+   "working": 0.15
+  }
+ },
+ "cx_login_required": {
+  "in_tokens": 993,
+  "latency": 0.320979541997076,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.97,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.86,
+  "state": "blocked",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 1.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.0
+  }
+ },
+ "cx_rate_limit_menu": {
+  "in_tokens": 864,
+  "latency": 0.3590531660011038,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.95,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.77,
+  "state": "blocked",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 1.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.0
+  }
+ },
+ "cx_rate_limit_menu_keep_selected": {
+  "in_tokens": 851,
+  "latency": 0.3509948330029147,
+  "model": "jev-1.13.0",
+  "needs_human": true,
+  "needs_human_p": 0.95,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.54,
+  "state": "blocked",
+  "state_conf": 1.0,
+  "state_probs": {
+   "blocked": 1.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 0.0
+  }
+ },
+ "cx_working": {
+  "in_tokens": 865,
+  "latency": 0.4281418750033481,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.05,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.41,
+  "state": "working",
+  "state_conf": 0.99,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 1.0
+  }
+ },
+ "shell_only": {
+  "in_tokens": 819,
+  "latency": 0.3252428330015391,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.08,
+  "out_tokens": 108,
+  "safe_key": "none",
+  "safe_key_conf": 0.81,
+  "state": "exited",
+  "state_conf": 0.72,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.79,
+   "idle": 0.21,
+   "working": 0.0
+  }
+ },
+ "tmux_respawn_in_progress": {
+  "in_tokens": 828,
+  "latency": 0.33214787500037346,
+  "model": "jev-1.13.0",
+  "needs_human": false,
+  "needs_human_p": 0.21,
+  "out_tokens": 107,
+  "safe_key": "none",
+  "safe_key_conf": 0.82,
+  "state": "working",
+  "state_conf": 0.99,
+  "state_probs": {
+   "blocked": 0.0,
+   "exited": 0.0,
+   "idle": 0.0,
+   "working": 1.0
+  }
+ }
+}
