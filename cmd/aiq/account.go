@@ -11,6 +11,7 @@ import (
 	"github.com/orlenko/aiq/internal/fsutil"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
+	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/quota"
@@ -19,7 +20,7 @@ import (
 
 func cmdAccount(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq account list|add|login|authorize|poll|label|order|enable|disable|remove|use|next|import|link")
+		return fmt.Errorf("usage: aiq account list|add|login|authorize|poll|label|order|enable|disable|rename|remove|use|next|import|link")
 	}
 	a, err := openApp()
 	if err != nil {
@@ -63,6 +64,17 @@ func cmdAccount(args []string) error {
 		}
 		fmt.Printf("%s %sd\n", rest[0], sub)
 		return nil
+	case "rename":
+		var pos []string
+		for _, r := range rest {
+			if r != "--keep-home" {
+				pos = append(pos, r)
+			}
+		}
+		if len(pos) != 2 {
+			return fmt.Errorf("usage: aiq account rename <provider>/<name> <new-name> [--keep-home]")
+		}
+		return a.accountRename(pos[0], pos[1], hasFlag(rest, "--keep-home"))
 	case "remove":
 		if len(rest) < 1 {
 			return fmt.Errorf("usage: aiq account remove <provider>/<name> [--purge]")
@@ -437,6 +449,136 @@ func (a *app) accountRemove(id string, purge bool) error {
 		fmt.Printf("home kept at %s (pass --purge to delete it)\n", shortHome(acc.Home))
 	}
 	return nil
+}
+
+// accountRename renames an account everywhere aiq keeps its name: the state
+// database (usage, windows, leases, affinity, launch history, events), the
+// display labels and order, and, when it sits at the default path, the
+// overlay home with its macOS keychain credential and any aiquota pointer
+// into it. A session running on the account holds the old name and home in
+// its environment, so the rename waits until none is.
+func (a *app) accountRename(oldID, newName string, keepHome bool) error {
+	acc, err := a.st.GetAccount(oldID)
+	if err != nil {
+		return err
+	}
+	if p, n, ok := strings.Cut(newName, "/"); ok {
+		if p != acc.Provider {
+			return fmt.Errorf("%s is a %s account; it cannot become %s", acc.ID, acc.Provider, newName)
+		}
+		newName = n
+	}
+	if err := validName(newName); err != nil {
+		return err
+	}
+	newID := state.AccountID(acc.Provider, newName)
+	if newID == acc.ID {
+		return fmt.Errorf("%s already has that name", acc.ID)
+	}
+	if _, err := a.st.GetAccount(newID); err == nil {
+		return fmt.Errorf("%s already exists", newID)
+	}
+	live, err := a.st.PruneLeases(pool.Hostname(), proc.Alive)
+	if err != nil {
+		return err
+	}
+	var busy []string
+	for _, l := range live {
+		if l.AccountID == acc.ID {
+			busy = append(busy, fmt.Sprintf("lease %d (%s, pid %d, %s)", l.ID, l.Mode, l.PID, shortHome(l.Cwd)))
+		}
+	}
+	if len(busy) > 0 {
+		return fmt.Errorf("%s has running sessions; end them first (long ones with aiq long stop <lease>):\n  %s",
+			acc.ID, strings.Join(busy, "\n  "))
+	}
+
+	newHome := acc.Home
+	move := !acc.Native && !keepHome && filepath.Clean(acc.Home) == homeFor(acc.Provider, acc.Name)
+	keychain := false
+	if move {
+		newHome = homeFor(acc.Provider, newName)
+		if _, err := os.Lstat(newHome); err == nil {
+			return fmt.Errorf("%s already exists; move it aside or pass --keep-home", shortHome(newHome))
+		}
+		if acc.Provider == "claude" {
+			if keychain, err = claude.CopyKeychainCredential(acc.Home, newHome); err != nil {
+				return err
+			}
+		}
+		if err := os.Rename(acc.Home, newHome); err != nil && !os.IsNotExist(err) {
+			if keychain {
+				claude.DeleteKeychainCredential(newHome)
+			}
+			return err
+		}
+	}
+	if err := a.st.RenameAccount(acc.ID, newID, newName, newHome); err != nil {
+		if move {
+			os.Rename(newHome, acc.Home)
+			if keychain {
+				claude.DeleteKeychainCredential(newHome)
+			}
+		}
+		return err
+	}
+	if keychain {
+		if err := claude.DeleteKeychainCredential(acc.Home); err != nil {
+			fmt.Fprintf(os.Stderr, "aiq: the old keychain item %s is still there: %v\n", claude.KeychainService(acc.Home), err)
+		}
+	}
+
+	if label, ok := a.cfg.Display.Labels[acc.ID]; ok {
+		delete(a.cfg.Display.Labels, acc.ID)
+		a.cfg.Display.Labels[newID] = label
+	}
+	for i, o := range a.cfg.Display.Order {
+		if o == acc.ID {
+			a.cfg.Display.Order[i] = newID
+		}
+	}
+	if err := config.Save(a.cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "aiq: renamed, but saving %s failed: %v\n", paths.ConfigFile(), err)
+	}
+	if move && acc.QuotaID != "" {
+		a.repointAiquota(acc.QuotaID, acc.Home, newHome)
+	}
+	a.st.LogEvent(acc.Provider, newID, "rename", "from "+acc.ID, time.Now())
+
+	fmt.Printf("renamed %s to %s\n", acc.ID, newID)
+	if move {
+		fmt.Printf("home moved to %s", shortHome(newHome))
+		if keychain {
+			fmt.Print(" (keychain login carried over)")
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+// repointAiquota follows a home move in aiquota's config when its credential
+// path lies inside the old home. aiquota is optional, so failures only warn.
+func (a *app) repointAiquota(quotaID, oldHome, newHome string) {
+	path := quota.ConfigPath(a.cfg.Aiquota.Config)
+	qcfg, err := quota.LoadConfig(path)
+	if err != nil {
+		return
+	}
+	for _, qa := range qcfg.Accounts {
+		if qa.ID != quotaID {
+			continue
+		}
+		rel, err := filepath.Rel(oldHome, qa.Credentials)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			return
+		}
+		if err := quota.SetCredentials(path, quotaID, filepath.Join(newHome, rel)); err != nil {
+			fmt.Fprintf(os.Stderr, "aiq: aiquota %s still points into the old home: %v\n", quotaID, err)
+			return
+		}
+		fmt.Printf("aiquota %s re-pointed\n", quotaID)
+		return
+	}
 }
 
 func (a *app) accountNext(provider string) error {

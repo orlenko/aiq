@@ -335,6 +335,34 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	return s.mustAffect(res, err, id)
 }
 
+// RenameAccount gives an account a new id, name and home, and carries its
+// usage, windows, leases, affinity, launch history and events along, in one
+// transaction.
+func (s *Store) RenameAccount(oldID, newID, newName, newHome string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE accounts SET id = ?, name = ?, home = ? WHERE id = ?`, newID, newName, newHome, oldID)
+	if err := s.mustAffect(res, err, oldID); err != nil {
+		return err
+	}
+	// Stray telemetry already filed under the new id (a status line of a
+	// removed account) would collide with the carried rows.
+	for _, table := range []string{"windows", "usage"} {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE account_id = ?`, newID); err != nil {
+			return err
+		}
+	}
+	for _, table := range []string{"windows", "usage", "leases", "affinity", "launches", "events"} {
+		if _, err := tx.Exec(`UPDATE `+table+` SET account_id = ? WHERE account_id = ?`, newID, oldID); err != nil {
+			return fmt.Errorf("rename in %s: %w", table, err)
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) RemoveAccount(id string) error {
 	res, err := s.db.Exec(`DELETE FROM accounts WHERE id = ?`, id)
 	if err := s.mustAffect(res, err, id); err != nil {

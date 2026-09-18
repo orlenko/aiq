@@ -92,3 +92,64 @@ func CredentialDrifted(configDir string) bool {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]) != strings.TrimSpace(string(want))
 }
+
+// CopyKeychainCredential copies the login-keychain credential Claude Code
+// keeps for oldDir to the service name it will look up for newDir, so an
+// overlay home can move without a new login. It reports whether an item was
+// copied; none (not macOS, or the CLI keeps a file) is not an error. The
+// secret reaches security(1) as hex on stdin, never on a command line.
+func CopyKeychainCredential(oldDir, newDir string) (bool, error) {
+	if runtime.GOOS != "darwin" {
+		return false, nil
+	}
+	oldSvc, newSvc := KeychainService(oldDir), KeychainService(newDir)
+	attrs, err := exec.Command("security", "find-generic-password", "-s", oldSvc).Output()
+	if err != nil {
+		return false, nil
+	}
+	acct := keychainAttr(string(attrs), "acct")
+	out, err := exec.Command("security", "find-generic-password", "-s", oldSvc, "-w").Output()
+	if err != nil {
+		return false, fmt.Errorf("read keychain item %s: %w", oldSvc, err)
+	}
+	secret := strings.TrimRight(string(out), "\n")
+	if secret == "" {
+		return false, nil
+	}
+	if strings.ContainsAny(acct, "\"\\\n") {
+		return false, fmt.Errorf("keychain item %s has an account name aiq cannot quote: %q", oldSvc, acct)
+	}
+	add := exec.Command("security", "-i")
+	add.Stdin = strings.NewReader(fmt.Sprintf("add-generic-password -U -a \"%s\" -s \"%s\" -X %s\n",
+		acct, newSvc, hex.EncodeToString([]byte(secret))))
+	if msg, err := add.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("write keychain item %s: %v: %s", newSvc, err, strings.TrimSpace(string(msg)))
+	}
+	got, err := exec.Command("security", "find-generic-password", "-s", newSvc, "-w").Output()
+	if err != nil || strings.TrimRight(string(got), "\n") != secret {
+		DeleteKeychainCredential(newDir)
+		return false, fmt.Errorf("keychain item %s did not read back after the copy", newSvc)
+	}
+	return true, nil
+}
+
+// DeleteKeychainCredential removes the keychain credential for configDir.
+func DeleteKeychainCredential(configDir string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	return exec.Command("security", "delete-generic-password", "-s", KeychainService(configDir)).Run()
+}
+
+// keychainAttr pulls one attribute out of `security find-generic-password`
+// output, where it reads `    "acct"<blob>="vlad"`.
+func keychainAttr(out, name string) string {
+	prefix := `"` + name + `"<blob>="`
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, prefix); ok {
+			return strings.TrimSuffix(v, `"`)
+		}
+	}
+	return ""
+}
