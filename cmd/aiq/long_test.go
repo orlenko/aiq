@@ -60,12 +60,39 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, acc := range []state.Account{
+		{ID: "codex/bjola", Provider: "codex", Name: "bjola", Enabled: true, Identity: "vlad@bjola.ca"},
+		{ID: "codex/off", Provider: "codex", Name: "off"},
+	} {
+		if err := st.AddAccount(acc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct{ account, want string }{
+		{"claude4", "codex accounts: bjola (vlad@bjola.ca), off"},
+		{"off", "account codex/off is disabled"},
+	} {
+		cfg := config.Default()
+		a := &app{cfg: cfg, st: st}
+		err := a.longStart("codex", "", []string{"--account", tt.account, "--", "--yolo"})
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("--account %s: err = %v; want it to mention %q", tt.account, err, tt.want)
+		}
+		if _, statErr := os.Stat(capture); statErr == nil {
+			t.Fatalf("--account %s reached tmux", tt.account)
+		}
+	}
 	for _, launcher := range []string{"", "test-launcher"} {
 		t.Run("launcher="+launcher, func(t *testing.T) {
 			cfg := config.Default()
 			cfg.Long.Fallback = nil
 			cfg.Launchers = map[string]config.Launcher{"test-launcher": {Provider: "codex"}}
-			a := &app{cfg: cfg}
+			a := &app{cfg: cfg, st: st}
 			if err := a.longStart("codex", launcher, []string{"--account", "bjola", "--", "--yolo"}); err != nil {
 				t.Fatal(err)
 			}

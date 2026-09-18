@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -171,6 +172,12 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 			return configErr("bad-flags", "%v", err)
 		}
 	}
+	if account != "" && provider != "auto" {
+		// Fail here, not in a tmux pane that closes before it can be read.
+		if err := a.checkLongAccount(provider, account); err != nil {
+			return err
+		}
+	}
 	ws := workspaceID()
 	name, attached, err := a.longExisting(ws)
 	if attached || err != nil {
@@ -204,6 +211,34 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 		what = launcher + " (" + provider + ")"
 	}
 	return a.longLaunch(name, ws, ws, what, launcher, cmdArgs)
+}
+
+// checkLongAccount rejects a forced account that does not exist or is
+// disabled, naming the provider's accounts so a typo is easy to fix.
+func (a *app) checkLongAccount(provider, name string) error {
+	acc, err := a.st.GetAccount(state.AccountID(provider, name))
+	if err == nil {
+		if !acc.Enabled {
+			return configErr("account-disabled", "account %s is disabled", acc.ID)
+		}
+		return nil
+	}
+	if !errors.Is(err, state.ErrNotFound) {
+		return err
+	}
+	accs, _ := a.st.ListAccounts(provider)
+	var names []string
+	for _, x := range accs {
+		n := x.Name
+		if x.Identity != "" {
+			n += " (" + x.Identity + ")"
+		}
+		names = append(names, n)
+	}
+	if len(names) == 0 {
+		return configErr("account-not-found", "account %s not found; no %s accounts are registered", state.AccountID(provider, name), provider)
+	}
+	return configErr("account-not-found", "account %s not found; %s accounts: %s", state.AccountID(provider, name), provider, strings.Join(names, ", "))
 }
 
 // longExisting returns the tmux session name for workspace ws, attaching

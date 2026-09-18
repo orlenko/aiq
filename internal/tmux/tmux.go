@@ -32,19 +32,17 @@ func HasSession(name string) bool {
 // dir. The pane is kept after the command exits so it can be respawned.
 // Returns the pane id.
 func NewSession(name, dir, command string) (string, error) {
-	if _, err := run("new-session", "-d", "-s", name, "-c", dir, command); err != nil {
-		return "", err
-	}
 	// Keep the pane after the command exits (window option), so a dead
 	// session can be respawned in place and the server does not vanish.
-	pane, err := PaneOf(name)
-	if err != nil {
+	// The option is set in the same tmux invocation: the server runs the
+	// command list before it reaps the child, so a command that fails at
+	// once still leaves a dead pane with its error on screen. A separate
+	// set-option call would find the pane already gone.
+	if _, err := run("new-session", "-d", "-s", name, "-c", dir, command,
+		";", "set-option", "-w", "remain-on-exit", "on"); err != nil {
 		return "", err
 	}
-	if _, err := run("set-option", "-w", "-t", pane, "remain-on-exit", "on"); err != nil {
-		return pane, err
-	}
-	return pane, nil
+	return PaneOf(name)
 }
 
 // PaneOf returns the id of the session's first pane.
