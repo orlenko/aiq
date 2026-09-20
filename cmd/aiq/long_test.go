@@ -160,6 +160,14 @@ esac
 		"box":  {Provider: "claude", Fallback: []string{"cbox"}},
 		"cbox": {Provider: "codex"},
 	}
+	for _, acc := range []state.Account{
+		{ID: "claude/pinned", Provider: "claude", Name: "pinned", Enabled: true, Identity: "pinned@example.com"},
+		{ID: "codex/other", Provider: "codex", Name: "other", Enabled: true},
+	} {
+		if err := st.AddAccount(acc); err != nil {
+			t.Fatal(err)
+		}
+	}
 	a := &app{cfg: cfg, st: st}
 	captured := func() (dir string, cmd string) {
 		d, err := os.ReadFile(filepath.Join(bin, "dir"))
@@ -212,6 +220,11 @@ esac
 		// Through a launcher the bypass comes only from an earlier launch.
 		{"launcher", []string{"--launcher", "box", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,codex", "--launcher", "box",
 			"--model-tier", "1", "--resume-session", "s1", "--"}},
+		// --account forces where the resumed session starts, by name or id.
+		{"account", []string{"--account", "pinned", "--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex",
+			"--account", "pinned", "--model-tier", "1", "--resume-session", "s1", "--", "--dangerously-skip-permissions"}},
+		{"account id", []string{"--account=claude/pinned", "--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex",
+			"--account", "pinned", "--model-tier", "1", "--resume-session", "s1", "--", "--dangerously-skip-permissions"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := a.longAutoResume(tt.args); err != nil {
@@ -227,9 +240,21 @@ esac
 			}
 		})
 	}
-	for _, bad := range [][]string{{"--print", "s1"}, {"--model-tier", "9", "s1"}, {"nope"}, {"--bare", "s1", "--", "--model", "x"}} {
+	for _, bad := range [][]string{{"--print", "s1"}, {"--model-tier", "9", "s1"}, {"nope"}, {"--bare", "s1", "--", "--model", "x"},
+		{"--account", "s1"}, {"--account=", "s1"}, {"--account", "gone", "s1"}, {"--account", "codex/other", "s1"}} {
 		if err := a.longAutoResume(bad); err == nil {
 			t.Errorf("long auto resume accepted %q", bad)
 		}
+		if _, statErr := os.Stat(filepath.Join(bin, "command")); statErr == nil {
+			t.Fatalf("long auto resume %q reached tmux", bad)
+		}
+	}
+	// The session decides the provider, so a mismatch is caught on the pick.
+	if err := a.longAutoResume([]string{"--account", "codex/other", "s1"}); err == nil || !strings.Contains(err.Error(), "runs on claude") {
+		t.Errorf("--account codex/other: err = %v", err)
+	}
+	// An id names its own provider, so a typo fails before the browser opens.
+	if err := a.longAutoResume([]string{"--account", "claude/gone"}); err == nil || !strings.Contains(err.Error(), "claude accounts: pinned") {
+		t.Errorf("--account claude/gone: err = %v", err)
 	}
 }

@@ -46,8 +46,9 @@ func defaultChoice() menuChoice {
 
 // menuAccount is one account the Account row offers.
 type menuAccount struct {
-	name string
-	note string // headroom, or why it is not eligible
+	name     string
+	provider string
+	note     string // headroom, or why it is not eligible
 }
 
 // menuEnv is what the menu knows about this machine and directory.
@@ -63,6 +64,38 @@ type menuEnv struct {
 type menuSessions struct {
 	count  int
 	latest transcript.Session
+}
+
+// accountChoices are the accounts the Account row offers. Resuming, the
+// session's provider is not known until the pick, so every pool is on
+// offer and the value is the account's id rather than its bare name.
+func (e *menuEnv) accountChoices(c menuChoice) []menuAccount {
+	if c.Session != "resume" {
+		return e.accounts[e.provider(c.Agent)]
+	}
+	var out []menuAccount
+	for _, p := range []string{"claude", "codex"} {
+		out = append(out, e.accounts[p]...)
+	}
+	return out
+}
+
+// accountValue is what --account carries for a, and accountLabel what the
+// row shows: the bare name, qualified when it would otherwise be ambiguous.
+func accountValue(c menuChoice, a menuAccount) string {
+	if c.Session == "resume" {
+		return state.AccountID(a.provider, a.name)
+	}
+	return a.name
+}
+
+func accountLabel(a menuAccount, all []menuAccount) string {
+	for _, o := range all {
+		if o.name == a.name && o.provider != a.provider {
+			return state.AccountID(a.provider, a.name)
+		}
+	}
+	return a.name
 }
 
 func (e *menuEnv) provider(agent string) string {
@@ -92,8 +125,8 @@ func (e *menuEnv) normalize(c menuChoice) menuChoice {
 	}
 	if c.Account != "" {
 		found := false
-		for _, a := range e.accounts[e.provider(c.Agent)] {
-			found = found || a.name == c.Account
+		for _, a := range e.accountChoices(c) {
+			found = found || accountValue(c, a) == c.Account
 		}
 		if !found {
 			c.Account = ""
@@ -115,7 +148,11 @@ func menuArgs(c menuChoice, e *menuEnv) []string {
 	}
 	if c.Session == "resume" {
 		if c.Length == "long" {
-			return append([]string{"long", "auto", "resume"}, model...)
+			args := []string{"long", "auto", "resume"}
+			if c.Account != "" {
+				args = append(args, "--account", c.Account)
+			}
+			return append(args, model...)
 		}
 		return []string{"resume"}
 	}
@@ -182,7 +219,6 @@ type menu struct {
 func (m *menu) rows() []menuRow {
 	c, e := m.c, m.env
 	resume := c.Session == "resume"
-	provider := e.provider(c.Agent)
 
 	agents := []menuOpt{{"auto", "Any"}, {"claude", "Claude"}, {"codex", "Codex"}}
 	var names []string
@@ -213,9 +249,10 @@ func (m *menu) rows() []menuRow {
 	for i, l := range tier.Efforts["codex"] {
 		efforts = append(efforts, menuOpt{strconv.Itoa(i + 1), l})
 	}
+	choices := e.accountChoices(c)
 	accounts := []menuOpt{{"", "routed"}}
-	for _, a := range e.accounts[provider] {
-		accounts = append(accounts, menuOpt{a.name, a.name})
+	for _, a := range choices {
+		accounts = append(accounts, menuOpt{accountValue(c, a), accountLabel(a, choices)})
 	}
 	more := []menuRow{
 		{key: "tier", label: "Model tier", opts: tiers, cur: strconv.Itoa(c.Tier)},
@@ -229,10 +266,10 @@ func (m *menu) rows() []menuRow {
 	}
 	switch {
 	case resume:
-		more[2].off = "routed, on the session's provider"
 		if c.Length == "long" {
 			more[3].off = "bypass, always, for a long resume"
 		} else {
+			more[2].off = "routed, on the session's provider"
 			more[3].off = "as the session ran"
 		}
 	case c.Agent == "auto":
@@ -251,13 +288,14 @@ func (m *menu) moreSummary() string {
 	if m.c.Effort > 0 {
 		on = append(on, "effort "+tier.Efforts["codex"][m.c.Effort-1])
 	}
-	if m.c.Agent != "auto" && m.c.Session == "new" {
-		if m.c.Account != "" {
-			on = append(on, "account "+m.c.Account)
-		}
-		if m.c.Bypass {
-			on = append(on, "bypass")
-		}
+	// The account counts where the command carries it: a named agent on a
+	// new start, either provider on a long resume.
+	forced := m.c.Session == "new" && m.c.Agent != "auto" || m.c.Session == "resume" && m.c.Length == "long"
+	if m.c.Account != "" && forced {
+		on = append(on, "account "+m.c.Account)
+	}
+	if m.c.Bypass && m.c.Agent != "auto" && m.c.Session == "new" {
+		on = append(on, "bypass")
 	}
 	if len(on) == 0 {
 		return "model tier, effort, account, permissions"
@@ -268,6 +306,9 @@ func (m *menu) moreSummary() string {
 func (m *menu) set(key, value string) {
 	switch key {
 	case "session":
+		if value != m.c.Session {
+			m.c.Account = "" // a resume names the provider too; a new start does not
+		}
 		m.c.Session = value
 	case "agent":
 		if value != m.c.Agent && m.env.provider(value) != m.env.provider(m.c.Agent) {
@@ -352,13 +393,19 @@ func (m *menu) hint(r menuRow) string {
 		return fmt.Sprintf("Level %d of 6: Claude %s, Codex %s.", c.Effort, tier.Efforts["claude"][c.Effort-1], tier.Efforts["codex"][c.Effort-1])
 	case "account":
 		if c.Account == "" {
+			if c.Session == "resume" {
+				return "aiq picks, on the provider of the session you resume."
+			}
 			if id := e.routed[e.provider(c.Agent)]; id != "" {
 				return "aiq picks; now that is " + id + "."
 			}
 			return "aiq picks."
 		}
-		for _, a := range e.accounts[e.provider(c.Agent)] {
-			if a.name == c.Account {
+		for _, a := range e.accountChoices(c) {
+			if accountValue(c, a) == c.Account {
+				if c.Session == "resume" {
+					return a.note + " Pick a " + a.provider + " session: the account must match it."
+				}
 				return a.note
 			}
 		}
@@ -665,7 +712,7 @@ func (a *app) menuEnvironment(dir string) *menuEnv {
 			if !acc.Eligible && acc.Ineligible != "" {
 				note += "; " + acc.Ineligible
 			}
-			e.accounts[acc.Provider] = append(e.accounts[acc.Provider], menuAccount{acc.Name, note + "."})
+			e.accounts[acc.Provider] = append(e.accounts[acc.Provider], menuAccount{acc.Name, acc.Provider, note + "."})
 		}
 		for _, p := range []string{"claude", "codex"} {
 			for _, r := range v.Rankings[p+"/interactive"] {

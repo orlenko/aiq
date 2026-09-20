@@ -121,7 +121,8 @@ session named after the workspace and supervises it:
 aiq long claude [--account <name>] [--model-tier N] [--effort N] [-- claude args...]
                                     start or attach
 aiq long auto [--model-tier 0]      start on whichever pool auto picks, or attach
-aiq long auto resume [<id>]         pick a session here and resume it as a long one
+aiq long auto resume [--account <name>] [<id>]
+                                    pick a session here and resume it as a long one
 aiq long list                       leases, pane, drain state, idle/busy
 aiq long drain .                    move this workspace's session now
 aiq long attach                     re-attach
@@ -144,7 +145,9 @@ session.
 `aiq long auto resume` opens the `aiq resume` browser for this directory;
 `r` on a session reopens it in a long session instead of the current
 terminal (or give the id: `aiq long auto resume 3f2a`). The transcript fixes
-the provider; the account is routed, the model tier and effort apply as for
+the provider; the account is routed unless `--account` names one (a bare
+name, `--account claude3`, or an id, `--account claude/claude3`, which must
+belong to the session's provider), the model tier and effort apply as for
 `auto`, and the bypass is on. As with `aiq resume`, a session that ran under a
 launcher resumes through it (`b` or `--bare` skips it), and then gets the
 bypass only if its earlier launch passed it. A session already running in

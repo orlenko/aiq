@@ -554,7 +554,15 @@ func (a *app) selectAccount(provider, mode string, f runFlags, workspace string,
 	}
 	pol.AffinityID = affinity
 	if f.account != "" && len(tried) == 0 {
+		// --account takes a bare name, and an id (claude/claude3) too, so a
+		// value copied from `aiq account list` or the menu works as typed.
 		pol.ForceID = state.AccountID(provider, f.account)
+		if p, name, ok := strings.Cut(f.account, "/"); ok {
+			if p != provider {
+				return state.Account{}, nil, configErr("account-not-found", "account %s is a %s account, not %s", f.account, p, provider)
+			}
+			pol.ForceID = state.AccountID(provider, name)
+		}
 	}
 	if f.next {
 		pol.SkipID = affinity

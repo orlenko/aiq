@@ -91,9 +91,11 @@ Long-running sessions (supervised, moved between accounts before they run dry):
   aiq long auto [--model-tier 0..3] [--effort 1..6]
                                     the same on the account auto picks from both
                                     pools, with YOLO; no prompt, type it in the session
-  aiq long auto resume [--model-tier N] [--effort N] [--all] [--launcher <name> | --bare] [<id>]
+  aiq long auto resume [--account <name>] [--model-tier N] [--effort N] [--all]
+                       [--launcher <name> | --bare] [<id>]
                                     browse this directory's sessions; r resumes the
-                                    pick as a long session (tier defaults to 1)
+                                    pick as a long session (tier defaults to 1);
+                                    --account starts it on that account
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
 Sessions in this directory (Claude and Codex transcripts):

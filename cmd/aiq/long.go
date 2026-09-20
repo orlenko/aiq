@@ -19,14 +19,14 @@ import (
 
 // aiq long <provider> [--account <name>] [--model-tier N] [--effort N] [--] [args...] starts or attaches.
 // aiq long auto [--model-tier N] [--effort N]   the same across both pools
-// aiq long auto resume [<id>]     pick a session in this directory, resume it long
+// aiq long auto resume [--account <name>] [<id>]  resume a session here, long
 // aiq long list                   long sessions and their drain state
 // aiq long drain <lease-id|.>     ask a session to wrap up and move now
 // aiq long attach [.]             attach to this workspace's session
 // aiq long stop <lease-id|.>      end the session and its tmux session
 func cmdLong(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq long claude|codex|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | auto resume [<id>] | list | drain <id|.> | attach [.] | stop <id|.>")
+		return fmt.Errorf("usage: aiq long claude|codex|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | auto resume [--account <name>] [<id>] | list | drain <id|.> | attach [.] | stop <id|.>")
 	}
 	a, err := openApp()
 	if err != nil {
@@ -175,7 +175,7 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 	}
 	if account != "" && provider != "auto" {
 		// Fail here, not in a tmux pane that closes before it can be read.
-		if err := a.checkLongAccount(provider, account); err != nil {
+		if account, err = a.longAccountName(provider, account); err != nil {
 			return err
 		}
 	}
@@ -213,6 +213,24 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 		what = launcher + " (" + provider + ")"
 	}
 	return a.longLaunch(name, ws, ws, what, launcher, cmdArgs)
+}
+
+// longAccountName resolves a forced --account for provider. The value is a
+// bare name (claude3) or an id (claude/claude3); the name is what `aiq run`
+// takes. A forced account only decides where the session starts: the
+// supervisor still moves it on before the account runs dry.
+func (a *app) longAccountName(provider, ref string) (string, error) {
+	name := ref
+	if p, n, ok := strings.Cut(ref, "/"); ok {
+		if p != provider {
+			return "", configErr("account-not-found", "account %s is a %s account; this session runs on %s", ref, p, provider)
+		}
+		name = n
+	}
+	if err := a.checkLongAccount(provider, name); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 // checkLongAccount rejects a forced account that does not exist or is
@@ -281,21 +299,32 @@ func (a *app) longLaunch(name, ws, dir, what, launcher string, cmdArgs []string)
 	return nil
 }
 
-const longAutoResumeUsage = `usage: aiq long auto resume [--model-tier 0..3] [--effort 1..6] [--all] [--launcher <name> | --bare] [<session-id>] [-- extra CLI args]
+const longAutoResumeUsage = `usage: aiq long auto resume [--account <name>] [--model-tier 0..3] [--effort 1..6] [--all] [--launcher <name> | --bare] [<session-id>] [-- extra CLI args]
   no id: browse this directory's sessions and pick one with r
   resumes the pick as a long session on a routed account of its provider,
-  with the permission bypass and the model tier (default 1) auto uses`
+  with the permission bypass and the model tier (default 1) auto uses
+  --account starts on that account of the session's provider instead of the
+  routed pick; the supervisor still moves the session on before it runs dry`
 
-// longAutoResume picks a session in this directory and reopens it as a
-// supervised long session. The transcript fixes the provider; the account,
-// tier and bypass follow auto.
-func (a *app) longAutoResume(args []string) error {
-	var tierArgs, rest []string
+// parseLongAutoResumeArgs splits a long auto resume command line: aiq's own
+// --account, the model flags `aiq run` translates, and the rest, which is
+// the session selection `aiq resume` parses.
+func parseLongAutoResumeArgs(args []string) (account string, tierArgs, rest []string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; {
 		case arg == "--":
 			rest = append(rest, args[i:]...)
 			i = len(args)
+		case arg == "--account":
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "-") {
+				return "", nil, nil, fmt.Errorf("--account requires an account name")
+			}
+			i++
+			account = args[i]
+		case strings.HasPrefix(arg, "--account="):
+			if account = strings.TrimPrefix(arg, "--account="); account == "" || strings.HasPrefix(account, "-") {
+				return "", nil, nil, fmt.Errorf("--account requires an account name")
+			}
 		case arg == "--model-tier" || arg == "--effort":
 			tierArgs = append(tierArgs, arg)
 			if i+1 < len(args) {
@@ -306,6 +335,23 @@ func (a *app) longAutoResume(args []string) error {
 			tierArgs = append(tierArgs, arg)
 		default:
 			rest = append(rest, arg)
+		}
+	}
+	return account, tierArgs, rest, nil
+}
+
+// longAutoResume picks a session in this directory and reopens it as a
+// supervised long session. The transcript fixes the provider; the tier and
+// bypass follow auto, and so does the account unless --account names one.
+func (a *app) longAutoResume(args []string) error {
+	account, tierArgs, rest, err := parseLongAutoResumeArgs(args)
+	if err != nil {
+		return configErr("bad-flags", "%v\n%s", err, longAutoResumeUsage)
+	}
+	// An id names its provider, so a typo fails before the browser opens.
+	if p, _, ok := strings.Cut(account, "/"); ok {
+		if _, err := a.longAccountName(p, account); err != nil {
+			return err
 		}
 	}
 	o, err := parseResumeArgs(rest)
@@ -380,6 +426,13 @@ func (a *app) longAutoResume(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The pick fixes the provider, so a forced account can be checked now.
+	forced := ""
+	if account != "" {
+		if forced, err = a.longAccountName(s.Provider, account); err != nil {
+			return err
+		}
+	}
 	// Auto always bypasses permissions. Through a launcher, which may add
 	// the flag itself, the bypass is added only if it was passed before.
 	var cliArgs []string
@@ -403,6 +456,9 @@ func (a *app) longAutoResume(args []string) error {
 	cmdArgs := []string{self, "run", s.Provider, "--long", "--fallback", fallback}
 	if launcher != "" {
 		cmdArgs = append(cmdArgs, "--launcher", launcher)
+	}
+	if forced != "" {
+		cmdArgs = append(cmdArgs, "--account", forced)
 	}
 	cmdArgs = append(cmdArgs, tierArgs...)
 	cmdArgs = append(cmdArgs, "--resume-session", s.ID, "--")
