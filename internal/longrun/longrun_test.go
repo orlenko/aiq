@@ -1,12 +1,15 @@
 package longrun
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/orlenko/aiq/internal/config"
+	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/state"
 )
 
@@ -146,6 +149,69 @@ func TestIdleRotateDue(t *testing.T) {
 		if got := IdleRotateDue(c.lease, c.remaining, c.pct, idle, c.lastWrite, now); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestSuccessorUsesLowQuotaAsLastResort(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	type target struct {
+		used   float64
+		resets time.Duration
+	}
+	cases := []struct {
+		name       string
+		sourceUsed float64
+		targets    []target
+		want       string
+	}{
+		{"blocked source accepts quota below drain floor", 100, []target{{96, time.Hour}}, "codex/target-0"},
+		{"lower source accepts a better account below drain floor", 97, []target{{96, time.Hour}}, "codex/target-0"},
+		{"equal low accounts do not ping-pong", 96, []target{{96, time.Hour}}, ""},
+		{"worse low account is not a successor", 96, []target{{97, time.Hour}}, ""},
+		{"healthy account beats the more perishable last resort", 97, []target{{96, time.Hour}, {50, 7 * 24 * time.Hour}}, "codex/target-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			accounts := []state.Account{{ID: "codex/source", Provider: "codex", Name: "source", Enabled: true, Native: true}}
+			for i := range tc.targets {
+				name := fmt.Sprintf("target-%d", i)
+				accounts = append(accounts, state.Account{ID: "codex/" + name, Provider: "codex", Name: name, Enabled: true, Native: true})
+			}
+			for _, a := range accounts {
+				if err := st.AddAccount(a); err != nil {
+					t.Fatal(err)
+				}
+			}
+			window := func(used float64, resets time.Duration) []state.Window {
+				return []state.Window{{Key: "weekly", Label: "Weekly", Kind: state.KindWeekly,
+					UsedPct: used, ResetsAt: now.Add(resets).Unix(), ObservedAt: now.Unix()}}
+			}
+			if err := st.ReplaceWindows("codex/source", "test", window(tc.sourceUsed, time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			for i, target := range tc.targets {
+				if err := st.ReplaceWindows(fmt.Sprintf("codex/target-%d", i), "test", window(target.used, target.resets)); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cfg := config.Default()
+			cfg.Providers.Codex.ModelScope = ""
+			s := &Supervisor{Pool: &pool.Pool{Cfg: cfg, St: st}}
+			got, err := s.successor(state.Lease{AccountID: "codex/source", Provider: "codex", Fallback: "codex"}, now)
+			if tc.want != "" {
+				if err != nil || got.ID != tc.want {
+					t.Fatalf("got %q, %v; want %s", got.ID, err, tc.want)
+				}
+			} else if err == nil {
+				t.Fatalf("got %q; want no successor", got.ID)
+			}
+		})
 	}
 }
 

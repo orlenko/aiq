@@ -334,7 +334,25 @@ func (s *Supervisor) dismissRateLimitPrompt(l state.Lease, now time.Time) {
 
 // successor picks the account a long lease moves to.
 func (s *Supervisor) successor(l state.Lease, now time.Time) (state.Account, error) {
-	return s.successorAbove(l, now, s.Pool.Cfg.Long.DrainPct)
+	// Search every fallback provider above the normal drain floor first.
+	// Only when none qualifies may a nearly empty account be used as a last
+	// resort.
+	drainPct := s.Pool.Cfg.Long.DrainPct
+	if acc, err := s.successorAbove(l, now, drainPct); err == nil {
+		return acc, nil
+	}
+	// Do not let the floor strand the lease when the current account has even
+	// less quota or is blocked outright. In those cases any account with more
+	// usable headroom is progress. Keeping the comparison strict also prevents
+	// two equally low accounts from handing the lease back and forth.
+	remaining, _, blocked := s.headroom(l.AccountID, l.Provider, now)
+	if blocked {
+		return s.successorAbove(l, now, 0)
+	}
+	if remaining < drainPct {
+		return s.successorAbove(l, now, remaining)
+	}
+	return state.Account{}, fmt.Errorf("no account with headroom")
 }
 
 // successorAbove picks the first eligible account in fallback order with

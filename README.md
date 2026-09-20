@@ -91,8 +91,11 @@ session named after the workspace and supervises it:
   less remaining, the daemon flags the lease and the next hook tells the
   agent to keep working, write a handoff note at the next natural break and
   keep it current. The session moves at its next turn end if another account
-  has headroom, or when the account runs out, whichever comes first; while no
-  account can take it, the agent spends what is left instead of idling.
+  has headroom, or when the account runs out, whichever comes first. It
+  normally prefers a successor above `drain_pct`, but if none exists it uses
+  an account with more quota than the current one; once the current account
+  is blocked, any positive headroom is enough. While no account can take it,
+  the agent spends what is left instead of idling.
 - **Idle sessions do not strand quota.** An agent can stop on its own above
   `drain_pct` (a quota floor, nothing it thinks it can afford), and then the
   account never runs out and nothing moves it. A long session that has been
