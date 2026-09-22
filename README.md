@@ -474,18 +474,22 @@ account sits idle. `weight_w` is 1 for the session window and
 `weekly_weight` (default 5) for weekly windows, because one weekly point is
 several session points' worth of tokens: an account whose week rolls over
 in ten hours with 40% unspent gets the work all afternoon, not only in the
-last hour. Highest score wins. Exhausted accounts (a binding window
-at 100%, or a limit hit), disabled accounts, and accounts without a login
+last hour. Highest score normally wins. Exhausted accounts (a binding window
+at 100%, or a limit hit), disabled accounts, accounts without a login, and
+Codex accounts whose latest poll definitively rejected their authentication
 are filtered first; workers additionally respect the weekly reserve and the
 per-account cap. Telemetry older than `stale_after_seconds` falls back to a
 neutral prior. `aiq status --explain` prints the ranking with every term.
 
 Codex reset credits expire, and each one is a full weekly window, so an
 account holding them scores as if that quota perished at the soonest
-credit's expiry (a week out when the expiry is unknown). Workers may drain
-such an account past the weekly reserve, and take it even while it carries
-an interactive session. When it then hits its cap, the
-poll that sees the block redeems a credit on its own — always for a weekly
+credit's expiry (a week out when the expiry is unknown). Once its weekly
+allowance crosses `switch_pct`, it takes priority over a fresh account and
+stays sticky until the remaining allowance is gone; this makes the credit
+redeemable instead of leaving it stranded behind the final few percent.
+Workers may drain such an account past the weekly reserve, and take it even
+while it carries an interactive session. When it then hits its cap, the poll
+that sees the block redeems a credit on its own — always for a weekly
 block, and for a shorter window only when the credit would expire first or
 within a day. Set `auto_reset_credits = false` to leave spending to
 `aiq reset codex/<name>`.
@@ -533,6 +537,12 @@ aiq account add codex work       # codex login (one browser step)
 aiq doctor
 ```
 
+A definitive Codex authentication rejection from the periodic quota poll
+automatically removes that account from routing. `aiq account login codex/<name>`
+verifies the replacement login with a fresh poll and restores it when
+successful. For a manual pause, use `aiq account disable codex/<name>` and later
+`aiq account enable codex/<name>`.
+
 Sign in as the intended account at each browser step: sign out of claude.ai
 or chatgpt.com first, or use a private window, so the browser does not hand
 back the account it is already signed in as. aiq warns when two accounts
@@ -566,6 +576,7 @@ aiq account order [<id>...]          display order within each provider column
 aiq account rename <id> <new-name> [--keep-home]
                                      rename everywhere; moves the home and its login
 aiq account enable|disable|remove <provider>/<name> [--purge]
+                                     disable temporarily removes it from routing
 aiq account use <provider>/<name>    pin this workspace
 aiq account next <provider>          rotate this workspace
 aiq account import [id[=name]...]    adopt aiquota accounts, if you have aiquota

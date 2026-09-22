@@ -141,6 +141,13 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 			c.CooldownUntil = u.CooldownUntil
 			c.ResetCredits = u.ResetCredits
 			c.ResetCreditExpiry = u.ResetCreditExpiry
+			// A credential file can still hold a revoked token. Codex's
+			// periodic app-server poll is also an authentication probe; once
+			// it has a definitive auth rejection, keep routing off the account
+			// until a successful poll clears PollError.
+			if acc.Provider == "codex" && strings.Contains(strings.ToLower(u.PollError), codex.ErrAuthRequired.Error()) {
+				c.UnavailableReason = "authentication required"
+			}
 		}
 		ws, err := p.St.ListWindows(acc.ID)
 		if err != nil {

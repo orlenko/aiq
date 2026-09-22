@@ -42,7 +42,15 @@ func cmdAccount(args []string) error {
 		if len(rest) < 1 {
 			return fmt.Errorf("usage: aiq account login <provider>/<name>")
 		}
-		return a.accountLogin(rest[0])
+		if err := a.accountLogin(rest[0]); err != nil {
+			return err
+		}
+		// A successful Codex poll both verifies the new login and clears a
+		// stored auth rejection so routing can use the account immediately.
+		if acc, err := a.st.GetAccount(rest[0]); err == nil && acc.Provider == "codex" {
+			return a.pollAndReport(rest[0])
+		}
+		return nil
 	case "authorize":
 		if len(rest) < 1 {
 			return fmt.Errorf("usage: aiq account authorize claude/<name>")

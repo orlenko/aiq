@@ -142,6 +142,28 @@ func TestAutoRanking(t *testing.T) {
 	}
 }
 
+func TestAutoRankingDrainsReadyResetCredit(t *testing.T) {
+	now := time.Now()
+	policies := map[string]selector.Policy{}
+	for _, provider := range []string{"claude", "codex"} {
+		policies[provider] = selector.Policy{
+			Now: now, Mode: state.ModeInteractive, SwitchPct: 95,
+			StaleAfter: 15 * time.Minute, WeeklyWeight: 5,
+		}
+	}
+	weekly := func(used float64, resetIn time.Duration) state.Window {
+		return state.Window{Kind: state.KindWeekly, UsedPct: used, ResetsAt: now.Add(resetIn).Unix(), ObservedAt: now.Unix()}
+	}
+	cands := []selector.Candidate{
+		{ID: "claude/fresh", Enabled: true, HasCredential: true, Windows: []state.Window{weekly(2, 7*24*time.Hour)}},
+		{ID: "codex/credit", Enabled: true, HasCredential: true, Windows: []state.Window{weekly(98, 4*24*time.Hour)}, ResetCredits: 1, ResetCreditExpiry: now.Add(30 * 24 * time.Hour).Unix()},
+	}
+	got := rankAuto(policies, cands)
+	if got[0].ID != "codex/credit" || !got[0].ResetCreditReady {
+		t.Fatalf("auto should drain the redeemable credit first: %+v", got)
+	}
+}
+
 func TestAutoEndToEnd(t *testing.T) {
 	// Real CLI, database, worker trampoline, leases and retries; only the AI
 	// executables are fakes. No accounts, credentials or quota outside temp dirs.

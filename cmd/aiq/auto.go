@@ -172,8 +172,14 @@ func rankAuto(policies map[string]selector.Policy, candidates []selector.Candida
 		}
 		ca, cb := byID[a.ID], byID[b.ID]
 		provider, _, _ := strings.Cut(a.ID, "/")
-		if policies[provider].Mode == state.ModeWorker && (ca.InteractiveLeases > 0) != (cb.InteractiveLeases > 0) {
-			return ca.InteractiveLeases == 0
+		if policies[provider].Mode == state.ModeWorker {
+			guarded := func(c selector.Candidate) bool { return c.InteractiveLeases > 0 && c.ResetCredits == 0 }
+			if guarded(ca) != guarded(cb) {
+				return !guarded(ca)
+			}
+		}
+		if a.ResetCreditReady != b.ResetCreditReady {
+			return a.ResetCreditReady
 		}
 		if a.Score != b.Score {
 			return a.Score > b.Score

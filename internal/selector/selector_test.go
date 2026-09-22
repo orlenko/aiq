@@ -266,3 +266,71 @@ func TestResetCreditHolderTakesWorkersDespiteInteractive(t *testing.T) {
 		t.Fatalf("without a credit the interactive guard applies, got %s", res.ID)
 	}
 }
+
+// Once a credit holder reaches the normal switch boundary, finish its current
+// allowance before sending work to a freshly rolled-over account. This makes
+// the credit redeemable instead of stranding it behind the last few percent.
+func TestResetCreditReadyDrainsBeforeFreshAccount(t *testing.T) {
+	p := policy(state.ModeInteractive)
+	p.WeeklyWeight = 5
+	nearlySpent := cand("codex/netflix", win(state.KindWeekly, 98, 92*time.Hour))
+	nearlySpent.ResetCredits = 1
+	nearlySpent.ResetCreditExpiry = now.Add(718 * time.Hour).Unix()
+	fresh := cand("codex/charlotte", win(state.KindWeekly, 2, 7*24*time.Hour))
+
+	res, err := Select(p, []Candidate{fresh, nearlySpent})
+	if err != nil || res.ID != nearlySpent.ID {
+		t.Fatalf("credit holder should drain first: err=%v result=%+v", err, res)
+	}
+	if !res.Ranked[0].ResetCreditReady || !strings.Contains(strings.Join(res.Ranked[0].Terms, " "), "drain first") {
+		t.Fatalf("ranking should explain reset-credit priority: %+v", res.Ranked[0])
+	}
+
+	// Workspace affinity must not strand that credit on another account.
+	p.Sticky = true
+	p.AffinityID = fresh.ID
+	res, err = Select(p, []Candidate{fresh, nearlySpent})
+	if err != nil || res.ID != nearlySpent.ID {
+		t.Fatalf("credit drain should override fresh affinity: err=%v result=%+v", err, res)
+	}
+
+	// Once already on the near-empty account, stick there until it blocks and
+	// the automatic reset-credit redemption runs.
+	p.AffinityID = nearlySpent.ID
+	res, err = Select(p, []Candidate{fresh, nearlySpent})
+	if err != nil || res.ID != nearlySpent.ID {
+		t.Fatalf("credit-draining affinity should stay put: err=%v result=%+v", err, res)
+	}
+
+	// After that credit has redeemed, a second nearly spent holder becomes
+	// the next drain target instead of continuing on the freshly reset one.
+	nearlySpent.Windows[0].UsedPct = 0
+	nearlySpent.ResetCredits = 0
+	second := cand("codex/bjola", win(state.KindWeekly, 98, 95*time.Hour))
+	second.ResetCredits = 1
+	p.AffinityID = nearlySpent.ID
+	res, err = Select(p, []Candidate{fresh, nearlySpent, second})
+	if err != nil || res.ID != second.ID {
+		t.Fatalf("second credit holder should drain next: err=%v result=%+v", err, res)
+	}
+}
+
+func TestKnownAuthenticationFailureIsIneligible(t *testing.T) {
+	p := policy(state.ModeInteractive)
+	bad := cand("codex/usky", win(state.KindWeekly, 0, 7*24*time.Hour))
+	bad.UnavailableReason = "authentication required"
+	good := cand("codex/charlotte", win(state.KindWeekly, 98, 7*24*time.Hour))
+
+	res, err := Select(p, []Candidate{bad, good})
+	if err != nil || res.ID != good.ID {
+		t.Fatalf("known-bad auth must be skipped: err=%v result=%+v", err, res)
+	}
+	if res.Ranked[1].Eligible || res.Ranked[1].Reason != "authentication required" {
+		t.Fatalf("auth failure reason lost: %+v", res.Ranked[1])
+	}
+
+	p.ForceID = bad.ID
+	if _, err := Select(p, []Candidate{bad, good}); err == nil || !strings.Contains(err.Error(), "authentication required") {
+		t.Fatalf("forcing known-bad auth should fail clearly, got %v", err)
+	}
+}

@@ -13,7 +13,8 @@
 // expiry, so they add credits × 100 / hours_to_expiry × WeeklyWeight. The
 // score is Σ perish over binding windows and credits, divided by
 // (1 + worker leases). Highest
-// score wins. Exhausted accounts, accounts below
+// score wins, except that an account close enough to exhaustion to redeem a
+// reset credit is drained first. Exhausted accounts, accounts below
 // the weekly reserve (workers only), disabled accounts and accounts at their
 // worker cap are filtered out first. Interactive sessions may be sticky: they
 // keep their workspace's account until it crosses the switch threshold.
@@ -31,11 +32,14 @@ import (
 
 // Candidate is one account with everything the policy needs to rank it.
 type Candidate struct {
-	ID             string
-	Enabled        bool
-	HasCredential  bool
-	Priority       int
-	LastSelectedAt int64
+	ID            string
+	Enabled       bool
+	HasCredential bool
+	// UnavailableReason excludes an account whose credential exists but is
+	// known not to work (for example, a Codex poll rejected a revoked token).
+	UnavailableReason string
+	Priority          int
+	LastSelectedAt    int64
 
 	Windows       []state.Window
 	CooldownUntil int64 // unix seconds, 0 = none
@@ -69,11 +73,12 @@ type Policy struct {
 
 // Ranked is one candidate with its score and the reason it ranked there.
 type Ranked struct {
-	ID       string
-	Score    float64
-	Eligible bool
-	Reason   string   // why it is ineligible, or "" when eligible
-	Terms    []string // per-window contributions, for --explain
+	ID               string
+	Score            float64
+	Eligible         bool
+	Reason           string   // why it is ineligible, or "" when eligible
+	Terms            []string // per-window contributions, for --explain
+	ResetCreditReady bool     // final weekly allowance should be drained first
 }
 
 type Result struct {
@@ -134,6 +139,35 @@ func weeklyRemaining(ws []state.Window, modelScope string) float64 {
 		return -1
 	}
 	return rem
+}
+
+// resetCreditReady reports whether a live reset credit is immediately behind
+// the tail of the current weekly allowance. At that point normal perishability
+// scoring works backwards: as the allowance approaches zero its score falls,
+// even though finishing it is what unlocks the expiring full-window credit.
+// SwitchPct is the existing boundary for "this window is nearly spent".
+func resetCreditReady(c Candidate, p Policy) (float64, bool) {
+	if c.ResetCredits <= 0 || (c.ResetCreditExpiry > 0 && c.ResetCreditExpiry <= p.Now.Unix()) || p.SwitchPct <= 0 {
+		return 0, false
+	}
+	remaining := 100.0
+	found := false
+	for _, w := range c.Windows {
+		if w.Kind != state.KindWeekly || !binding(w, p.ModelScope) || w.UsedPct < 0 {
+			continue
+		}
+		if w.ResetsAt > 0 && w.ResetsAt <= p.Now.Unix() {
+			continue
+		}
+		if p.StaleAfter > 0 && w.ObservedAt > 0 && p.Now.Sub(time.Unix(w.ObservedAt, 0)) > p.StaleAfter {
+			continue
+		}
+		found = true
+		if r := 100 - w.UsedPct; r < remaining {
+			remaining = r
+		}
+	}
+	return remaining, found && remaining <= 100-p.SwitchPct
 }
 
 // Score computes the perishability score and its explanation terms.
@@ -246,6 +280,8 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 			r.Eligible, r.Reason = false, "disabled"
 		case !c.HasCredential:
 			r.Eligible, r.Reason = false, "no credential"
+		case c.UnavailableReason != "":
+			r.Eligible, r.Reason = false, c.UnavailableReason
 		case c.CooldownUntil > p.Now.Unix():
 			r.Eligible, r.Reason = false, "exhausted until "+fmtReset(c.CooldownUntil, p.Now)
 		}
@@ -273,6 +309,10 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 			}
 		}
 		r.Score, r.Terms = Score(c, p)
+		if remaining, ok := resetCreditReady(c, p); r.Eligible && ok {
+			r.ResetCreditReady = true
+			r.Terms = append([]string{fmt.Sprintf("reset credit ready after final %.0f%% weekly: drain first", remaining)}, r.Terms...)
+		}
 		out = append(out, r)
 	}
 	byID := map[string]Candidate{}
@@ -293,6 +333,9 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 			if fa != fb {
 				return !fa
 			}
+		}
+		if a.ResetCreditReady != b.ResetCreditReady {
+			return a.ResetCreditReady
 		}
 		if a.Score != b.Score {
 			return a.Score > b.Score
@@ -328,6 +371,9 @@ func Select(p Policy, cands []Candidate) (Result, error) {
 		if !c.HasCredential {
 			return res, fmt.Errorf("account %s has no credential", p.ForceID)
 		}
+		if c.UnavailableReason != "" {
+			return res, fmt.Errorf("account %s is unavailable: %s", p.ForceID, c.UnavailableReason)
+		}
 		if c.CooldownUntil > p.Now.Unix() {
 			res.Notes = append(res.Notes, fmt.Sprintf("Warning: %s is exhausted until %s (forced anyway)",
 				c.ID, fmtReset(c.CooldownUntil, p.Now)))
@@ -353,6 +399,7 @@ func Select(p Policy, cands []Candidate) (Result, error) {
 		if _, ok := eligible[p.AffinityID]; ok {
 			c := byID[p.AffinityID]
 			healthy := true
+			_, affinityCreditReady := resetCreditReady(c, p)
 			for _, w := range c.Windows {
 				if binding(w, p.ModelScope) && w.UsedPct >= p.SwitchPct && p.SwitchPct > 0 {
 					if w.ResetsAt > 0 && w.ResetsAt <= p.Now.Unix() {
@@ -361,11 +408,30 @@ func Select(p Policy, cands []Candidate) (Result, error) {
 					healthy = false
 				}
 			}
-			if healthy {
+			if affinityCreditReady {
+				healthy = true // finish this allowance so its credit can redeem
+			}
+			// A nearly spent credit holder takes precedence over a healthy
+			// sticky account. If the sticky account is itself in that state,
+			// keep draining it rather than bouncing between credit holders.
+			creditReady := false
+			if !affinityCreditReady {
+				for _, r := range res.Ranked {
+					if r.Eligible && r.ResetCreditReady {
+						creditReady = true
+						break
+					}
+				}
+			}
+			if healthy && !creditReady {
 				res.ID = p.AffinityID
 				return res, nil
 			}
-			res.Notes = append(res.Notes, fmt.Sprintf("Leaving %s — usage above %.0f%%", p.AffinityID, p.SwitchPct))
+			if creditReady {
+				res.Notes = append(res.Notes, fmt.Sprintf("Leaving %s — another account is ready to redeem a reset credit", p.AffinityID))
+			} else {
+				res.Notes = append(res.Notes, fmt.Sprintf("Leaving %s — usage above %.0f%%", p.AffinityID, p.SwitchPct))
+			}
 		}
 	}
 
