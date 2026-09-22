@@ -175,9 +175,13 @@ type Usage struct {
 	CooldownUntil   int64
 	ExhaustedAt     int64 // when the mark was made (0 = not marked)
 	ResetCredits    int
-	Plan            string
-	PollError       string
-	ObservedAt      int64
+	// ResetCreditExpiry is the soonest expiry among the available reset
+	// credits (0 = unknown or never); ResetCreditID is that credit.
+	ResetCreditExpiry int64
+	ResetCreditID     string
+	Plan              string
+	PollError         string
+	ObservedAt        int64
 }
 
 type Lease struct {
@@ -253,6 +257,8 @@ func Open(path string) (*Store, error) {
 	}
 	// Migrations for databases created before a column existed.
 	db.Exec(`ALTER TABLE usage ADD COLUMN exhausted_at INTEGER`)
+	db.Exec(`ALTER TABLE usage ADD COLUMN reset_credit_expires_at INTEGER`)
+	db.Exec(`ALTER TABLE usage ADD COLUMN reset_credit_id TEXT`)
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
 		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
 		"launcher TEXT", "transcript TEXT"} {
@@ -478,15 +484,25 @@ func (s *Store) SetUsageMeta(id string, plan string, resetCredits int, pollError
 	return err
 }
 
+// SetResetCreditDetail records which available reset credit expires first
+// and when (0 = unknown or never). It runs after SetUsageMeta.
+func (s *Store) SetResetCreditDetail(id string, expiresAt int64, creditID string) error {
+	_, err := s.db.Exec(
+		`UPDATE usage SET reset_credit_expires_at = ?, reset_credit_id = ? WHERE account_id = ?`,
+		expiresAt, creditID, id)
+	return err
+}
+
 func (s *Store) GetUsage(id string) (Usage, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT account_id, exhausted, COALESCE(exhausted_reason,''), COALESCE(cooldown_until,0),
-		        reset_credits, COALESCE(plan,''), COALESCE(poll_error,''), COALESCE(observed_at,0), COALESCE(exhausted_at,0)
+		        reset_credits, COALESCE(reset_credit_expires_at,0), COALESCE(reset_credit_id,''),
+		        COALESCE(plan,''), COALESCE(poll_error,''), COALESCE(observed_at,0), COALESCE(exhausted_at,0)
 		 FROM usage WHERE account_id = ?`, id)
 	var u Usage
 	var exhausted int
 	err := row.Scan(&u.AccountID, &exhausted, &u.ExhaustedReason, &u.CooldownUntil,
-		&u.ResetCredits, &u.Plan, &u.PollError, &u.ObservedAt, &u.ExhaustedAt)
+		&u.ResetCredits, &u.ResetCreditExpiry, &u.ResetCreditID, &u.Plan, &u.PollError, &u.ObservedAt, &u.ExhaustedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return u, false, nil
 	}

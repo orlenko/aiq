@@ -13,10 +13,12 @@ import (
 
 // Usage is what one poll of a Codex account yields.
 type Usage struct {
-	Windows      []state.Window
-	ResetCredits int
-	Identity     string
-	Plan         string
+	Windows           []state.Window
+	ResetCredits      int
+	ResetCreditExpiry int64  // soonest expiry among available credits, 0 = unknown/never
+	ResetCreditID     string // the credit to redeem first
+	Identity          string
+	Plan              string
 }
 
 // Poll reads rate limits through `codex app-server` (the documented API),
@@ -27,7 +29,7 @@ func (p *Provider) Poll(home string, native bool, now time.Time) (*Usage, error)
 	if err != nil {
 		return nil, err
 	}
-	u := &Usage{ResetCredits: rl.ResetCredits}
+	u := &Usage{ResetCredits: rl.ResetCredits, ResetCreditExpiry: rl.ResetCreditExpiry, ResetCreditID: rl.ResetCreditID}
 	u.Windows = WindowsFromRateLimits(rl, now)
 	u.Identity, u.Plan = Identity(AuthPath(home))
 	return u, nil

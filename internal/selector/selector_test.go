@@ -203,3 +203,66 @@ func TestForceAndNoEligible(t *testing.T) {
 		t.Fatal("expected no eligible account")
 	}
 }
+
+// Reset credits expire: an account holding two that lapse in two days must
+// win over accounts whose only edge is a nearer weekly rollover, and a worker
+// may drain it past the weekly reserve, since the credit refills the week.
+func TestResetCreditsFavourAndWaiveReserve(t *testing.T) {
+	p := policy(state.ModeWorker)
+	p.WeeklyWeight = 5
+	usky := cand("codex/usky", win(state.KindWeekly, 20, 6*24*time.Hour))
+	usky.ResetCredits, usky.ResetCreditExpiry = 2, now.Add(48*time.Hour).Unix()
+	other := cand("codex/netflix", win(state.KindWeekly, 40, 4*24*time.Hour))
+	res, err := Select(p, []Candidate{other, usky})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ID != "codex/usky" {
+		t.Fatalf("want codex/usky, got %s\n%+v", res.ID, res.Ranked)
+	}
+	if !strings.Contains(strings.Join(res.Ranked[0].Terms, " "), "reset credit") {
+		t.Fatalf("explain should name the credit term: %v", res.Ranked[0].Terms)
+	}
+
+	low := cand("codex/usky", win(state.KindWeekly, 98, 6*24*time.Hour))
+	low.ResetCredits = 1
+	if r := Rank(p, []Candidate{low}); !r[0].Eligible {
+		t.Fatalf("credit holder below reserve should stay eligible for workers: %+v", r[0])
+	}
+	low.ResetCredits = 0
+	if r := Rank(p, []Candidate{low}); r[0].Eligible {
+		t.Fatalf("without a credit the reserve applies: %+v", r[0])
+	}
+}
+
+// An expired credit adds nothing.
+func TestExpiredResetCreditIgnored(t *testing.T) {
+	p := policy(state.ModeWorker)
+	c := cand("codex/a", win(state.KindWeekly, 50, 3*24*time.Hour))
+	base, _ := Score(c, p)
+	c.ResetCredits, c.ResetCreditExpiry = 1, now.Add(-time.Hour).Unix()
+	if got, _ := Score(c, p); got != base {
+		t.Fatalf("expired credit changed the score: %.2f → %.2f", base, got)
+	}
+}
+
+// A credit holder with an interactive session still takes workers: the
+// credit refills what they spend.
+func TestResetCreditHolderTakesWorkersDespiteInteractive(t *testing.T) {
+	p := policy(state.ModeWorker)
+	p.WeeklyWeight = 5
+	usky := cand("codex/usky", win(state.KindWeekly, 20, 7*24*time.Hour))
+	usky.ResetCredits, usky.InteractiveLeases = 2, 1
+	bjola := cand("codex/bjola", win(state.KindWeekly, 74, 4*24*time.Hour))
+	res, err := Select(p, []Candidate{bjola, usky})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ID != "codex/usky" {
+		t.Fatalf("want codex/usky, got %s\n%+v", res.ID, res.Ranked)
+	}
+	usky.ResetCredits = 0
+	if res, _ := Select(p, []Candidate{bjola, usky}); res.ID != "codex/bjola" {
+		t.Fatalf("without a credit the interactive guard applies, got %s", res.ID)
+	}
+}

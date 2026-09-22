@@ -125,6 +125,7 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 		} else if ok {
 			c.CooldownUntil = u.CooldownUntil
 			c.ResetCredits = u.ResetCredits
+			c.ResetCreditExpiry = u.ResetCreditExpiry
 		}
 		ws, err := p.St.ListWindows(acc.ID)
 		if err != nil {
@@ -168,7 +169,9 @@ func (p *Pool) Rank(provider, mode string) ([]selector.Ranked, error) {
 // returns per-account results; a failed account keeps its last windows.
 func (p *Pool) Refresh(ids ...string) []PollResult {
 	timeout := time.Duration(p.Cfg.Poll.TimeoutSeconds) * time.Second
-	return p.Poll(p.CodexCommand, timeout, ids...)
+	results := p.Poll(p.CodexCommand, timeout, ids...)
+	p.SpendResetCredits(p.CodexCommand)
+	return results
 }
 
 // clearStaleCooldowns lifts a manual/observed exhaustion once fresh
@@ -252,6 +255,7 @@ type AccountView struct {
 	Reason        string       `json:"reason,omitempty"`
 	CooldownUntil int64        `json:"cooldown_until,omitempty"`
 	ResetCredits  int          `json:"reset_credits"`
+	CreditExpiry  int64        `json:"reset_credit_expires_at,omitempty"`
 	PollError     string       `json:"poll_error,omitempty"`
 	ObservedAt    int64        `json:"observed_at"`
 	Windows       []WindowView `json:"windows"`
@@ -362,6 +366,7 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 			}
 			if u, ok, _ := p.St.GetUsage(a.ID); ok {
 				av.Plan, av.ResetCredits, av.PollError, av.ObservedAt = u.Plan, u.ResetCredits, u.PollError, u.ObservedAt
+				av.CreditExpiry = u.ResetCreditExpiry
 				if u.Exhausted && u.CooldownUntil > now.Unix() {
 					av.Exhausted, av.Reason, av.CooldownUntil = true, u.ExhaustedReason, u.CooldownUntil
 				}

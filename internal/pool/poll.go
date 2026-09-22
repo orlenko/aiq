@@ -96,6 +96,7 @@ func (p *Pool) pollOne(a state.Account, codexCmd func(args, env []string) *exec.
 		p.St.PruneWindowSources(a.ID, SourceAIQ)
 		prev, _, _ := p.St.GetUsage(a.ID)
 		p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), u.ResetCredits, "", now)
+		p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)
 		p.updateIdentity(a, u.Identity)
 		return nil
 	}

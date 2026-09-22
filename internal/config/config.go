@@ -110,6 +110,10 @@ type Selection struct {
 	// worth several session points of tokens, so an approaching weekly reset
 	// starts to matter hours before it happens, not minutes.
 	WeeklyWeight float64 `toml:"weekly_weight"`
+	// AutoResetCredits lets aiq redeem a Codex reset credit on its own when
+	// an account holding one is blocked (weekly cap, or a credit that would
+	// otherwise expire first). Off, credits are only spent by `aiq reset`.
+	AutoResetCredits bool `toml:"auto_reset_credits"`
 }
 
 type Worker struct {
@@ -229,6 +233,7 @@ func Default() *Config {
 		MaxDepth:             3,
 		MinHours:             0.25,
 		WeeklyWeight:         5,
+		AutoResetCredits:     true,
 	}
 	c.Worker = Worker{Retry: true, RetryMaxSeconds: 60}
 	c.Poll = Poll{IntervalSeconds: 300, TimeoutSeconds: 60}

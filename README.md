@@ -425,7 +425,8 @@ default):
 remaining_w = 100 − used_w
 hours_w     = time until w resets, floored at min_hours
 perish_w    = min(remaining_w, remaining_weekly) / hours_w
-score       = Σ perish_w × weight_w  ÷  (1 + worker leases on the account)
+credits     = reset_credits × 100 / hours_to_credit_expiry × weekly_weight
+score       = (Σ perish_w × weight_w + credits)  ÷  (1 + worker leases on the account)
 ```
 
 `perish_w` is the number of percentage points that vanish per hour if the
@@ -438,6 +439,16 @@ at 100%, or a limit hit), disabled accounts, and accounts without a login
 are filtered first; workers additionally respect the weekly reserve and the
 per-account cap. Telemetry older than `stale_after_seconds` falls back to a
 neutral prior. `aiq status --explain` prints the ranking with every term.
+
+Codex reset credits expire, and each one is a full weekly window, so an
+account holding them scores as if that quota perished at the soonest
+credit's expiry (a week out when the expiry is unknown). Workers may drain
+such an account past the weekly reserve, and take it even while it carries
+an interactive session. When it then hits its cap, the
+poll that sees the block redeems a credit on its own — always for a weekly
+block, and for a shorter window only when the credit would expire first or
+within a day. Set `auto_reset_credits = false` to leave spending to
+`aiq reset codex/<name>`.
 
 ## Install
 
@@ -661,6 +672,7 @@ max_workers_per_account = 3
 max_depth = 3
 min_hours = 0.25
 weekly_weight = 5.0
+auto_reset_credits = true       # redeem a Codex reset credit when a holder is blocked
 
 [worker]
 retry = true
@@ -759,8 +771,7 @@ order it will use.
 
 ## Scope
 
-Not in this version: agy (Antigravity) accounts and automatic consumption of
-Codex reset credits (`aiq reset codex/<name>` is manual).
+Not in this version: agy (Antigravity) accounts.
 
 ## A note on the Claude quota endpoint
 

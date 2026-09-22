@@ -153,7 +153,11 @@ func renderStatus(v *pool.View, explain bool) string {
 			notes = append(notes, acc.Ineligible)
 		}
 		if acc.ResetCredits > 0 {
-			notes = append(notes, fmt.Sprintf("%d reset credit", acc.ResetCredits))
+			note := fmt.Sprintf("%d reset credit", acc.ResetCredits)
+			if acc.CreditExpiry > 0 {
+				note += ", next expires " + time.Unix(acc.CreditExpiry, 0).Local().Format("Mon Jan 2 15:04")
+			}
+			notes = append(notes, note)
 		}
 		if acc.PollError != "" {
 			notes = append(notes, acc.PollError)

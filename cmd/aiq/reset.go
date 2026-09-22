@@ -35,7 +35,8 @@ func cmdReset(args []string) error {
 	}
 	var key [16]byte
 	rand.Read(key[:])
-	outcome, err := p.ConsumeResetCredit(acc.Home, acc.Native, hex.EncodeToString(key[:]))
+	u, _, _ := a.st.GetUsage(acc.ID)
+	outcome, err := p.ConsumeResetCredit(acc.Home, acc.Native, u.ResetCreditID, hex.EncodeToString(key[:]))
 	if err != nil {
 		return err
 	}

@@ -21,6 +21,11 @@ type RateLimits struct {
 	SecondaryReset     int64
 	SecondaryWindowSec int64
 	ResetCredits       int
+	// ResetCreditExpiry is when the soonest-expiring available credit
+	// expires (unix seconds, 0 = unknown or never), and ResetCreditID names
+	// it so it is the one redeemed first.
+	ResetCreditExpiry int64
+	ResetCreditID     string
 }
 
 // ErrAuthRequired reports that the stored credential no longer authenticates.
@@ -155,15 +160,20 @@ func (p *Provider) Probe(home string, native bool) (RateLimits, error) {
 	return parsed, nil
 }
 
-// ConsumeResetCredit redeems one earned rate-limit reset. outcome is one of
+// ConsumeResetCredit redeems one earned rate-limit reset: creditID, or the
+// backend's next available credit when it is empty. outcome is one of
 // reset, alreadyRedeemed, nothingToReset, noCredit.
-func (p *Provider) ConsumeResetCredit(home string, native bool, idempotencyKey string) (outcome string, err error) {
+func (p *Provider) ConsumeResetCredit(home string, native bool, creditID, idempotencyKey string) (outcome string, err error) {
 	s, err := p.open(home, native, 30*time.Second)
 	if err != nil {
 		return "", err
 	}
 	defer s.close()
-	result, err := s.call("account/rateLimitResetCredit/consume", map[string]any{"idempotencyKey": idempotencyKey})
+	params := map[string]any{"idempotencyKey": idempotencyKey}
+	if creditID != "" {
+		params["creditId"] = creditID
+	}
+	result, err := s.call("account/rateLimitResetCredit/consume", params)
 	if err != nil {
 		return "", err
 	}
@@ -209,12 +219,28 @@ func ParseRateLimitsResult(result json.RawMessage, now time.Time) (RateLimits, b
 			var credits struct {
 				Available *int `json:"availableCount"`
 				Snake     *int `json:"available_count"`
+				Credits   []struct {
+					ID        string `json:"id"`
+					Status    string `json:"status"`
+					ExpiresAt *int64 `json:"expiresAt"`
+				} `json:"credits"`
 			}
 			if json.Unmarshal(raw, &credits) == nil {
 				if credits.Available != nil {
 					rl.ResetCredits = *credits.Available
 				} else if credits.Snake != nil {
 					rl.ResetCredits = *credits.Snake
+				}
+				for _, c := range credits.Credits {
+					if c.Status != "" && c.Status != "available" {
+						continue
+					}
+					if rl.ResetCreditID == "" {
+						rl.ResetCreditID = c.ID
+					}
+					if c.ExpiresAt != nil && *c.ExpiresAt > 0 && (rl.ResetCreditExpiry == 0 || *c.ExpiresAt < rl.ResetCreditExpiry) {
+						rl.ResetCreditExpiry, rl.ResetCreditID = *c.ExpiresAt, c.ID
+					}
 				}
 			}
 		}

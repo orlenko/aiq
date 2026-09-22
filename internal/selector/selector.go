@@ -8,8 +8,11 @@
 //
 // perish_w is the number of percentage points that vanish per hour if the
 // account sits idle. Weekly windows are multiplied by WeeklyWeight, since one
-// weekly point is several session points' worth of tokens. The score is
-// Σ perish_w over binding windows, divided by (1 + worker leases). Highest
+// weekly point is several session points' worth of tokens. Codex reset
+// credits expire too: each is a full weekly window (100 points) lost at its
+// expiry, so they add credits × 100 / hours_to_expiry × WeeklyWeight. The
+// score is Σ perish over binding windows and credits, divided by
+// (1 + worker leases). Highest
 // score wins. Exhausted accounts, accounts below
 // the weekly reserve (workers only), disabled accounts and accounts at their
 // worker cap are filtered out first. Interactive sessions may be sticky: they
@@ -37,6 +40,8 @@ type Candidate struct {
 	Windows       []state.Window
 	CooldownUntil int64 // unix seconds, 0 = none
 	ResetCredits  int
+	// ResetCreditExpiry is when the soonest credit expires (0 = unknown).
+	ResetCreditExpiry int64
 
 	InteractiveLeases int
 	WorkerLeases      int
@@ -78,6 +83,10 @@ type Result struct {
 }
 
 const neutralScore = 5 // score for an account with no usable telemetry
+
+// creditHorizonHours spreads a reset credit whose expiry is unknown over a
+// week: it still counts, without the urgency of a known deadline.
+const creditHorizonHours = 168
 
 // binding reports whether a window counts toward the account's capacity.
 func binding(w state.Window, modelScope string) bool {
@@ -202,6 +211,22 @@ func Score(c Candidate, p Policy) (float64, []string) {
 		total = neutralScore
 		terms = []string{"no fresh telemetry: neutral prior"}
 	}
+	if c.ResetCredits > 0 && (c.ResetCreditExpiry == 0 || c.ResetCreditExpiry > p.Now.Unix()) {
+		hours := float64(creditHorizonHours)
+		when := "expiry unknown"
+		if c.ResetCreditExpiry > 0 {
+			hours = math.Max(float64(c.ResetCreditExpiry-p.Now.Unix())/3600, minHours)
+			when = "next expires " + time.Unix(c.ResetCreditExpiry, 0).Local().Format("Jan 2 15:04")
+		}
+		weight := 1.0
+		if p.WeeklyWeight > 0 {
+			weight = p.WeeklyWeight
+		}
+		perish := float64(c.ResetCredits) * 100 / hours * weight
+		total += perish
+		terms = append(terms, fmt.Sprintf("%d reset credit(s), %s: %d×100%% / %.1fh × %g = %.1f",
+			c.ResetCredits, when, c.ResetCredits, hours, weight, perish))
+	}
 	if c.WorkerLeases > 0 {
 		total /= float64(1 + c.WorkerLeases)
 		terms = append(terms, fmt.Sprintf("÷ (1+%d workers)", c.WorkerLeases))
@@ -237,10 +262,13 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 				r.Eligible, r.Reason = false, fmt.Sprintf("%s window exhausted%s", strings.ToLower(name), when)
 			}
 		}
+		// The weekly reserve is waived while the account holds a reset
+		// credit: the credit refills the week, and the reserve would only
+		// keep workers from draining it to where the credit can be spent.
 		if r.Eligible && p.Mode == state.ModeWorker {
 			if p.MaxWorkers > 0 && c.WorkerLeases >= p.MaxWorkers {
 				r.Eligible, r.Reason = false, fmt.Sprintf("at worker cap (%d)", p.MaxWorkers)
-			} else if rem := weeklyRemaining(c.Windows, p.ModelScope); rem >= 0 && rem <= p.WeeklyReservePct {
+			} else if rem := weeklyRemaining(c.Windows, p.ModelScope); rem >= 0 && rem <= p.WeeklyReservePct && c.ResetCredits == 0 {
 				r.Eligible, r.Reason = false, fmt.Sprintf("weekly %.0f%% left ≤ reserve %.0f%%", rem, p.WeeklyReservePct)
 			}
 		}
@@ -257,9 +285,11 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 			return a.Eligible
 		}
 		// Workers stay off accounts that carry an interactive session when
-		// any alternative exists.
+		// any alternative exists — unless the account holds a reset credit:
+		// the credit refills whatever the workers spend, and it expires.
 		if p.Mode == state.ModeWorker {
-			fa, fb := byID[a.ID].InteractiveLeases > 0, byID[b.ID].InteractiveLeases > 0
+			guarded := func(c Candidate) bool { return c.InteractiveLeases > 0 && c.ResetCredits == 0 }
+			fa, fb := guarded(byID[a.ID]), guarded(byID[b.ID])
 			if fa != fb {
 				return !fa
 			}
