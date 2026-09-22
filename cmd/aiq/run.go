@@ -186,7 +186,7 @@ func cmdRun(provider string, args []string) error {
 	if f.flagsErr != nil {
 		return configErr("bad-flags", "%v", f.flagsErr)
 	}
-	if !auto && provider != "claude" && provider != "codex" {
+	if !auto && !knownProvider(provider) {
 		return fmt.Errorf("unknown provider %s", provider)
 	}
 	if !auto {
@@ -210,7 +210,7 @@ func cmdRun(provider string, args []string) error {
 	}
 
 	// CLI self-management never routes.
-	passthrough := (provider == "claude" && claude.Passthrough(f.rest)) || (provider == "codex" && codex.Passthrough(f.rest))
+	passthrough := !auto && providerPassthrough(provider, f.rest)
 	if passthrough || os.Getenv("AIQ_BYPASS") == "1" {
 		if len(f.rest) > 0 && (f.rest[0] == "login" || f.rest[0] == "logout" || f.rest[0] == "auth") {
 			fmt.Fprintf(os.Stderr, "aiq: `%s %s` acts on your real home, not on a pool account; pool logins are `aiq account login <provider>/<name>`\n", provider, f.rest[0])
@@ -232,7 +232,7 @@ func cmdRun(provider string, args []string) error {
 		mode = os.Getenv("AIQ_MODE")
 	}
 	if mode == "" {
-		isWorker := (auto && request.print) || (provider == "claude" && claude.IsWorker(f.rest)) || (provider == "codex" && codex.IsWorker(f.rest))
+		isWorker := (auto && request.print) || (!auto && providerIsWorker(provider, f.rest))
 		if isWorker {
 			mode = state.ModeWorker
 		} else {
@@ -375,10 +375,8 @@ func cmdRun(provider string, args []string) error {
 		case mode == state.ModeWorker:
 		case mode == state.ModeLong && f.resumeSession != "":
 			sessionID = f.resumeSession
-		case provider == "claude":
-			sessionID, f.rest = claude.Session(f.rest)
-		case provider == "codex":
-			sessionID = codex.Session(f.rest)
+		default:
+			sessionID, f.rest = providerSession(provider, f.rest)
 		}
 		a.st.AddLaunch(state.Launch{
 			StartedAt: now, Hostname: hostname(), Provider: provider, AccountID: acc.ID,
@@ -400,6 +398,7 @@ func cmdRun(provider string, args []string) error {
 		if mode == state.ModeLong {
 			env = append(env, "AIQ_LONG=1", "AIQ_LEASE="+strconv.FormatInt(leaseID, 10))
 			self, _ := os.Executable()
+			prepareLong(provider, workspace)
 			a.close()
 			return a.execProvider(provider, longArgs(provider, self, f), env, f.launcher)
 		}
@@ -452,30 +451,24 @@ func refusalToken(err error) string {
 // arguments are cut, and the whole line is capped so an IDE's injected hook
 // flags do not swamp the event table.
 // longArgs assembles the CLI argument list for a supervised session: aiq's
-// hooks, the user's own args, an optional resume, and an optional first
-// prompt (the takeover nudge).
+// hooks (Antigravity's are global, installed by ensureLongHooks), the
+// user's own args, an optional resume, and an optional first prompt (the
+// takeover nudge).
 func longArgs(provider, aiqBin string, f runFlags) []string {
 	var out []string
 	switch provider {
 	case "claude":
 		out = append(out, "--settings", claude.HookSettings(aiqBin))
-		out = append(out, f.rest...)
-		if f.resumeSession != "" {
-			out = append(out, "--resume", f.resumeSession)
-		}
-		if f.nudge != "" {
-			out = append(out, f.nudge)
-		}
 	case "codex":
 		out = append(out, codex.HookArgs(aiqBin)...)
 		out = append(out, codex.UnattendedArgs...)
-		out = append(out, f.rest...)
-		if f.resumeSession != "" {
-			out = append(out, "resume", f.resumeSession)
-		}
-		if f.nudge != "" {
-			out = append(out, f.nudge)
-		}
+	}
+	out = append(out, f.rest...)
+	if f.resumeSession != "" {
+		out = append(out, resumeVerb(provider, f.resumeSession)...)
+	}
+	if f.nudge != "" {
+		out = append(out, firstPromptArgs(provider, f.nudge)...)
 	}
 	return out
 }
@@ -599,12 +592,9 @@ func (a *app) prepareHome(acc state.Account) error {
 	if acc.Native {
 		return nil
 	}
-	var spec overlay.Spec
-	switch acc.Provider {
-	case "claude":
-		spec = claude.OverlaySpec(acc.Home)
-	case "codex":
-		spec = codex.OverlaySpec(acc.Home)
+	spec, ok := providerOverlaySpec(acc)
+	if !ok {
+		return fmt.Errorf("%s: %s accounts run on the real home only in this release", acc.ID, acc.Provider)
 	}
 	rep, err := overlay.Sync(spec)
 	if err != nil {
@@ -636,15 +626,7 @@ func (a *app) prepareHome(acc state.Account) error {
 }
 
 func (a *app) launchEnv(provider string, acc state.Account, inheritAuthEnv bool, depth int) []string {
-	var env []string
-	switch provider {
-	case "claude":
-		p, _ := a.claudeProvider()
-		env = p.Env(acc.Home, acc.Native, inheritAuthEnv)
-	case "codex":
-		p, _ := a.codexProvider()
-		env = p.Env(acc.Home, acc.Native, inheritAuthEnv)
-	}
+	env := a.providerEnv(provider, acc, inheritAuthEnv)
 	// Scrub the routing metadata of a parent session before setting ours.
 	filtered := env[:0]
 	for _, kv := range env {

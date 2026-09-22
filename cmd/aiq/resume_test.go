@@ -36,6 +36,9 @@ func TestResumeArgs(t *testing.T) {
 		{transcript.Session{Provider: "codex", ID: "c1", Bypass: true}, nil,
 			[]string{"--dangerously-bypass-approvals-and-sandbox", "resume", "c1"}},
 		{transcript.Session{Provider: "codex", ID: "c1"}, []string{"-m", "gpt"}, []string{"-m", "gpt", "resume", "c1"}},
+		{transcript.Session{Provider: "agy", ID: "g1", Bypass: true}, []string{"--model", "gemini-3.1-pro-high"},
+			[]string{"--dangerously-skip-permissions", "--model", "gemini-3.1-pro-high", "--conversation", "g1"}},
+		{transcript.Session{Provider: "agy", ID: "g1"}, nil, []string{"--conversation", "g1"}},
 	}
 	for _, c := range cases {
 		if got := resumeArgs(c.s, c.s.Bypass, c.extra); !reflect.DeepEqual(got, c.want) {

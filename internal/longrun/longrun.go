@@ -19,6 +19,7 @@ import (
 
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
+	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/selector"
@@ -490,8 +491,9 @@ func fallbackOrder(l state.Lease, def []string) []string {
 // replayArgs is the same-provider replay of a lease's launch arguments. A
 // session selection in the original command (Codex `resume`/`fork` with its
 // id, --last, --all or prompt; Claude --resume/-r, --continue/-c,
-// --session-id) was consumed by the session that ran: the successor gets its
-// own --resume-session or starts fresh, so those tokens are dropped.
+// --session-id; Antigravity --conversation, --continue/-c) was consumed by
+// the session that ran: the successor gets its own --resume-session or
+// starts fresh, so those tokens are dropped.
 func replayArgs(provider string, args []string) []string {
 	var out []string
 	for i := 0; i < len(args); i++ {
@@ -516,17 +518,71 @@ func replayArgs(provider string, args []string) []string {
 			case strings.HasPrefix(a, "--resume=") || strings.HasPrefix(a, "--session-id="):
 				continue
 			}
+		case "agy":
+			switch {
+			case a == "--continue" || a == "-c":
+				continue
+			case a == "--conversation":
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					i++
+				}
+				continue
+			case strings.HasPrefix(a, "--conversation="):
+				continue
+			}
 		}
 		out = append(out, a)
 	}
 	return out
 }
 
+// BypassFlag is each CLI's permission bypass as a takeover spells it.
+var BypassFlag = map[string]string{
+	"claude": "--dangerously-skip-permissions",
+	"codex":  "--dangerously-bypass-approvals-and-sandbox",
+	"agy":    "--dangerously-skip-permissions",
+}
+
+// ModelArgs spells a model ("" for the CLI's default) and an effort level
+// ("" for its default) for a provider. Antigravity carries the level in the
+// model name, so the two are composed there.
+func ModelArgs(provider, model, level string) []string {
+	if provider == "agy" {
+		return agy.ModelArgs(model, level)
+	}
+	var out []string
+	if model != "" {
+		out = append(out, "--model", model)
+	}
+	switch {
+	case level == "":
+	case provider == "codex":
+		out = append(out, "-c", "model_reasoning_effort="+level)
+	default:
+		out = append(out, "--effort", level)
+	}
+	return out
+}
+
+// modelTier is tier.Of, with Antigravity's effort suffixes ignored.
+func modelTier(provider, model string) int {
+	if provider == "agy" {
+		for i, m := range tier.Models[provider] {
+			if agy.SameModel(m, model) {
+				return i
+			}
+		}
+		return -1
+	}
+	return tier.Of(provider, model)
+}
+
 // TranslateArgs carries across a cross-provider takeover the arguments that
-// mean the same thing on both CLIs: the permission bypass (Claude's
-// --dangerously-skip-permissions or --permission-mode bypassPermissions,
-// Codex's --dangerously-bypass-approvals-and-sandbox or --yolo), a model
-// named by an aiq tier (opus ↔ gpt-5.6-sol), and an effort level (Claude
+// mean the same thing on every CLI: the permission bypass (Claude's and
+// Antigravity's --dangerously-skip-permissions or Claude's --permission-mode
+// bypassPermissions, Codex's --dangerously-bypass-approvals-and-sandbox or
+// --yolo), a model named by an aiq tier (opus ↔ gpt-5.6-sol ↔
+// gemini-3.1-pro-high), and an effort level (Claude and Antigravity
 // --effort, Codex -c model_reasoning_effort). Any other model, a resume
 // target, extra directories and a prompt are provider-specific and dropped.
 // Same provider returns args unchanged.
@@ -553,12 +609,12 @@ func TranslateArgs(from, to string, args []string) []string {
 		case a == "--permission-mode":
 			bypass = bypass || next() == "bypassPermissions"
 		case a == "--model" || (from == "codex" && a == "-m"):
-			model = tier.Of(from, next())
+			model = modelTier(from, next())
 		case strings.HasPrefix(a, "--model="):
-			model = tier.Of(from, strings.TrimPrefix(a, "--model="))
-		case from == "claude" && a == "--effort":
+			model = modelTier(from, strings.TrimPrefix(a, "--model="))
+		case from != "codex" && a == "--effort":
 			effort = tier.EffortOf(from, next())
-		case from == "claude" && strings.HasPrefix(a, "--effort="):
+		case from != "codex" && strings.HasPrefix(a, "--effort="):
 			effort = tier.EffortOf(from, strings.TrimPrefix(a, "--effort="))
 		case from == "codex" && (a == "-c" || a == "--config" || strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "--config=")):
 			value := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(a, "--config="), "-c"), "=")
@@ -572,20 +628,21 @@ func TranslateArgs(from, to string, args []string) []string {
 	}
 	var out []string
 	if bypass {
-		out = append(out, map[string]string{"claude": "--dangerously-skip-permissions", "codex": "--dangerously-bypass-approvals-and-sandbox"}[to])
-	}
-	if model >= 0 {
-		out = append(out, "--model", tier.Models[to][model])
-	}
-	if effort > 0 {
-		level := tier.Efforts[to][effort-1]
-		if to == "claude" {
-			out = append(out, "--effort", level)
-		} else {
-			out = append(out, "-c", "model_reasoning_effort="+level)
+		if flag := BypassFlag[to]; flag != "" {
+			out = append(out, flag)
 		}
 	}
-	return out
+	if !tier.Known(to) {
+		return out
+	}
+	name, level := "", ""
+	if model >= 0 {
+		name = tier.Models[to][model]
+	}
+	if effort > 0 {
+		level = tier.Efforts[to][effort-1]
+	}
+	return append(out, ModelArgs(to, name, level)...)
 }
 
 // splitArgs decodes the JSON array a long lease records its args as.

@@ -114,8 +114,8 @@ command:
 		l.Command = args[i]
 		l.Args = args[i+1:]
 	}
-	if l.Provider != "claude" && l.Provider != "codex" {
-		return fmt.Errorf("--provider must be claude or codex")
+	if !config.KnownProvider(l.Provider) {
+		return fmt.Errorf("--provider must be %s", providerList())
 	}
 	if l.Command == "" {
 		return fmt.Errorf("no command; put it after `--`\n\n%s", launcherAddUsageText())
@@ -178,7 +178,7 @@ func launcherRemove(name string) error {
 func launcherAddUsage() error { return fmt.Errorf("%s", launcherAddUsageText()) }
 
 func launcherAddUsageText() string {
-	return `usage: aiq launcher add <name> --provider claude|codex [flags] -- <command> [args...]
+	return `usage: aiq launcher add <name> --provider claude|codex|agy [flags] -- <command> [args...]
 
   --credential file     write the account's credential into the overlay home
                         first, for a launcher that cuts the CLI off from the

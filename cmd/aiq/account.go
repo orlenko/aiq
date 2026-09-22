@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/proc"
+	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/quota"
@@ -33,7 +35,7 @@ func cmdAccount(args []string) error {
 		return a.accountList()
 	case "add":
 		if len(rest) < 2 {
-			return fmt.Errorf("usage: aiq account add <claude|codex> <name> [--no-login]")
+			return fmt.Errorf("usage: aiq account add <%s> <name> [--no-login]", config.ProviderList("|"))
 		}
 		return a.accountAdd(rest[0], rest[1], !hasFlag(rest, "--no-login"))
 	case "login":
@@ -125,7 +127,7 @@ func (a *app) accountList() error {
 		return err
 	}
 	if len(accounts) == 0 {
-		fmt.Println("no accounts — run: aiq account add <claude|codex> <name>")
+		fmt.Printf("no accounts — run: aiq account add <%s> <name>\n", config.ProviderList("|"))
 		return nil
 	}
 	fmt.Printf("%-20s %-8s %-6s %-6s %-30s %-24s %s\n", "ACCOUNT", "STATE", "LOGIN", "POLL", "IDENTITY", "LABEL", "HOME")
@@ -160,12 +162,7 @@ func shortHome(p string) string {
 }
 
 func homeFor(provider, name string) string {
-	switch provider {
-	case "claude":
-		return filepath.Join(paths.ClaudeHomesDir(), name)
-	default:
-		return filepath.Join(paths.CodexHomesDir(), name)
-	}
+	return filepath.Join(homesDir(provider), name)
 }
 
 func validName(name string) error {
@@ -176,10 +173,12 @@ func validName(name string) error {
 }
 
 // accountAdd creates an overlay home for a new account, logs the CLI in,
-// and (Claude) authorizes the poll grant.
+// and (Claude) authorizes the poll grant. An Antigravity account is the
+// user's real ~/.gemini login, registered as native: its CLI reads no
+// variable for another home, so one account per machine for now.
 func (a *app) accountAdd(provider, name string, login bool) error {
-	if provider != "claude" && provider != "codex" {
-		return fmt.Errorf("provider must be claude or codex")
+	if !knownProvider(provider) {
+		return fmt.Errorf("provider must be %s", providerList())
 	}
 	if err := validName(name); err != nil {
 		return err
@@ -192,6 +191,12 @@ func (a *app) accountAdd(provider, name string, login bool) error {
 		ID: id, Provider: provider, Name: name, Enabled: true,
 		Home: homeFor(provider, name), Priority: 100, CreatedAt: time.Now().Unix(),
 	}
+	if provider == "agy" {
+		if others, _ := a.st.ListAccounts("agy"); len(others) > 0 {
+			return fmt.Errorf("%s is already registered as the agy account; agy runs on the real ~/.gemini login, one account per machine in this release (aiq account remove %s first)", others[0].ID, others[0].ID)
+		}
+		acc.Native, acc.Home = true, paths.RealAgyHome()
+	}
 	if err := a.prepareHome(acc); err != nil {
 		return err
 	}
@@ -200,6 +205,9 @@ func (a *app) accountAdd(provider, name string, login bool) error {
 	}
 	a.appendOrder(id)
 	fmt.Printf("added %s (home %s)\n", id, shortHome(acc.Home))
+	if provider == "agy" {
+		a.maybeInstallAgyStatusline()
+	}
 	if !login {
 		return nil
 	}
@@ -255,6 +263,32 @@ func (a *app) accountLogin(id string) error {
 		if email, _ := codex.Identity(codex.AuthPath(acc.Home)); email != "" {
 			acc.Identity = email
 		}
+	case "agy":
+		p, err := a.agyProvider()
+		if err != nil {
+			return err
+		}
+		// The CLI keeps its token in the OS keyring, so the only way to
+		// tell a login is to ask it: the quota probe reports the email, or
+		// that a sign-in is needed.
+		a.maybeInstallAgyStatusline()
+		probe := func() (*agy.Usage, error) {
+			return p.Poll(acc.Home, acc.Native, agy.ProbeDir(paths.DataDir()), time.Now(), time.Duration(a.cfg.Poll.TimeoutSeconds)*time.Second)
+		}
+		u, err := probe()
+		if errors.Is(err, agy.ErrNotLoggedIn) {
+			if err := p.Login(acc.Home, acc.Native); err != nil {
+				return err
+			}
+			u, err = probe()
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", id, err)
+		}
+		if !acc.Native {
+			agy.MarkLoggedIn(acc.Home, u.Identity)
+		}
+		acc.Identity = u.Identity
 	}
 	a.st.UpdateAccount(acc)
 	a.st.LogEvent(acc.Provider, acc.ID, "login", acc.Identity, time.Now())
@@ -270,7 +304,7 @@ func (a *app) accountAuthorize(id string) error {
 		return err
 	}
 	if acc.Provider != "claude" {
-		return fmt.Errorf("only Claude accounts need a poll grant; Codex is polled through its own CLI")
+		return fmt.Errorf("only Claude accounts need a poll grant; Codex and Antigravity are polled through their own CLIs")
 	}
 	fmt.Fprintf(os.Stderr, "Step 2/2 for %s: quota polling grant.\n", id)
 	g, err := claude.Authorize(os.Stdin, os.Stderr)

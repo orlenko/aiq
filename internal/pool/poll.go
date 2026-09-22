@@ -2,10 +2,11 @@ package pool
 
 import (
 	"fmt"
-	"os/exec"
 	"sync"
 	"time"
 
+	"github.com/orlenko/aiq/internal/paths"
+	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/state"
@@ -22,8 +23,9 @@ type PollResult struct {
 
 // Poll refreshes telemetry for every enabled account (or only ids) using
 // aiq's own pollers: the aiq OAuth grant for Claude, the app-server RPC for
-// Codex. Accounts run concurrently; each is bounded by timeout.
-func (p *Pool) Poll(codexCmd func(args, env []string) *exec.Cmd, timeout time.Duration, ids ...string) []PollResult {
+// Codex, a headless run cut short at its status line for Antigravity.
+// Accounts run concurrently; each is bounded by timeout.
+func (p *Pool) Poll(timeout time.Duration, ids ...string) []PollResult {
 	accounts, err := p.St.ListAccounts("")
 	if err != nil {
 		return []PollResult{{Err: err}}
@@ -42,7 +44,7 @@ func (p *Pool) Poll(codexCmd func(args, env []string) *exec.Cmd, timeout time.Du
 		go func(a state.Account) {
 			defer wg.Done()
 			done := make(chan error, 1)
-			go func() { done <- p.pollOne(a, codexCmd) }()
+			go func() { done <- p.pollOne(a, timeout) }()
 			select {
 			case err := <-done:
 				results <- PollResult{ID: a.ID, Err: err}
@@ -61,9 +63,27 @@ func (p *Pool) Poll(codexCmd func(args, env []string) *exec.Cmd, timeout time.Du
 	return out
 }
 
-func (p *Pool) pollOne(a state.Account, codexCmd func(args, env []string) *exec.Cmd) error {
+func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 	now := time.Now()
 	switch a.Provider {
+	case "agy":
+		cmd := p.command("agy")
+		if cmd == nil {
+			return p.recordError(a, "agy binary not available")
+		}
+		prov := &agy.Provider{Command: cmd}
+		u, err := prov.Poll(a.Home, a.Native, agy.ProbeDir(paths.DataDir()), now, timeout-time.Second)
+		if err != nil {
+			return p.recordError(a, err.Error())
+		}
+		if err := p.St.ReplaceWindows(a.ID, SourceAIQ, u.Windows); err != nil {
+			return err
+		}
+		p.St.PruneWindowSources(a.ID, SourceAIQ, "statusline")
+		prev, _, _ := p.St.GetUsage(a.ID)
+		p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), prev.ResetCredits, "", now)
+		p.updateIdentity(a, u.Identity)
+		return nil
 	case "claude":
 		path := claude.GrantPath(a.Home)
 		if !claude.HasGrant(a.Home) {
@@ -82,6 +102,7 @@ func (p *Pool) pollOne(a state.Account, codexCmd func(args, env []string) *exec.
 		p.updateIdentity(a, u.Identity)
 		return nil
 	case "codex":
+		codexCmd := p.command("codex")
 		if codexCmd == nil {
 			return p.recordError(a, "codex binary not available")
 		}

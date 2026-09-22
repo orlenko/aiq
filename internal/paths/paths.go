@@ -8,6 +8,7 @@ package paths
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -51,11 +52,12 @@ func ShimsDir() string { return filepath.Join(DataDir(), "shims") }
 func ShimPath(name string) string { return filepath.Join(ShimsDir(), name) }
 func ClaudeHomesDir() string      { return filepath.Join(DataDir(), "claude") }
 func CodexHomesDir() string       { return filepath.Join(DataDir(), "codex") }
+func AgyHomesDir() string         { return filepath.Join(DataDir(), "agy") }
 
 // EnsureDirs creates every directory aiq needs, mode 0700.
 func EnsureDirs() error {
 	dirs := []string{
-		DataDir(), LocksDir(), LogDir(), ShimsDir(), ClaudeHomesDir(), CodexHomesDir(),
+		DataDir(), LocksDir(), LogDir(), ShimsDir(), ClaudeHomesDir(), CodexHomesDir(), AgyHomesDir(),
 		filepath.Dir(ConfigFile()),
 	}
 	for _, d := range dirs {
@@ -107,4 +109,18 @@ func RealCodexHome() string {
 		return d
 	}
 	return filepath.Join(home(), ".codex")
+}
+
+// RealAgyHome returns the user's real ~/.gemini, where the Antigravity CLI
+// keeps its login and, under antigravity-cli/, its state. The CLI reads no
+// variable for it, so a HOME that points at one of aiq's homes (inherited
+// from a routed parent) is ignored.
+func RealAgyHome() string {
+	if h := os.Getenv("HOME"); h != "" && !isManaged(h) {
+		return filepath.Join(h, ".gemini")
+	}
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		return filepath.Join(u.HomeDir, ".gemini")
+	}
+	return filepath.Join(home(), ".gemini")
 }

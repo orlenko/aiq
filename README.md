@@ -1,10 +1,11 @@
 # aiq
 
-`aiq` pools several paid Claude Code and Codex subscriptions and routes every
-`claude` and `codex` invocation to the account that is about to waste the
-most quota. Interactive sessions, `claude -p` / `codex exec` workers, and the
-workers those agents spawn in turn all go through it. Nobody has to know
-which subscription they are on.
+`aiq` pools several paid Claude Code and Codex subscriptions, plus an
+Antigravity CLI (`agy`) login, and routes every `claude`, `codex` and `agy`
+invocation to the account that is about to waste the most quota. Interactive
+sessions, `claude -p` / `codex exec` / `agy -p` workers, and the workers those
+agents spawn in turn all go through it. Nobody has to know which subscription
+they are on.
 
 ```text
 $ claude                      # interactive: sticky per workspace
@@ -159,6 +160,41 @@ finds the transcript.
 
 Handoff notes live in `~/.local/share/aiq/handoff/`.
 
+## Antigravity
+
+`agy`, Google's Antigravity CLI, joins the pool as a third provider with one
+difference: it runs on your real login. The CLI reads no variable for another
+home (only `HOME` moves `~/.gemini`), and it keeps its token in the OS
+keyring, so in this release aiq registers the one `~/.gemini` login as a
+native account and does not build overlay homes for it:
+
+```text
+aiq account add agy main       # registers ~/.gemini; opens the sign-in if it has none
+aiq run auto -p "fix the test" # may now land on agy/main when it has the most to spare
+aiq long agy                   # supervised like the others; moves to Claude or Codex when dry
+```
+
+**Quota comes through the status line.** The CLI has no usage command, but
+its status line carries the quota buckets (`gemini-5h`, `gemini-weekly`, and
+`3p-*` for its Claude models), and it runs the statusLine command during a
+headless run's initialization, before the model is called. `aiq account add
+agy` therefore points `~/.gemini/antigravity-cli/settings.json` at
+`aiq agy-statusline` (a command of your own keeps rendering behind it; with
+none, aiq's line is stacked under the built-in one). A poll starts `agy -p`,
+takes the payload the multiplexer hands back, and stops the run: three
+seconds, no tokens. Interactive sessions feed the same channel live.
+`aiq statusline uninstall agy` removes it, and with it the ability to poll.
+
+**Long sessions use global hooks.** The CLI takes no per-launch hook flag, so
+`aiq long agy` installs an `aiq-long` entry in `~/.gemini/config/hooks.json`
+(PreInvocation and Stop) that does nothing unless the session carries an aiq
+long lease, and adds the workspace to the CLI's trusted list so an unattended
+pane is not stopped at the trust prompt. A same-provider takeover resumes with
+`--conversation <id>`.
+
+Not yet: several agy accounts (the keyring, not the home, holds the login),
+and a live "open right now" marker for `aiq resume`.
+
 ## Picking up where the agents left off
 
 After a day of sessions in one directory, several of them run by `aiq long`,
@@ -229,31 +265,35 @@ or forced accounts. `--wait` and `--mode` remain available, with worker mode
 requiring `-p`. For a supervised session that moves between accounts, use
 `aiq long auto` (see Long-running sessions).
 
-| Tier | Claude | Codex |
-| --- | --- | --- |
-| 0 | Fable (`fable`) | Astra (`gpt-6-astra`) |
-| 1 (default for auto) | Opus (`opus`) | Sol (`gpt-5.6-sol`) |
-| 2 | Sonnet (`sonnet`) | Terra (`gpt-5.6-terra`) |
-| 3 | Haiku (`haiku`) | Luna (`gpt-5.6-luna`) |
+| Tier | Claude | Codex | Antigravity |
+| --- | --- | --- | --- |
+| 0 | Fable (`fable`) | Astra (`gpt-6-astra`) | Claude Opus 4.6 (`claude-opus-4-6-thinking`) |
+| 1 (default for auto) | Opus (`opus`) | Sol (`gpt-5.6-sol`) | Gemini 3.1 Pro (`gemini-3.1-pro-high`) |
+| 2 | Sonnet (`sonnet`) | Terra (`gpt-5.6-terra`) | Gemini 3.8 Flash (`gemini-3.8-flash-medium`) |
+| 3 | Haiku (`haiku`) | Luna (`gpt-5.6-luna`) | Gemini 3.7 Flash (`gemini-3.7-flash-medium`) |
 
 The requested tier stays fixed during retries; aiq never silently downgrades it.
 Model-scoped quota windows bind only the selected model, so an exhausted Fable
-cap does not disqualify an otherwise eligible Opus account.
+cap does not disqualify an otherwise eligible Opus account. On Antigravity the
+Gemini models share the account's main 5-hour and weekly windows; Claude
+models there draw on separate "3p" windows, which bind only tier 0.
 
-| Effort | Claude | Codex |
-| --- | --- | --- |
-| 1 | low | low |
-| 2 | medium | medium |
-| 3 | high | high |
-| 4 | xhigh | xhigh |
-| 5 | max | max |
-| 6 | ultracode | ultra |
+| Effort | Claude | Codex | Antigravity |
+| --- | --- | --- | --- |
+| 1 | low | low | low |
+| 2 | medium | medium | medium |
+| 3 | high | high | high |
+| 4 | xhigh | xhigh | high |
+| 5 | max | max | high |
+| 6 | ultracode | ultra | high |
 
 Effort is optional; omission preserves the CLI default. Claude's sixth setting
 means `xhigh` plus dynamic workflows, rather than a sixth model reasoning level;
 it requires Claude Code 2.1.203 or later. See the
 [Claude CLI reference](https://code.claude.com/docs/en/cli-reference).
-Model and client support still apply to each setting.
+Model and client support still apply to each setting. Antigravity spells the
+level as the model name's suffix (`gemini-3.8-flash-low`), so a tier and an
+effort become one `--model`; the Pro models have no medium and take high.
 
 Both shared options also work with an explicit provider, before `--`:
 
@@ -636,6 +676,7 @@ Depth is 1, well under `max_depth`.
 | What | Where |
 |---|---|
 | Overlay homes (credential, poll grant, `.claude.json` private; everything else symlinked) | `~/.local/share/aiq/claude/<name>/`, `~/.local/share/aiq/codex/<name>/` |
+| Antigravity: the native account is `~/.gemini`; quota polls run in | `~/.local/share/aiq/agy-probe/` |
 | Shims | `~/.local/share/aiq/shims/` |
 | State (accounts, windows, leases, affinity, launches, events; no credentials) | `~/.local/share/aiq/state.db` |
 | Daemon log | `~/.local/share/aiq/log/daemon.log` |
@@ -694,7 +735,7 @@ listen = "127.0.0.1:7379"
 
 [long]
 drain_pct = 4.0                 # ask for a handoff note at this much remaining
-fallback = ["claude", "codex"]  # takeover order after the session's own provider
+fallback = ["claude", "codex", "agy"]  # takeover order after the session's own provider
 check_interval_seconds = 30
 idle_grace_seconds = 20
 idle_rotate_pct = 15.0          # move a quiet session off an account this low (0 = off)

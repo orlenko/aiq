@@ -109,13 +109,7 @@ func parentIsShell() bool {
 
 // resolveNext picks the provider binary to exec, honouring the chain.
 func (a *app) resolveNext(provider string, c chain) (string, error) {
-	configured := ""
-	switch provider {
-	case "claude":
-		configured = a.cfg.Providers.Claude.Binary
-	case "codex":
-		configured = a.cfg.Providers.Codex.Binary
-	}
+	configured := a.cfg.Provider(provider).Binary
 	bin, err := binpath.Resolve(provider, configured, paths.ShimsDir(), c.paths)
 	if err != nil && len(c.paths) > 0 {
 		return "", fmt.Errorf("%w; the last wrapper tried was %s", err, c.paths[len(c.paths)-1])

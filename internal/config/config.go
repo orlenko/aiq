@@ -14,6 +14,22 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 )
 
+// Providers lists the CLIs aiq routes, in the order they are shown.
+var Providers = []string{"claude", "codex", "agy"}
+
+// KnownProvider reports whether name is one of the routed CLIs.
+func KnownProvider(name string) bool {
+	for _, p := range Providers {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ProviderList renders the provider names for a usage line: "claude|codex|agy".
+func ProviderList(sep string) string { return strings.Join(Providers, sep) }
+
 type Provider struct {
 	// Binary is the real CLI path. Empty means: walk PATH, skipping aiq's
 	// own shim directory.
@@ -32,7 +48,7 @@ type Provider struct {
 // CLAUDE_CONFIG_DIR or CODEX_HOME names the overlay home it has to let the
 // CLI reach.
 type Launcher struct {
-	// Provider is the CLI this launcher starts: "claude" or "codex".
+	// Provider is the CLI this launcher starts: "claude", "codex" or "agy".
 	Provider string `toml:"provider"`
 	// Command is the program to exec. An absolute path is used as given; a
 	// bare name is looked up on PATH with aiq's shim directory excluded, so
@@ -62,11 +78,11 @@ var launcherName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // <name>` resolves built-ins first, so such a launcher could never be
 // reached, and its shim would shadow a real command.
 var reservedNames = map[string]bool{
-	"run": true, "claude": true, "codex": true, "status": true, "top": true,
+	"run": true, "claude": true, "codex": true, "agy": true, "status": true, "top": true,
 	"account": true, "mark": true, "reset": true, "shim": true, "statusline": true,
 	"daemon": true, "doctor": true, "long": true, "launcher": true, "version": true,
 	"resume": true, "help": true, "__launch": true, "claude-hook": true, "codex-hook": true,
-	"claude-statusline": true,
+	"agy-hook": true, "claude-statusline": true, "agy-statusline": true,
 	// `aiq long <word>` has to tell these from a launcher name.
 	"list": true, "attach": true, "drain": true, "stop": true, "auto": true,
 }
@@ -188,6 +204,12 @@ type Telemetry struct {
 	// ClaudeStatuslinePrevious preserves the user's own statusline command so
 	// the multiplexer can keep invoking it.
 	ClaudeStatuslinePrevious string `toml:"claude_statusline_previous,omitempty"`
+	// The same three for the Antigravity CLI, whose status line is also
+	// what aiq polls quota through. It is installed once an agy account
+	// exists.
+	AgyStatusline          bool   `toml:"agy_statusline"`
+	AgyStatuslineInstalled bool   `toml:"agy_statusline_installed,omitempty"`
+	AgyStatuslinePrevious  string `toml:"agy_statusline_previous,omitempty"`
 }
 
 type Config struct {
@@ -195,6 +217,7 @@ type Config struct {
 	Providers struct {
 		Claude Provider `toml:"claude"`
 		Codex  Provider `toml:"codex"`
+		Agy    Provider `toml:"agy"`
 	} `toml:"providers"`
 	Selection Selection `toml:"selection"`
 	Worker    Worker    `toml:"worker"`
@@ -218,12 +241,28 @@ var DefaultLimitPatterns = []string{
 	`(?i)out of (codex|claude) messages`,
 	`(?i)rate[_ ]limit[_ ]exceeded`,
 	`(?i)"type":\s*"rate_limit_error"`,
+	`(?i)quota (has been |is )?(exhausted|exceeded)`,
+	`RESOURCE_EXHAUSTED`,
+}
+
+// Provider returns the settings of a provider by name.
+func (c *Config) Provider(name string) Provider {
+	switch name {
+	case "claude":
+		return c.Providers.Claude
+	case "codex":
+		return c.Providers.Codex
+	case "agy":
+		return c.Providers.Agy
+	}
+	return Provider{}
 }
 
 func Default() *Config {
 	c := &Config{Version: 2}
 	c.Providers.Claude.ModelScope = "auto"
 	c.Providers.Codex.ModelScope = "auto"
+	c.Providers.Agy.ModelScope = "auto"
 	c.Selection = Selection{
 		InteractivePolicy:    "sticky",
 		SwitchPct:            95,
@@ -239,9 +278,10 @@ func Default() *Config {
 	c.Poll = Poll{IntervalSeconds: 300, TimeoutSeconds: 60}
 	c.Display.Labels = map[string]string{}
 	c.Daemon.Listen = "127.0.0.1:7379"
-	c.Long = Long{DrainPct: 4, Fallback: []string{"claude", "codex"}, CheckIntervalSeconds: 30, IdleGraceSeconds: 20,
+	c.Long = Long{DrainPct: 4, Fallback: append([]string{}, Providers...), CheckIntervalSeconds: 30, IdleGraceSeconds: 20,
 		IdleRotatePct: 15, IdleRotateMinutes: 15, TmuxPrefix: "aiq"}
 	c.Telemetry.ClaudeStatusline = true
+	c.Telemetry.AgyStatusline = true
 	c.Launchers = map[string]Launcher{}
 	return c
 }
@@ -279,8 +319,8 @@ func Load() (*Config, error) {
 		if err := ValidLauncherName(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", paths.ConfigFile(), err)
 		}
-		if l.Provider != "claude" && l.Provider != "codex" {
-			return nil, fmt.Errorf("%s: launcher %q: provider must be claude or codex", paths.ConfigFile(), name)
+		if !KnownProvider(l.Provider) {
+			return nil, fmt.Errorf("%s: launcher %q: provider must be %s", paths.ConfigFile(), name, ProviderList(", "))
 		}
 		if l.Command == "" {
 			return nil, fmt.Errorf("%s: launcher %q: command is required", paths.ConfigFile(), name)
@@ -308,7 +348,7 @@ func Load() (*Config, error) {
 		c.Long.DrainPct = 4
 	}
 	if len(c.Long.Fallback) == 0 {
-		c.Long.Fallback = []string{"claude", "codex"}
+		c.Long.Fallback = append([]string{}, Providers...)
 	}
 	if c.Long.CheckIntervalSeconds <= 0 {
 		c.Long.CheckIntervalSeconds = 30
