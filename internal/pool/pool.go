@@ -18,6 +18,7 @@ import (
 	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
+	"github.com/orlenko/aiq/internal/provider/copilot"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
 )
@@ -54,6 +55,8 @@ func (p *Pool) ModelScope(provider string) string {
 		return codex.DefaultModel()
 	case "agy":
 		return agy.ScopeOf(agy.DefaultModel(paths.RealAgyHome()))
+	case "copilot":
+		return copilot.DefaultModel()
 	}
 	return ""
 }
@@ -70,6 +73,9 @@ func HasCredential(a state.Account) bool {
 		return codex.HasCredential(a.Home)
 	case "agy":
 		return agy.HasCredential(a.Home, a.Native)
+	case "copilot":
+		// Native home is enough. No multiple accounts supported yet.
+		return a.Native
 	}
 	return false
 }

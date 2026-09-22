@@ -53,11 +53,12 @@ func ShimPath(name string) string { return filepath.Join(ShimsDir(), name) }
 func ClaudeHomesDir() string      { return filepath.Join(DataDir(), "claude") }
 func CodexHomesDir() string       { return filepath.Join(DataDir(), "codex") }
 func AgyHomesDir() string         { return filepath.Join(DataDir(), "agy") }
+func CopilotHomesDir() string     { return filepath.Join(DataDir(), "copilot") }
 
 // EnsureDirs creates every directory aiq needs, mode 0700.
 func EnsureDirs() error {
 	dirs := []string{
-		DataDir(), LocksDir(), LogDir(), ShimsDir(), ClaudeHomesDir(), CodexHomesDir(), AgyHomesDir(),
+		DataDir(), LocksDir(), LogDir(), ShimsDir(), ClaudeHomesDir(), CodexHomesDir(), AgyHomesDir(), CopilotHomesDir(),
 		filepath.Dir(ConfigFile()),
 	}
 	for _, d := range dirs {
@@ -123,4 +124,12 @@ func RealAgyHome() string {
 		return filepath.Join(u.HomeDir, ".gemini")
 	}
 	return filepath.Join(home(), ".gemini")
+}
+
+// RealCopilotHome returns the user's real ~/.copilot.
+func RealCopilotHome() string {
+	if d := os.Getenv("COPILOT_HOME"); d != "" && !isManaged(d) {
+		return d
+	}
+	return filepath.Join(home(), ".copilot")
 }

@@ -81,12 +81,13 @@ type Roots struct {
 	CodexSessions  []string
 	CodexIndex     []string // session_index.jsonl files (thread names)
 	AgyAppData     []string // Antigravity CLI app data dirs (brain/, history.jsonl)
+	CopilotAppData []string
 }
 
 // DefaultRoots derives the search roots from the real homes (realAgy is the
 // Antigravity CLI's app data dir; "" leaves it out) and the parent
 // directories that hold aiq's overlay homes.
-func DefaultRoots(realClaude, realCodex, realAgy string, overlayParents ...string) Roots {
+func DefaultRoots(realClaude, realCodex, realAgy, realCopilot string, overlayParents ...string) Roots {
 	r := Roots{
 		ClaudeProjects: []string{filepath.Join(realClaude, "projects")},
 		CodexSessions:  []string{filepath.Join(realCodex, "sessions")},
@@ -94,6 +95,9 @@ func DefaultRoots(realClaude, realCodex, realAgy string, overlayParents ...strin
 	}
 	if realAgy != "" {
 		r.AgyAppData = []string{realAgy}
+	}
+	if realCopilot != "" {
+		r.CopilotAppData = []string{realCopilot}
 	}
 	for _, parent := range overlayParents {
 		homes, _ := os.ReadDir(parent)
