@@ -44,3 +44,22 @@ func TestResetCreditTarget(t *testing.T) {
 		}
 	}
 }
+
+// The observed sequence on 2026-09-22: a weekly block redeemed with two
+// credits, then a read minutes later still showing 100% of the old window
+// with one credit left. That read must map to the same key so the backend
+// answers alreadyRedeemed instead of spending the second credit. The fresh
+// window after the reset is a new block.
+func TestResetCreditKeySurvivesStaleRead(t *testing.T) {
+	old := state.Window{Key: "plan:primary_window", Kind: state.KindWeekly, UsedPct: 100, ResetsAt: 1790426580}
+	stale := old
+	stale.ResetsAt += 40 // relative reset times drift by seconds between reads
+	if ResetCreditKey("vorlenko@urbansky.com", old) != ResetCreditKey("Vorlenko@UrbanSky.com", stale) {
+		t.Fatal("a stale read of the redeemed block must reuse its key")
+	}
+	fresh := old
+	fresh.ResetsAt = 1790694271 // the new week the reset started
+	if ResetCreditKey("vorlenko@urbansky.com", old) == ResetCreditKey("vorlenko@urbansky.com", fresh) {
+		t.Fatal("a block in the new window needs a new key")
+	}
+}
