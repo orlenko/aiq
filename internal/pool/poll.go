@@ -120,6 +120,9 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)
 		p.updateIdentity(a, u.Identity)
 		return nil
+	case "copilot":
+		// Copilot polling not implemented yet.
+		return nil
 	}
 	return nil
 }

@@ -5,26 +5,29 @@ package tier
 
 // Models lists each provider's model for tiers 0 (strongest) to 3.
 var Models = map[string][4]string{
-	"claude": {"fable", "opus", "sonnet", "haiku"},
-	"codex":  {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
-	"agy":    {"claude-opus-4-6-thinking", "gemini-3.1-pro-high", "gemini-3.8-flash-medium", "gemini-3.7-flash-medium"},
+	"claude":  {"fable", "opus", "sonnet", "haiku"},
+	"codex":   {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+	"agy":     {"claude-opus-4-6-thinking", "gemini-3.1-pro-high", "gemini-3.8-flash-medium", "gemini-3.7-flash-medium"},
+	"copilot": {"gpt-4o", "gpt-4", "gpt-3.5-turbo", "claude-3.5-sonnet"},
 }
 
 // Scopes are the quota-scope names of the tiers, where they differ from the
 // model name. Antigravity's Gemini models draw on the account's main
 // windows (no scope); its Claude models draw on the "3p" windows.
 var Scopes = map[string][4]string{
-	"claude": Models["claude"],
-	"codex":  {"astra", "sol", "terra", "luna"},
-	"agy":    {"3p", "", "", ""},
+	"claude":  Models["claude"],
+	"codex":   {"astra", "sol", "terra", "luna"},
+	"agy":     {"3p", "", "", ""},
+	"copilot": Models["copilot"],
 }
 
 // Efforts lists effort levels 1 to 6 as each provider spells them. The
 // Antigravity CLI knows three; the upper levels all map to its highest.
 var Efforts = map[string][6]string{
-	"claude": {"low", "medium", "high", "xhigh", "max", "ultracode"},
-	"codex":  {"low", "medium", "high", "xhigh", "max", "ultra"},
-	"agy":    {"low", "medium", "high", "high", "high", "high"},
+	"claude":  {"low", "medium", "high", "xhigh", "max", "ultracode"},
+	"codex":   {"low", "medium", "high", "xhigh", "max", "ultra"},
+	"agy":     {"low", "medium", "high", "high", "high", "high"},
+	"copilot": {"low", "medium", "high", "high", "high", "high"},
 }
 
 // Of returns the tier of a provider's model, or -1.

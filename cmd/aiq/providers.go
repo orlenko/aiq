@@ -12,6 +12,7 @@ import (
 	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
+	"github.com/orlenko/aiq/internal/provider/copilot"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -49,6 +50,8 @@ func cliName(provider string) string {
 		return "Codex"
 	case "agy":
 		return "Antigravity"
+	case "copilot":
+		return "Copilot"
 	}
 	return "Claude Code"
 }
@@ -74,6 +77,13 @@ func (a *app) agyProvider() (*agy.Provider, error) {
 	return &agy.Provider{Command: func(args, env []string) *exec.Cmd { return providerCommand("agy", args, env) }}, nil
 }
 
+func (a *app) copilotProvider() (*copilot.Provider, error) {
+	if _, err := a.binary("copilot"); err != nil {
+		return nil, err
+	}
+	return &copilot.Provider{Command: func(args, env []string) *exec.Cmd { return providerCommand("copilot", args, env) }}, nil
+}
+
 // providerPassthrough reports whether the CLI's own management subcommands
 // were named, which run on the real home unrouted.
 func providerPassthrough(provider string, args []string) bool {
@@ -84,6 +94,8 @@ func providerPassthrough(provider string, args []string) bool {
 		return codex.Passthrough(args)
 	case "agy":
 		return agy.Passthrough(args)
+	case "copilot":
+		return copilot.Passthrough(args)
 	}
 	return false
 }
@@ -97,6 +109,8 @@ func providerIsWorker(provider string, args []string) bool {
 		return codex.IsWorker(args)
 	case "agy":
 		return agy.IsWorker(args)
+	case "copilot":
+		return copilot.IsWorker(args)
 	}
 	return false
 }
@@ -111,6 +125,8 @@ func providerSession(provider string, args []string) (string, []string) {
 		return codex.Session(args), args
 	case "agy":
 		return agy.Session(args), args
+	case "copilot":
+		return copilot.Session(args), args
 	}
 	return "", args
 }
@@ -138,6 +154,9 @@ func (a *app) providerEnv(provider string, acc state.Account, inheritAuthEnv boo
 	case "agy":
 		p, _ := a.agyProvider()
 		return p.Env(acc.Home, acc.Native, inheritAuthEnv)
+	case "copilot":
+		p, _ := a.copilotProvider()
+		return p.Env(acc.Home, acc.Native, inheritAuthEnv)
 	}
 	return os.Environ()
 }
@@ -145,7 +164,7 @@ func (a *app) providerEnv(provider string, acc state.Account, inheritAuthEnv boo
 // bypassFlag is the permission bypass as aiq adds it for a session it
 // starts (auto, the menu, a resume).
 func bypassFlag(provider string) string {
-	if provider == "codex" {
+	if provider == "codex" || provider == "copilot" {
 		return "--yolo"
 	}
 	return longrun.BypassFlag[provider]
@@ -156,7 +175,7 @@ func workerArgs(provider, prompt string) []string {
 	switch provider {
 	case "codex":
 		return []string{"exec", "--", prompt}
-	case "agy":
+	case "agy", "copilot":
 		return []string{"-p", prompt}
 	}
 	return []string{"-p", "--", prompt}
@@ -169,6 +188,8 @@ func resumeVerb(provider, id string) []string {
 		return []string{"resume", id}
 	case "agy":
 		return []string{"--conversation", id}
+	case "copilot":
+		return []string{"--resume", id}
 	}
 	return []string{"--resume", id}
 }
@@ -177,6 +198,9 @@ func resumeVerb(provider, id string) []string {
 func firstPromptArgs(provider, prompt string) []string {
 	if provider == "agy" {
 		return []string{"--prompt-interactive", prompt}
+	}
+	if provider == "copilot" {
+		return []string{"-i", prompt}
 	}
 	return []string{prompt}
 }
@@ -190,6 +214,8 @@ func realHome(provider string) string {
 		return paths.RealCodexHome()
 	case "agy":
 		return paths.RealAgyHome()
+	case "copilot":
+		return paths.RealCopilotHome()
 	}
 	return ""
 }
@@ -203,14 +229,17 @@ func homesDir(provider string) string {
 		return paths.CodexHomesDir()
 	case "agy":
 		return paths.AgyHomesDir()
+	case "copilot":
+		return paths.CopilotHomesDir()
 	}
 	return ""
 }
 
 // defaultRoots is where the transcripts of every provider are looked for.
 func defaultRoots() transcript.Roots {
-	return transcript.DefaultRoots(paths.RealClaudeHome(), paths.RealCodexHome(), agy.AppDataDir(paths.RealAgyHome()),
-		paths.ClaudeHomesDir(), paths.CodexHomesDir())
+	return transcript.DefaultRoots(
+		paths.RealClaudeHome(), paths.RealCodexHome(), agy.AppDataDir(paths.RealAgyHome()), paths.RealCopilotHome(),
+		paths.ClaudeHomesDir(), paths.CodexHomesDir(), paths.CopilotHomesDir())
 }
 
 // prepareLong readies a CLI for a supervised session where it cannot be

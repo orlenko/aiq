@@ -15,7 +15,7 @@ import (
 )
 
 // Providers lists the CLIs aiq routes, in the order they are shown.
-var Providers = []string{"claude", "codex", "agy"}
+var Providers = []string{"claude", "codex", "agy", "copilot"}
 
 // KnownProvider reports whether name is one of the routed CLIs.
 func KnownProvider(name string) bool {
@@ -78,11 +78,11 @@ var launcherName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // <name>` resolves built-ins first, so such a launcher could never be
 // reached, and its shim would shadow a real command.
 var reservedNames = map[string]bool{
-	"run": true, "claude": true, "codex": true, "agy": true, "status": true, "top": true,
+	"run": true, "claude": true, "codex": true, "agy": true, "copilot": true, "status": true, "top": true,
 	"account": true, "mark": true, "reset": true, "shim": true, "statusline": true,
 	"daemon": true, "doctor": true, "long": true, "launcher": true, "version": true,
 	"resume": true, "help": true, "__launch": true, "claude-hook": true, "codex-hook": true,
-	"agy-hook": true, "claude-statusline": true, "agy-statusline": true,
+	"agy-hook": true, "copilot-hook": true, "claude-statusline": true, "agy-statusline": true,
 	// `aiq long <word>` has to tell these from a launcher name.
 	"list": true, "attach": true, "drain": true, "stop": true, "auto": true,
 }
@@ -215,9 +215,10 @@ type Telemetry struct {
 type Config struct {
 	Version   int `toml:"version"`
 	Providers struct {
-		Claude Provider `toml:"claude"`
-		Codex  Provider `toml:"codex"`
-		Agy    Provider `toml:"agy"`
+		Claude  Provider `toml:"claude"`
+		Codex   Provider `toml:"codex"`
+		Agy     Provider `toml:"agy"`
+		Copilot Provider `toml:"copilot"`
 	} `toml:"providers"`
 	Selection Selection `toml:"selection"`
 	Worker    Worker    `toml:"worker"`
@@ -254,6 +255,8 @@ func (c *Config) Provider(name string) Provider {
 		return c.Providers.Codex
 	case "agy":
 		return c.Providers.Agy
+	case "copilot":
+		return c.Providers.Copilot
 	}
 	return Provider{}
 }
@@ -263,6 +266,7 @@ func Default() *Config {
 	c.Providers.Claude.ModelScope = "auto"
 	c.Providers.Codex.ModelScope = "auto"
 	c.Providers.Agy.ModelScope = "auto"
+	c.Providers.Copilot.ModelScope = "auto"
 	c.Selection = Selection{
 		InteractivePolicy:    "sticky",
 		SwitchPct:            95,

@@ -197,6 +197,12 @@ func (a *app) accountAdd(provider, name string, login bool) error {
 		}
 		acc.Native, acc.Home = true, paths.RealAgyHome()
 	}
+	if provider == "copilot" {
+		if others, _ := a.st.ListAccounts("copilot"); len(others) > 0 {
+			return fmt.Errorf("%s is already registered as the copilot account; copilot runs on the real ~/.copilot login, one account per machine in this release (aiq account remove %s first)", others[0].ID, others[0].ID)
+		}
+		acc.Native, acc.Home = true, paths.RealCopilotHome()
+	}
 	if err := a.prepareHome(acc); err != nil {
 		return err
 	}
@@ -289,6 +295,14 @@ func (a *app) accountLogin(id string) error {
 			agy.MarkLoggedIn(acc.Home, u.Identity)
 		}
 		acc.Identity = u.Identity
+	case "copilot":
+		p, err := a.copilotProvider()
+		if err != nil {
+			return err
+		}
+		if err := p.Login(acc.Home, acc.Native); err != nil {
+			return err
+		}
 	}
 	a.st.UpdateAccount(acc)
 	a.st.LogEvent(acc.Provider, acc.ID, "login", acc.Identity, time.Now())

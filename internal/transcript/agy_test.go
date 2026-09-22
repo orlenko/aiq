@@ -64,7 +64,7 @@ func TestListAgy(t *testing.T) {
 	os.MkdirAll(filepath.Join(appData, "cache"), 0o700)
 	os.WriteFile(filepath.Join(appData, "cache", "last_conversations.json"), []byte(`{"`+work+`":"here2","/other":"gone"}`), 0o600)
 
-	list, err := List(DefaultRoots(filepath.Join(root, "claude"), filepath.Join(root, "codex"), appData), work)
+	list, err := List(DefaultRoots(filepath.Join(root, "claude"), filepath.Join(root, "codex"), appData, ""), work)
 	if err != nil {
 		t.Fatal(err)
 	}

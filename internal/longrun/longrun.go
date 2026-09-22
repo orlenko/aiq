@@ -506,7 +506,7 @@ func replayArgs(provider string, args []string) []string {
 				}
 				continue
 			}
-		case "claude":
+		case "claude", "copilot":
 			switch {
 			case a == "--continue" || a == "-c":
 				continue
@@ -538,9 +538,10 @@ func replayArgs(provider string, args []string) []string {
 
 // BypassFlag is each CLI's permission bypass as a takeover spells it.
 var BypassFlag = map[string]string{
-	"claude": "--dangerously-skip-permissions",
-	"codex":  "--dangerously-bypass-approvals-and-sandbox",
-	"agy":    "--dangerously-skip-permissions",
+	"claude":  "--dangerously-skip-permissions",
+	"codex":   "--dangerously-bypass-approvals-and-sandbox",
+	"agy":     "--dangerously-skip-permissions",
+	"copilot": "--yolo",
 }
 
 // ModelArgs spells a model ("" for the CLI's default) and an effort level

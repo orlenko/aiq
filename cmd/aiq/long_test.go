@@ -213,17 +213,17 @@ esac
 		args []string
 		want []string
 	}{
-		{"bare", []string{"--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy", "--model-tier", "1",
+		{"bare", []string{"--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy,copilot", "--model-tier", "1",
 			"--resume-session", "s1", "--", "--dangerously-skip-permissions"}},
-		{"tier and extra", []string{"--effort=2", "--bare", "--model-tier", "3", "s1", "--", "--add-dir", "/x"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy",
+		{"tier and extra", []string{"--effort=2", "--bare", "--model-tier", "3", "s1", "--", "--add-dir", "/x"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy,copilot",
 			"--effort=2", "--model-tier", "3", "--resume-session", "s1", "--", "--dangerously-skip-permissions", "--add-dir", "/x"}},
 		// Through a launcher the bypass comes only from an earlier launch.
 		{"launcher", []string{"--launcher", "box", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,codex", "--launcher", "box",
 			"--model-tier", "1", "--resume-session", "s1", "--"}},
 		// --account forces where the resumed session starts, by name or id.
-		{"account", []string{"--account", "pinned", "--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy",
+		{"account", []string{"--account", "pinned", "--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy,copilot",
 			"--account", "pinned", "--model-tier", "1", "--resume-session", "s1", "--", "--dangerously-skip-permissions"}},
-		{"account id", []string{"--account=claude/pinned", "--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy",
+		{"account id", []string{"--account=claude/pinned", "--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy,copilot",
 			"--account", "pinned", "--model-tier", "1", "--resume-session", "s1", "--", "--dangerously-skip-permissions"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

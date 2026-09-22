@@ -44,7 +44,7 @@ func TestAutoWorkerArgsPerProvider(t *testing.T) {
 }
 
 func TestProviderList(t *testing.T) {
-	if got := providerList(); got != "claude, codex or agy" {
+	if got := providerList(); got != "claude, codex, agy or copilot" {
 		t.Errorf("providerList: %q", got)
 	}
 	if got := joinOr([]string{"one"}); got != "one" {

@@ -191,7 +191,7 @@ func TestList(t *testing.T) {
 		`{"id":"c1","thread_name":"blog post"}`,
 	)
 
-	list, err := List(DefaultRoots(claudeHome, codexHome, "", overlays), work)
+	list, err := List(DefaultRoots(claudeHome, codexHome, "", "", overlays), work)
 	if err != nil {
 		t.Fatal(err)
 	}
