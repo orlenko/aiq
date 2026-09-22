@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
@@ -32,7 +33,7 @@ import (
 // so that Enter alone repeats the last start.
 type menuChoice struct {
 	Session string `json:"session"` // new | resume
-	Agent   string `json:"agent"`   // auto | claude | codex | <launcher>
+	Agent   string `json:"agent"`   // auto | claude | codex | agy | <launcher>
 	Length  string `json:"length"`  // short | long
 	Tier    int    `json:"tier"`    // -1: default
 	Effort  int    `json:"effort"`  // 0: default
@@ -74,7 +75,7 @@ func (e *menuEnv) accountChoices(c menuChoice) []menuAccount {
 		return e.accounts[e.provider(c.Agent)]
 	}
 	var out []menuAccount
-	for _, p := range []string{"claude", "codex"} {
+	for _, p := range config.Providers {
 		out = append(out, e.accounts[p]...)
 	}
 	return out
@@ -99,7 +100,7 @@ func accountLabel(a menuAccount, all []menuAccount) string {
 }
 
 func (e *menuEnv) provider(agent string) string {
-	if agent == "claude" || agent == "codex" {
+	if knownProvider(agent) {
 		return agent
 	}
 	return e.launchers[agent]
@@ -135,8 +136,6 @@ func (e *menuEnv) normalize(c menuChoice) menuChoice {
 	return c
 }
 
-var bypassFlag = map[string]string{"claude": "--dangerously-skip-permissions", "codex": "--yolo"}
-
 // menuArgs is the aiq command line a choice stands for.
 func menuArgs(c menuChoice, e *menuEnv) []string {
 	var model []string
@@ -169,7 +168,7 @@ func menuArgs(c menuChoice, e *menuEnv) []string {
 	provider := e.provider(c.Agent)
 	var cli []string
 	if c.Bypass {
-		cli = append(cli, bypassFlag[provider])
+		cli = append(cli, bypassFlag(provider))
 	}
 	if c.Length == "long" {
 		args := []string{"long", c.Agent}
@@ -220,7 +219,10 @@ func (m *menu) rows() []menuRow {
 	c, e := m.c, m.env
 	resume := c.Session == "resume"
 
-	agents := []menuOpt{{"auto", "Any"}, {"claude", "Claude"}, {"codex", "Codex"}}
+	agents := []menuOpt{{"auto", "Any"}}
+	for _, p := range config.Providers {
+		agents = append(agents, menuOpt{p, cliName(p)})
+	}
 	var names []string
 	for n := range e.launchers {
 		names = append(names, n)
@@ -343,7 +345,7 @@ func (m *menu) hint(r menuRow) string {
 		case s == nil:
 			return "Opens the browser of this directory's sessions; r resumes the one you pick. Counting them now."
 		case s.count == 0:
-			return "No Claude or Codex sessions have run in this directory yet."
+			return "No sessions have run in this directory yet."
 		default:
 			title := s.latest.Title
 			if title == "" && len(s.latest.Turns) > 0 {
@@ -360,10 +362,14 @@ func (m *menu) hint(r menuRow) string {
 			}
 			return "none eligible"
 		}
-		switch c.Agent {
-		case "auto":
-			return fmt.Sprintf("aiq picks the account with the most quota to spare, Claude or Codex, and skips permission prompts. Best now: %s, %s.", now("claude"), now("codex"))
-		case "claude", "codex":
+		switch {
+		case c.Agent == "auto":
+			var best []string
+			for _, p := range config.Providers {
+				best = append(best, p+" "+now(p))
+			}
+			return fmt.Sprintf("aiq picks the account with the most quota to spare on any provider, and skips permission prompts. Best now: %s.", strings.Join(best, ", "))
+		case knownProvider(c.Agent):
 			return fmt.Sprintf("%s on a routed %s account. Best now: %s.", cliName(c.Agent), c.Agent, now(c.Agent))
 		default:
 			return fmt.Sprintf("%s through the %s launcher.", cliName(e.provider(c.Agent)), c.Agent)
@@ -390,7 +396,11 @@ func (m *menu) hint(r menuRow) string {
 		if c.Effort == 0 {
 			return "The CLI's own default effort."
 		}
-		return fmt.Sprintf("Level %d of 6: Claude %s, Codex %s.", c.Effort, tier.Efforts["claude"][c.Effort-1], tier.Efforts["codex"][c.Effort-1])
+		var levels []string
+		for _, p := range config.Providers {
+			levels = append(levels, cliName(p)+" "+tier.Efforts[p][c.Effort-1])
+		}
+		return fmt.Sprintf("Level %d of 6: %s.", c.Effort, strings.Join(levels, ", "))
 	case "account":
 		if c.Account == "" {
 			if c.Session == "resume" {
@@ -411,25 +421,22 @@ func (m *menu) hint(r menuRow) string {
 		}
 	case "bypass":
 		if c.Bypass {
-			return "Starts with " + bypassFlag[e.provider(c.Agent)] + ": no permission prompts."
+			return "Starts with " + bypassFlag(e.provider(c.Agent)) + ": no permission prompts."
 		}
 		return "The CLI asks before it runs commands or edits files."
 	}
 	return ""
 }
 
-func cliName(provider string) string {
-	if provider == "codex" {
-		return "Codex"
-	}
-	return "Claude Code"
-}
-
 func tierModels(n int, provider string) string {
-	if provider != "" {
+	if provider != "" && tier.Known(provider) {
 		return tier.Models[provider][n]
 	}
-	return tier.Models["claude"][n] + " or " + tier.Models["codex"][n]
+	var names []string
+	for _, p := range config.Providers {
+		names = append(names, tier.Models[p][n])
+	}
+	return joinOr(names)
 }
 
 // --- keys ---
@@ -714,7 +721,7 @@ func (a *app) menuEnvironment(dir string) *menuEnv {
 			}
 			e.accounts[acc.Provider] = append(e.accounts[acc.Provider], menuAccount{acc.Name, acc.Provider, note + "."})
 		}
-		for _, p := range []string{"claude", "codex"} {
+		for _, p := range config.Providers {
 			for _, r := range v.Rankings[p+"/interactive"] {
 				if r.Eligible {
 					e.routed[p] = r.ID
@@ -756,8 +763,7 @@ func headroom(windows []pool.WindowView) int {
 }
 
 func loadMenuSessions(dir string) *menuSessions {
-	roots := transcript.DefaultRoots(paths.RealClaudeHome(), paths.RealCodexHome(), paths.ClaudeHomesDir(), paths.CodexHomesDir())
-	all, err := transcript.List(roots, dir)
+	all, err := transcript.List(defaultRoots(), dir)
 	if err != nil {
 		return &menuSessions{}
 	}

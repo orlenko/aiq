@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/config"
+	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/tier"
@@ -14,23 +16,23 @@ import (
 
 // modelFlags translates shared controls only after a provider is chosen.
 func modelFlags(provider string, f runFlags) (runFlags, error) {
+	if !tier.Known(provider) {
+		return f, fmt.Errorf("no model tiers for provider %q", provider)
+	}
 	var prefix []string
+	model, level := "", ""
 	if f.modelTier != nil {
 		if f.modelScope != "" {
 			return f, fmt.Errorf("--model-tier determines quota scope; omit --model-scope")
 		}
-		prefix = append(prefix, "--model", tier.Models[provider][*f.modelTier])
+		model = tier.Models[provider][*f.modelTier]
 		// Explicitly override the user's default scoped cap for this model.
 		f.modelScope = tier.Scopes[provider][*f.modelTier]
 	}
 	if f.effort > 0 {
-		level := tier.Efforts[provider][f.effort-1]
-		if provider == "claude" {
-			prefix = append(prefix, "--effort", level)
-		} else {
-			prefix = append(prefix, "-c", "model_reasoning_effort="+level)
-		}
+		level = tier.Efforts[provider][f.effort-1]
 	}
+	prefix = append(prefix, longrun.ModelArgs(provider, model, level)...)
 	// A second model/effort could make quota selection disagree with execution.
 	for i, arg := range f.rest {
 		if arg == "--" {
@@ -109,7 +111,7 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 		return f, r, f.flagsErr
 	}
 	if len(f.rest) > 0 {
-		return f, r, fmt.Errorf("unsupported auto argument %q; use -p for a task, or select claude/codex for native options", f.rest[0])
+		return f, r, fmt.Errorf("unsupported auto argument %q; use -p for a task, or select a provider for native options", f.rest[0])
 	}
 	if f.account != "" || f.launcher != "" || f.next || f.takeover != 0 || f.fallback != "" || f.resumeSession != "" || f.nudge != "" || f.modelScope != "" {
 		return f, r, fmt.Errorf("auto supports --model-tier, --effort, --mode, --wait, --inherit-auth-env, -p, and --yolo; account, launcher, and session controls require a provider")
@@ -129,20 +131,18 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 	return f, r, nil
 }
 
+// args is the CLI command line auto composes: the worker verb when -p was
+// given, the permission bypass, and the prompt. Claude and Codex take the
+// prompt after --; Antigravity takes it as the value of -p.
 func (r autoRequest) args(provider string) []string {
 	var args []string
 	if r.print {
-		if provider == "claude" {
-			args = append(args, "-p")
-		} else {
-			args = append(args, "exec")
+		if provider == "agy" {
+			return append([]string{bypassFlag(provider)}, workerArgs(provider, r.prompt)...)
 		}
+		args = append(args, workerArgs(provider, "")[:1]...)
 	}
-	if provider == "claude" {
-		args = append(args, "--dangerously-skip-permissions")
-	} else {
-		args = append(args, "--yolo")
-	}
+	args = append(args, bypassFlag(provider))
 	if r.hasPrompt {
 		args = append(args, "--", r.prompt)
 	}
@@ -151,7 +151,7 @@ func (r autoRequest) args(provider string) []string {
 
 // Rank each provider with its model scope, then compare their quota scores.
 // Auto intentionally has no provider affinity: it spends the most perishable
-// eligible quota across both pools, keeping the requested tier on every retry.
+// eligible quota across every pool, keeping the requested tier on every retry.
 func rankAuto(policies map[string]selector.Policy, candidates []selector.Candidate) []selector.Ranked {
 	var ranked []selector.Ranked
 	byID := map[string]selector.Candidate{}
@@ -195,7 +195,7 @@ func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) 
 	var candidates []selector.Candidate
 	var notes []string
 	available, registered := 0, 0
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range config.Providers {
 		if _, err := a.binary(provider); err != nil {
 			notes = append(notes, "Skipping "+provider+": "+err.Error())
 			continue
@@ -226,7 +226,7 @@ func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) 
 		policies[provider] = policy
 	}
 	if available == 0 {
-		return state.Account{}, notes, configErr("no-binary", "neither claude nor codex is available")
+		return state.Account{}, notes, configErr("no-binary", "none of %s is available", providerList())
 	}
 	if registered == 0 {
 		return state.Account{}, notes, configErr("no-accounts", "no accounts registered for available providers")
@@ -246,5 +246,5 @@ func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) 
 		}
 		notes = append(notes, fmt.Sprintf("Skipping %s — %s", r.ID, r.Reason))
 	}
-	return state.Account{}, notes, poolDry(token, "no eligible Claude or Codex account for model tier %d", *f.modelTier)
+	return state.Account{}, notes, poolDry(token, "no eligible account on any provider for model tier %d", *f.modelTier)
 }

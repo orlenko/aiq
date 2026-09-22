@@ -10,15 +10,15 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/longrun"
-	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
 // aiq long <provider> [--account <name>] [--model-tier N] [--effort N] [--] [args...] starts or attaches.
-// aiq long auto [--model-tier N] [--effort N]   the same across both pools
+// aiq long auto [--model-tier N] [--effort N]   the same across every pool
 // aiq long auto resume [--account <name>] [<id>]  resume a session here, long
 // aiq long list                   long sessions and their drain state
 // aiq long drain <lease-id|.>     ask a session to wrap up and move now
@@ -26,7 +26,7 @@ import (
 // aiq long stop <lease-id|.>      end the session and its tmux session
 func cmdLong(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq long claude|codex|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | auto resume [--account <name>] [<id>] | list | drain <id|.> | attach [.] | stop <id|.>")
+		return fmt.Errorf("usage: aiq long %s|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | auto resume [--account <name>] [<id>] | list | drain <id|.> | attach [.] | stop <id|.>", config.ProviderList("|"))
 	}
 	a, err := openApp()
 	if err != nil {
@@ -34,7 +34,7 @@ func cmdLong(args []string) error {
 	}
 	defer a.close()
 	switch args[0] {
-	case "claude", "codex":
+	case "claude", "codex", "agy":
 		return a.longStart(args[0], "", args[1:])
 	case "auto":
 		if len(args) > 1 && args[1] == "resume" {
@@ -385,8 +385,7 @@ func (a *app) longAutoResume(args []string) error {
 	if err != nil {
 		return err
 	}
-	roots := transcript.DefaultRoots(paths.RealClaudeHome(), paths.RealCodexHome(), paths.ClaudeHomesDir(), paths.CodexHomesDir())
-	sessions, err := transcript.List(roots, dir)
+	sessions, err := transcript.List(defaultRoots(), dir)
 	if err != nil {
 		return err
 	}
@@ -523,7 +522,7 @@ func (a *app) longList() error {
 		return err
 	}
 	if len(leases) == 0 {
-		fmt.Println("no long sessions — start one with: aiq long claude|codex [args]")
+		fmt.Printf("no long sessions — start one with: aiq long %s [args]\n", config.ProviderList("|"))
 		return nil
 	}
 	now := time.Now()

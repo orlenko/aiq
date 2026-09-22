@@ -197,7 +197,10 @@ func renderStatus(v *pool.View, explain bool) string {
 	}
 	if explain {
 		b.WriteString("\nnext pick (score = Σ remaining%/hours-to-reset, higher first):\n")
-		keys := []string{"claude/" + state.ModeInteractive, "claude/" + state.ModeWorker, "codex/" + state.ModeInteractive, "codex/" + state.ModeWorker}
+		var keys []string
+		for _, p := range pool.Providers {
+			keys = append(keys, p+"/"+state.ModeInteractive, p+"/"+state.ModeWorker)
+		}
 		for _, k := range keys {
 			list, ok := v.Rankings[k]
 			if !ok {

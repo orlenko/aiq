@@ -76,16 +76,26 @@ func recordClaudeUsage(account string, rl claude.RateLimits) {
 	}
 }
 
-// cmdStatusline installs or removes the Claude status-line multiplexer by hand.
+// cmdStatusline installs or removes a status-line multiplexer by hand:
+// Claude's unless agy is named.
 func cmdStatusline(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq statusline install|uninstall|status")
+		return fmt.Errorf("usage: aiq statusline install|uninstall|status [claude|agy]")
 	}
 	a, err := openApp()
 	if err != nil {
 		return err
 	}
 	defer a.close()
+	if len(args) > 1 {
+		switch args[1] {
+		case "agy":
+			return a.cmdAgyStatuslineAdmin(args[0])
+		case "claude":
+		default:
+			return fmt.Errorf("statusline provider must be claude or agy, not %q", args[1])
+		}
+	}
 	configDir := paths.RealClaudeHome()
 	switch args[0] {
 	case "install":

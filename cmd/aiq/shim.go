@@ -9,8 +9,8 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 )
 
-// shimScript is what `claude` and `codex` become on PATH. AIQ_SHIM marks it
-// so binpath never mistakes a copy for the real CLI.
+// shimScript is what `claude`, `codex` and `agy` become on PATH. AIQ_SHIM
+// marks it so binpath never mistakes a copy for the real CLI.
 const shimScript = `#!/bin/sh
 # AIQ_SHIM: routes %[1]s to the pooled account with the most perishable quota.
 exec %[2]q run %[1]s -- "$@"
@@ -58,7 +58,7 @@ func cmdShim(args []string) error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
-		for _, name := range []string{"claude", "codex"} {
+		for _, name := range config.Providers {
 			path := filepath.Join(dir, name)
 			if err := os.WriteFile(path, []byte(fmt.Sprintf(shimScript, name, self)), 0o755); err != nil {
 				return err
@@ -75,10 +75,10 @@ func cmdShim(args []string) error {
 		}
 		fmt.Printf("shims written to %s\n\n", dir)
 		fmt.Printf("Put them first on PATH (add to ~/.zshrc / ~/.bashrc):\n\n  export PATH=%q:$PATH\n\n", dir)
-		fmt.Println("Every shell and every agent-spawned subprocess then routes claude/codex through aiq.")
+		fmt.Printf("Every shell and every agent-spawned subprocess then routes %s through aiq.\n", config.ProviderList("/"))
 		return nil
 	case "uninstall":
-		for _, name := range []string{"claude", "codex"} {
+		for _, name := range config.Providers {
 			os.Remove(filepath.Join(dir, name))
 		}
 		fmt.Printf("shims removed from %s (drop the PATH line from your shell rc)\n", dir)

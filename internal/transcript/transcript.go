@@ -1,13 +1,14 @@
-// Package transcript reads the session transcripts Claude Code and Codex
-// leave on disk and reduces each one to what a person coming back to a
-// directory wants to know: who worked here, when, and what each turn asked
-// and answered.
+// Package transcript reads the session transcripts Claude Code, Codex and
+// the Antigravity CLI leave on disk and reduces each one to what a person
+// coming back to a directory wants to know: who worked here, when, and what
+// each turn asked and answered.
 //
 // Claude keeps one JSONL file per session under projects/<encoded-cwd>/.
 // Codex keeps rollout-*.jsonl files under sessions/YYYY/MM/DD/, each opening
-// with a session_meta record that names its cwd. Both formats change
-// between CLI versions, so every field is optional and unknown records are
-// ignored.
+// with a session_meta record that names its cwd. Antigravity keeps
+// brain/<id>/.system_generated/logs/transcript.jsonl and records the
+// workspace of each prompt in history.jsonl. All formats change between CLI
+// versions, so every field is optional and unknown records are ignored.
 package transcript
 
 import (
@@ -23,7 +24,7 @@ import (
 
 // Session is one transcript.
 type Session struct {
-	Provider string // "claude" or "codex"
+	Provider string // "claude", "codex" or "agy"
 	ID       string
 	Path     string
 	Cwd      string
@@ -79,15 +80,20 @@ type Roots struct {
 	ClaudeProjects []string
 	CodexSessions  []string
 	CodexIndex     []string // session_index.jsonl files (thread names)
+	AgyAppData     []string // Antigravity CLI app data dirs (brain/, history.jsonl)
 }
 
-// DefaultRoots derives the search roots from the real homes and the parent
+// DefaultRoots derives the search roots from the real homes (realAgy is the
+// Antigravity CLI's app data dir; "" leaves it out) and the parent
 // directories that hold aiq's overlay homes.
-func DefaultRoots(realClaude, realCodex string, overlayParents ...string) Roots {
+func DefaultRoots(realClaude, realCodex, realAgy string, overlayParents ...string) Roots {
 	r := Roots{
 		ClaudeProjects: []string{filepath.Join(realClaude, "projects")},
 		CodexSessions:  []string{filepath.Join(realCodex, "sessions")},
 		CodexIndex:     []string{filepath.Join(realCodex, "session_index.jsonl")},
+	}
+	if realAgy != "" {
+		r.AgyAppData = []string{realAgy}
 	}
 	for _, parent := range overlayParents {
 		homes, _ := os.ReadDir(parent)
@@ -116,6 +122,7 @@ func List(r Roots, dir string) ([]Session, error) {
 	var paths []found
 	paths = append(paths, claudeFiles(r.ClaudeProjects, dir)...)
 	paths = append(paths, codexFiles(r.CodexSessions, dir)...)
+	paths = append(paths, agyFiles(r.AgyAppData, dir)...)
 
 	out := make([]*Session, len(paths))
 	parallel(len(paths), func(i int) {
@@ -126,6 +133,8 @@ func List(r Roots, dir string) ([]Session, error) {
 			s, err = ParseClaude(paths[i].path)
 		case "codex":
 			s, err = ParseCodex(paths[i].path)
+		case "agy":
+			s, err = ParseAgy(paths[i].path)
 		}
 		if err != nil || s == nil {
 			return

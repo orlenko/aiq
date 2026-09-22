@@ -77,6 +77,17 @@ func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
 		{"codex", "claude", []string{"-m", "gpt-5.6-terra", "--config=model_reasoning_effort=\"low\""}, []string{"--model", "sonnet", "--effort", "low"}},
 		{"claude", "codex", []string{"--", "--model", "opus"}, nil},
 		{"claude", "claude", []string{"--model", "opus"}, []string{"--model", "opus"}},
+		{"claude", "agy", []string{"--dangerously-skip-permissions", "--model", "opus", "--effort", "max"},
+			[]string{"--dangerously-skip-permissions", "--model", "gemini-3.1-pro-high"}},
+		{"claude", "agy", []string{"--model", "sonnet", "--effort", "low"}, []string{"--model", "gemini-3.8-flash-low"}},
+		{"claude", "agy", []string{"--model", "fable", "--effort", "low"}, []string{"--model", "claude-opus-4-6-thinking"}},
+		{"claude", "agy", []string{"--effort", "medium"}, []string{"--effort", "medium"}},
+		{"agy", "codex", []string{"--dangerously-skip-permissions", "--model=gemini-3.7-flash-low", "--effort", "low", "--conversation", "abc"},
+			[]string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-luna", "-c", "model_reasoning_effort=low"}},
+		{"agy", "claude", []string{"-c", "--model", "claude-opus-4-6-thinking"}, []string{"--model", "fable"}},
+		{"agy", "claude", []string{"--model", "gemini-3.8-flash-high"}, []string{"--model", "sonnet"}},
+		{"codex", "agy", []string{"--yolo", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=xhigh"},
+			[]string{"--dangerously-skip-permissions", "--model", "gemini-3.1-pro-high"}},
 	}
 	for _, c := range cases {
 		got := TranslateArgs(c.from, c.to, c.in)
@@ -101,6 +112,9 @@ func TestReplayArgsDropsSessionSelection(t *testing.T) {
 		{"claude", []string{"-c", "--model", "opus"}, []string{"--model", "opus"}},
 		{"claude", []string{"--session-id=abc", "-r"}, nil},
 		{"claude", []string{"--model", "opus"}, []string{"--model", "opus"}},
+		{"agy", []string{"--dangerously-skip-permissions", "--conversation", "abc"}, []string{"--dangerously-skip-permissions"}},
+		{"agy", []string{"--conversation=abc", "-c", "--model", "gemini-3.1-pro-high"}, []string{"--model", "gemini-3.1-pro-high"}},
+		{"agy", []string{"--continue", "--effort", "high"}, []string{"--effort", "high"}},
 	}
 	for _, c := range cases {
 		got := replayArgs(c.provider, c.in)

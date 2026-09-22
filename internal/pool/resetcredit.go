@@ -142,7 +142,7 @@ func (p *Pool) SpendResetCredits(codexCmd func(args, env []string) *exec.Cmd) {
 	}
 	for _, id := range reset {
 		if a, err := p.St.GetAccount(id); err == nil {
-			p.pollOne(a, codexCmd)
+			p.pollOne(a, time.Duration(p.Cfg.Poll.TimeoutSeconds)*time.Second)
 		}
 	}
 }

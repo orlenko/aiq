@@ -1,25 +1,30 @@
 // Package tier maps aiq's portable model tiers and effort levels to each
 // provider's own names, so a choice made for one CLI can be restated for
-// the other.
+// another.
 package tier
 
 // Models lists each provider's model for tiers 0 (strongest) to 3.
 var Models = map[string][4]string{
 	"claude": {"fable", "opus", "sonnet", "haiku"},
 	"codex":  {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+	"agy":    {"claude-opus-4-6-thinking", "gemini-3.1-pro-high", "gemini-3.8-flash-medium", "gemini-3.7-flash-medium"},
 }
 
 // Scopes are the quota-scope names of the tiers, where they differ from the
-// model name.
+// model name. Antigravity's Gemini models draw on the account's main
+// windows (no scope); its Claude models draw on the "3p" windows.
 var Scopes = map[string][4]string{
 	"claude": Models["claude"],
 	"codex":  {"astra", "sol", "terra", "luna"},
+	"agy":    {"3p", "", "", ""},
 }
 
-// Efforts lists effort levels 1 to 6 as each provider spells them.
+// Efforts lists effort levels 1 to 6 as each provider spells them. The
+// Antigravity CLI knows three; the upper levels all map to its highest.
 var Efforts = map[string][6]string{
 	"claude": {"low", "medium", "high", "xhigh", "max", "ultracode"},
 	"codex":  {"low", "medium", "high", "xhigh", "max", "ultra"},
+	"agy":    {"low", "medium", "high", "high", "high", "high"},
 }
 
 // Of returns the tier of a provider's model, or -1.
@@ -40,4 +45,10 @@ func EffortOf(provider, level string) int {
 		}
 	}
 	return 0
+}
+
+// Known reports whether the provider has a tier table.
+func Known(provider string) bool {
+	_, ok := Models[provider]
+	return ok
 }

@@ -13,32 +13,37 @@ import (
 	"time"
 
 	"github.com/orlenko/aiq/internal/config"
+	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/proc"
+	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
 )
 
-var Providers = []string{"claude", "codex"}
+// Providers are the routed CLIs, in display order.
+var Providers = config.Providers
 
 type Pool struct {
 	Cfg *config.Config
 	St  *state.Store
-	// CodexCommand builds a child process for the real codex binary (set by
+	// Command builds a child process for a provider's real binary (set by
 	// the command layer, which owns binary resolution).
-	CodexCommand func(args, env []string) *exec.Cmd
+	Command func(provider string, args, env []string) *exec.Cmd
+}
+
+// command returns the process builder for one provider, or nil.
+func (p *Pool) command(provider string) func(args, env []string) *exec.Cmd {
+	if p.Command == nil {
+		return nil
+	}
+	return func(args, env []string) *exec.Cmd { return p.Command(provider, args, env) }
 }
 
 // ModelScope resolves the scoped-limit name for a provider.
 func (p *Pool) ModelScope(provider string) string {
-	var cfg config.Provider
-	switch provider {
-	case "claude":
-		cfg = p.Cfg.Providers.Claude
-	case "codex":
-		cfg = p.Cfg.Providers.Codex
-	}
+	cfg := p.Cfg.Provider(provider)
 	if cfg.ModelScope != "auto" {
 		return cfg.ModelScope
 	}
@@ -47,6 +52,8 @@ func (p *Pool) ModelScope(provider string) string {
 		return claude.DefaultModel()
 	case "codex":
 		return codex.DefaultModel()
+	case "agy":
+		return agy.ScopeOf(agy.DefaultModel(paths.RealAgyHome()))
 	}
 	return ""
 }
@@ -61,6 +68,8 @@ func HasCredential(a state.Account) bool {
 			return true
 		}
 		return codex.HasCredential(a.Home)
+	case "agy":
+		return agy.HasCredential(a.Home, a.Native)
 	}
 	return false
 }
@@ -169,8 +178,8 @@ func (p *Pool) Rank(provider, mode string) ([]selector.Ranked, error) {
 // returns per-account results; a failed account keeps its last windows.
 func (p *Pool) Refresh(ids ...string) []PollResult {
 	timeout := time.Duration(p.Cfg.Poll.TimeoutSeconds) * time.Second
-	results := p.Poll(p.CodexCommand, timeout, ids...)
-	p.SpendResetCredits(p.CodexCommand)
+	results := p.Poll(timeout, ids...)
+	p.SpendResetCredits(p.command("codex"))
 	return results
 }
 

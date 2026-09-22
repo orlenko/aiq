@@ -12,6 +12,7 @@ import (
 	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
+	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/provider/claude"
 )
 
@@ -72,6 +73,10 @@ func cmdDoctor(args []string) error {
 
 	accounts, _ := a.st.ListAccounts("")
 	check(len(accounts) > 0, "%d accounts registered", len(accounts))
+	if agyAccounts, _ := a.st.ListAccounts("agy"); len(agyAccounts) > 0 {
+		_, installed, _ := agy.InstalledStatusline(paths.RealAgyHome())
+		check(installed, "agy statusline multiplexer installed in %s (quota is polled through it)%s", agy.SettingsPath(paths.RealAgyHome()), hint(!installed, "aiq statusline install agy"))
+	}
 	now := time.Now()
 	for _, acc := range accounts {
 		check(pool.HasCredential(acc), "%s: CLI login present (%s)%s", acc.ID, shortHome(acc.Home), hint(!pool.HasCredential(acc), "aiq account login "+acc.ID))

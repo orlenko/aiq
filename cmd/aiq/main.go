@@ -1,4 +1,4 @@
-// Command aiq routes every claude and codex invocation to the pooled
+// Command aiq routes every claude, codex and agy invocation to the pooled
 // subscription account that is about to waste the most quota, and runs the
 // daemon that keeps the pool's telemetry fresh.
 package main
@@ -16,8 +16,6 @@ import (
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
-	"github.com/orlenko/aiq/internal/provider/claude"
-	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/state"
 )
 
@@ -37,7 +35,7 @@ func launcherByName(name string) (config.Launcher, bool) {
 	return cfg.Launcher(name)
 }
 
-const usage = `aiq %s — quota-aware router for pooled Claude Code and Codex accounts
+const usage = `aiq %s — quota-aware router for pooled Claude Code, Codex and Antigravity accounts
 
 On a terminal, aiq with no arguments opens the start menu: pick new or
 resume, any agent or a specific one, short or long, and it runs the
@@ -48,20 +46,23 @@ Launch (what the PATH shims call):
                  [--model-tier 0..3] [--effort 1..6]
                  [--model-scope <name>] [--wait <duration>] -- [claude args...]
   aiq run codex  [same flags] -- [codex args...]
+  aiq run agy    [same flags] -- [agy args...]
   aiq run auto [--model-tier 0..3] [--effort 1..6] [-p <prompt>]
-    auto chooses across both pools; tier defaults to 1, effort to the CLI default.
-    -p runs a worker (Claude print / Codex exec); omit it for an interactive session.
-    auto always enables YOLO: Claude --dangerously-skip-permissions / Codex --yolo.
+    auto chooses across every pool; tier defaults to 1, effort to the CLI default.
+    -p runs a worker (Claude print / Codex exec / agy print); omit it for an interactive session.
+    auto always enables YOLO: --dangerously-skip-permissions (Claude, agy) / Codex --yolo.
     exit 75: no eligible account (pool dry, at cap, wait expired); 78: nothing to route to;
     any other code is the child's own
   aiq claude [args...]            same as: aiq run claude -- args
   aiq codex  [args...]
+  aiq agy    [args...]
 
 Pool:
   aiq status [--json] [--refresh] [--explain]
   aiq top                          live console view
   aiq account list
-  aiq account add <provider> <name>        new overlay home + browser login (+ poll grant for Claude)
+  aiq account add <provider> <name>        new overlay home + browser login (+ poll grant for Claude);
+                                           agy: the one ~/.gemini login, registered as native
   aiq account login <provider>/<name>      (re)authenticate the CLI for an account
   aiq account authorize claude/<name>      (re)mint the quota poll grant
   aiq account poll [<provider>/<name>...]  poll now
@@ -77,20 +78,20 @@ Pool:
   aiq reset codex/<name>                   consume an earned Codex reset credit
 
 Launchers (a named program that starts the CLI in an environment of its own):
-  aiq launcher add <name> --provider claude|codex [--credential file]
+  aiq launcher add <name> --provider claude|codex|agy [--credential file]
                           [--env K=V]... [--fallback a,b] -- <command> [args...]
   aiq launcher list | remove <name>
   aiq <name> [args...]             route, then start the CLI through that launcher
   <name> [args...]                 same, via the shim that launcher add writes
-    plain claude and codex never use one: a launcher runs only when named.
+    plain claude, codex and agy never use one: a launcher runs only when named.
 
 Long-running sessions (supervised, moved between accounts before they run dry):
-  aiq long claude|codex|<launcher> [--account <name>] [--model-tier 0..3] [--effort 1..6] [--] [args...]
+  aiq long claude|codex|agy|<launcher> [--account <name>] [--model-tier 0..3] [--effort 1..6] [--] [args...]
                                     start in a tmux session named after
                                     the workspace, or attach
   aiq long auto [--model-tier 0..3] [--effort 1..6]
-                                    the same on the account auto picks from both
-                                    pools, with YOLO; no prompt, type it in the session
+                                    the same on the account auto picks from every
+                                    pool, with YOLO; no prompt, type it in the session
   aiq long auto resume [--account <name>] [--model-tier N] [--effort N] [--all]
                        [--launcher <name> | --bare] [<id>]
                                     browse this directory's sessions; r resumes the
@@ -98,7 +99,7 @@ Long-running sessions (supervised, moved between accounts before they run dry):
                                     --account starts it on that account
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
-Sessions in this directory (Claude and Codex transcripts):
+Sessions in this directory (Claude, Codex and Antigravity transcripts):
   aiq resume [--all] [--launcher <name> | --bare] [<id>] [-- args]
                                     browse sessions and their turns; r resumes
                                     the selected one on a routed account, through
@@ -107,7 +108,8 @@ Sessions in this directory (Claude and Codex transcripts):
 
 Machine:
   aiq shim install|uninstall|path
-  aiq statusline install|uninstall|status   Claude status-line multiplexer (live quota feed)
+  aiq statusline install|uninstall|status [claude|agy]
+                                   status-line multiplexer (live quota feed; how agy is polled)
   aiq daemon run|install|uninstall|status
   aiq doctor
 `
@@ -159,7 +161,7 @@ func openApp() (*app, error) {
 		return nil, err
 	}
 	p := &pool.Pool{Cfg: cfg, St: st}
-	p.CodexCommand = func(args, env []string) *exec.Cmd { return providerCommand("codex", args, env) }
+	p.Command = func(provider string, args, env []string) *exec.Cmd { return providerCommand(provider, args, env) }
 	return &app{cfg: cfg, st: st, pool: p}, nil
 }
 
@@ -172,20 +174,6 @@ func (a *app) close() {
 // binary reports which executable a launch would exec first (for doctor).
 func (a *app) binary(provider string) (string, error) {
 	return a.resolveNext(provider, chain{provider: provider})
-}
-
-func (a *app) claudeProvider() (*claude.Provider, error) {
-	if _, err := a.binary("claude"); err != nil {
-		return nil, err
-	}
-	return &claude.Provider{Command: func(args, env []string) *exec.Cmd { return providerCommand("claude", args, env) }}, nil
-}
-
-func (a *app) codexProvider() (*codex.Provider, error) {
-	if _, err := a.binary("codex"); err != nil {
-		return nil, err
-	}
-	return &codex.Provider{Command: func(args, env []string) *exec.Cmd { return providerCommand("codex", args, env) }}, nil
 }
 
 func main() {
@@ -213,7 +201,7 @@ func main() {
 		} else {
 			err = cmdRun(args[0], args[1:])
 		}
-	case "claude", "codex":
+	case "claude", "codex", "agy":
 		err = cmdRun(cmd, append([]string{"--"}, args...))
 	case "status":
 		err = cmdStatus(args)
@@ -245,9 +233,15 @@ func main() {
 	case "codex-hook":
 		cmdHook("codex", args)
 		return
+	case "agy-hook":
+		cmdHook("agy", args)
+		return
 	case "claude-statusline":
 		// Never break the user's status line: this always exits 0.
 		cmdClaudeStatusline()
+		return
+	case "agy-statusline":
+		cmdAgyStatusline()
 		return
 	case "version", "--version", "-v":
 		fmt.Println("aiq", version)

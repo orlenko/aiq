@@ -100,6 +100,7 @@ aiq account remove claude/work --purge
 aiq account use codex/work            # pin this checkout
 aiq account next codex                # rotate this checkout
 aiq account import                    # optional: adopt accounts from aiquota, if installed</code></pre>
+<p>Antigravity (<code>agy</code>) joins as a third provider on your real login: <code>aiq account add agy main</code> registers <code>~/.gemini</code> as a native account (the CLI keeps its token in the OS keyring and reads no variable for another home, so one account per machine for now). Its quota is read through its status line: aiq points <code>~/.gemini/antigravity-cli/settings.json</code> at <code>aiq agy-statusline</code>, and a poll starts a headless <code>agy -p</code> that is stopped as soon as the status line reports the buckets, before any model call. <code>aiq run auto</code>, <code>aiq long</code> and <code>aiq resume</code> treat it like the others.</p>
 <p>Adding a Claude account takes two browser steps: the Claude Code login inside the account's home, then a second authorization that mints aiq's own token for reading quota (Claude Code's own credential is never read or copied). Sign in as the same account both times. Adding a Codex account is one browser login; quota is read through the Codex CLI itself, no extra step.</p>
 <p>Sign out of claude.ai or chatgpt.com first, or use a private window, or the browser hands back the account it is already signed in as; aiq warns when two accounts turn out to be the same login.</p>
 <p>Manual overrides when telemetry lags:</p>
@@ -186,7 +187,7 @@ listen = "127.0.0.1:7379"
 
 [long]
 drain_pct = 4.0
-fallback = ["claude", "codex"]
+fallback = ["claude", "codex", "agy"]
 check_interval_seconds = 30
 idle_grace_seconds = 20</code></pre>
 </main>

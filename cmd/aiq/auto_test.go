@@ -24,7 +24,7 @@ func TestAutoArguments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, provider := range []string{"claude", "codex"} {
+			for _, provider := range []string{"claude", "codex", "agy"} {
 				f.rest = r.args(provider)
 				got, err := modelFlags(provider, f)
 				if err != nil {
@@ -32,12 +32,28 @@ func TestAutoArguments(t *testing.T) {
 				}
 				level := []string{"low", "medium", "high", "xhigh", "max", "ultra"}[effort-1]
 				var want []string
-				if provider == "claude" {
+				switch provider {
+				case "claude":
 					if effort == 6 {
 						level = "ultracode"
 					}
 					want = []string{"--model", tier.Models[provider][tr], "--effort", level, "-p", "--dangerously-skip-permissions", "--", r.prompt}
-				} else {
+				case "agy":
+					if effort > 3 {
+						level = "high"
+					}
+					// The level is the model name's suffix; a model without
+					// variants takes none, and the pro models have no medium.
+					model := tier.Models[provider][tr]
+					switch {
+					case tr == 0:
+					case tr == 1 && level == "medium":
+						model = "gemini-3.1-pro-high"
+					default:
+						model = model[:strings.LastIndex(model, "-")] + "-" + level
+					}
+					want = []string{"--model", model, "--dangerously-skip-permissions", "-p", r.prompt}
+				default:
 					want = []string{"exec", "--model", tier.Models[provider][tr], "-c", "model_reasoning_effort=" + level, "--yolo", "--", r.prompt}
 				}
 				if !reflect.DeepEqual(got.rest, want) {

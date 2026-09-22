@@ -18,11 +18,16 @@ import (
 //
 //	aiq claude-hook sessionstart|userpromptsubmit|stop
 //	aiq codex-hook  sessionstart|userpromptsubmit|stop
+//	aiq agy-hook    userpromptsubmit|stop
 //
-// Both CLIs pipe a JSON payload on stdin and accept the same output shapes:
-// {"decision":"block","reason":…} on Stop makes the agent continue with the
-// reason as its instruction; hookSpecificOutput.additionalContext on
-// UserPromptSubmit injects context alongside the user's prompt.
+// Every CLI pipes a JSON payload on stdin. Claude and Codex accept the same
+// output shapes: {"decision":"block","reason":…} on Stop makes the agent
+// continue with the reason as its instruction; hookSpecificOutput.
+// additionalContext on UserPromptSubmit injects context alongside the
+// user's prompt. Antigravity's hooks are global (its CLI has no per-launch
+// hook flag), fire on every model invocation rather than on the prompt, use
+// camelCase fields, and take {"decision":"continue","reason":…} on Stop and
+// {"injectSteps":[{"ephemeralMessage":…}]} before an invocation.
 func cmdHook(provider string, args []string) {
 	defer func() { recover() }()
 	if len(args) == 0 {
@@ -38,8 +43,16 @@ func cmdHook(provider string, args []string) {
 		SessionID      string `json:"session_id"`
 		TranscriptPath string `json:"transcript_path"`
 		StopHookActive bool   `json:"stop_hook_active"`
+		ConversationID string `json:"conversationId"`
+		Transcript     string `json:"transcriptPath"`
 	}
 	json.Unmarshal(input, &payload)
+	if payload.SessionID == "" {
+		payload.SessionID = payload.ConversationID
+	}
+	if payload.TranscriptPath == "" {
+		payload.TranscriptPath = payload.Transcript
+	}
 
 	st, err := state.Open(paths.StateDB())
 	if err != nil {
@@ -49,6 +62,9 @@ func cmdHook(provider string, args []string) {
 	l, err := st.GetLease(leaseID)
 	if err != nil {
 		return
+	}
+	if l.Provider != "" && l.Provider != provider {
+		return // a hook of one CLI inherited a lease of another (nested launch)
 	}
 	now := time.Now()
 	if payload.SessionID != "" && payload.SessionID != l.SessionID {
@@ -62,15 +78,25 @@ func cmdHook(provider string, args []string) {
 	case "sessionstart":
 		return
 	case "userpromptsubmit":
-		st.MarkTurn(l.ID, true, now)
+		// Antigravity fires this before every model call of a turn; the
+		// first one starts the turn and the rest keep it going.
+		if provider != "agy" || !l.InTurn() {
+			st.MarkTurn(l.ID, true, now)
+		}
 		if l.Drain == state.DrainRequested {
 			remaining, until := currentHeadroom(st, l)
 			st.SetLeaseDrain(l.ID, state.DrainDraining, now)
 			st.LogEvent(provider, l.AccountID, "long", fmt.Sprintf("lease %d: wrap-up injected at prompt", l.ID), now)
-			out := map[string]any{"hookSpecificOutput": map[string]any{
-				"hookEventName":     "UserPromptSubmit",
-				"additionalContext": longrun.DrainInstruction(l.Workspace, remaining, until),
-			}}
+			instruction := longrun.DrainInstruction(l.Workspace, remaining, until)
+			var out map[string]any
+			if provider == "agy" {
+				out = map[string]any{"injectSteps": []map[string]any{{"ephemeralMessage": instruction}}}
+			} else {
+				out = map[string]any{"hookSpecificOutput": map[string]any{
+					"hookEventName":     "UserPromptSubmit",
+					"additionalContext": instruction,
+				}}
+			}
 			json.NewEncoder(os.Stdout).Encode(out)
 		}
 	case "stop":
@@ -84,7 +110,11 @@ func cmdHook(provider string, args []string) {
 			remaining, until := currentHeadroom(st, l)
 			st.SetLeaseDrain(l.ID, state.DrainDraining, now)
 			st.LogEvent(provider, l.AccountID, "long", fmt.Sprintf("lease %d: wrap-up injected at turn end", l.ID), now)
-			out := map[string]any{"decision": "block", "reason": longrun.DrainInstruction(l.Workspace, remaining, until)}
+			decision := "block"
+			if provider == "agy" {
+				decision = "continue"
+			}
+			out := map[string]any{"decision": decision, "reason": longrun.DrainInstruction(l.Workspace, remaining, until)}
 			json.NewEncoder(os.Stdout).Encode(out)
 		case state.DrainDraining:
 			st.SetLeaseDrain(l.ID, state.DrainReady, now)

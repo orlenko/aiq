@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/orlenko/aiq/internal/binpath"
+	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/paths"
 )
@@ -23,6 +24,7 @@ func cmdDaemon(args []string) error {
 		defer a.close()
 		logger := log.New(os.Stderr, "", log.LstdFlags)
 		a.maybeInstallStatusline()
+		a.maybeInstallAgyStatusline()
 		return daemon.New(a.cfg, a.pool, logger).Run()
 	case "install":
 		self, err := os.Executable()
@@ -34,6 +36,7 @@ func cmdDaemon(args []string) error {
 			return err
 		}
 		a.maybeInstallStatusline()
+		a.maybeInstallAgyStatusline()
 		listen := a.cfg.Daemon.Listen
 		a.close()
 		path, err := daemon.Install(self)
@@ -44,7 +47,7 @@ func cmdDaemon(args []string) error {
 		// Takeovers start the CLI with the service's PATH; say so now if
 		// that cannot find one, rather than when a successor dies.
 		servicePath := daemon.ServicePATH()
-		for _, provider := range []string{"claude", "codex"} {
+		for _, provider := range config.Providers {
 			saved := os.Getenv("PATH")
 			os.Setenv("PATH", servicePath)
 			_, err := binpath.Resolve(provider, "", paths.ShimsDir(), nil)

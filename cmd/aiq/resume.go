@@ -21,7 +21,7 @@ const resumeUsage = `usage: aiq resume [--all] [--print] [--launcher <name> | --
   no id, on a terminal: browse this directory's sessions, read their turns, press r to resume
   <session-id>          resume that session (a unique prefix is enough)
   --print               print the sessions (or, with an id, that session's turns) and exit
-  --all                 include worker sessions (claude -p, codex exec)
+  --all                 include worker sessions (claude -p, codex exec, agy -p)
   --launcher <name>     resume through this launcher instead of the one the session ran under
   --bare                resume without a launcher, even if the session ran under one`
 
@@ -99,8 +99,7 @@ func cmdResume(args []string) error {
 	if err != nil {
 		return err
 	}
-	roots := transcript.DefaultRoots(paths.RealClaudeHome(), paths.RealCodexHome(), paths.ClaudeHomesDir(), paths.CodexHomesDir())
-	sessions, err := transcript.List(roots, dir)
+	sessions, err := transcript.List(defaultRoots(), dir)
 	if err != nil {
 		return err
 	}
@@ -192,21 +191,11 @@ func findSession(list []transcript.Session, prefix string) (transcript.Session, 
 // bypass when bypass is set.
 func resumeArgs(s transcript.Session, bypass bool, extra []string) []string {
 	var args []string
-	switch s.Provider {
-	case "claude":
-		if bypass {
-			args = append(args, "--dangerously-skip-permissions")
-		}
-		args = append(args, extra...)
-		args = append(args, "--resume", s.ID)
-	case "codex":
-		if bypass {
-			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
-		}
-		args = append(args, extra...)
-		args = append(args, "resume", s.ID)
+	if bypass {
+		args = append(args, longrun.BypassFlag[s.Provider])
 	}
-	return args
+	args = append(args, extra...)
+	return append(args, resumeVerb(s.Provider, s.ID)...)
 }
 
 // resumeSession closes the app and hands the terminal to the resumed CLI.
