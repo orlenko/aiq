@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/overlay"
 	"github.com/orlenko/aiq/internal/pool"
@@ -38,6 +39,8 @@ type runFlags struct {
 	// modelScope overrides the binding model-scoped window for this launch
 	// ("fable" skips accounts whose Fable weekly cap is dry; "opus" ignores it).
 	modelScope string
+	// providers limits auto to these pools (--providers claude,codex).
+	providers []string
 	// wait keeps a worker polling for a free slot instead of refusing.
 	wait    time.Duration
 	waitErr error // a --wait value that did not parse (reported as bad-flags)
@@ -103,6 +106,21 @@ func parseRunFlags(args []string) runFlags {
 			i++
 		case strings.HasPrefix(a, "--model-scope="):
 			f.modelScope = strings.TrimPrefix(a, "--model-scope=")
+		case a == "--providers" || strings.HasPrefix(a, "--providers="):
+			value, equals := strings.CutPrefix(a, "--providers=")
+			if !equals {
+				if i+1 == len(args) {
+					f.flagsErr = fmt.Errorf("--providers requires a list such as claude,codex")
+					break
+				}
+				i++
+				value = args[i]
+			}
+			if list, err := config.ParseProviders(value); err != nil {
+				f.flagsErr = fmt.Errorf("--providers: %v", err)
+			} else {
+				f.providers = list
+			}
 		case a == "--wait" && i+1 < len(args):
 			f.wait, f.waitErr = parseWait(args[i+1])
 			i++
@@ -188,6 +206,9 @@ func cmdRun(provider string, args []string) error {
 	}
 	if !auto && !knownProvider(provider) {
 		return fmt.Errorf("unknown provider %s", provider)
+	}
+	if !auto && f.providers != nil {
+		return configErr("bad-flags", "--providers applies to auto; %s already names the provider", provider)
 	}
 	if !auto {
 		var err error
@@ -292,7 +313,7 @@ func cmdRun(provider string, args []string) error {
 				provider = acc.Provider
 				f.rest = request.args(provider)
 				if mode == state.ModeLong {
-					f.fallback = a.longFallback(provider)
+					f.fallback = a.autoLongFallback(provider, f)
 				}
 				f, err = modelFlags(provider, f)
 			}

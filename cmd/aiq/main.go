@@ -50,8 +50,9 @@ Launch (what the PATH shims call):
                  [--model-scope <name>] [--wait <duration>] -- [claude args...]
   aiq run codex  [same flags] -- [codex args...]
   aiq run agy    [same flags] -- [agy args...]
-  aiq run auto [--model-tier 0..3] [--effort 1..6] [-p <prompt>]
-    auto chooses across every pool; tier defaults to 1, effort to the CLI default.
+  aiq run auto [--model-tier 0..3] [--effort 1..6] [--providers claude,codex] [-p <prompt>]
+    auto chooses across every pool (or those in --providers, else auto.providers
+    in config.toml); tier defaults to 1, effort to the CLI default.
     -p runs a worker (Claude print / Codex exec / agy print); omit it for an interactive session.
     auto always enables YOLO: --dangerously-skip-permissions (Claude, agy) / Codex --yolo.
     exit 75: no eligible account (pool dry, at cap, wait expired); 78: nothing to route to;
@@ -92,7 +93,7 @@ Long-running sessions (supervised, moved between accounts before they run dry):
   aiq long claude|codex|agy|<launcher> [--account <name>] [--model-tier 0..3] [--effort 1..6] [--] [args...]
                                     start in a tmux session named after
                                     the workspace, or attach
-  aiq long auto [--model-tier 0..3] [--effort 1..6]
+  aiq long auto [--model-tier 0..3] [--effort 1..6] [--providers claude,codex]
                                     the same on the account auto picks from every
                                     pool, with YOLO; no prompt, type it in the session
   aiq long auto resume [--account <name>] [--model-tier N] [--effort N] [--all]

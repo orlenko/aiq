@@ -30,6 +30,25 @@ func KnownProvider(name string) bool {
 // ProviderList renders the provider names for a usage line: "claude|codex|agy".
 func ProviderList(sep string) string { return strings.Join(Providers, sep) }
 
+// ParseProviders reads a comma-separated provider list such as
+// "claude,codex", rejecting unknown and repeated names.
+func ParseProviders(s string) ([]string, error) {
+	var out []string
+	for _, name := range strings.Split(s, ",") {
+		name = strings.TrimSpace(name)
+		if !KnownProvider(name) {
+			return nil, fmt.Errorf("unknown provider %q; choose from %s", name, ProviderList(", "))
+		}
+		for _, seen := range out {
+			if seen == name {
+				return nil, fmt.Errorf("provider %q listed twice", name)
+			}
+		}
+		out = append(out, name)
+	}
+	return out, nil
+}
+
 type Provider struct {
 	// Binary is the real CLI path. Empty means: walk PATH, skipping aiq's
 	// own shim directory.
@@ -173,6 +192,14 @@ type Daemon struct {
 	Listen string `toml:"listen"`
 }
 
+// Auto configures `aiq run auto` and `aiq long auto`.
+type Auto struct {
+	// Providers are the pools auto may choose from, and the only ones a long
+	// auto session may move to. Empty means every provider. --providers
+	// overrides it for one launch.
+	Providers []string `toml:"providers"`
+}
+
 // Long configures supervised long-running sessions (`aiq long`).
 type Long struct {
 	// DrainPct: when the account's tightest binding window has this much or
@@ -226,6 +253,7 @@ type Config struct {
 	Aiquota   Aiquota   `toml:"aiquota"`
 	Display   Display   `toml:"display"`
 	Daemon    Daemon    `toml:"daemon"`
+	Auto      Auto      `toml:"auto"`
 	Long      Long      `toml:"long"`
 	Telemetry Telemetry `toml:"telemetry"`
 	// Launchers are named programs that start a CLI in an environment of
@@ -331,6 +359,11 @@ func Load() (*Config, error) {
 		}
 		if l.Credential != "" && l.Credential != "file" {
 			return nil, fmt.Errorf("%s: launcher %q: credential must be empty or \"file\"", paths.ConfigFile(), name)
+		}
+	}
+	for _, name := range c.Auto.Providers {
+		if !KnownProvider(name) {
+			return nil, fmt.Errorf("%s: auto.providers: unknown provider %q; choose from %s", paths.ConfigFile(), name, ProviderList(", "))
 		}
 	}
 	if c.Selection.MinHours <= 0 {

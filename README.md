@@ -124,7 +124,8 @@ session named after the workspace and supervises it:
 ```text
 aiq long claude [--account <name>] [--model-tier N] [--effort N] [-- claude args...]
                                     start or attach
-aiq long auto [--model-tier 0]      start on whichever pool auto picks, or attach
+aiq long auto [--model-tier 0] [--providers claude,codex]
+                                    start on whichever pool auto picks, or attach
 aiq long auto resume [--account <name>] [<id>]
                                     pick a session here and resume it as a long one
 aiq long list                       leases, pane, drain state, idle/busy
@@ -244,12 +245,16 @@ aiq run auto -p "do this thing"
 aiq run auto --model-tier 0 --effort 6 -p "analyze this design"
 aiq run auto --model-tier 2 --effort 2 -p "fix the failing test"
 aiq run auto --model-tier 1             # interactive session
+aiq run auto --providers claude,codex   # only these pools
 ```
 
 `auto` ranks eligible accounts of every provider together (Claude, Codex,
 Antigravity, Copilot) using the quota score, worker reserve and concurrency
 limits. It skips providers whose CLI is missing and providers with no model at
-the requested tier.
+the requested tier. `--providers claude,codex` limits one launch to those
+pools; `auto.providers` in `config.toml` sets the default (empty means every
+provider), and the flag overrides it. A worker's retry and a long session's
+takeover stay inside the same set.
 Selection uses stored telemetry, as ordinary routing does; unknown or stale
 telemetry cannot guarantee remaining quota. An early worker quota rejection
 can retry on another account, including the other provider, under the existing
@@ -753,6 +758,9 @@ order = ["claude/work", "claude/home", "codex/work"]
 
 [daemon]
 listen = "127.0.0.1:7379"
+
+[auto]
+providers = ["claude", "codex"]  # pools auto may pick; empty = every provider
 
 [long]
 drain_pct = 4.0                 # ask for a handoff note at this much remaining
