@@ -24,9 +24,15 @@ func TestAutoArguments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, provider := range []string{"claude", "codex", "agy"} {
+			for _, provider := range []string{"claude", "codex", "agy", "copilot"} {
 				f.rest = r.args(provider)
 				got, err := modelFlags(provider, f)
+				if !tier.Has(provider, tr) {
+					if err == nil {
+						t.Fatalf("%s tier %d: accepted a tier it has no model for: %q", provider, tr, got.rest)
+					}
+					continue
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -38,18 +44,19 @@ func TestAutoArguments(t *testing.T) {
 						level = "ultracode"
 					}
 					want = []string{"--model", tier.Models[provider][tr], "--effort", level, "-p", "--dangerously-skip-permissions", "--", r.prompt}
+				case "copilot":
+					if effort == 6 {
+						level = "max"
+					}
+					want = []string{"--model", tier.Models[provider][tr], "--effort", level, "--yolo", "-p", r.prompt}
 				case "agy":
 					if effort > 3 {
 						level = "high"
 					}
 					// The level is the model name's suffix; a model without
-					// variants takes none, and the pro models have no medium.
+					// variants takes none.
 					model := tier.Models[provider][tr]
-					switch {
-					case tr == 0:
-					case tr == 1 && level == "medium":
-						model = "gemini-3.1-pro-high"
-					default:
+					if strings.HasPrefix(model, "gemini-") {
 						model = model[:strings.LastIndex(model, "-")] + "-" + level
 					}
 					want = []string{"--model", model, "--dangerously-skip-permissions", "-p", r.prompt}

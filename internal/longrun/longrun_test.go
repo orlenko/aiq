@@ -1,6 +1,7 @@
 package longrun
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,17 +78,23 @@ func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
 		{"codex", "claude", []string{"-m", "gpt-5.6-terra", "--config=model_reasoning_effort=\"low\""}, []string{"--model", "sonnet", "--effort", "low"}},
 		{"claude", "codex", []string{"--", "--model", "opus"}, nil},
 		{"claude", "claude", []string{"--model", "opus"}, []string{"--model", "opus"}},
+		// Antigravity has no tier-0 or tier-1 model: the model is dropped
+		// (a takeover never picks it for such a session; see successorAbove).
 		{"claude", "agy", []string{"--dangerously-skip-permissions", "--model", "opus", "--effort", "max"},
-			[]string{"--dangerously-skip-permissions", "--model", "gemini-3.1-pro-high"}},
-		{"claude", "agy", []string{"--model", "sonnet", "--effort", "low"}, []string{"--model", "gemini-3.8-flash-low"}},
-		{"claude", "agy", []string{"--model", "fable", "--effort", "low"}, []string{"--model", "claude-opus-4-6-thinking"}},
+			[]string{"--dangerously-skip-permissions", "--effort", "high"}},
+		{"claude", "agy", []string{"--model", "sonnet", "--effort", "low"}, []string{"--model", "claude-opus-4-6-thinking"}},
+		{"claude", "agy", []string{"--model", "haiku", "--effort", "low"}, []string{"--model", "gemini-3.8-flash-low"}},
+		{"claude", "agy", []string{"--model", "fable", "--effort", "low"}, []string{"--effort", "low"}},
 		{"claude", "agy", []string{"--effort", "medium"}, []string{"--effort", "medium"}},
-		{"agy", "codex", []string{"--dangerously-skip-permissions", "--model=gemini-3.7-flash-low", "--effort", "low", "--conversation", "abc"},
+		{"agy", "codex", []string{"--dangerously-skip-permissions", "--model=gemini-3.8-flash-low", "--effort", "low", "--conversation", "abc"},
 			[]string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-luna", "-c", "model_reasoning_effort=low"}},
-		{"agy", "claude", []string{"-c", "--model", "claude-opus-4-6-thinking"}, []string{"--model", "fable"}},
-		{"agy", "claude", []string{"--model", "gemini-3.8-flash-high"}, []string{"--model", "sonnet"}},
-		{"codex", "agy", []string{"--yolo", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=xhigh"},
-			[]string{"--dangerously-skip-permissions", "--model", "gemini-3.1-pro-high"}},
+		{"agy", "codex", []string{"--model=gemini-3.1-pro-high"}, nil},
+		{"agy", "claude", []string{"-c", "--model", "claude-opus-4-6-thinking"}, []string{"--model", "sonnet"}},
+		{"agy", "claude", []string{"--model", "gemini-3.8-flash-high"}, []string{"--model", "haiku"}},
+		{"codex", "agy", []string{"--yolo", "-m", "gpt-5.6-terra", "-c", "model_reasoning_effort=xhigh"},
+			[]string{"--dangerously-skip-permissions", "--model", "claude-opus-4-6-thinking"}},
+		{"claude", "copilot", []string{"--model", "fable", "--effort", "xhigh"}, []string{"--model", "gpt-6-astra", "--effort", "xhigh"}},
+		{"copilot", "claude", []string{"--model", "gpt-5.6-sol", "--effort", "max"}, []string{"--model", "opus", "--effort", "max"}},
 	}
 	for _, c := range cases {
 		got := TranslateArgs(c.from, c.to, c.in)
@@ -224,6 +231,55 @@ func TestSuccessorUsesLowQuotaAsLastResort(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatalf("got %q; want no successor", got.ID)
+			}
+		})
+	}
+}
+
+// A session on a tier's model must not move to a provider with no model of
+// that tier: the takeover would run an older model in its place.
+func TestSuccessorKeepsTheTier(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	for _, tc := range []struct {
+		model, want string
+	}{
+		{"opus", "codex/target"},        // Antigravity has no tier 1
+		{"sonnet", "agy/target"},        // but it has a tier 2
+		{"claude-opus-5", "agy/target"}, // not a tier model: no constraint
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			for _, provider := range []string{"claude", "agy", "codex"} {
+				name := "target"
+				if provider == "claude" {
+					name = "source"
+				}
+				id := provider + "/" + name
+				if err := st.AddAccount(state.Account{ID: id, Provider: provider, Name: name, Enabled: true, Native: true}); err != nil {
+					t.Fatal(err)
+				}
+				used := 10.0
+				if provider == "claude" {
+					used = 100
+				}
+				if err := st.ReplaceWindows(id, "test", []state.Window{{Key: "weekly", Label: "Weekly", Kind: state.KindWeekly,
+					UsedPct: used, ResetsAt: now.Add(time.Hour).Unix(), ObservedAt: now.Unix()}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := config.Default()
+			cfg.Providers.Claude.ModelScope = ""
+			cfg.Providers.Codex.ModelScope = ""
+			cfg.Providers.Agy.ModelScope = ""
+			s := &Supervisor{Pool: &pool.Pool{Cfg: cfg, St: st}}
+			args, _ := json.Marshal([]string{"--model", tc.model})
+			got, err := s.successor(state.Lease{AccountID: "claude/source", Provider: "claude", Fallback: "claude,agy,codex", Args: string(args)}, now)
+			if err != nil || got.ID != tc.want {
+				t.Fatalf("got %q, %v; want %s", got.ID, err, tc.want)
 			}
 		})
 	}

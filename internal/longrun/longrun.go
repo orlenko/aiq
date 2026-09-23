@@ -363,6 +363,9 @@ func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining f
 	if l.Fallback == "" {
 		order = append([]string{l.Provider}, s.Pool.Cfg.Long.Fallback...)
 	}
+	// A session on a tier's model moves only to providers that have a model
+	// of the same tier; anything else would be a silent downgrade.
+	want := ArgsTier(l.Provider, splitArgs(l.Args))
 	seen := map[string]bool{}
 	for _, provider := range order {
 		provider = strings.TrimSpace(provider)
@@ -370,6 +373,9 @@ func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining f
 			continue
 		}
 		seen[provider] = true
+		if provider != l.Provider && want >= 0 && !tier.Has(provider, want) {
+			continue
+		}
 		cands, err := s.Pool.Candidates(provider)
 		if err != nil {
 			continue
@@ -612,7 +618,7 @@ func ModelArgs(provider, model, level string) []string {
 func modelTier(provider, model string) int {
 	if provider == "agy" {
 		for i, m := range tier.Models[provider] {
-			if agy.SameModel(m, model) {
+			if m != "" && agy.SameModel(m, model) {
 				return i
 			}
 		}
@@ -625,16 +631,46 @@ func modelTier(provider, model string) int {
 // mean the same thing on every CLI: the permission bypass (Claude's and
 // Antigravity's --dangerously-skip-permissions or Claude's --permission-mode
 // bypassPermissions, Codex's --dangerously-bypass-approvals-and-sandbox or
-// --yolo), a model named by an aiq tier (opus ↔ gpt-5.6-sol ↔
-// gemini-3.1-pro-high), and an effort level (Claude and Antigravity
-// --effort, Codex -c model_reasoning_effort). Any other model, a resume
-// target, extra directories and a prompt are provider-specific and dropped.
+// --yolo), a model named by an aiq tier (opus ↔ gpt-5.6-sol; dropped when
+// the target has no model of that tier), and an effort level (Claude,
+// Antigravity and Copilot --effort, Codex -c model_reasoning_effort). Any
+// other model, a resume target, extra directories and a prompt are
+// provider-specific and dropped.
 // Same provider returns args unchanged.
 func TranslateArgs(from, to string, args []string) []string {
 	if from == to {
 		return args
 	}
-	bypass, model, effort := false, -1, 0
+	bypass, model, effort := portableArgs(from, args)
+	var out []string
+	if bypass {
+		if flag := BypassFlag[to]; flag != "" {
+			out = append(out, flag)
+		}
+	}
+	if !tier.Known(to) {
+		return out
+	}
+	name, level := "", ""
+	if tier.Has(to, model) {
+		name = tier.Models[to][model]
+	}
+	if effort > 0 {
+		level = tier.Efforts[to][effort-1]
+	}
+	return append(out, ModelArgs(to, name, level)...)
+}
+
+// ArgsTier is the aiq tier of the model a provider's arguments name, or -1.
+func ArgsTier(provider string, args []string) int {
+	_, model, _ := portableArgs(provider, args)
+	return model
+}
+
+// portableArgs reads the permission bypass, the model's tier and the effort
+// level out of a provider's arguments.
+func portableArgs(from string, args []string) (bypass bool, model, effort int) {
+	model = -1
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() string {
@@ -670,23 +706,7 @@ func TranslateArgs(from, to string, args []string) []string {
 			}
 		}
 	}
-	var out []string
-	if bypass {
-		if flag := BypassFlag[to]; flag != "" {
-			out = append(out, flag)
-		}
-	}
-	if !tier.Known(to) {
-		return out
-	}
-	name, level := "", ""
-	if model >= 0 {
-		name = tier.Models[to][model]
-	}
-	if effort > 0 {
-		level = tier.Efforts[to][effort-1]
-	}
-	return append(out, ModelArgs(to, name, level)...)
+	return bypass, model, effort
 }
 
 // splitArgs decodes the JSON array a long lease records its args as.

@@ -25,6 +25,9 @@ func modelFlags(provider string, f runFlags) (runFlags, error) {
 		if f.modelScope != "" {
 			return f, fmt.Errorf("--model-tier determines quota scope; omit --model-scope")
 		}
+		if !tier.Has(provider, *f.modelTier) {
+			return f, fmt.Errorf("%s has no tier-%d model", provider, *f.modelTier)
+		}
 		model = tier.Models[provider][*f.modelTier]
 		// Explicitly override the user's default scoped cap for this model.
 		f.modelScope = tier.Scopes[provider][*f.modelTier]
@@ -133,11 +136,15 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 
 // args is the CLI command line auto composes: the worker verb when -p was
 // given, the permission bypass, and the prompt. Claude and Codex take the
-// prompt after --; Antigravity takes it as the value of -p.
+// prompt after --; Antigravity and Copilot take it as the value of -p, and
+// Copilot takes an interactive session's first prompt as the value of -i.
 func (r autoRequest) args(provider string) []string {
 	var args []string
+	if provider == "copilot" && r.hasPrompt && !r.print {
+		return []string{bypassFlag(provider), "-i", r.prompt}
+	}
 	if r.print {
-		if provider == "agy" {
+		if provider == "agy" || provider == "copilot" {
 			return append([]string{bypassFlag(provider)}, workerArgs(provider, r.prompt)...)
 		}
 		args = append(args, workerArgs(provider, "")[:1]...)
@@ -204,6 +211,10 @@ func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) 
 	for _, provider := range config.Providers {
 		if _, err := a.binary(provider); err != nil {
 			notes = append(notes, "Skipping "+provider+": "+err.Error())
+			continue
+		}
+		if !tier.Has(provider, *f.modelTier) {
+			notes = append(notes, fmt.Sprintf("Skipping %s: no tier-%d model", provider, *f.modelTier))
 			continue
 		}
 		available++

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -430,11 +431,16 @@ func (m *menu) hint(r menuRow) string {
 
 func tierModels(n int, provider string) string {
 	if provider != "" && tier.Known(provider) {
+		if !tier.Has(provider, n) {
+			return "none on " + cliName(provider)
+		}
 		return tier.Models[provider][n]
 	}
 	var names []string
 	for _, p := range config.Providers {
-		names = append(names, tier.Models[p][n])
+		if tier.Has(p, n) && !slices.Contains(names, tier.Models[p][n]) {
+			names = append(names, tier.Models[p][n])
+		}
 	}
 	return joinOr(names)
 }
