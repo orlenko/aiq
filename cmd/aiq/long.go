@@ -277,6 +277,16 @@ func (a *app) longExisting(ws string) (name string, attached bool, err error) {
 				return name, true, tmux.Attach(name)
 			}
 		}
+		// A session with no lease is normally aiq's own leftover, safe to
+		// clear. Not when the user has split the window and put something
+		// else in it: killing the session takes their pane down too, and a
+		// takeover that failed leaves exactly this state (dead aiq pane, no
+		// lease) beside a script that is still running.
+		if n, err := tmux.PaneCount(name); err == nil && n > 1 {
+			return "", false, fmt.Errorf(
+				"tmux session %s has %d panes and no aiq lease; attach and close it yourself rather than have aiq kill panes it did not start (tmux attach -t %s)",
+				name, n, name)
+		}
 		tmux.Kill(name)
 	}
 	return name, false, nil

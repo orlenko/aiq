@@ -252,3 +252,48 @@ func TestLastWriteSeesSubagents(t *testing.T) {
 		t.Fatal("unknown transcript must be zero")
 	}
 }
+
+// A takeover releases the lease the moment it respawns the pane, expecting the
+// successor to register its own. When every successor dies before it can, the
+// session must stay under supervision instead of being forgotten beside a dead
+// pane that nothing will ever retry.
+func TestReadoptKeepsAFailedTakeoverSupervised(t *testing.T) {
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	orig := state.Lease{
+		AccountID: "claude/a", Mode: state.ModeLong, Hostname: "h", Provider: "claude",
+		Workspace: "/w", Pane: "%3", SessionID: "sess-1", Fallback: "claude",
+		Args: `["--model","opus"]`, StartedAt: time.Now().Unix(), PID: 999999,
+	}
+	id, err := st.AddLease(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig.ID = id
+	st.ReleaseLease(id) // what moveTo does before the successor is known to be up
+
+	s := &Supervisor{Pool: &pool.Pool{Cfg: config.Default(), St: st}, Logf: func(string, ...any) {}}
+	s.readopt(orig, time.Now())
+
+	leases, err := st.ListLeases()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("got %d leases after readopt, want 1", len(leases))
+	}
+	got := leases[0]
+	if got.Pane != "%3" || got.Workspace != "/w" || got.SessionID != "sess-1" {
+		t.Fatalf("readopted lease lost its identity: %+v", got)
+	}
+	if got.Drain != state.DrainWaiting {
+		t.Fatalf("drain = %q, want %q so the supervisor retries", got.Drain, state.DrainWaiting)
+	}
+	if got.PID != os.Getpid() {
+		t.Fatalf("pid = %d, want the daemon's %d; a dead pid is pruned before the retry", got.PID, os.Getpid())
+	}
+}

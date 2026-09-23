@@ -58,12 +58,55 @@ func PaneOf(name string) (string, error) {
 }
 
 // PaneAlive reports whether the pane exists and its process is running.
+// A tmux query that fails reads as "gone": the caller cannot tell that case
+// apart, so use PaneState where the difference matters.
 func PaneAlive(pane string) (exists bool, running bool) {
+	exists, running, _ = PaneState(pane)
+	return exists, running
+}
+
+// PaneState is PaneAlive with the query error kept. A failed query returns
+// (false, false, err), which is not the same as a pane that really died: a
+// caller that respawns on !running would be killing a healthy session.
+func PaneState(pane string) (exists bool, running bool, err error) {
 	out, err := run("display-message", "-p", "-t", pane, "#{pane_dead}")
 	if err != nil {
-		return false, false
+		return false, false, err
 	}
-	return true, out == "0"
+	return true, out == "0", nil
+}
+
+// PaneDiag describes a pane for a log line: whether it is dead, the exit
+// status of the command that died, its pid and the command it last ran.
+func PaneDiag(pane string) string {
+	out, err := run("display-message", "-p", "-t", pane,
+		"dead=#{pane_dead} status=#{pane_dead_status} pid=#{pane_pid} cmd=#{pane_current_command} panes_in_window=#{window_panes}")
+	if err != nil {
+		return "pane query failed: " + err.Error()
+	}
+	return out
+}
+
+// Tail returns the last n non-empty lines of the pane's visible text, joined
+// with " / " so the whole thing fits on one log line.
+func Tail(pane string, n int) string {
+	screen, err := Capture(pane)
+	if err != nil {
+		return "(capture failed: " + err.Error() + ")"
+	}
+	var lines []string
+	for _, l := range strings.Split(screen, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) == 0 {
+		return "(pane is blank)"
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " / ")
 }
 
 // Respawn kills whatever runs in pane and starts command there.
@@ -129,4 +172,21 @@ func Quote(args []string) string {
 		parts = append(parts, "'"+strings.ReplaceAll(a, "'", `'\''`)+"'")
 	}
 	return strings.Join(parts, " ")
+}
+
+// PaneCount returns how many panes the session holds. A long session aiq
+// started has one; more means the user split the window and put something of
+// their own beside it.
+func PaneCount(name string) (int, error) {
+	out, err := run("list-panes", "-t", "="+name, "-F", "#{pane_id}")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) != "" {
+			n++
+		}
+	}
+	return n, nil
 }

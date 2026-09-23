@@ -321,6 +321,29 @@ func mergeDir(src, dst string, now time.Time) error {
 	return nil
 }
 
+// lockWait bounds how long Sync waits for another process to finish syncing
+// the same overlay. A sync is a directory walk over one home; anything past
+// this is a stuck holder, and saying so beats waiting out the session.
+const lockWait = 30 * time.Second
+
+// flockWait takes an exclusive flock, giving up after wait.
+func flockWait(f *os.File, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if err != syscall.EWOULDBLOCK {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("held by another aiq process for over %s", wait)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // lock takes an exclusive flock for the overlay so two launches of the same
 // account cannot adopt the same file at once.
 func lock(s Spec) (func(), error) {
@@ -339,9 +362,13 @@ func lock(s Spec) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	// Bounded wait. A blocking LOCK_EX here used to hang a launch forever
+	// behind whatever held the lock, with nothing on screen yet: the caller
+	// prints "using <account>" only after Sync returns, so the session looked
+	// like a blank pane rather than a failure.
+	if err := flockWait(f, lockWait); err != nil {
 		f.Close()
-		return nil, err
+		return nil, fmt.Errorf("overlay lock %s: %w", f.Name(), err)
 	}
 	return func() {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

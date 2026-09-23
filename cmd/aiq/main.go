@@ -6,10 +6,13 @@ package main
 import (
 	"errors"
 	"fmt"
-	ver "github.com/orlenko/aiq/internal/version"
 	"os"
-
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	ver "github.com/orlenko/aiq/internal/version"
 
 	"golang.org/x/term"
 
@@ -259,6 +262,7 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
+		noteFailure(cmd, args, err)
 		var ee *exitError
 		if errors.As(err, &ee) {
 			fmt.Fprintf(os.Stderr, "aiq: refused: %s\n", ee.token)
@@ -268,4 +272,36 @@ func main() {
 		fmt.Fprintln(os.Stderr, "aiq:", err)
 		os.Exit(1)
 	}
+}
+
+// noteFailure appends a launch failure to a plain log file. A supervised
+// session that fails before it can record anything in the database writes its
+// only explanation to a tmux pane, which the next respawn overwrites; this
+// keeps it somewhere the failure itself cannot erase, and needs neither the
+// database nor the config to be readable.
+func noteFailure(cmd string, args []string, err error) {
+	switch cmd {
+	case "run", "claude", "codex", "agy", "copilot":
+	default:
+		if _, ok := launcherByName(cmd); !ok {
+			return
+		}
+	}
+	path := filepath.Join(paths.LogDir(), "launch-errors.log")
+	if os.MkdirAll(filepath.Dir(path), 0o700) != nil {
+		return
+	}
+	f, ferr := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if ferr != nil {
+		return
+	}
+	defer f.Close()
+	token := ""
+	var ee *exitError
+	if errors.As(err, &ee) {
+		token = " [" + ee.token + "]"
+	}
+	fmt.Fprintf(f, "%s pid=%d pane=%s cwd=%s\n  aiq %s %s\n  failed%s: %v\n",
+		time.Now().Format(time.RFC3339), os.Getpid(), os.Getenv("TMUX_PANE"), cwd(),
+		cmd, strings.Join(trimArgs(args), " "), token, err)
 }

@@ -454,7 +454,23 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 				args = append(args, TranslateArgs(l.Provider, acc.Provider, splitArgs(l.Args))...)
 			}
 		}
-		return tmux.Respawn(l.Pane, l.Workspace, tmux.Quote(args))
+		cmd := tmux.Quote(args)
+		s.Logf("lease %d: respawn %s in %s: %s", l.ID, l.Pane, l.Workspace, cmd)
+		return tmux.Respawn(l.Pane, l.Workspace, cmd)
+	}
+	// died reports whether the pane's command has exited, and describes what
+	// is on screen. A tmux query that fails is not a death: respawning then
+	// would kill a session that is merely slow to start.
+	died := func() (bool, string) {
+		exists, running, err := tmux.PaneState(l.Pane)
+		if err != nil {
+			s.Logf("lease %d: pane %s query failed, leaving it alone: %v", l.ID, l.Pane, err)
+			return false, ""
+		}
+		if !exists || running {
+			return false, ""
+		}
+		return true, tmux.PaneDiag(l.Pane) + " | screen: " + tmux.Tail(l.Pane, 6)
 	}
 	if err := launch(resume); err != nil {
 		st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: respawn failed: %v", l.ID, err), now)
@@ -465,20 +481,47 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 	st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("took over lease %d from %s in pane %s (resume=%v)", l.ID, l.AccountID, l.Pane, resume), now)
 	// A resume that the CLI rejects exits within seconds; fall back to a
 	// fresh session so the pane never sits dead.
-	if resume {
-		time.Sleep(8 * time.Second)
-		if _, running := tmux.PaneAlive(l.Pane); !running {
-			st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("resume of %s exited at once; starting fresh in pane %s", l.SessionID, l.Pane), time.Now())
-			if err := launch(false); err != nil {
-				st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("fresh respawn failed: %v", err), time.Now())
-				return
-			}
-			time.Sleep(8 * time.Second)
-			if _, running := tmux.PaneAlive(l.Pane); !running {
-				st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("fresh start exited at once too; pane %s left dead for inspection (aiq long attach)", l.Pane), time.Now())
-			}
+	time.Sleep(8 * time.Second)
+	dead, why := died()
+	if dead && resume {
+		st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("resume of %s exited at once; starting fresh in pane %s [%s]", l.SessionID, l.Pane, why), time.Now())
+		if err := launch(false); err != nil {
+			st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("fresh respawn failed: %v", err), time.Now())
+			s.readopt(l, now)
+			return
 		}
+		time.Sleep(8 * time.Second)
+		dead, why = died()
 	}
+	if dead {
+		st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf(
+			"start in pane %s exited at once (aiq long attach to inspect) [%s]", l.Pane, why), time.Now())
+		s.readopt(l, now)
+	}
+}
+
+// readopt takes a session back under supervision after every attempt to hand
+// it to a successor died on the spot. The lease was released the moment the
+// pane was respawned, on the assumption the successor would register its own;
+// a successor that never got that far leaves nothing behind, so the daemon
+// forgets the session entirely and the user finds a dead pane that nothing is
+// going to retry. Re-adding the lease against the daemon's own pid (the old
+// process is gone, and PruneLeases drops leases whose pid is not alive) keeps
+// it in the supervisor's hands, waiting, so the next tick tries again once
+// whatever broke the launch has passed.
+func (s *Supervisor) readopt(l state.Lease, now time.Time) {
+	retry := l
+	retry.PID = os.Getpid()
+	retry.Drain = state.DrainWaiting
+	retry.DrainAt = now.Unix()
+	retry.TakeoverOf = l.ID
+	id, err := s.Pool.St.AddLease(retry)
+	if err != nil {
+		s.Logf("lease %d: could not re-adopt after a failed takeover: %v", l.ID, err)
+		return
+	}
+	s.Pool.St.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
+		"lease %d: every start in pane %s died at once; re-adopted as lease %d and waiting to retry", l.ID, l.Pane, id), now)
 }
 
 func fallbackOrder(l state.Lease, def []string) []string {

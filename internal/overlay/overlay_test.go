@@ -3,6 +3,7 @@ package overlay
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -196,5 +197,38 @@ func TestSeed(t *testing.T) {
 	}
 	if err := Seed(filepath.Join(dir, "missing"), filepath.Join(dir, "x")); err != nil {
 		t.Fatal("missing source is not an error")
+	}
+}
+
+// A sync that cannot get the lock must give up and say so. It used to block
+// on LOCK_EX forever, which showed up as a launch that printed nothing at all:
+// the caller reports the account it chose only after Sync returns.
+func TestSyncGivesUpWhenTheLockIsHeld(t *testing.T) {
+	real, over := t.TempDir(), t.TempDir()
+	locks := t.TempDir()
+	spec := Spec{Real: real, Overlay: over, LockDir: locks}
+
+	held, err := lock(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held()
+
+	// Second holder: same spec, lock already taken.
+	f, err := os.OpenFile(filepath.Join(locks,
+		strings.ReplaceAll(strings.Trim(over, string(filepath.Separator)), string(filepath.Separator), "_")+".sync.lock"),
+		os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	start := time.Now()
+	err = flockWait(f, 300*time.Millisecond)
+	if err == nil {
+		t.Fatal("flockWait took a lock that was already held")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("flockWait blocked for %s; it must give up at the deadline", elapsed)
 	}
 }
