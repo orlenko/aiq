@@ -69,3 +69,24 @@ func TestLoadValidatesLaunchers(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoProviders(t *testing.T) {
+	writeConfig(t, "version = 2\n[auto]\nproviders = [\"claude\", \"codex\"]\n")
+	c, err := Load()
+	if err != nil || strings.Join(c.Auto.Providers, ",") != "claude,codex" {
+		t.Fatalf("auto.providers not loaded: %+v %v", c.Auto, err)
+	}
+	writeConfig(t, "version = 2\n[auto]\nproviders = [\"claude\", \"gemini\"]\n")
+	if _, err := Load(); err == nil {
+		t.Error("an unknown provider in auto.providers must be refused")
+	}
+
+	if got, err := ParseProviders("codex, claude"); err != nil || strings.Join(got, ",") != "codex,claude" {
+		t.Errorf("ParseProviders: %q %v", got, err)
+	}
+	for _, bad := range []string{"", "claude,", "gemini", "claude,claude"} {
+		if _, err := ParseProviders(bad); err == nil {
+			t.Errorf("ParseProviders(%q) accepted", bad)
+		}
+	}
+}

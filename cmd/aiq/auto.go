@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +25,9 @@ func modelFlags(provider string, f runFlags) (runFlags, error) {
 	if f.modelTier != nil {
 		if f.modelScope != "" {
 			return f, fmt.Errorf("--model-tier determines quota scope; omit --model-scope")
+		}
+		if !tier.Has(provider, *f.modelTier) {
+			return f, fmt.Errorf("%s has no tier-%d model", provider, *f.modelTier)
 		}
 		model = tier.Models[provider][*f.modelTier]
 		// Explicitly override the user's default scoped cap for this model.
@@ -98,7 +102,7 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 			options = append(options, arg)
 			// Preserve option values, even if they resemble a portable flag.
 			switch arg {
-			case "--model-tier", "--effort", "--mode", "--wait", "--account", "--launcher", "--model-scope":
+			case "--model-tier", "--effort", "--mode", "--wait", "--account", "--launcher", "--model-scope", "--providers":
 				if i+1 < len(args) {
 					i++
 					options = append(options, args[i])
@@ -114,7 +118,7 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 		return f, r, fmt.Errorf("unsupported auto argument %q; use -p for a task, or select a provider for native options", f.rest[0])
 	}
 	if f.account != "" || f.launcher != "" || f.next || f.takeover != 0 || f.fallback != "" || f.resumeSession != "" || f.nudge != "" || f.modelScope != "" {
-		return f, r, fmt.Errorf("auto supports --model-tier, --effort, --mode, --wait, --inherit-auth-env, -p, and --yolo; account, launcher, and session controls require a provider")
+		return f, r, fmt.Errorf("auto supports --model-tier, --effort, --providers, --mode, --wait, --inherit-auth-env, -p, and --yolo; account, launcher, and session controls require a provider")
 	}
 	// A takeover replays the launch arguments, so a first prompt would be
 	// sent again to every successor.
@@ -133,11 +137,15 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 
 // args is the CLI command line auto composes: the worker verb when -p was
 // given, the permission bypass, and the prompt. Claude and Codex take the
-// prompt after --; Antigravity takes it as the value of -p.
+// prompt after --; Antigravity and Copilot take it as the value of -p, and
+// Copilot takes an interactive session's first prompt as the value of -i.
 func (r autoRequest) args(provider string) []string {
 	var args []string
+	if provider == "copilot" && r.hasPrompt && !r.print {
+		return []string{bypassFlag(provider), "-i", r.prompt}
+	}
 	if r.print {
-		if provider == "agy" {
+		if provider == "agy" || provider == "copilot" {
 			return append([]string{bypassFlag(provider)}, workerArgs(provider, r.prompt)...)
 		}
 		args = append(args, workerArgs(provider, "")[:1]...)
@@ -195,15 +203,46 @@ func rankAuto(policies map[string]selector.Policy, candidates []selector.Candida
 	return ranked
 }
 
+// autoProviders are the pools auto may use: --providers, else
+// auto.providers from the config, else every provider.
+func (a *app) autoProviders(f runFlags) []string {
+	if f.providers != nil {
+		return f.providers
+	}
+	if len(a.cfg.Auto.Providers) > 0 {
+		return a.cfg.Auto.Providers
+	}
+	return config.Providers
+}
+
+// autoLongFallback is a long auto session's takeover order, kept to the
+// pools auto was allowed to choose from.
+func (a *app) autoLongFallback(provider string, f runFlags) string {
+	allowed := a.autoProviders(f)
+	var order []string
+	for _, p := range strings.Split(a.longFallback(provider), ",") {
+		if slices.Contains(allowed, p) {
+			order = append(order, p)
+		}
+	}
+	return strings.Join(order, ",")
+}
+
 func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) (state.Account, []string, error) {
 	now := time.Now()
 	policies := map[string]selector.Policy{}
 	var candidates []selector.Candidate
 	var notes []string
-	available, registered := 0, 0
-	for _, provider := range config.Providers {
+	available, registered, tierless := 0, 0, 0
+	allowed := a.autoProviders(f)
+	for _, provider := range allowed {
 		if _, err := a.binary(provider); err != nil {
 			notes = append(notes, "Skipping "+provider+": "+err.Error())
+			continue
+		}
+		if !tier.Has(provider, *f.modelTier) {
+			notes = append(notes, fmt.Sprintf("Skipping %s: no tier-%d model", provider, *f.modelTier))
+			tierless++
 			continue
 		}
 		available++
@@ -231,8 +270,11 @@ func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) 
 		policy.ModelScope = mf.modelScope
 		policies[provider] = policy
 	}
+	if available == 0 && tierless > 0 {
+		return state.Account{}, notes, configErr("bad-flags", "no tier-%d model on %s", *f.modelTier, joinOr(allowed))
+	}
 	if available == 0 {
-		return state.Account{}, notes, configErr("no-binary", "none of %s is available", providerList())
+		return state.Account{}, notes, configErr("no-binary", "none of %s is available", joinOr(allowed))
 	}
 	if registered == 0 {
 		return state.Account{}, notes, configErr("no-accounts", "no accounts registered for available providers")
@@ -252,5 +294,5 @@ func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) 
 		}
 		notes = append(notes, fmt.Sprintf("Skipping %s — %s", r.ID, r.Reason))
 	}
-	return state.Account{}, notes, poolDry(token, "no eligible account on any provider for model tier %d", *f.modelTier)
+	return state.Account{}, notes, poolDry(token, "no eligible account on %s for model tier %d", joinOr(allowed), *f.modelTier)
 }

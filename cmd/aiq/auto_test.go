@@ -24,9 +24,15 @@ func TestAutoArguments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, provider := range []string{"claude", "codex", "agy"} {
+			for _, provider := range []string{"claude", "codex", "agy", "copilot"} {
 				f.rest = r.args(provider)
 				got, err := modelFlags(provider, f)
+				if !tier.Has(provider, tr) {
+					if err == nil {
+						t.Fatalf("%s tier %d: accepted a tier it has no model for: %q", provider, tr, got.rest)
+					}
+					continue
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -38,18 +44,19 @@ func TestAutoArguments(t *testing.T) {
 						level = "ultracode"
 					}
 					want = []string{"--model", tier.Models[provider][tr], "--effort", level, "-p", "--dangerously-skip-permissions", "--", r.prompt}
+				case "copilot":
+					if effort == 6 {
+						level = "max"
+					}
+					want = []string{"--model", tier.Models[provider][tr], "--effort", level, "--yolo", "-p", r.prompt}
 				case "agy":
 					if effort > 3 {
 						level = "high"
 					}
 					// The level is the model name's suffix; a model without
-					// variants takes none, and the pro models have no medium.
+					// variants takes none.
 					model := tier.Models[provider][tr]
-					switch {
-					case tr == 0:
-					case tr == 1 && level == "medium":
-						model = "gemini-3.1-pro-high"
-					default:
+					if strings.HasPrefix(model, "gemini-") {
 						model = model[:strings.LastIndex(model, "-")] + "-" + level
 					}
 					want = []string{"--model", model, "--dangerously-skip-permissions", "-p", r.prompt}
@@ -66,7 +73,15 @@ func TestAutoArguments(t *testing.T) {
 	if err != nil || *f.modelTier != 1 || f.effort != 0 || r.print {
 		t.Fatalf("defaults: %+v %+v %v", f, r, err)
 	}
+	f, _, err = parseAutoFlags([]string{"--providers", "codex,claude", "-p", "x"})
+	if err != nil || strings.Join(f.providers, ",") != "codex,claude" {
+		t.Fatalf("--providers: %q %v", f.providers, err)
+	}
+	if f, _, err = parseAutoFlags([]string{"--providers=codex"}); err != nil || strings.Join(f.providers, ",") != "codex" {
+		t.Fatalf("--providers=: %q %v", f.providers, err)
+	}
 	for _, args := range [][]string{
+		{"--providers"}, {"--providers", "gemini"}, {"--providers="}, {"--providers", "claude,claude"},
 		{"--model-tier", "4"}, {"--model-tier=-1"}, {"--model-tier"},
 		{"--effort", "0"}, {"--effort=7"}, {"--effort=high"}, {"--effort"},
 		{"-p"}, {"-p", "a", "-p", "b"}, {"--account", "test"},
@@ -179,11 +194,17 @@ func TestAutoEndToEnd(t *testing.T) {
 		rejectClaude          bool
 		want                  string
 		code                  int
+		configProviders       []string // auto.providers
+		flagProviders         string   // --providers
 	}{
-		{"claude available", 0, 100, false, "claude", 0},
-		{"codex available", 100, 0, false, "codex", 0},
-		{"both dry", 100, 100, false, "", 75},
-		{"retry across providers", 0, 50, true, "codex", 0},
+		{"claude available", 0, 100, false, "claude", 0, nil, ""},
+		{"codex available", 100, 0, false, "codex", 0, nil, ""},
+		{"both dry", 100, 100, false, "", 75, nil, ""},
+		{"retry across providers", 0, 50, true, "codex", 0, nil, ""},
+		{"flag leaves out the emptier pool", 0, 50, false, "codex", 0, nil, "codex"},
+		{"config leaves out the emptier pool", 0, 50, false, "codex", 0, []string{"codex"}, ""},
+		{"flag overrides config", 50, 0, false, "claude", 0, []string{"codex"}, "claude"},
+		{"no retry outside the set", 0, 50, true, "", 75, nil, "claude"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -193,6 +214,7 @@ func TestAutoEndToEnd(t *testing.T) {
 			cfg.Daemon.Listen = "127.0.0.1:1"
 			cfg.Worker.Retry = true
 			cfg.Worker.WaitForSlotSeconds = 0
+			cfg.Auto.Providers = tt.configProviders
 			for _, p := range []string{"claude", "codex"} {
 				path := filepath.Join(root, "fake-"+p)
 				script := "#!/bin/sh\nprintf '%s\\n' \"$AIQ_PROVIDER/$AIQ_ACCOUNT\" \"$@\"\n"
@@ -229,7 +251,11 @@ func TestAutoEndToEnd(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			cmd := exec.Command(bin, "run", "auto", "-p", "do this thing", "--model-tier", "0", "--effort", "6")
+			args := []string{"run", "auto", "-p", "do this thing", "--model-tier", "0", "--effort", "6"}
+			if tt.flagProviders != "" {
+				args = append(args, "--providers", tt.flagProviders)
+			}
+			cmd := exec.Command(bin, args...)
 			cmd.Env = proc.SanitizeEnv(os.Environ(), "AIQ_BYPASS", "AIQ_MODE", "AIQ_WAIT", "AIQ_ACCOUNT", "AIQ_DEPTH", chainVar)
 			out, err := cmd.CombinedOutput()
 			code := 0
@@ -257,5 +283,21 @@ func TestAutoEndToEnd(t *testing.T) {
 				t.Fatalf("leaked worker lease: %+v %v", leases, err)
 			}
 		})
+	}
+}
+
+// A long auto session moves only between the pools auto could choose from.
+func TestAutoLongFallbackKeepsToTheProviders(t *testing.T) {
+	cfg := config.Default()
+	a := &app{cfg: cfg}
+	if got := a.autoLongFallback("claude", runFlags{}); got != "claude,claude,codex,agy,copilot" {
+		t.Errorf("no limit: %s", got)
+	}
+	if got := a.autoLongFallback("claude", runFlags{providers: []string{"claude", "codex"}}); got != "claude,claude,codex" {
+		t.Errorf("flag: %s", got)
+	}
+	cfg.Auto.Providers = []string{"codex"}
+	if got := a.autoLongFallback("codex", runFlags{}); got != "codex,codex" {
+		t.Errorf("config: %s", got)
 	}
 }

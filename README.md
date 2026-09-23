@@ -113,7 +113,7 @@ session named after the workspace and supervises it:
   (`--model opus` ↔ `--model gpt-5.6-sol`, see the tier table below) and an
   effort level (`--effort high` ↔ `-c model_reasoning_effort=high`). Every
   other flag is provider-specific and dropped. Fallback order is
-  `long.fallback`.
+  `long.fallback`, less any provider with no model of the session's tier.
 - **Takeover in place.** The daemon `respawn-pane`s the same tmux pane with
   the successor, copies the project's trust entry between Claude accounts so
   no dialog blocks the restart, and nudges the successor with a first prompt.
@@ -124,7 +124,8 @@ session named after the workspace and supervises it:
 ```text
 aiq long claude [--account <name>] [--model-tier N] [--effort N] [-- claude args...]
                                     start or attach
-aiq long auto [--model-tier 0]      start on whichever pool auto picks, or attach
+aiq long auto [--model-tier 0] [--providers claude,codex]
+                                    start on whichever pool auto picks, or attach
 aiq long auto resume [--account <name>] [<id>]
                                     pick a session here and resume it as a long one
 aiq long list                       leases, pane, drain state, idle/busy
@@ -244,10 +245,16 @@ aiq run auto -p "do this thing"
 aiq run auto --model-tier 0 --effort 6 -p "analyze this design"
 aiq run auto --model-tier 2 --effort 2 -p "fix the failing test"
 aiq run auto --model-tier 1             # interactive session
+aiq run auto --providers claude,codex   # only these pools
 ```
 
-`auto` ranks eligible Claude and Codex accounts together using the quota score,
-worker reserve and concurrency limits. It skips providers whose CLI is missing.
+`auto` ranks eligible accounts of every provider together (Claude, Codex,
+Antigravity, Copilot) using the quota score, worker reserve and concurrency
+limits. It skips providers whose CLI is missing and providers with no model at
+the requested tier. `--providers claude,codex` limits one launch to those
+pools; `auto.providers` in `config.toml` sets the default (empty means every
+provider), and the flag overrides it. A worker's retry and a long session's
+takeover stay inside the same set.
 Selection uses stored telemetry, as ordinary routing does; unknown or stale
 telemetry cannot guarantee remaining quota. An early worker quota rejection
 can retry on another account, including the other provider, under the existing
@@ -265,27 +272,35 @@ or forced accounts. `--wait` and `--mode` remain available, with worker mode
 requiring `-p`. For a supervised session that moves between accounts, use
 `aiq long auto` (see Long-running sessions).
 
-| Tier | Claude | Codex | Antigravity |
-| --- | --- | --- | --- |
-| 0 | Fable (`fable`) | Astra (`gpt-6-astra`) | Claude Opus 4.6 (`claude-opus-4-6-thinking`) |
-| 1 (default for auto) | Opus (`opus`) | Sol (`gpt-5.6-sol`) | Gemini 3.1 Pro (`gemini-3.1-pro-high`) |
-| 2 | Sonnet (`sonnet`) | Terra (`gpt-5.6-terra`) | Gemini 3.8 Flash (`gemini-3.8-flash-medium`) |
-| 3 | Haiku (`haiku`) | Luna (`gpt-5.6-luna`) | Gemini 3.7 Flash (`gemini-3.7-flash-medium`) |
+| Tier | Claude | Codex | Antigravity | Copilot |
+| --- | --- | --- | --- | --- |
+| 0 | Fable (`fable`) | Astra (`gpt-6-astra`) | — | Astra (`gpt-6-astra`) |
+| 1 (default for auto) | Opus (`opus`) | Sol (`gpt-5.6-sol`) | — | Sol (`gpt-5.6-sol`) |
+| 2 | Sonnet (`sonnet`) | Terra (`gpt-5.6-terra`) | Claude Opus 4.6 (`claude-opus-4-6-thinking`) | Terra (`gpt-5.6-terra`) |
+| 3 | Haiku (`haiku`) | Luna (`gpt-5.6-luna`) | Gemini 3.8 Flash (`gemini-3.8-flash-medium`) | Luna (`gpt-5.6-luna`) |
+
+A tier is a class of model, the same on every provider, not a provider's own
+ranking of its models. Antigravity's newest models (Claude Opus 4.6, Gemini
+3.1 Pro) are a generation behind tiers 0 and 1, so it has none there: `aiq run
+auto` at those tiers skips it, `aiq run agy --model-tier 0` is an error, and a
+long session on a tier-0 or tier-1 model never moves to it. Copilot serves the
+Codex models; which of them an account may pick depends on its Copilot plan
+(on a Copilot Free login every named model was rejected as not available).
 
 The requested tier stays fixed during retries; aiq never silently downgrades it.
 Model-scoped quota windows bind only the selected model, so an exhausted Fable
 cap does not disqualify an otherwise eligible Opus account. On Antigravity the
 Gemini models share the account's main 5-hour and weekly windows; Claude
-models there draw on separate "3p" windows, which bind only tier 0.
+models there draw on separate "3p" windows, which bind only tier 2.
 
-| Effort | Claude | Codex | Antigravity |
-| --- | --- | --- | --- |
-| 1 | low | low | low |
-| 2 | medium | medium | medium |
-| 3 | high | high | high |
-| 4 | xhigh | xhigh | high |
-| 5 | max | max | high |
-| 6 | ultracode | ultra | high |
+| Effort | Claude | Codex | Antigravity | Copilot |
+| --- | --- | --- | --- | --- |
+| 1 | low | low | low | low |
+| 2 | medium | medium | medium | medium |
+| 3 | high | high | high | high |
+| 4 | xhigh | xhigh | high | xhigh |
+| 5 | max | max | high | max |
+| 6 | ultracode | ultra | high | max |
 
 Effort is optional; omission preserves the CLI default. Claude's sixth setting
 means `xhigh` plus dynamic workflows, rather than a sixth model reasoning level;
@@ -391,7 +406,7 @@ aiq long stop .    # end it
 ```
 
 `aiq long auto --model-tier 0` keeps the strongest model, on whichever
-provider it moves to. Run `aiq long auto` again in the same repository and it
+provider it moves to; providers with no tier-0 model are passed over. Run `aiq long auto` again in the same repository and it
 attaches to the running session rather than starting a second one.
 
 ### Turn a session into a long one
@@ -743,6 +758,9 @@ order = ["claude/work", "claude/home", "codex/work"]
 
 [daemon]
 listen = "127.0.0.1:7379"
+
+[auto]
+providers = ["claude", "codex"]  # pools auto may pick; empty = every provider
 
 [long]
 drain_pct = 4.0                 # ask for a handoff note at this much remaining

@@ -3,12 +3,18 @@
 // another.
 package tier
 
-// Models lists each provider's model for tiers 0 (strongest) to 3.
+// Models lists each provider's model for tiers 0 (strongest) to 3. A tier is
+// a class of model, the same on every provider: 0 is the frontier (Fable,
+// GPT-6 Astra), 1 the next step down (Opus, Sol), 2 the mid-size models
+// (Sonnet, Terra), 3 the small fast ones (Haiku, Luna). An empty name means
+// the provider has no model of that class; aiq then skips the provider at
+// that tier rather than run an older model in its place.
 var Models = map[string][4]string{
-	"claude":  {"fable", "opus", "sonnet", "haiku"},
-	"codex":   {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
-	"agy":     {"claude-opus-4-6-thinking", "gemini-3.1-pro-high", "gemini-3.8-flash-medium", "gemini-3.7-flash-medium"},
-	"copilot": {"gpt-4o", "gpt-4", "gpt-3.5-turbo", "claude-3.5-sonnet"},
+	"claude": {"fable", "opus", "sonnet", "haiku"},
+	"codex":  {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+	// Antigravity's newest models are a generation behind tiers 0 and 1.
+	"agy":     {"", "", "claude-opus-4-6-thinking", "gemini-3.8-flash-medium"},
+	"copilot": {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 }
 
 // Scopes are the quota-scope names of the tiers, where they differ from the
@@ -17,7 +23,7 @@ var Models = map[string][4]string{
 var Scopes = map[string][4]string{
 	"claude":  Models["claude"],
 	"codex":   {"astra", "sol", "terra", "luna"},
-	"agy":     {"3p", "", "", ""},
+	"agy":     {"", "", "3p", ""},
 	"copilot": Models["copilot"],
 }
 
@@ -27,11 +33,19 @@ var Efforts = map[string][6]string{
 	"claude":  {"low", "medium", "high", "xhigh", "max", "ultracode"},
 	"codex":   {"low", "medium", "high", "xhigh", "max", "ultra"},
 	"agy":     {"low", "medium", "high", "high", "high", "high"},
-	"copilot": {"low", "medium", "high", "high", "high", "high"},
+	"copilot": {"low", "medium", "high", "xhigh", "max", "max"},
+}
+
+// Has reports whether the provider has a model at tier n.
+func Has(provider string, n int) bool {
+	return n >= 0 && n < 4 && Models[provider][n] != ""
 }
 
 // Of returns the tier of a provider's model, or -1.
 func Of(provider, model string) int {
+	if model == "" {
+		return -1
+	}
 	for i, m := range Models[provider] {
 		if m == model {
 			return i

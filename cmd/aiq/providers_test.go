@@ -26,9 +26,10 @@ func TestLongArgsPerProvider(t *testing.T) {
 func TestAutoWorkerArgsPerProvider(t *testing.T) {
 	r := autoRequest{print: true, hasPrompt: true, prompt: "do it"}
 	cases := map[string][]string{
-		"claude": {"-p", "--dangerously-skip-permissions", "--", "do it"},
-		"codex":  {"exec", "--yolo", "--", "do it"},
-		"agy":    {"--dangerously-skip-permissions", "-p", "do it"},
+		"claude":  {"-p", "--dangerously-skip-permissions", "--", "do it"},
+		"codex":   {"exec", "--yolo", "--", "do it"},
+		"agy":     {"--dangerously-skip-permissions", "-p", "do it"},
+		"copilot": {"--yolo", "-p", "do it"},
 	}
 	for provider, want := range cases {
 		if got := r.args(provider); !reflect.DeepEqual(got, want) {
@@ -36,9 +37,15 @@ func TestAutoWorkerArgsPerProvider(t *testing.T) {
 		}
 	}
 	interactive := autoRequest{}
-	for provider, want := range map[string][]string{"claude": {"--dangerously-skip-permissions"}, "codex": {"--yolo"}, "agy": {"--dangerously-skip-permissions"}} {
+	for provider, want := range map[string][]string{"claude": {"--dangerously-skip-permissions"}, "codex": {"--yolo"}, "agy": {"--dangerously-skip-permissions"}, "copilot": {"--yolo"}} {
 		if got := interactive.args(provider); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s interactive: got %q, want %q", provider, got, want)
+		}
+	}
+	first := autoRequest{hasPrompt: true, prompt: "start"}
+	for provider, want := range map[string][]string{"claude": {"--dangerously-skip-permissions", "--", "start"}, "copilot": {"--yolo", "-i", "start"}} {
+		if got := first.args(provider); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s first prompt: got %q, want %q", provider, got, want)
 		}
 	}
 }
