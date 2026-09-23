@@ -9,10 +9,11 @@ import (
 	"github.com/orlenko/aiq/internal/daemon"
 )
 
-// cmdReset consumes one earned Codex rate-limit reset credit.
+// cmdReset consumes one reset credit: an earned Codex rate-limit reset or a
+// Claude reset grant.
 func cmdReset(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: aiq reset codex/<name>")
+		return fmt.Errorf("usage: aiq reset codex/<name> | claude/<name>")
 	}
 	a, err := openApp()
 	if err != nil {
@@ -23,25 +24,27 @@ func cmdReset(args []string) error {
 	if err != nil {
 		return err
 	}
-	if acc.Provider != "codex" {
-		return fmt.Errorf("reset credits exist only for Codex accounts")
-	}
-	p, err := a.codexProvider()
-	if err != nil {
-		return err
-	}
-	if err := a.prepareHome(acc); err != nil {
-		return err
+	switch acc.Provider {
+	case "codex":
+		if _, err := a.codexProvider(); err != nil {
+			return err
+		}
+		if err := a.prepareHome(acc); err != nil {
+			return err
+		}
+	case "claude":
+	default:
+		return fmt.Errorf("reset credits exist only for Codex and Claude accounts")
 	}
 	var key [16]byte
 	rand.Read(key[:])
 	u, _, _ := a.st.GetUsage(acc.ID)
-	outcome, err := p.ConsumeResetCredit(acc.Home, acc.Native, u.ResetCreditID, hex.EncodeToString(key[:]))
+	outcome, err := a.pool.RedeemResetCredit(acc, u, hex.EncodeToString(key[:]))
 	if err != nil {
 		return err
 	}
 	now := time.Now()
-	a.st.LogEvent("codex", acc.ID, "reset-credit", outcome, now)
+	a.st.LogEvent(acc.Provider, acc.ID, "reset-credit", outcome, now)
 	switch outcome {
 	case "reset", "alreadyRedeemed":
 		a.st.MarkReady(acc.ID, now)

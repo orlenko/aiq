@@ -106,7 +106,7 @@ aiq account import                    # optional: adopt accounts from aiquota, i
 <p>Manual overrides when telemetry lags:</p>
 <pre><code>aiq mark codex/work exhausted --until 14:42   # or +2h, or RFC3339
 aiq mark codex/work ready
-aiq reset codex/work                          # spend an earned Codex reset credit</code></pre>
+aiq reset codex/work                          # spend a reset credit (Codex or Claude)</code></pre>
 
 <h2 id="long">Long-running sessions</h2>
 <p>A session that must survive for days (a QC loop, an orchestration overseer) is started with <code>aiq long claude</code> or <code>aiq long codex</code>. It lives in a tmux session named after the workspace, and the daemon watches its account. When the tightest window drops to <code>drain_pct</code> remaining, aiq's hooks (attached only to sessions launched this way) inject a wrap-up instruction at the next turn boundary: finish the current unit, stop background jobs and subagents, write a handoff note, end the turn. Then the daemon respawns the same pane on the next account: the same provider resumes the transcript, a different provider starts from the note plus the working tree. An idle session is moved without waiting; an account that is already blocked is moved at once; with no headroom anywhere the session waits for a reset.</p>
@@ -124,7 +124,7 @@ hours_w     = time until w resets   (floored at min_hours, default 15 min)
 perish_w    = min(remaining_w, remaining_weekly) / hours_w
 score       = Σ perish_w × weight_w  ÷  (1 + worker leases on the account)</code></pre>
 <p><code>perish_w</code> is the quota that evaporates per hour if the account sits idle. <code>weight_w</code> is 1 for the session window and <code>weekly_weight</code> (default 5) for weekly windows, since one weekly point is several session points' worth of tokens; that way an account whose week rolls over in a few hours with quota unspent gets the work well before the last hour. Highest score normally wins, so a session window with 57% left that resets in six minutes beats an account with far more weekly quota. Before scoring, accounts are filtered: exhausted (a binding window at 100%, or a recent limit hit), disabled, no login, or a Codex account whose latest poll definitively rejected its authentication. Workers additionally skip accounts at the worker cap or with weekly remaining at or below the reserve, and prefer accounts that do not carry an interactive session. Interactive launches are sticky per git checkout until a window crosses <code>switch_pct</code>. Telemetry older than <code>stale_after_seconds</code> falls back to a neutral prior.</p>
-<p>Codex reset credits expire, and each is a full weekly window, so a holder adds <code>credits × 100 / hours to the soonest expiry × weekly_weight</code> (a week when the expiry is unknown). Once its weekly allowance crosses <code>switch_pct</code>, it takes priority over a fresh account and stays sticky until the remaining allowance is gone, making the credit redeemable. Workers may drain it past the reserve, even while it carries an interactive session. Once it is blocked, the next poll redeems a credit automatically: always for a weekly block, and for a shorter window only when the credit would expire first or within a day. <code>auto_reset_credits = false</code> turns that off.</p>
+<p>Reset credits expire, and each is a full weekly window: Codex earns them, and Anthropic grants Claude accounts limit resets (what Claude Code offers as <code>/limit-reset</code>, clearing the session and weekly windows), so a holder adds <code>credits × 100 / hours to the soonest expiry × weekly_weight</code> (a week when the expiry is unknown). Once its weekly allowance crosses <code>switch_pct</code>, it takes priority over a fresh account and stays sticky until the remaining allowance is gone, making the credit redeemable. Workers may drain it past the reserve, even while it carries an interactive session. Once it is blocked, the next poll redeems a credit automatically: always for a weekly block, and for a shorter window only when the credit would expire first or within a day. <code>auto_reset_credits = false</code> turns that off.</p>
 
 <h2 id="commands">Commands</h2>
 <table>
@@ -134,7 +134,7 @@ score       = Σ perish_w × weight_w  ÷  (1 + worker leases on the account)</c
 <tr><td>aiq run &lt;provider&gt; [--account N] [--next] [--mode interactive|worker] [--model-scope M] [--wait D] -- args</td><td>What the shims call. <code>aiq claude …</code> / <code>aiq codex …</code> are shorthands. <code>--model-scope fable</code> skips accounts whose Fable cap is dry for this launch; <code>--wait 10m</code> makes a worker queue for a slot at the worker cap. Refusals exit 75 (nothing available now) or 78 (nothing to route to) with a stable <code>aiq: refused: &lt;token&gt;</code> line; child exit codes pass through.</td></tr>
 <tr><td>aiq account …</td><td>list, add, login, authorize, poll, label, order, enable, disable, remove, use, next, import.</td></tr>
 <tr><td>aiq mark &lt;id&gt; exhausted|ready</td><td>Manual bench / un-bench.</td></tr>
-<tr><td>aiq reset codex/&lt;name&gt;</td><td>Consume one earned Codex reset credit.</td></tr>
+<tr><td>aiq reset &lt;provider&gt;/&lt;name&gt;</td><td>Consume one Codex or Claude reset credit.</td></tr>
 <tr><td>aiq shim install|uninstall|path</td><td>Write or remove the PATH shims.</td></tr>
 <tr><td>aiq statusline install|uninstall|status</td><td>Claude status-line multiplexer: records live quota for routed sessions, then chains to your own status line.</td></tr>
 <tr><td>aiq daemon run|install|uninstall|status</td><td>This service (launchd on macOS, systemd --user on Linux).</td></tr>
@@ -168,7 +168,7 @@ max_workers_per_account = 3
 max_depth = 3                   # nested claude → codex → claude … cap
 min_hours = 0.25
 weekly_weight = 5.0             # weekly points count 5× session points
-auto_reset_credits = true       # redeem a Codex reset credit when a holder is blocked
+auto_reset_credits = true       # redeem a Codex or Claude reset credit when a holder is blocked
 
 [worker]
 retry = true

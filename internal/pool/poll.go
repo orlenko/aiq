@@ -98,7 +98,8 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		}
 		p.St.PruneWindowSources(a.ID, SourceAIQ, "statusline")
 		prev, _, _ := p.St.GetUsage(a.ID)
-		p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), prev.ResetCredits, "", now)
+		p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), u.ResetCredits, "", now)
+		p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)
 		p.updateIdentity(a, u.Identity)
 		return nil
 	case "codex":

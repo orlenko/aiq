@@ -192,7 +192,7 @@ func (p *Pool) Rank(provider, mode string) ([]selector.Ranked, error) {
 func (p *Pool) Refresh(ids ...string) []PollResult {
 	timeout := time.Duration(p.Cfg.Poll.TimeoutSeconds) * time.Second
 	results := p.Poll(timeout, ids...)
-	p.SpendResetCredits(p.command("codex"))
+	p.SpendResetCredits()
 	return results
 }
 

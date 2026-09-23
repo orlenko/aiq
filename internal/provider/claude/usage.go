@@ -33,7 +33,8 @@ import (
 const (
 	oauthClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	oauthTokenURL    = "https://api.anthropic.com/v1/oauth/token"
-	oauthUsageURL    = "https://api.anthropic.com/api/oauth/usage"
+	oauthUsageURL    = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1"
+	oauthResetURL    = "https://api.anthropic.com/api/organizations/%s/reset_rate_limits"
 	oauthProfileURL  = "https://api.anthropic.com/api/oauth/profile"
 	oauthAuthorize   = "https://claude.ai/oauth/authorize"
 	oauthRedirectURI = "https://console.anthropic.com/oauth/code/callback"
@@ -45,6 +46,14 @@ const (
 	refreshSkew = 10 * time.Minute
 	httpTimeout = 25 * time.Second
 	grantFile   = ".aiq-grant.json"
+
+	// cliUserAgent: the usage endpoint reports reset grants (cedar_ember)
+	// only to Claude Code; any other client gets ineligible_reason
+	// "surface". The version is the one this was verified against.
+	cliUserAgent = "claude-cli/2.1.281 (external, cli)"
+	// resetProgram is the reset-grant program Claude Code's /limit-reset
+	// claims from.
+	resetProgram = "cedar_ember"
 )
 
 // Grant is the on-disk shape, compatible with Claude Code's credential file
@@ -222,11 +231,17 @@ type Usage struct {
 	Identity string
 	Plan     string
 	Notes    []string
+	// ResetCredits counts usage-limit resets Anthropic granted the account
+	// (see NormalizeResetCredits); ResetCreditExpiry is the soonest grant's
+	// end (unix seconds, 0 = none), ResetCreditID the grant to claim first.
+	ResetCredits      int
+	ResetCreditExpiry int64
+	ResetCreditID     string
 }
 
-// Poll refreshes the grant at path when needed (writing it back) and fetches
-// usage. It never touches Claude Code's own credential.
-func Poll(path string, now time.Time) (*Usage, error) {
+// freshGrant loads the grant at path, refreshing and writing it back when
+// it is close to expiry.
+func freshGrant(path string, now time.Time) (*Grant, error) {
 	g, err := LoadGrant(path)
 	if err != nil {
 		return nil, err
@@ -245,11 +260,27 @@ func Poll(path string, now time.Time) (*Usage, error) {
 			g = refreshed
 		}
 	}
-	headers := map[string]string{
+	return g, nil
+}
+
+func authHeaders(g *Grant) map[string]string {
+	return map[string]string{
 		"Authorization":  "Bearer " + g.OAuth.AccessToken,
 		"anthropic-beta": "oauth-2025-04-20",
 		"Accept":         "application/json",
+		"User-Agent":     cliUserAgent,
+		"x-app":          "cli",
 	}
+}
+
+// Poll refreshes the grant at path when needed (writing it back) and fetches
+// usage. It never touches Claude Code's own credential.
+func Poll(path string, now time.Time) (*Usage, error) {
+	g, err := freshGrant(path, now)
+	if err != nil {
+		return nil, err
+	}
+	headers := authHeaders(g)
 	status, body, err := getJSON(oauthUsageURL, headers)
 	if err != nil {
 		return nil, fmt.Errorf("usage: %w", err)
@@ -262,10 +293,104 @@ func Poll(path string, now time.Time) (*Usage, error) {
 	}
 	u := &Usage{}
 	u.Windows = NormalizeUsage(body, now)
+	u.ResetCredits, u.ResetCreditExpiry, u.ResetCreditID = NormalizeResetCredits(body, now)
 	if pstatus, profile, err := getJSON(oauthProfileURL, headers); err == nil && pstatus == 200 {
 		u.Identity, u.Plan = ParseProfile(profile)
 	}
 	return u, nil
+}
+
+// NormalizeResetCredits reads the cedar_ember block of the usage payload:
+// usage-limit resets Anthropic grants an account (a model-launch promo, for
+// one), which Claude Code offers through /limit-reset. Each reset clears the
+// session and weekly windows. It counts the resets left on live grants and
+// names the soonest-ending one; the backend's next_grant_id wins when it is
+// among them.
+func NormalizeResetCredits(body []byte, now time.Time) (credits int, expiry int64, id string) {
+	var doc struct {
+		CedarEmber *struct {
+			Eligible bool `json:"eligible"`
+			Grants   []struct {
+				ID         string `json:"id"`
+				ResetsLeft int    `json:"resets_left"`
+				EndsAt     string `json:"ends_at"`
+				Paused     bool   `json:"paused"`
+			} `json:"grants"`
+			NextGrantID string `json:"next_grant_id"`
+		} `json:"cedar_ember"`
+	}
+	if json.Unmarshal(body, &doc) != nil || doc.CedarEmber == nil || !doc.CedarEmber.Eligible {
+		return 0, 0, ""
+	}
+	next := ""
+	for _, g := range doc.CedarEmber.Grants {
+		end := parseISO(g.EndsAt)
+		if g.ResetsLeft <= 0 || g.Paused || (end > 0 && end <= now.Unix()) {
+			continue
+		}
+		credits += g.ResetsLeft
+		if id == "" || (end > 0 && (expiry == 0 || end < expiry)) {
+			id = g.ID
+		}
+		if end > 0 && (expiry == 0 || end < expiry) {
+			expiry = end
+		}
+		if g.ID == doc.CedarEmber.NextGrantID {
+			next = g.ID
+		}
+	}
+	if next != "" {
+		id = next
+	}
+	return credits, expiry, id
+}
+
+// ConsumeResetCredit claims one reset from grantID, the way Claude Code's
+// /limit-reset does. requestID ([A-Za-z0-9_-]{1,64}) identifies the claim.
+// outcome is the backend's result: reset, not_limited, cooldown,
+// already_used, ineligible, unavailable, rate_limited.
+func ConsumeResetCredit(path, grantID, requestID string) (outcome string, err error) {
+	if grantID == "" {
+		return "", fmt.Errorf("no reset grant to claim")
+	}
+	g, err := freshGrant(path, time.Now())
+	if err != nil {
+		return "", err
+	}
+	headers := authHeaders(g)
+	status, profile, err := getJSON(oauthProfileURL, headers)
+	if err != nil {
+		return "", fmt.Errorf("profile: %w", err)
+	}
+	if status != 200 {
+		return "", fmt.Errorf("profile: HTTP %d %s", status, truncate(errorDetail(profile), 140))
+	}
+	org := ParseOrganization(profile)
+	if org == "" {
+		return "", fmt.Errorf("profile has no organization")
+	}
+	status, body, err := sendJSON("POST", fmt.Sprintf(oauthResetURL, url.PathEscape(org)), headers, map[string]any{
+		"program":    resetProgram,
+		"grant_id":   grantID,
+		"request_id": requestID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("reset: %w", err)
+	}
+	if status != 200 {
+		return "", fmt.Errorf("reset: HTTP %d %s", status, truncate(errorDetail(body), 140))
+	}
+	var res struct {
+		Result string `json:"result"`
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(body, &res) != nil || res.Result == "" {
+		return "", fmt.Errorf("reset: unreadable response: %s", truncate(string(body), 140))
+	}
+	if res.Reason != "" && res.Result != "reset" {
+		return res.Result + " (" + res.Reason + ")", nil
+	}
+	return res.Result, nil
 }
 
 // NormalizeUsage converts the usage payload into windows with the same keys
@@ -354,6 +479,20 @@ func ParseProfile(body []byte) (email, plan string) {
 	return email, plan
 }
 
+// ParseOrganization returns the account's organization uuid, which the
+// reset endpoint is scoped to.
+func ParseOrganization(body []byte) string {
+	var doc struct {
+		Organization struct {
+			UUID string `json:"uuid"`
+		} `json:"organization"`
+	}
+	if json.Unmarshal(body, &doc) != nil {
+		return ""
+	}
+	return doc.Organization.UUID
+}
+
 func findEmail(node any, depth int) string {
 	if depth > 4 {
 		return ""
@@ -421,9 +560,23 @@ func postJSON(u string, payload any) ([]byte, error) {
 }
 
 func getJSON(u string, headers map[string]string) (int, []byte, error) {
-	req, err := http.NewRequest("GET", u, nil)
+	return sendJSON("GET", u, headers, nil)
+}
+
+// sendJSON makes an authenticated request; payload, when not nil, is sent
+// as the JSON body.
+func sendJSON(method, u string, headers map[string]string, payload any) (int, []byte, error) {
+	var rd io.Reader
+	if payload != nil {
+		data, _ := json.Marshal(payload)
+		rd = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest(method, u, rd)
 	if err != nil {
 		return 0, nil, err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("User-Agent", "aiq/0.2")
 	for k, v := range headers {

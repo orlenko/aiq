@@ -4,11 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/state"
 )
@@ -77,22 +77,57 @@ func ResetCreditKey(login string, block state.Window) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// SpendResetCredits redeems a Codex reset credit on every account that is
-// blocked and holds one (see ResetCreditTarget), then re-polls the accounts
-// it reset. The idempotency key is ResetCreditKey, so every aiq that sees
-// the same block — this host's daemon and CLI, or another host polling the
-// same login — redeems at most one credit for it.
-func (p *Pool) SpendResetCredits(codexCmd func(args, env []string) *exec.Cmd) {
-	if codexCmd == nil || !p.Cfg.Selection.AutoResetCredits {
-		return
+// RedeemResetCredit spends one reset credit on account a: a Codex earned
+// reset or a Claude reset grant. key identifies the attempt; the backend
+// uses it to recognise a repeat. Codex reports a repeat as alreadyRedeemed.
+func (p *Pool) RedeemResetCredit(a state.Account, u state.Usage, key string) (string, error) {
+	switch a.Provider {
+	case "codex":
+		cmd := p.command("codex")
+		if cmd == nil {
+			return "", fmt.Errorf("codex binary not available")
+		}
+		prov := &codex.Provider{Command: cmd}
+		return prov.ConsumeResetCredit(a.Home, a.Native, u.ResetCreditID, key)
+	case "claude":
+		if !claude.HasGrant(a.Home) {
+			return "", fmt.Errorf("no poll grant — run: aiq account authorize %s", a.ID)
+		}
+		return claude.ConsumeResetCredit(claude.GrantPath(a.Home), u.ResetCreditID, key)
 	}
-	accounts, err := p.St.ListAccounts("codex")
-	if err != nil {
+	return "", fmt.Errorf("%s accounts have no reset credits", a.Provider)
+}
+
+// SpendResetCredits redeems a reset credit on every Codex or Claude account
+// that is blocked and holds one (see ResetCreditTarget), then re-polls the
+// accounts it reset. The idempotency key is ResetCreditKey, so every aiq
+// that sees the same block — this host's daemon and CLI, or another host
+// polling the same login — redeems at most one credit for it.
+func (p *Pool) SpendResetCredits() {
+	if !p.Cfg.Selection.AutoResetCredits {
 		return
 	}
 	now := time.Now()
-	scope := p.ModelScope("codex")
 	var reset []string
+	for _, provider := range []string{"codex", "claude"} {
+		if provider == "codex" && p.command("codex") == nil {
+			continue
+		}
+		reset = append(reset, p.spendResetCredits(provider, now)...)
+	}
+	for _, id := range reset {
+		if a, err := p.St.GetAccount(id); err == nil {
+			p.pollOne(a, time.Duration(p.Cfg.Poll.TimeoutSeconds)*time.Second)
+		}
+	}
+}
+
+func (p *Pool) spendResetCredits(provider string, now time.Time) (reset []string) {
+	accounts, err := p.St.ListAccounts(provider)
+	if err != nil {
+		return nil
+	}
+	scope := p.ModelScope(provider)
 	for _, a := range accounts {
 		if !a.Enabled || !HasCredential(a) {
 			continue
@@ -112,8 +147,7 @@ func (p *Pool) SpendResetCredits(codexCmd func(args, env []string) *exec.Cmd) {
 		if now.Sub(last) < resetCreditRetry {
 			continue
 		}
-		prov := &codex.Provider{Command: codexCmd}
-		outcome, err := prov.ConsumeResetCredit(a.Home, a.Native, u.ResetCreditID, ResetCreditKey(firstNonEmpty(a.Identity, a.ID), block))
+		outcome, err := p.RedeemResetCredit(a, u, ResetCreditKey(firstNonEmpty(a.Identity, a.ID), block))
 		label := block.Label
 		if label == "" {
 			label = block.Key
@@ -123,7 +157,7 @@ func (p *Pool) SpendResetCredits(codexCmd func(args, env []string) *exec.Cmd) {
 			resetTriedMu.Lock()
 			resetTried[a.ID] = now
 			resetTriedMu.Unlock()
-			p.St.LogEvent("codex", a.ID, "reset-credit", fmt.Sprintf("auto: %s window blocked, redeem failed: %v", label, err), now)
+			p.St.LogEvent(provider, a.ID, "reset-credit", fmt.Sprintf("auto: %s window blocked, redeem failed: %v", label, err), now)
 		case outcome == "reset" || outcome == "alreadyRedeemed":
 			// Usage reads lag a reset by minutes; hold off so a stale
 			// 100% is not taken for a new block.
@@ -131,18 +165,14 @@ func (p *Pool) SpendResetCredits(codexCmd func(args, env []string) *exec.Cmd) {
 			resetTried[a.ID] = now
 			resetTriedMu.Unlock()
 			p.St.MarkReady(a.ID, now)
-			p.St.LogEvent("codex", a.ID, "reset-credit", fmt.Sprintf("auto: %s window blocked, %s (%d credit(s) before)", label, outcome, u.ResetCredits), now)
+			p.St.LogEvent(provider, a.ID, "reset-credit", fmt.Sprintf("auto: %s window blocked, %s (%d credit(s) before)", label, outcome, u.ResetCredits), now)
 			reset = append(reset, a.ID)
 		default:
 			resetTriedMu.Lock()
 			resetTried[a.ID] = now
 			resetTriedMu.Unlock()
-			p.St.LogEvent("codex", a.ID, "reset-credit", fmt.Sprintf("auto: %s window blocked, %s", label, outcome), now)
+			p.St.LogEvent(provider, a.ID, "reset-credit", fmt.Sprintf("auto: %s window blocked, %s", label, outcome), now)
 		}
 	}
-	for _, id := range reset {
-		if a, err := p.St.GetAccount(id); err == nil {
-			p.pollOne(a, time.Duration(p.Cfg.Poll.TimeoutSeconds)*time.Second)
-		}
-	}
+	return reset
 }

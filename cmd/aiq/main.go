@@ -79,7 +79,7 @@ Pool:
   aiq account import [id[=name]...]        adopt accounts from aiquota, if you have it
   aiq mark <provider>/<name> exhausted [--until 14:42|+2h|RFC3339]
   aiq mark <provider>/<name> ready
-  aiq reset codex/<name>                   consume an earned Codex reset credit
+  aiq reset <provider>/<name>              consume a Codex or Claude reset credit
 
 Launchers (a named program that starts the CLI in an environment of its own):
   aiq launcher add <name> --provider claude|codex|agy [--credential file]

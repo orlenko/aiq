@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -60,5 +61,41 @@ func TestGrantFromTokenResponse(t *testing.T) {
 	}
 	if _, err := grantFromTokenResponse(nil, []byte(`{"error":"invalid_grant"}`)); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestNormalizeResetCredits(t *testing.T) {
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{"cedar_ember": {"eligible": true, "grants": [
+	    {"id": "later", "resets_left": 2, "ends_at": "2026-11-01T00:00:00+00:00"},
+	    {"id": "promo", "resets_left": 1, "ends_at": "2026-10-22T16:00:00+00:00"},
+	    {"id": "spent", "resets_left": 0, "ends_at": "2026-10-01T00:00:00+00:00"},
+	    {"id": "paused", "resets_left": 1, "ends_at": "2026-10-01T00:00:00+00:00", "paused": true},
+	    {"id": "lapsed", "resets_left": 1, "ends_at": "2026-09-01T00:00:00+00:00"}
+	  ], "next_grant_id": null}}`)
+	credits, expiry, id := NormalizeResetCredits(body, now)
+	if credits != 3 || id != "promo" || expiry != time.Date(2026, 10, 22, 16, 0, 0, 0, time.UTC).Unix() {
+		t.Fatalf("got %d credits, expiry %d, id %q", credits, expiry, id)
+	}
+	// The backend's pick wins over the soonest expiry.
+	withNext := []byte(strings.Replace(string(body), `"next_grant_id": null`, `"next_grant_id": "later"`, 1))
+	if _, _, id := NormalizeResetCredits(withNext, now); id != "later" {
+		t.Fatalf("next_grant_id ignored: %q", id)
+	}
+	// Ineligible (a client the backend does not offer resets to) or absent.
+	for _, b := range []string{
+		`{"cedar_ember": {"eligible": false, "ineligible_reason": "surface", "grants": []}}`,
+		`{"cedar_ember": null}`,
+		`{}`,
+	} {
+		if c, _, _ := NormalizeResetCredits([]byte(b), now); c != 0 {
+			t.Fatalf("%s: got %d credits", b, c)
+		}
+	}
+}
+
+func TestParseOrganization(t *testing.T) {
+	if got := ParseOrganization([]byte(`{"account": {"email": "a@b.c"}, "organization": {"uuid": "1593dbce-9dd4"}}`)); got != "1593dbce-9dd4" {
+		t.Fatalf("got %q", got)
 	}
 }
