@@ -9,6 +9,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/orlenko/aiq/internal/binpath"
+	"github.com/orlenko/aiq/internal/paths"
 )
 
 const launchdLabel = "dev.aiq.daemon"
@@ -23,13 +26,30 @@ func systemdUnit() string {
 	return filepath.Join(home, ".config", "systemd", "user", "aiq.service")
 }
 
-// ServicePATH is the PATH baked into the service: the current one, then
-// any entries only the user's interactive login shell adds. A takeover
-// respawns `aiq run` with the daemon's environment, so a PATH captured from
-// a bare ssh or cron shell (no nvm, no ~/.local/bin additions from .zshrc)
-// leaves every successor with "claude not found on PATH".
+// ServicePATH is the PATH baked into the service: the shim directory, then
+// the current PATH, then any entries only the user's interactive login shell
+// adds. A takeover respawns `aiq run` with the daemon's environment, so a
+// PATH captured from a bare ssh or cron shell (no nvm, no ~/.local/bin
+// additions from .zshrc) leaves every successor with "claude not found on
+// PATH". The shims lead because provider lookup starts after them: merging
+// two PATHs can otherwise leave the shims behind /opt/homebrew/bin, and then
+// the daemon finds no CLI at all.
 func ServicePATH() string {
-	return mergePATH(os.Getenv("PATH"), loginShellPATH())
+	return binpath.WithDirFirst(mergePATH(os.Getenv("PATH"), loginShellPATH()), paths.ShimsDir())
+}
+
+// FixPATH puts the shim directory first in this process's PATH and reports
+// whether that changed anything. The daemon calls it at startup so a service
+// installed with an older, badly ordered PATH heals itself on restart
+// instead of failing every poll that has to launch a CLI.
+func FixPATH() (changed bool) {
+	current := os.Getenv("PATH")
+	fixed := binpath.WithDirFirst(current, paths.ShimsDir())
+	if fixed == current {
+		return false
+	}
+	os.Setenv("PATH", fixed)
+	return true
 }
 
 func mergePATH(first, extra string) string {

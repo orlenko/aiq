@@ -138,3 +138,45 @@ func TestWithoutDir(t *testing.T) {
 		t.Fatalf("got %q, want empty", got)
 	}
 }
+
+// The shape a service environment produces: the shims land behind the real
+// binary directories, so the walk after them finds nothing. WithDirFirst is
+// what the daemon applies before resolving.
+func TestWithDirFirstUnburiesTheShims(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	realDir := filepath.Join(root, "bin")
+	writeExec(t, shimDir, "codex", "#!/bin/sh\n# AIQ_SHIM\nexec aiq run codex -- \"$@\"\n")
+	real := writeExec(t, realDir, "codex", "#!/bin/sh\necho real\n")
+
+	buried := strings.Join([]string{realDir, shimDir}, sep)
+	t.Setenv("PATH", buried)
+	if _, err := Resolve("codex", "", shimDir, nil); err == nil {
+		t.Fatal("nothing follows the shims, so resolution must fail")
+	}
+
+	fixed := WithDirFirst(buried, shimDir)
+	if want := strings.Join([]string{shimDir, realDir}, sep); fixed != want {
+		t.Fatalf("got %q, want %q", fixed, want)
+	}
+	t.Setenv("PATH", fixed)
+	got, err := Resolve("codex", "", shimDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != real {
+		t.Fatalf("got %s, want %s", got, real)
+	}
+
+	// Already first, or absent: still exactly one leading entry.
+	if got := WithDirFirst(fixed, shimDir); got != fixed {
+		t.Fatalf("got %q, want %q", got, fixed)
+	}
+	if got := WithDirFirst(realDir, shimDir); got != shimDir+sep+realDir {
+		t.Fatalf("got %q, want the shims prepended", got)
+	}
+	if got := WithDirFirst(realDir, ""); got != realDir {
+		t.Fatal("an empty dir must not rewrite the PATH")
+	}
+}

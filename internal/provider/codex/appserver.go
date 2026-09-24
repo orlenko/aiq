@@ -45,9 +45,11 @@ type session struct {
 	cmd     *exec.Cmd
 	stdin   interface{ Write([]byte) (int, error) }
 	scanner *bufio.Scanner
+	stderr  *tailWriter
 	ctx     context.Context
 	cancel  context.CancelFunc
 	nextID  int
+	closed  bool
 }
 
 func (p *Provider) open(home string, native bool, timeout time.Duration) (*session, error) {
@@ -69,31 +71,51 @@ func (p *Provider) open(home string, native bool, timeout time.Duration) (*sessi
 		cancel()
 		return nil, err
 	}
-	cmd.Stderr = nil
+	// Keep the child's stderr: when the launch fails — no codex on the
+	// daemon's PATH, a broken wrapper — that is the only place the reason
+	// appears, and without it every failure reads "exited before responding".
+	tail := &tailWriter{max: 4096}
+	cmd.Stderr = tail
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, err
 	}
-	s := &session{cmd: cmd, stdin: stdin, ctx: ctx, cancel: cancel}
+	s := &session{cmd: cmd, stdin: stdin, stderr: tail, ctx: ctx, cancel: cancel}
 	s.scanner = bufio.NewScanner(stdout)
 	s.scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	if _, err := s.call("initialize", map[string]any{"clientInfo": map[string]any{
 		"name": "aiq", "title": "aiq", "version": version.Version,
 	}}); err != nil {
-		s.close()
-		return nil, fmt.Errorf("initialize: %w", err)
+		return nil, fmt.Errorf("initialize: %w", s.fail(err))
 	}
 	s.notify("initialized", map[string]any{})
 	return s, nil
 }
 
 func (s *session) close() {
+	if s.closed {
+		return
+	}
+	s.closed = true
 	if c, ok := s.stdin.(interface{ Close() error }); ok {
 		c.Close()
 	}
 	s.cmd.Process.Kill()
+	// Wait also waits for the stderr copy to finish, so the tail is whole
+	// by the time fail reads it.
 	s.cmd.Wait()
 	s.cancel()
+}
+
+// fail closes the session and annotates err with what the child printed on
+// stderr, which is where a launch that never got as far as the protocol
+// says why.
+func (s *session) fail(err error) error {
+	s.close()
+	if note := s.stderr.lastLine(); note != "" {
+		return fmt.Errorf("%w: %s", err, note)
+	}
+	return err
 }
 
 func (s *session) send(v any) error {
@@ -151,7 +173,7 @@ func (p *Provider) Probe(home string, native bool) (RateLimits, error) {
 	defer s.close()
 	result, err := s.call("account/rateLimits/read", map[string]any{})
 	if err != nil {
-		return rl, err
+		return rl, s.fail(err)
 	}
 	parsed, ok := ParseRateLimitsResult(result, time.Now())
 	if !ok {
@@ -175,7 +197,7 @@ func (p *Provider) ConsumeResetCredit(home string, native bool, creditID, idempo
 	}
 	result, err := s.call("account/rateLimitResetCredit/consume", params)
 	if err != nil {
-		return "", err
+		return "", s.fail(err)
 	}
 	var doc struct {
 		Outcome string `json:"outcome"`

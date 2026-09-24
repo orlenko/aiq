@@ -126,3 +126,18 @@ func isShim(path string) bool {
 	}
 	return strings.Contains(head, "aiq run ") || strings.Contains(head, "AIQ_SHIM")
 }
+
+// WithDirFirst returns a PATH value that begins with dir, dropping any other
+// occurrence of it. Resolve only considers entries after the shim directory,
+// so a PATH that buries the shims mid-list — a service environment merged
+// from several sources — hides every provider CLI that sits ahead of them.
+func WithDirFirst(pathValue, dir string) string {
+	if dir == "" {
+		return pathValue
+	}
+	rest := WithoutDir(pathValue, dir)
+	if rest == "" {
+		return dir
+	}
+	return dir + string(filepath.ListSeparator) + rest
+}

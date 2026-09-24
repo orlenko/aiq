@@ -54,6 +54,9 @@ func New(cfg *config.Config, p *pool.Pool, logger *log.Logger) *Server {
 
 // Run serves until the listener fails.
 func (s *Server) Run() error {
+	if FixPATH() {
+		s.log.Printf("PATH: moved %s to the front; a service installed with the shims buried mid-PATH cannot find any provider CLI", paths.ShimsDir())
+	}
 	go s.pollLoop()
 	go s.housekeeping()
 	mux := http.NewServeMux()
