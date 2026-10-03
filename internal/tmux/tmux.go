@@ -120,25 +120,33 @@ type Pane struct {
 
 // Panes lists every pane on the server; none when no server runs.
 func Panes() ([]Pane, error) {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F",
-		"#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_start_command}").Output()
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", paneFormat).Output()
 	if err != nil {
 		return nil, err
 	}
+	return parsePanes(string(out)), nil
+}
+
+// paneFormat separates fields with ':', which tmux forbids in session
+// names, so only the start command, last, can hold one. A tab would not
+// do: without a UTF-8 locale (the daemon under launchd) tmux prints it as _.
+const paneFormat = "#{pane_id}:#{pane_pid}:#{pane_dead}:#{session_name}:#{pane_start_command}"
+
+func parsePanes(out string) []Pane {
 	var panes []Pane
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		f := strings.SplitN(line, "\t", 5)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.SplitN(line, ":", 5)
 		if len(f) < 4 {
 			continue
 		}
-		p := Pane{Session: f[0], ID: f[1], Dead: f[3] == "1"}
-		fmt.Sscan(f[2], &p.PID)
+		p := Pane{ID: f[0], Dead: f[2] == "1", Session: f[3]}
+		fmt.Sscan(f[1], &p.PID)
 		if len(f) == 5 {
 			p.StartCommand = f[4]
 		}
 		panes = append(panes, p)
 	}
-	return panes, nil
+	return panes
 }
 
 // Respawn kills whatever runs in pane and starts command there.
