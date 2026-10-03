@@ -146,6 +146,9 @@ type Supervisor struct {
 	// strandedLeases remembers idle leases already reported as having no
 	// account to move to, for the same reason.
 	strandedLeases map[int64]bool
+	// unadoptable remembers orphaned panes already reported as impossible
+	// to re-adopt, keyed by pane and lease id.
+	unadoptable map[string]bool
 }
 
 // launcherFor names the launcher a successor on provider should start
@@ -178,6 +181,10 @@ func (s *Supervisor) Tick() {
 		return
 	}
 	now := time.Now()
+	s.adoptOrphans(leases, now)
+	if leases, err = s.Pool.St.ListLeases(); err != nil {
+		return
+	}
 	for _, l := range leases {
 		if l.Mode != state.ModeLong || l.Hostname != pool.Hostname() {
 			continue
@@ -543,6 +550,7 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 // whatever broke the launch has passed.
 func (s *Supervisor) readopt(l state.Lease, now time.Time) {
 	retry := l
+	retry.ID = 0
 	retry.PID = os.Getpid()
 	retry.Drain = state.DrainWaiting
 	retry.DrainAt = now.Unix()

@@ -3,10 +3,14 @@
 package proc
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 )
 
@@ -85,4 +89,34 @@ func SanitizeEnv(environ []string, drop ...string) []string {
 		}
 	}
 	return out
+}
+
+// Environ reads the environment of one of this user's processes: from
+// /proc/<pid>/environ on Linux, and from `ps -E` on macOS, which prints it
+// after the command line, so there only values without spaces come through
+// whole (later words win over the command line's).
+func Environ(pid int) (map[string]string, error) {
+	var words []string
+	if runtime.GOOS == "linux" {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range bytes.Split(b, []byte{0}) {
+			words = append(words, string(w))
+		}
+	} else {
+		out, err := exec.Command("ps", "-E", "-ww", "-o", "command=", "-p", fmt.Sprint(pid)).Output()
+		if err != nil {
+			return nil, err
+		}
+		words = strings.Fields(string(out))
+	}
+	env := map[string]string{}
+	for _, w := range words {
+		if name, value, ok := strings.Cut(w, "="); ok && name != "" && !strings.ContainsAny(name, "-/.") {
+			env[name] = value
+		}
+	}
+	return env, nil
 }

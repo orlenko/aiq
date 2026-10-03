@@ -109,6 +109,38 @@ func Tail(pane string, n int) string {
 	return strings.Join(lines, " / ")
 }
 
+// Pane is one pane as list-panes reports it.
+type Pane struct {
+	Session      string
+	ID           string // %17
+	PID          int
+	Dead         bool
+	StartCommand string
+}
+
+// Panes lists every pane on the server; none when no server runs.
+func Panes() ([]Pane, error) {
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F",
+		"#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_start_command}").Output()
+	if err != nil {
+		return nil, err
+	}
+	var panes []Pane
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.SplitN(line, "\t", 5)
+		if len(f) < 4 {
+			continue
+		}
+		p := Pane{Session: f[0], ID: f[1], Dead: f[3] == "1"}
+		fmt.Sscan(f[2], &p.PID)
+		if len(f) == 5 {
+			p.StartCommand = f[4]
+		}
+		panes = append(panes, p)
+	}
+	return panes, nil
+}
+
 // Respawn kills whatever runs in pane and starts command there.
 func Respawn(pane, dir, command string) error {
 	_, err := run("respawn-pane", "-k", "-c", dir, "-t", pane, command)

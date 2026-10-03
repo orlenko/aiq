@@ -102,6 +102,11 @@ session named after the workspace and supervises it:
   window that rolled over. aiq re-polls the account right before every move,
   so a reading taken before the credit was spent cannot move a refilled
   session. A drain asked for with `aiq long drain` always goes through.
+- **Supervised for as long as it runs.** A long session's lease lives as
+  long as its process. A pane whose lease is gone anyway (aiq before this
+  fix dropped every lease 36 hours after it started) is re-adopted on the
+  next check: the daemon reads `AIQ_LEASE` from the CLI's environment and
+  rebuilds the lease under that id from the launch that started it.
 - **Launches start above the floor.** `aiq long` ranks accounts at or below
   `drain_pct` after every other account and ignores the reset-credit
   "drain first" preference, since the session would be moved off such an

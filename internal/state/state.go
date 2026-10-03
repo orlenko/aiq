@@ -538,12 +538,19 @@ func (s *Store) MarkReady(id string, now time.Time) error {
 
 // --- leases ---
 
+// AddLease inserts l. A zero l.ID takes the next free id; a set one is kept
+// (a re-adopted long session must keep the id its hooks carry in AIQ_LEASE)
+// and fails if another lease holds it.
 func (s *Store) AddLease(l Lease) (int64, error) {
+	var want any
+	if l.ID != 0 {
+		want = l.ID
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO leases (account_id, pid, hostname, mode, cwd, depth, parent_account, root_id, args, started_at,
+		`INSERT INTO leases (id, account_id, pid, hostname, mode, cwd, depth, parent_account, root_id, args, started_at,
 		                     workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of, launcher, drain_manual)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.AccountID, l.PID, l.Hostname, l.Mode, l.Cwd, l.Depth, l.ParentAccount, l.RootID, l.Args, l.StartedAt,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		want, l.AccountID, l.PID, l.Hostname, l.Mode, l.Cwd, l.Depth, l.ParentAccount, l.RootID, l.Args, l.StartedAt,
 		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf, l.Launcher, l.DrainManual)
 	if err != nil {
 		return 0, err
@@ -657,7 +664,9 @@ func (s *Store) SetLeasePane(id int64, pane string) error {
 const MaxLeaseAge = 36 * time.Hour
 
 // PruneLeases removes leases on this host whose pid is gone, and leases from
-// anywhere older than MaxLeaseAge. It returns the surviving leases.
+// other hosts older than MaxLeaseAge. A lease on this host lives as long as
+// its process: a long session runs for days, and dropping its lease by age
+// leaves it unsupervised. It returns the surviving leases.
 func (s *Store) PruneLeases(hostname string, alive func(pid int) bool) ([]Lease, error) {
 	leases, err := s.ListLeases()
 	if err != nil {
@@ -666,7 +675,7 @@ func (s *Store) PruneLeases(hostname string, alive func(pid int) bool) ([]Lease,
 	cutoff := time.Now().Add(-MaxLeaseAge).Unix()
 	var live []Lease
 	for _, l := range leases {
-		if (l.Hostname == hostname && !alive(l.PID)) || l.StartedAt < cutoff {
+		if (l.Hostname == hostname && !alive(l.PID)) || (l.Hostname != hostname && l.StartedAt < cutoff) {
 			s.ReleaseLease(l.ID)
 			continue
 		}
@@ -800,6 +809,33 @@ func (s *Store) ListLaunches(hostname string, cwds, sessionIDs []string) ([]Laun
 	rows, err := s.db.Query(`SELECT id, started_at_ms, COALESCE(hostname,''), COALESCE(provider,''), COALESCE(account_id,''),
 		COALESCE(launcher,''), COALESCE(cwd,''), COALESCE(mode,''), COALESCE(session_id,''), COALESCE(lease_id,0), COALESCE(args,'')
 		FROM launches WHERE hostname = ? AND (`+strings.Join(conds, " OR ")+`) ORDER BY started_at_ms, id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Launch
+	for rows.Next() {
+		var l Launch
+		var ms int64
+		var args string
+		if err := rows.Scan(&l.ID, &ms, &l.Hostname, &l.Provider, &l.AccountID, &l.Launcher, &l.Cwd, &l.Mode, &l.SessionID, &l.LeaseID, &args); err != nil {
+			return nil, err
+		}
+		l.StartedAt = time.UnixMilli(ms)
+		if args != "" {
+			json.Unmarshal([]byte(args), &l.Args)
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// LongLaunches returns the long launches on hostname that recorded leaseID,
+// newest first. Lease ids are reused, so callers match the rest too.
+func (s *Store) LongLaunches(hostname string, leaseID int64) ([]Launch, error) {
+	rows, err := s.db.Query(`SELECT id, started_at_ms, COALESCE(hostname,''), COALESCE(provider,''), COALESCE(account_id,''),
+		COALESCE(launcher,''), COALESCE(cwd,''), COALESCE(mode,''), COALESCE(session_id,''), COALESCE(lease_id,0), COALESCE(args,'')
+		FROM launches WHERE hostname = ? AND lease_id = ? AND mode = ? ORDER BY started_at_ms DESC, id DESC`, hostname, leaseID, ModeLong)
 	if err != nil {
 		return nil, err
 	}
