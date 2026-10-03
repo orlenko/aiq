@@ -69,6 +69,12 @@ type Policy struct {
 	MaxWorkers       int
 	MinHours         float64
 	WeeklyWeight     float64 // multiplier on weekly terms (0 = 1)
+
+	// FloorPct is the long-session drain floor. A long session is moved off
+	// an account whose Headroom is at or below it, so such an account ranks
+	// after every account above it, and the reset-credit preference (which
+	// wants the account run down to its block) is off. 0 = not a long launch.
+	FloorPct float64
 }
 
 // Ranked is one candidate with its score and the reason it ranked there.
@@ -79,6 +85,7 @@ type Ranked struct {
 	Reason           string   // why it is ineligible, or "" when eligible
 	Terms            []string // per-window contributions, for --explain
 	ResetCreditReady bool     // final weekly allowance should be drained first
+	BelowFloor       bool     // Headroom at or below Policy.FloorPct
 }
 
 type Result struct {
@@ -123,6 +130,23 @@ func exhaustedWindow(ws []state.Window, modelScope string, now time.Time) (state
 	return state.Window{}, false
 }
 
+// Headroom is the remaining percentage of the tightest binding window that
+// has not rolled over (100 when none binds), and when that window resets.
+// The long-session supervisor drains on it, and long launches rank on it,
+// so both sides agree on what "nearly spent" means.
+func Headroom(ws []state.Window, modelScope string, now time.Time) (remaining float64, resetsAt int64) {
+	remaining = 100
+	for _, w := range ws {
+		if !binding(w, modelScope) || w.UsedPct < 0 || (w.ResetsAt > 0 && w.ResetsAt <= now.Unix()) {
+			continue
+		}
+		if r := 100 - w.UsedPct; r < remaining {
+			remaining, resetsAt = r, w.ResetsAt
+		}
+	}
+	return remaining, resetsAt
+}
+
 func weeklyRemaining(ws []state.Window, modelScope string) float64 {
 	rem := 100.0
 	found := false
@@ -146,8 +170,10 @@ func weeklyRemaining(ws []state.Window, modelScope string) float64 {
 // scoring works backwards: as the allowance approaches zero its score falls,
 // even though finishing it is what unlocks the expiring full-window credit.
 // SwitchPct is the existing boundary for "this window is nearly spent".
+// A long launch never wants it: the supervisor moves the session at the
+// drain floor, before the allowance is gone and the credit can be redeemed.
 func resetCreditReady(c Candidate, p Policy) (float64, bool) {
-	if c.ResetCredits <= 0 || (c.ResetCreditExpiry > 0 && c.ResetCreditExpiry <= p.Now.Unix()) || p.SwitchPct <= 0 {
+	if c.ResetCredits <= 0 || (c.ResetCreditExpiry > 0 && c.ResetCreditExpiry <= p.Now.Unix()) || p.SwitchPct <= 0 || p.FloorPct > 0 {
 		return 0, false
 	}
 	remaining := 100.0
@@ -309,6 +335,12 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 			}
 		}
 		r.Score, r.Terms = Score(c, p)
+		if p.FloorPct > 0 && r.Eligible {
+			if rem, _ := Headroom(c.Windows, p.ModelScope, p.Now); rem <= p.FloorPct {
+				r.BelowFloor = true
+				r.Terms = append([]string{fmt.Sprintf("%.0f%% left ≤ long drain floor %.0f%%: last resort", rem, p.FloorPct)}, r.Terms...)
+			}
+		}
 		if remaining, ok := resetCreditReady(c, p); r.Eligible && ok {
 			r.ResetCreditReady = true
 			r.Terms = append([]string{fmt.Sprintf("reset credit ready after final %.0f%% weekly: drain first", remaining)}, r.Terms...)
@@ -323,6 +355,9 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 		a, b := out[i], out[j]
 		if a.Eligible != b.Eligible {
 			return a.Eligible
+		}
+		if a.BelowFloor != b.BelowFloor {
+			return b.BelowFloor
 		}
 		// Workers stay off accounts that carry an interactive session when
 		// any alternative exists — unless the account holds a reset credit:
@@ -410,6 +445,9 @@ func Select(p Policy, cands []Candidate) (Result, error) {
 			}
 			if affinityCreditReady {
 				healthy = true // finish this allowance so its credit can redeem
+			}
+			if eligible[p.AffinityID].BelowFloor {
+				healthy = false // a long session would be moved off it at once
 			}
 			// A nearly spent credit holder takes precedence over a healthy
 			// sticky account. If the sticky account is itself in that state,

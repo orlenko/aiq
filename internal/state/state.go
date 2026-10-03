@@ -215,6 +215,9 @@ type Lease struct {
 	// mtime (and its subagents') tells a quiet session from one whose turn
 	// ended while background work still runs.
 	Transcript string
+	// DrainManual marks a drain the user asked for (aiq long drain). The
+	// supervisor cancels its own drains when quota comes back, never these.
+	DrainManual bool
 }
 
 // InTurn reports whether the agent is in the middle of a turn.
@@ -261,7 +264,7 @@ func Open(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE usage ADD COLUMN reset_credit_id TEXT`)
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
 		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
-		"launcher TEXT", "transcript TEXT"} {
+		"launcher TEXT", "transcript TEXT", "drain_manual INTEGER"} {
 		db.Exec(`ALTER TABLE leases ADD COLUMN ` + col)
 	}
 	db.Exec(`ALTER TABLE launches ADD COLUMN args TEXT`)
@@ -538,10 +541,10 @@ func (s *Store) MarkReady(id string, now time.Time) error {
 func (s *Store) AddLease(l Lease) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO leases (account_id, pid, hostname, mode, cwd, depth, parent_account, root_id, args, started_at,
-		                     workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of, launcher)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                     workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of, launcher, drain_manual)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		l.AccountID, l.PID, l.Hostname, l.Mode, l.Cwd, l.Depth, l.ParentAccount, l.RootID, l.Args, l.StartedAt,
-		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf, l.Launcher)
+		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf, l.Launcher, l.DrainManual)
 	if err != nil {
 		return 0, err
 	}
@@ -564,14 +567,14 @@ const leaseCols = `id, account_id, COALESCE(pid,0), COALESCE(hostname,''), COALE
 	depth, COALESCE(parent_account,''), COALESCE(root_id,0), COALESCE(args,''), COALESCE(started_at,0),
 	COALESCE(workspace,''), COALESCE(pane,''), COALESCE(session_id,''), COALESCE(provider,''), COALESCE(fallback,''),
 	COALESCE(drain,''), COALESCE(drain_at,0), COALESCE(turn_started_at,0), COALESCE(turn_ended_at,0), COALESCE(takeover_of,0),
-	COALESCE(launcher,''), COALESCE(transcript,'')`
+	COALESCE(launcher,''), COALESCE(transcript,''), COALESCE(drain_manual,0) != 0`
 
 func scanLease(row interface{ Scan(...any) error }) (Lease, error) {
 	var l Lease
 	err := row.Scan(&l.ID, &l.AccountID, &l.PID, &l.Hostname, &l.Mode, &l.Cwd,
 		&l.Depth, &l.ParentAccount, &l.RootID, &l.Args, &l.StartedAt,
 		&l.Workspace, &l.Pane, &l.SessionID, &l.Provider, &l.Fallback,
-		&l.Drain, &l.DrainAt, &l.TurnStartedAt, &l.TurnEndedAt, &l.TakeoverOf, &l.Launcher, &l.Transcript)
+		&l.Drain, &l.DrainAt, &l.TurnStartedAt, &l.TurnEndedAt, &l.TakeoverOf, &l.Launcher, &l.Transcript, &l.DrainManual)
 	return l, err
 }
 
@@ -618,9 +621,18 @@ func (s *Store) SetLeaseTranscript(id int64, path string) error {
 	return err
 }
 
-// SetLeaseDrain moves a long lease through the drain state machine.
+// SetLeaseDrain moves a long lease through the drain state machine. Back to
+// DrainNone also forgets that the user asked for the drain.
 func (s *Store) SetLeaseDrain(id int64, drain string, now time.Time) error {
-	_, err := s.db.Exec(`UPDATE leases SET drain = ?, drain_at = ? WHERE id = ?`, drain, now.Unix(), id)
+	_, err := s.db.Exec(`UPDATE leases SET drain = ?, drain_at = ?,
+		drain_manual = CASE WHEN ? = '' THEN 0 ELSE drain_manual END WHERE id = ?`, drain, now.Unix(), drain, id)
+	return err
+}
+
+// RequestDrainByUser starts a drain the supervisor must see through even if
+// the account's quota recovers.
+func (s *Store) RequestDrainByUser(id int64, now time.Time) error {
+	_, err := s.db.Exec(`UPDATE leases SET drain = ?, drain_at = ?, drain_manual = 1 WHERE id = ?`, DrainRequested, now.Unix(), id)
 	return err
 }
 

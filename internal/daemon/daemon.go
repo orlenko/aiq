@@ -139,7 +139,8 @@ func (s *Server) poll(ids []string) {
 
 func (s *Server) housekeeping() {
 	self, _ := os.Executable()
-	sup := &longrun.Supervisor{Pool: s.pool, Logf: s.log.Printf, AiqBin: self}
+	sup := &longrun.Supervisor{Pool: s.pool, Logf: s.log.Printf, AiqBin: self,
+		Refresh: func(id string) { s.poll([]string{id}) }}
 	interval := time.Duration(s.cfg.Long.CheckIntervalSeconds) * time.Second
 	for {
 		time.Sleep(interval)

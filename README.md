@@ -92,11 +92,21 @@ session named after the workspace and supervises it:
   less remaining, the daemon flags the lease and the next hook tells the
   agent to keep working, write a handoff note at the next natural break and
   keep it current. The session moves at its next turn end if another account
-  has headroom, or when the account runs out, whichever comes first. It
-  normally prefers a successor above `drain_pct`, but if none exists it uses
-  an account with more quota than the current one; once the current account
-  is blocked, any positive headroom is enough. While no account can take it,
-  the agent spends what is left instead of idling.
+  has headroom, or when the account runs out, whichever comes first. The
+  successor must have more than `drain_pct` left; while none does, the agent
+  spends what is left instead of moving to another nearly spent account, and
+  once the current account is blocked, any positive headroom is enough.
+- **Recovered quota cancels the move.** A drain aiq started is called off
+  when the account has more than twice `drain_pct` left again: a reset
+  credit spent by aiq, by another host, or in the CLI (`/limit-reset`), or a
+  window that rolled over. aiq re-polls the account right before every move,
+  so a reading taken before the credit was spent cannot move a refilled
+  session. A drain asked for with `aiq long drain` always goes through.
+- **Launches start above the floor.** `aiq long` ranks accounts at or below
+  `drain_pct` after every other account and ignores the reset-credit
+  "drain first" preference, since the session would be moved off such an
+  account before its credit could redeem. With nothing above the floor it
+  still starts on the best of what is left.
 - **Idle sessions do not strand quota.** An agent can stop on its own above
   `drain_pct` (a quota floor, nothing it thinks it can afford), and then the
   account never runs out and nothing moves it. A long session that has been

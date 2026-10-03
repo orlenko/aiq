@@ -178,6 +178,9 @@ func rankAuto(policies map[string]selector.Policy, candidates []selector.Candida
 		if a.Eligible != b.Eligible {
 			return a.Eligible
 		}
+		if a.BelowFloor != b.BelowFloor {
+			return b.BelowFloor
+		}
 		ca, cb := byID[a.ID], byID[b.ID]
 		provider, _, _ := strings.Cut(a.ID, "/")
 		if policies[provider].Mode == state.ModeWorker {
@@ -268,6 +271,9 @@ func (a *app) selectAutoAccount(mode string, f runFlags, tried map[string]bool) 
 		}
 		policy := a.pool.Policy(provider, policyMode, now)
 		policy.ModelScope = mf.modelScope
+		if mode == state.ModeLong {
+			policy.FloorPct = a.cfg.Long.DrainPct
+		}
 		policies[provider] = policy
 	}
 	if available == 0 && tierless > 0 {

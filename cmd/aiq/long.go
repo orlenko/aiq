@@ -52,7 +52,7 @@ func cmdLong(args []string) error {
 			return err
 		}
 		longrun.ArchiveNote(l.Workspace, time.Now())
-		if err := a.st.SetLeaseDrain(l.ID, state.DrainRequested, time.Now()); err != nil {
+		if err := a.st.RequestDrainByUser(l.ID, time.Now()); err != nil {
 			return err
 		}
 		a.st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: drain requested by user", l.ID), time.Now())

@@ -173,7 +173,7 @@ func TestIdleRotateDue(t *testing.T) {
 	}
 }
 
-func TestSuccessorUsesLowQuotaAsLastResort(t *testing.T) {
+func TestSuccessorUsesLowQuotaOnlyWhenBlocked(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	type target struct {
 		used   float64
@@ -186,7 +186,7 @@ func TestSuccessorUsesLowQuotaAsLastResort(t *testing.T) {
 		want       string
 	}{
 		{"blocked source accepts quota below drain floor", 100, []target{{96, time.Hour}}, "codex/target-0"},
-		{"lower source accepts a better account below drain floor", 97, []target{{96, time.Hour}}, "codex/target-0"},
+		{"low source keeps spending rather than move to another low account", 97, []target{{96, time.Hour}}, ""},
 		{"equal low accounts do not ping-pong", 96, []target{{96, time.Hour}}, ""},
 		{"worse low account is not a successor", 96, []target{{97, time.Hour}}, ""},
 		{"healthy account beats the more perishable last resort", 97, []target{{96, time.Hour}, {50, 7 * 24 * time.Hour}}, "codex/target-1"},
@@ -351,5 +351,116 @@ func TestReadoptKeepsAFailedTakeoverSupervised(t *testing.T) {
 	}
 	if got.PID != os.Getpid() {
 		t.Fatalf("pid = %d, want the daemon's %d; a dead pid is pruned before the retry", got.PID, os.Getpid())
+	}
+}
+
+// newSupervisor is a supervisor over one source account and an optional
+// fresh target, with the source's weekly window at used percent.
+func newSupervisor(t *testing.T, used float64, target bool) (*Supervisor, *state.Store) {
+	t.Helper()
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ids := []string{"source"}
+	if target {
+		ids = append(ids, "target")
+	}
+	for _, name := range ids {
+		if err := st.AddAccount(state.Account{ID: "claude/" + name, Provider: "claude", Name: name, Enabled: true, Native: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setUsed(t, st, "claude/source", used)
+	if target {
+		setUsed(t, st, "claude/target", 10)
+	}
+	cfg := config.Default()
+	cfg.Providers.Claude.ModelScope = ""
+	return &Supervisor{Pool: &pool.Pool{Cfg: cfg, St: st}, Logf: func(string, ...any) {}}, st
+}
+
+func setUsed(t *testing.T, st *state.Store, id string, used float64) {
+	t.Helper()
+	now := time.Now()
+	if err := st.ReplaceWindows(id, "test", []state.Window{{Key: "weekly", Label: "Weekly", Kind: state.KindWeekly,
+		UsedPct: used, ResetsAt: now.Add(24 * time.Hour).Unix(), ObservedAt: now.Unix()}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func drainingLease(t *testing.T, st *state.Store, drain string, manual bool) state.Lease {
+	t.Helper()
+	l := state.Lease{AccountID: "claude/source", Mode: state.ModeLong, Hostname: pool.Hostname(), Provider: "claude",
+		Workspace: "/w", Fallback: "claude", Drain: drain, DrainAt: time.Now().Add(-time.Hour).Unix(),
+		StartedAt: time.Now().Unix(), PID: os.Getpid()}
+	id, err := st.AddLease(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual {
+		if err := st.RequestDrainByUser(id, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.GetLease(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// A reset credit spent on a draining account (here: from the CLI, so aiq
+// only sees it in the next poll) must stop the move, at whatever stage the
+// drain is.
+func TestRecoveredQuotaCancelsTheDrain(t *testing.T) {
+	for _, drain := range []string{state.DrainRequested, state.DrainDraining, state.DrainReady, state.DrainWaiting} {
+		t.Run(drain, func(t *testing.T) {
+			s, st := newSupervisor(t, 0, true)
+			l := drainingLease(t, st, drain, false)
+			s.evaluate(l, time.Now())
+			got, _ := st.GetLease(l.ID)
+			if got.Drain != state.DrainNone {
+				t.Fatalf("drain = %q after quota came back, want none", got.Drain)
+			}
+		})
+	}
+}
+
+func TestUserDrainSurvivesRecoveredQuota(t *testing.T) {
+	s, st := newSupervisor(t, 0, false)
+	l := drainingLease(t, st, state.DrainRequested, true)
+	if !l.DrainManual {
+		t.Fatal("RequestDrainByUser did not mark the drain manual")
+	}
+	if recovered(l, 100, s.Pool.Cfg.Long.DrainPct, false) {
+		t.Fatal("a drain the user asked for was cancelled")
+	}
+	if err := st.SetLeaseDrain(l.ID, state.DrainNone, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetLease(l.ID); got.DrainManual {
+		t.Fatal("the manual mark outlived the drain")
+	}
+}
+
+// The move itself re-polls first: the stale reading said 1% left, the
+// fresh one says the credit refilled the account.
+func TestTakeoverRepollsBeforeMoving(t *testing.T) {
+	s, st := newSupervisor(t, 99, true)
+	l := drainingLease(t, st, state.DrainReady, false)
+	l.Pane = "%999" // never reached: the refresh cancels the move
+	polled := 0
+	s.Refresh = func(id string) {
+		polled++
+		setUsed(t, st, id, 0)
+	}
+	s.takeover(l, time.Now())
+	if polled != 1 {
+		t.Fatalf("refreshed %d times, want 1", polled)
+	}
+	if got, _ := st.GetLease(l.ID); got.Drain != state.DrainNone {
+		t.Fatalf("drain = %q, want none: the session should stay", got.Drain)
 	}
 }

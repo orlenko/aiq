@@ -315,6 +315,45 @@ func TestResetCreditReadyDrainsBeforeFreshAccount(t *testing.T) {
 	}
 }
 
+// A long session is moved off an account at the drain floor, so a long
+// launch must not start there: not for a reset credit (the session leaves
+// before the credit can redeem), not for a sticky workspace, and not for a
+// perishable tail. With nothing above the floor it still gets the best of
+// what is left.
+func TestLongLaunchSkipsTheDrainFloor(t *testing.T) {
+	p := policy(state.ModeInteractive)
+	p.WeeklyWeight = 5
+	p.FloorPct = 4
+	nearlySpent := cand("codex/netflix", win(state.KindWeekly, 97, 83*time.Hour))
+	nearlySpent.ResetCredits = 1
+	nearlySpent.ResetCreditExpiry = now.Add(48 * time.Hour).Unix()
+	perishable := cand("codex/usky", win(state.KindWeekly, 98, 30*time.Minute))
+	fresh := cand("codex/bjola", win(state.KindWeekly, 1, 7*24*time.Hour))
+
+	res, err := Select(p, []Candidate{nearlySpent, perishable, fresh})
+	if err != nil || res.ID != fresh.ID {
+		t.Fatalf("long launch should start above the floor: err=%v result=%+v", err, res)
+	}
+	for _, r := range res.Ranked {
+		if r.ResetCreditReady {
+			t.Fatalf("long launch should not drain for a credit: %+v", r)
+		}
+	}
+	if !res.Ranked[1].BelowFloor || !strings.Contains(strings.Join(res.Ranked[1].Terms, " "), "drain floor") {
+		t.Fatalf("ranking should explain the floor: %+v", res.Ranked[1])
+	}
+
+	p.Sticky, p.AffinityID = true, nearlySpent.ID
+	if res, err = Select(p, []Candidate{nearlySpent, fresh}); err != nil || res.ID != fresh.ID {
+		t.Fatalf("affinity at the floor should not hold a long launch: err=%v result=%+v", err, res)
+	}
+
+	p.Sticky, p.AffinityID = false, ""
+	if res, err = Select(p, []Candidate{nearlySpent, perishable}); err != nil || res.ID == "" {
+		t.Fatalf("with nothing above the floor the best low account still serves: err=%v result=%+v", err, res)
+	}
+}
+
 func TestKnownAuthenticationFailureIsIneligible(t *testing.T) {
 	p := policy(state.ModeInteractive)
 	bad := cand("codex/usky", win(state.KindWeekly, 0, 7*24*time.Hour))

@@ -560,6 +560,9 @@ func (a *app) selectAccount(provider, mode string, f runFlags, workspace string,
 		policyMode = state.ModeInteractive
 	}
 	pol := a.pool.Policy(provider, policyMode, time.Now())
+	if mode == state.ModeLong {
+		pol.FloorPct = a.cfg.Long.DrainPct
+	}
 	if f.modelScope != "" {
 		pol.ModelScope = f.modelScope
 		if strings.EqualFold(f.modelScope, "none") {

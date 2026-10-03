@@ -137,6 +137,8 @@ type Supervisor struct {
 	Pool   *pool.Pool
 	Logf   func(format string, v ...any)
 	AiqBin string
+	// Refresh re-polls one account's telemetry; nil skips the re-poll.
+	Refresh func(accountID string)
 
 	// mutedLeases remembers the leases already reported as unsupervisable,
 	// so the daemon says it once instead of on every tick.
@@ -203,25 +205,48 @@ func (s *Supervisor) headroom(accountID, provider string, now time.Time) (remain
 		if c.ID != accountID {
 			continue
 		}
-		for _, w := range c.Windows {
-			if w.Kind != state.KindShort && w.Kind != state.KindWeekly {
-				continue
-			}
-			if w.Scope != "" && (pol.ModelScope == "" || !strings.Contains(strings.ToLower(w.Scope), strings.ToLower(pol.ModelScope))) {
-				continue
-			}
-			if w.UsedPct < 0 || (w.ResetsAt > 0 && w.ResetsAt <= now.Unix()) {
-				continue
-			}
-			if rem := 100 - w.UsedPct; rem < remaining {
-				remaining = rem
-				if w.ResetsAt > 0 {
-					until = ", resets " + time.Unix(w.ResetsAt, 0).Local().Format("15:04")
-				}
-			}
+		var resets int64
+		remaining, resets = selector.Headroom(c.Windows, pol.ModelScope, now)
+		if remaining < 100 && resets > 0 {
+			until = ", resets " + time.Unix(resets, 0).Local().Format("15:04")
 		}
 	}
 	return remaining, until, blocked
+}
+
+// recovered says whether a lease the supervisor asked to drain no longer
+// needs to move: its account has more than twice the drain floor again (a
+// reset credit was spent, from the CLI, by aiq or by another host, or a
+// window rolled over). A drain the user asked for stands.
+func recovered(l state.Lease, remaining, drainPct float64, blocked bool) bool {
+	return l.Drain != state.DrainNone && !l.DrainManual && !blocked && remaining > 2*drainPct
+}
+
+// cancelDrain puts a recovered lease back to running normally.
+func (s *Supervisor) cancelDrain(l state.Lease, remaining float64, now time.Time) {
+	s.Pool.St.SetLeaseDrain(l.ID, state.DrainNone, now)
+	s.Pool.St.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
+		"lease %d: %.0f%% left again, drain cancelled; staying on %s", l.ID, remaining, l.AccountID), now)
+}
+
+// staysAfterRefresh re-polls the lease's account just before a move and
+// reports whether the move is still needed. Usage reads lag: a reset credit
+// redeemed in the CLI (Claude's /limit-reset) or by another host shows only
+// at the next poll, and a move on the stale reading restarts a session that
+// has quota again.
+func (s *Supervisor) staysAfterRefresh(l state.Lease, now time.Time) bool {
+	if s.Refresh == nil || l.DrainManual {
+		return false
+	}
+	s.Refresh(l.AccountID)
+	remaining, _, blocked := s.headroom(l.AccountID, l.Provider, now)
+	if recovered(l, remaining, s.Pool.Cfg.Long.DrainPct, blocked) {
+		s.cancelDrain(l, remaining, now)
+		return true
+	}
+	// A block that lifted with little left: keep spending it, and let the
+	// next tick decide on a drain.
+	return l.Drain == state.DrainNone && !blocked
 }
 
 func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
@@ -239,6 +264,10 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 	remaining, until, blocked := s.headroom(l.AccountID, l.Provider, now)
 	drainPct := s.Pool.Cfg.Long.DrainPct
 	grace := time.Duration(s.Pool.Cfg.Long.IdleGraceSeconds) * time.Second
+	if recovered(l, remaining, drainPct, blocked) {
+		s.cancelDrain(l, remaining, now)
+		return
+	}
 
 	switch l.Drain {
 	case state.DrainNone:
@@ -337,21 +366,15 @@ func (s *Supervisor) dismissRateLimitPrompt(l state.Lease, now time.Time) {
 func (s *Supervisor) successor(l state.Lease, now time.Time) (state.Account, error) {
 	// Search every fallback provider above the normal drain floor first.
 	// Only when none qualifies may a nearly empty account be used as a last
-	// resort.
-	drainPct := s.Pool.Cfg.Long.DrainPct
-	if acc, err := s.successorAbove(l, now, drainPct); err == nil {
+	// resort, and only once the current account is blocked outright. Until
+	// then the session keeps spending what it has: a restart from one nearly
+	// spent account onto another buys a few points and costs a wrap-up and a
+	// cold start, and the new account is drained again on the next tick.
+	if acc, err := s.successorAbove(l, now, s.Pool.Cfg.Long.DrainPct); err == nil {
 		return acc, nil
 	}
-	// Do not let the floor strand the lease when the current account has even
-	// less quota or is blocked outright. In those cases any account with more
-	// usable headroom is progress. Keeping the comparison strict also prevents
-	// two equally low accounts from handing the lease back and forth.
-	remaining, _, blocked := s.headroom(l.AccountID, l.Provider, now)
-	if blocked {
+	if _, _, blocked := s.headroom(l.AccountID, l.Provider, now); blocked {
 		return s.successorAbove(l, now, 0)
-	}
-	if remaining < drainPct {
-		return s.successorAbove(l, now, remaining)
 	}
 	return state.Account{}, fmt.Errorf("no account with headroom")
 }
@@ -415,6 +438,9 @@ func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 			st.SetLeaseDrain(l.ID, state.DrainWaiting, now)
 			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: %v; waiting for a window to reset", l.ID, err), now)
 		}
+		return
+	}
+	if s.staysAfterRefresh(l, now) {
 		return
 	}
 	s.moveTo(l, acc, now)
