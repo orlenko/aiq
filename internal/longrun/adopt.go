@@ -18,14 +18,19 @@ import (
 // Orphan is a live long-session pane with no lease: what the supervisor
 // needs to take it back.
 type Orphan struct {
-	Pane     tmux.Pane
-	LeaseID  int64  // AIQ_LEASE, which the session's hooks report under
+	Pane    tmux.Pane
+	LeaseID int64 // AIQ_LEASE, which the session's hooks report under
+	// IDTaken: another lease holds LeaseID (it was reused while this
+	// session's lease was gone). The session is adopted under a new id and
+	// its hooks find it by pane.
+	IDTaken  bool
 	Provider string // AIQ_PROVIDER
 	Account  string // AIQ_ACCOUNT, the account's name
 }
 
 // FindOrphans lists the panes of this host's long sessions (tmux sessions
-// named prefix-…) whose CLI runs under an AIQ_LEASE that no lease holds.
+// named prefix-…) that no lease watches, with the AIQ_LEASE their CLI runs
+// under.
 // Before leases on this host lived as long as their process, every long
 // session lost its lease 36 hours after it started and ran unsupervised.
 func FindOrphans(prefix string, panes []tmux.Pane, leases []state.Lease, environ func(pid int) (map[string]string, error)) []Orphan {
@@ -47,10 +52,10 @@ func FindOrphans(prefix string, panes []tmux.Pane, leases []state.Lease, environ
 			continue
 		}
 		id, _ := strconv.ParseInt(env["AIQ_LEASE"], 10, 64)
-		if id <= 0 || held[id] {
+		if id <= 0 {
 			continue
 		}
-		out = append(out, Orphan{Pane: p, LeaseID: id, Provider: env["AIQ_PROVIDER"], Account: env["AIQ_ACCOUNT"]})
+		out = append(out, Orphan{Pane: p, LeaseID: id, IDTaken: held[id], Provider: env["AIQ_PROVIDER"], Account: env["AIQ_ACCOUNT"]})
 	}
 	return out
 }
@@ -81,12 +86,17 @@ func (s *Supervisor) adoptOrphans(leases []state.Lease, now time.Time) {
 			}
 			continue
 		}
-		if _, err := s.Pool.St.AddLease(l); err != nil {
-			s.Logf("lease %d: re-adopt pane %s: %v", l.ID, o.Pane.ID, err)
+		id, err := s.Pool.St.AddLease(l)
+		if err != nil {
+			s.Logf("lease %d: re-adopt pane %s: %v", o.LeaseID, o.Pane.ID, err)
 			continue
 		}
+		note := ""
+		if id != o.LeaseID {
+			note = fmt.Sprintf(" (its lease id %d is held by another lease)", o.LeaseID)
+		}
 		s.Pool.St.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
-			"lease %d: re-adopted pane %s in %s; its lease had been dropped and the session ran unsupervised", l.ID, o.Pane.ID, l.Workspace), now)
+			"lease %d: re-adopted pane %s in %s%s; its lease had been dropped and the session ran unsupervised", id, o.Pane.ID, l.Workspace, note), now)
 	}
 }
 
@@ -114,8 +124,12 @@ func (s *Supervisor) orphanLease(o Orphan, now time.Time) (state.Lease, error) {
 		if m := fallbackFlag.FindStringSubmatch(o.Pane.StartCommand); m != nil {
 			fallback = m[1]
 		}
+		id := o.LeaseID
+		if o.IDTaken {
+			id = 0
+		}
 		return state.Lease{
-			ID: o.LeaseID, AccountID: la.AccountID, PID: o.Pane.PID, Hostname: pool.Hostname(), Mode: state.ModeLong,
+			ID: id, AccountID: la.AccountID, PID: o.Pane.PID, Hostname: pool.Hostname(), Mode: state.ModeLong,
 			Cwd: la.Cwd, Args: string(enc), StartedAt: la.StartedAt.Unix(),
 			Workspace: ws, Pane: o.Pane.ID, SessionID: la.SessionID, Provider: la.Provider, Fallback: fallback,
 			Launcher: la.Launcher,

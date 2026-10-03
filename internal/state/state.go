@@ -602,6 +602,17 @@ func (s *Store) ListLeases() ([]Lease, error) {
 	return out, rows.Err()
 }
 
+// LongLeaseByPane returns the long lease of a tmux pane on this host's
+// server. Each host keeps its own database, so the pane id is unique here.
+func (s *Store) LongLeaseByPane(pane string) (Lease, error) {
+	row := s.db.QueryRow(`SELECT `+leaseCols+` FROM leases WHERE mode = ? AND pane = ? ORDER BY id DESC LIMIT 1`, ModeLong, pane)
+	l, err := scanLease(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return l, fmt.Errorf("no long lease for pane %s", pane)
+	}
+	return l, err
+}
+
 func (s *Store) GetLease(id int64) (Lease, error) {
 	row := s.db.QueryRow(`SELECT `+leaseCols+` FROM leases WHERE id = ?`, id)
 	l, err := scanLease(row)

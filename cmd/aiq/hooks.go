@@ -60,16 +60,18 @@ func cmdHook(provider string, args []string) {
 	}
 	defer st.Close()
 	l, err := st.GetLease(leaseID)
-	if err != nil {
+	// Lease ids are reused once a lease is gone, so the id this session
+	// carries may name a worker or another pane's session, and a session
+	// re-adopted while another held its id runs under a new one. The pane
+	// says which lease is this session's.
+	if pane := os.Getenv("TMUX_PANE"); pane != "" && (err != nil || l.Mode != state.ModeLong || (l.Pane != "" && l.Pane != pane)) {
+		l, err = st.LongLeaseByPane(pane)
+	}
+	if err != nil || l.Mode != state.ModeLong {
 		return
 	}
 	if l.Provider != "" && l.Provider != provider {
 		return // a hook of one CLI inherited a lease of another (nested launch)
-	}
-	// Lease ids are reused once a lease is gone: an id this session carries
-	// may now name a worker, or a long session in another pane.
-	if l.Mode != state.ModeLong || (l.Pane != "" && os.Getenv("TMUX_PANE") != "" && os.Getenv("TMUX_PANE") != l.Pane) {
-		return
 	}
 	now := time.Now()
 	if payload.SessionID != "" && payload.SessionID != l.SessionID {

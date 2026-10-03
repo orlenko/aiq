@@ -25,7 +25,7 @@ func TestFindOrphans(t *testing.T) {
 	}
 	panes := []tmux.Pane{
 		{Session: "aiq-ops2-3bd1", ID: "%80", PID: 80}, // orphan
-		{Session: "aiq-ops-9d58", ID: "%97", PID: 97},  // its lease is held
+		{Session: "aiq-ops-9d58", ID: "%97", PID: 97},  // orphan whose id a worker took
 		{Session: "aiq-ops3-d787", ID: "%93", PID: 93}, // its pane is watched under another id
 		{Session: "aiq-ops4-b53c", ID: "%98", PID: 98, Dead: true},
 		{Session: "aiq-ops5-0000", ID: "%99", PID: 99}, // not a long session
@@ -40,8 +40,11 @@ func TestFindOrphans(t *testing.T) {
 		{ID: 40, Hostname: pool.Hostname(), Mode: state.ModeLong, Pane: "%93"},
 	}
 	got := FindOrphans("aiq", panes, leases, fakeEnviron(envs))
-	if len(got) != 1 || got[0].Pane.ID != "%80" || got[0].LeaseID != 22 || got[0].Provider != "codex" || got[0].Account != "codex3" {
-		t.Fatalf("got %+v; want only pane %%80 under lease 22", got)
+	if len(got) != 2 || got[0].Pane.ID != "%80" || got[0].LeaseID != 22 || got[0].IDTaken || got[0].Provider != "codex" || got[0].Account != "codex3" {
+		t.Fatalf("got %+v; want pane %%80 under lease 22, then %%97", got)
+	}
+	if got[1].Pane.ID != "%97" || got[1].LeaseID != 28 || !got[1].IDTaken {
+		t.Fatalf("got %+v; want pane %%97 with its id 28 taken", got[1])
 	}
 }
 
@@ -83,6 +86,22 @@ func TestOrphanLeaseComesFromItsLaunch(t *testing.T) {
 	}
 	if got, err := st.GetLease(22); err != nil || got.Pane != "%80" {
 		t.Fatalf("lease 22 after adopt: %+v, %v", got, err)
+	}
+
+	// Another pane carries the same id: it gets a new one, and its hooks
+	// find it by pane.
+	o2 := o
+	o2.Pane.ID, o2.IDTaken = "%81", true
+	l2, err := s.orphanLease(o2, now)
+	if err != nil || l2.ID != 0 {
+		t.Fatalf("got %+v, %v; want a fresh id", l2, err)
+	}
+	id2, err := st.AddLease(l2)
+	if err != nil || id2 == 22 {
+		t.Fatalf("got id %d, %v", id2, err)
+	}
+	if byPane, err := st.LongLeaseByPane("%81"); err != nil || byPane.ID != id2 {
+		t.Fatalf("lease by pane: %+v, %v; want %d", byPane, err, id2)
 	}
 
 	o.Pane.Session = "aiq-elsewhere-0000"
