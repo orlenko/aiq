@@ -227,3 +227,30 @@ func TestInjected(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeUnfinished(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	user := `{"type":"user","timestamp":"2026-09-01T14:00:00Z","sessionId":"s","cwd":"/w","message":{"role":"user","content":"go"}}`
+	think := `{"type":"assistant","timestamp":"2026-09-01T14:00:05Z","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"hm"}]}}`
+	text := `{"type":"assistant","timestamp":"2026-09-01T14:00:12Z","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}`
+	closed := `{"type":"system","subtype":"turn_duration","timestamp":"2026-09-01T14:00:13Z","durationMs":13000}`
+	for _, c := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"ends on thinking", user + "\n" + think + "\n", true},
+		{"ends on text", user + "\n" + think + "\n" + text + "\n", true},
+		{"turn closed", user + "\n" + think + "\n" + text + "\n" + closed + "\n", false},
+		{"half-written line after thinking", user + "\n" + think + "\n" + text[:40], true},
+		{"only the prompt", user + "\n", false},
+	} {
+		if err := os.WriteFile(path, []byte(c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := ParseClaude(path)
+		if err != nil || s.Unfinished != c.want {
+			t.Errorf("%s: Unfinished = %v, %v; want %v", c.name, s.Unfinished, err, c.want)
+		}
+	}
+}

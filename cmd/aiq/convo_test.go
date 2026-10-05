@@ -289,7 +289,7 @@ func TestFollowPrintsWhatTheFileGains(t *testing.T) {
 	os.WriteFile(path, []byte(user("2026-09-15T10:00:00Z", "first")+reply("2026-09-15T10:01:00Z", "m1", "one")), 0o644)
 	var b bytes.Buffer
 	f := &convoFollow{tgt: convoTarget{provider: "claude", path: path}, w: &b,
-		statEvery: 10 * time.Millisecond, parseGap: 30 * time.Millisecond, resolveEvery: time.Hour}
+		statEvery: 10 * time.Millisecond, parseGap: 30 * time.Millisecond, resolveEvery: time.Hour, quiet: 100 * time.Millisecond}
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() { f.run(stop); close(done) }()
 
@@ -529,10 +529,12 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 		if s, err = parse(path); err != nil {
 			t.Fatal(err)
 		}
+		follow.hold = s.Unfinished // just written: not yet quiet
 		follow.emit(s)
 	}
 	if follow.pending {
-		follow.emit(s) // the follow loop parses again while a reply is held
+		follow.hold = false // the file went quiet
+		follow.emit(s)
 	}
 	snap := newConvoPrinter("x", false, false)
 	snapped := pieces(snap)
@@ -697,5 +699,53 @@ func TestLoadConvoGivesAStaleTurnItsLastAnswer(t *testing.T) {
 	stale, err := loadConvo(convoTarget{provider: "claude", path: path, stale: true})
 	if tr := stale.Turns[0]; err != nil || tr.Open || tr.Reply != "The deploy is fine." || len(tr.Earlier) != 0 {
 		t.Fatalf("stale: %+v, %v", tr, err)
+	}
+}
+
+func TestConvoPrintsAnswersTheAgentRepeats(t *testing.T) {
+	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
+	s := &transcript.Session{Provider: "claude", Turns: []transcript.Turn{
+		{Prompt: "fix the build", Earlier: []string{"Done.", "Build still red."}, Reply: "Done.", Started: at, Ended: at.Add(9 * time.Minute), Tools: 12},
+		{Prompt: "watch CI", Earlier: []string{"Waiting.", "Waiting."}, Reply: "Green.", Started: at.Add(10 * time.Minute), Ended: at.Add(20 * time.Minute)},
+	}}
+	out := renderConvo(s, convoTarget{}, 0, false, at)
+	if n := strings.Count(out, "Done."); n != 2 {
+		t.Errorf("Done. printed %d times, want 2:\n%s", n, out)
+	}
+	if !strings.Contains(out, "▌ claude · 9m · 12 tools\nDone.") {
+		t.Errorf("final reply missing:\n%s", out)
+	}
+	if n := strings.Count(out, "Waiting."); n != 2 {
+		t.Errorf("Waiting. printed %d times, want 2:\n%s", n, out)
+	}
+
+	// A follow run that saw the turn before its last stretch prints the
+	// same: the reply that moves out of Earlier is not printed again.
+	p := newConvoPrinter("claude", false, false)
+	early := &transcript.Session{Provider: "claude", Turns: []transcript.Turn{
+		{Prompt: "fix the build", Earlier: []string{"Done."}, Open: true, Started: at},
+	}}
+	got := p.emit(early) + p.emit(&transcript.Session{Provider: "claude", Turns: s.Turns[:1]})
+	if n := strings.Count(got, "Done."); n != 2 || !strings.Contains(got, "Build still red.") {
+		t.Errorf("follow output:\n%s", got)
+	}
+}
+
+func TestSanitizeKeepsTextAndDropsControls(t *testing.T) {
+	in := "tab\there 日本語 👍🏽 é\x1b]52;c;Zm9v\x07‮evil⁦x⁩ next"
+	want := "tab\there 日本語 👍🏽 é]52;c;Zm9vevilx\nnext"
+	if got := sanitize(in); got != want {
+		t.Errorf("sanitize = %q, want %q", got, want)
+	}
+}
+
+func TestSlashCommand(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want bool
+	}{{"/model", true}, {"/mcp list", true}, {"/Users/x/main.go panics on start, fix it", false}, {"/", false}, {"fix /model", false}} {
+		if got := slashCommand(c.in); got != c.want {
+			t.Errorf("slashCommand(%q) = %v", c.in, got)
+		}
 	}
 }

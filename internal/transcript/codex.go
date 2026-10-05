@@ -211,6 +211,8 @@ func ParseCodex(path string) (*Session, error) {
 		json.Unmarshal(rec.Payload, &p)
 		ts := parseTime(rec.Timestamp)
 		s.touch(ts)
+		// codexHeadOf skips lines before they get here; a case added
+		// below must also be kept there.
 		switch rec.Type {
 		case "session_meta":
 			if s.ID != "" {
@@ -410,6 +412,8 @@ func codexHeadOf(line []byte) (h codexHead) {
 	if r, ok := bytes.CutPrefix(rest, []byte(`,"payload":{"type":"`)); ok {
 		h.payload, _, _ = cutString(r)
 	}
+	// The types kept here must cover every case ParseCodex's main loop
+	// handles: a type skipped here never reaches that switch.
 	switch h.typ {
 	case "session_meta", "turn_context":
 	case "response_item":

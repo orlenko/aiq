@@ -169,6 +169,9 @@ func ParseClaude(path string) (*Session, error) {
 	r := bufio.NewReaderSize(f, 1<<16)
 	for {
 		line, err := r.ReadBytes('\n')
+		if err == nil {
+			s.Unfinished = false // a complete line; an assistant record sets it again
+		}
 		if len(line) > 0 && wanted(line) {
 			var rec claudeRecord
 			if json.Unmarshal(line, &rec) == nil {
@@ -265,6 +268,7 @@ func ParseClaude(path string) (*Session, error) {
 					if rec.IsSidechain || rec.Message == nil || cur == nil {
 						break
 					}
+					s.Unfinished = err == nil
 					if m := rec.Message.Model; m != "" && m != "<synthetic>" {
 						s.Model = m
 					}

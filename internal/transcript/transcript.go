@@ -40,6 +40,11 @@ type Session struct {
 	// Bypass records that the session ran with the permission bypass
 	// (Claude bypassPermissions, Codex never-ask + full access).
 	Bypass bool
+	// Unfinished says the file ends on an agent record with nothing after
+	// it. Claude Code writes one message as several records (thinking,
+	// then text) and closes a turn with system records, so the last turn's
+	// reply may still be on its way.
+	Unfinished bool
 }
 
 // Source says who put a turn's prompt into the conversation.

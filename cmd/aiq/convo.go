@@ -159,7 +159,7 @@ func cmdConvo(args []string) error {
 	tty := term.IsTerminal(int(os.Stdout.Fd()))
 	if o.follow {
 		f := &convoFollow{r: r, tgt: tgt, w: os.Stdout, tty: tty, last: o.last,
-			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second}
+			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: 20 * time.Second}
 		stop := make(chan struct{})
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -563,11 +563,15 @@ type convoPrinter struct {
 	provider string
 	color    bool
 	marks    bool
-	// live holds back the last turn's end while following: its reply is
-	// printed once two parses agree on it, and "(no reply)" not at all.
-	// Claude Code writes a final message as several records, and a parse
-	// between them sees the narration before it as the reply.
+	// live says the printer follows a running session: the last turn's
+	// "(no reply)" is never printed, since more may come.
 	live bool
+	// hold keeps back the last turn's final reply: the transcript may
+	// still be writing it (Session.Unfinished and the file not yet quiet).
+	// Claude Code writes thinking and text as separate records, seconds
+	// apart, and a parse between them sees the narration before them as
+	// the reply.
+	hold bool
 	// pending says emit held a reply back; parse again even if the file
 	// has not changed.
 	pending bool
@@ -581,9 +585,8 @@ type turnSeen struct {
 	hidden  bool // left out by --last
 	head    bool
 	steers  int
-	answers map[string]bool // agent texts printed, by text: the parser can move one between Earlier and Reply
+	answers map[string]int // how often each agent text was printed: the parser can move one between Earlier and Reply, and an agent can say the same thing twice
 	noReply bool
-	held    string // the last turn's reply, seen once and not yet printed
 }
 
 func newConvoPrinter(provider string, color, marks bool) *convoPrinter {
@@ -610,7 +613,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		k := turnKey(i, t)
 		seen := p.seen[k]
 		if seen == nil {
-			seen = &turnSeen{answers: map[string]bool{}}
+			seen = &turnSeen{answers: map[string]int{}}
 			p.seen[k] = seen
 		}
 		if seen.hidden || idleNotice(t) {
@@ -622,7 +625,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		}
 		human := t.Source == transcript.Human
 		if !seen.head {
-			if human && t.Open && t.Tools == 0 && len(answers) == 0 && strings.HasPrefix(t.Prompt, "/") {
+			if human && t.Open && t.Tools == 0 && len(answers) == 0 && slashCommand(t.Prompt) {
 				continue // a local command: the parser drops it if nothing comes of it
 			}
 			if human {
@@ -645,16 +648,17 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			head += fmt.Sprintf(" · %d tool%s", t.Tools, plural(t.Tools))
 		}
 		last := i == len(s.Turns)-1
+		occ := map[string]int{}
 		for j, a := range answers {
-			if seen.answers[a] {
+			if occ[a]++; occ[a] <= seen.answers[a] {
 				continue
 			}
 			final := j == len(answers)-1 && t.Reply != ""
-			if final && p.live && last && seen.held != a {
-				seen.held, p.pending = a, true
+			if final && last && p.hold {
+				p.pending = true
 				continue
 			}
-			seen.answers[a] = true
+			seen.answers[a]++
 			switch {
 			case !human && len(t.Steers) == 0:
 				b.WriteString(p.paint(sgrDim, "  → "+firstLine(a)) + "\n")
@@ -714,14 +718,25 @@ func (p *convoPrinter) paint(sgr, text string) string {
 // tabs stay; bytes that are not UTF-8 become U+FFFD.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' {
+		switch {
+		case r == '\n' || r == '\t':
 			return r
-		}
-		if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f {
+		case r == 0x2028 || r == 0x2029: // line and paragraph separators
+			return '\n'
+		case r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f:
 			return -1
+		case r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069:
+			return -1 // bidi embeddings and isolates, which can reorder what a terminal shows
 		}
 		return r
 	}, s)
+}
+
+// slashCommand reports a prompt that is a CLI command (/model, /mcp
+// list), as opposed to one that merely starts with a path.
+func slashCommand(prompt string) bool {
+	word, _, _ := strings.Cut(strings.TrimSpace(prompt), " ")
+	return len(word) > 1 && word[0] == '/' && !strings.Contains(word[1:], "/")
 }
 
 // firstLine is the first non-blank line of s, cut to fit a one-liner.
@@ -838,6 +853,12 @@ type convoFollow struct {
 	statEvery    time.Duration // how often to look at the file
 	parseGap     time.Duration // minimum time between re-parses
 	resolveEvery time.Duration // how often to ask the pane what it runs
+	// quiet is how long an Unfinished transcript must go unwritten before
+	// its last reply counts as final. Current Claude Code closes a turn
+	// with system records, which ends the wait at once; older versions
+	// don't. The longest gap seen between a final message's thinking and
+	// text records was 12 s.
+	quiet time.Duration
 
 	status string // on screen now
 }
@@ -853,7 +874,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 	p := f.printer(s)
 	from := convoStart(s.Turns, f.last)
 	p.skip(s.Turns[:from])
-	f.print(convoHeader(s, f.tgt, from, f.tty) + p.emit(s))
+	f.print(convoHeader(s, f.tgt, from, f.tty) + f.emit(p, s, mod))
 
 	lastParse, lastResolve := time.Now(), time.Now()
 	dirty := p.pending
@@ -898,7 +919,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 				if from > 0 {
 					line += fmt.Sprintf("\n(%d earlier turn%s not shown)", from, plural(from))
 				}
-				f.print("\n" + p.paint(sgrYellow, line) + "\n" + p.emit(s))
+				f.print("\n" + p.paint(sgrYellow, line) + "\n" + f.emit(p, s, m))
 				size, mod = sz, m
 				lastParse, dirty = now, p.pending
 			default:
@@ -913,7 +934,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 			lastParse, dirty = now, false
 			if ns, err := loadConvo(f.tgt); err == nil {
 				s = ns
-				f.print(p.emit(s))
+				f.print(f.emit(p, s, mod))
 			}
 			dirty = p.pending
 		}
@@ -925,6 +946,13 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 		}
 		f.setStatus(status)
 	}
+}
+
+// emit prints what s adds, holding the last reply while the transcript,
+// last written at mod, may still be writing it.
+func (f *convoFollow) emit(p *convoPrinter, s *transcript.Session, mod time.Time) string {
+	p.hold = s.Unfinished && time.Since(mod) < f.quiet
+	return p.emit(s)
 }
 
 func (f *convoFollow) printer(s *transcript.Session) *convoPrinter {
