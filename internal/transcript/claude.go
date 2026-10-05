@@ -80,6 +80,7 @@ type claudeRecord struct {
 		Prompt      json.RawMessage `json:"prompt"`
 		CommandMode string          `json:"commandMode"`
 		Origin      *claudeOrigin   `json:"origin"`
+		IsMeta      bool            `json:"isMeta"`
 	} `json:"attachment"`
 }
 
@@ -201,7 +202,7 @@ func ParseClaude(path string) (*Session, error) {
 					// mode alone says it was typed; without either, it can't
 					// be told from a task notification.
 					human := a.Origin != nil && a.Origin.Kind == "human" && (a.CommandMode == "" || a.CommandMode == "prompt") ||
-						a.Origin == nil && a.CommandMode == "prompt"
+						a.Origin == nil && a.CommandMode == "prompt" && !a.IsMeta && !rec.IsMeta
 					text, _ := claudeText(a.Prompt, "")
 					if !human || text == "" {
 						break

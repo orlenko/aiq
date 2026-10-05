@@ -186,7 +186,7 @@ func cmdConvo(args []string) error {
 	if err != nil {
 		return err
 	}
-	if s.Unfinished && time.Since(mod) < convoQuiet && len(s.Turns) > 0 {
+	if !tgt.stale && s.Unfinished && time.Since(mod) < convoQuiet && len(s.Turns) > 0 {
 		// The last reply may still be on its way (see convoFollow.quiet):
 		// show the turn as running rather than its narration as the answer.
 		last := &s.Turns[len(s.Turns)-1]
@@ -957,6 +957,9 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 			switch {
 			case err != nil:
 				note = err.Error()
+			case t.provider == "agy" && canonicalPath(t.path) != canonicalPath(f.tgt.path):
+				// See cmdConvo: no running-turn semantics to follow.
+				note = "the pane moved to an Antigravity session, which --follow cannot follow yet"
 			case canonicalPath(t.path) != canonicalPath(f.tgt.path):
 				sz, m := statFile(t.path)
 				ns, err := loadConvo(t)
@@ -1005,7 +1008,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 // emit prints what s adds, holding the last reply while the transcript,
 // last written at mod, may still be writing it.
 func (f *convoFollow) emit(p *convoPrinter, s *transcript.Session, mod time.Time) string {
-	p.hold = s.Unfinished && time.Since(mod) < f.quiet
+	p.hold = !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet
 	return p.emit(s)
 }
 

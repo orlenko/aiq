@@ -774,3 +774,20 @@ func TestDepth(t *testing.T) {
 		t.Errorf("depth: %d %d", depth(parents, 30), depth(parents, 10))
 	}
 }
+
+// A stopped session writes nothing more, so an Unfinished file is final.
+func TestFollowDoesNotHoldAStaleSession(t *testing.T) {
+	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
+	s := &transcript.Session{Provider: "claude", Unfinished: true, Turns: []transcript.Turn{
+		{Prompt: "go", Reply: "Done.", Started: at, Ended: at},
+	}}
+	for _, stale := range []bool{false, true} {
+		f := &convoFollow{tgt: convoTarget{stale: stale}, quiet: time.Hour}
+		p := newConvoPrinter("claude", false, false)
+		p.live = true
+		got := f.emit(p, s, time.Now())
+		if held := !strings.Contains(got, "Done."); held == stale {
+			t.Errorf("stale=%v: held=%v\n%s", stale, held, got)
+		}
+	}
+}

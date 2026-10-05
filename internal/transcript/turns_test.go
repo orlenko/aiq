@@ -582,3 +582,17 @@ func TestClaudeNoStopReasonToolKeepsTurnOpen(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+// A queued prompt marked meta, with no origin, was not typed by a person.
+func TestClaudeQueuedMetaIsNotASteer(t *testing.T) {
+	var c claudeLines
+	c.typed("fix it")
+	c.tool("m1")
+	c.queued(`"prompt":"synthesized","commandMode":"prompt","isMeta":true`)
+	c.say("m2", "end_turn", "Fixed.")
+	s := c.parse(t)
+	if got := s.Turns[0]; len(got.Steers) != 0 || got.Reply != "Fixed." {
+		t.Fatalf("%+v", got)
+	}
+	wantPrompts(t, s, "you: fix it")
+}
