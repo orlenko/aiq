@@ -248,6 +248,63 @@ func parseTime(s string) time.Time {
 	return t
 }
 
+// The prompts aiq types into a session it moved to a fresh account start
+// with these; longrun builds its prompts from them so the two never drift.
+const (
+	AiqResumeNudge  = "aiq moved this session to a fresh quota account; the conversation above is yours. "
+	AiqHandoffNudge = "aiq is handing a long-running task over to you from a "
+)
+
+// peerPrefix opens a message another Claude session sent to this one.
+// Claude Code 2.1.268–284 records it with no origin.
+const peerPrefix = "Another Claude session sent a message"
+
+// noticePrefixes open what notifier tools type into a session.
+var noticePrefixes = []string{"[agent-nudge]", "Agent Orchestra local inbox notice."}
+
+// prefixSource names who sent a prompt by how it opens. Text typed in with
+// tmux send-keys records as typed by a human, so the prefix decides.
+func prefixSource(text string) Source {
+	t := strings.TrimSpace(text)
+	switch {
+	case strings.HasPrefix(t, strings.TrimSpace(AiqResumeNudge)), strings.HasPrefix(t, AiqHandoffNudge):
+		return Aiq
+	case strings.HasPrefix(t, peerPrefix):
+		return Peer
+	}
+	for _, p := range noticePrefixes {
+		if strings.HasPrefix(t, p) {
+			return Notice
+		}
+	}
+	return Human
+}
+
+// peerBody strips the header line, the wrapping tag and the advice the CLI
+// appends after it from a peer message, leaving what the other session said.
+func peerBody(text string) string {
+	t := strings.TrimSpace(text)
+	if strings.HasPrefix(t, peerPrefix) {
+		if i := strings.IndexByte(t, '\n'); i >= 0 {
+			t = strings.TrimSpace(t[i+1:])
+		}
+	}
+	if strings.HasPrefix(t, "<") {
+		end := strings.IndexAny(t, " >")
+		if end > 1 && isTagName(t[1:end]) {
+			closing := "</" + t[1:end] + ">"
+			gt, end := strings.IndexByte(t, '>'), strings.Index(t, closing)
+			if gt > 0 && end > gt {
+				t = strings.TrimSpace(t[gt+1 : end])
+			}
+		}
+	}
+	if t == "" {
+		return strings.TrimSpace(text)
+	}
+	return t
+}
+
 // injected reports text a CLI put into the user's side of the conversation
 // on its own: environment blocks, instructions, command echoes, reminders.
 func injected(text string) bool {

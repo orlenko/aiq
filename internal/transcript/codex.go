@@ -92,13 +92,26 @@ type codexPayload struct {
 	Phase   string        `json:"phase"`
 	Content []contentPart `json:"content"`
 
+	// response_item message metadata (CLI 0.149 and later)
+	Meta *struct {
+		TurnID string   `json:"turn_id"`
+		Kinds  []string `json:"content_item_kinds"`
+	} `json:"internal_chat_message_metadata_passthrough"`
+
 	// event_msg
 	Message          string  `json:"message"`
 	LastAgentMessage *string `json:"last_agent_message"`
+	TurnID           string  `json:"turn_id"`
 }
 
 // ParseCodex reads one Codex rollout. A subagent's rollout returns nil: its
 // work shows up in the parent session.
+//
+// Each task (task_started … task_complete) normally answers one prompt.
+// Input that joins a running task (same turn_id, or within the task's
+// bounds when messages carry no turn_id) is a steer; a task that starts
+// with no prompt of its own (a background wakeup) is a later stretch of
+// the turn before it.
 func ParseCodex(path string) (*Session, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -112,21 +125,56 @@ func ParseCodex(path string) (*Session, error) {
 	s := &Session{Provider: "codex", Path: path}
 	var cur *Turn
 	final, commentary := false, ""
-	flush := func() {
+	// curTurn is the turn_id cur answers; running says a task is under
+	// way, and fresh that it has not yet been given to a turn. ended says
+	// cur's current stretch gave its final answer.
+	curTurn, running, fresh, ended := "", false, false, false
+	// work marks output of the turn; after a final answer it opens a new
+	// stretch, and the answer so far moves to Earlier.
+	work := func() {
+		if fresh || ended {
+			if cur.Reply != "" {
+				cur.Earlier = append(cur.Earlier, cur.Reply)
+			}
+			cur.Reply, final, commentary = "", false, ""
+			fresh, ended = false, false
+		}
+	}
+	flush := func(last bool) {
 		if cur == nil {
 			return
 		}
-		if cur.Reply == "" {
+		// A task that has started but not yet been given its prompt, or
+		// whose final answer is in, leaves the turn closed.
+		cur.Open = last && running && !fresh && !ended
+		switch {
+		case cur.Open:
+			cur.Reply = ""
+		case cur.Reply == "" && commentary != "":
 			cur.Reply = commentary
+		case cur.Reply == "" && len(cur.Earlier) > 0:
+			cur.Reply = cur.Earlier[len(cur.Earlier)-1]
+			cur.Earlier = cur.Earlier[:len(cur.Earlier)-1]
 		}
 		s.Turns = append(s.Turns, *cur)
 		cur, final, commentary = nil, false, ""
 	}
-	start := func(prompt string, ts time.Time) {
-		flush()
-		cur = &Turn{Prompt: prompt, Started: ts, Ended: ts}
+	input := func(prompt, turnID string, ts time.Time) {
+		src := prefixSource(prompt)
+		joins := cur != nil && (turnID != "" && turnID == curTurn || turnID == "" && running && !fresh)
+		if joins {
+			if src == Human {
+				cur.Steers = append(cur.Steers, prompt)
+			}
+			return
+		}
+		if src == Peer {
+			prompt = peerBody(prompt)
+		}
+		flush(false)
+		cur = &Turn{Prompt: prompt, Source: src, Started: ts, Ended: ts}
+		curTurn, fresh, ended = turnID, false, false
 	}
-
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -165,14 +213,12 @@ func ParseCodex(path string) (*Session, error) {
 		case "response_item":
 			switch {
 			case p.Type == "message" && p.Role == "user" && !userEvents:
-				var texts []string
-				for _, c := range p.Content {
-					if c.Type == "input_text" && !injected(c.Text) {
-						texts = append(texts, strings.TrimSpace(c.Text))
+				if text := codexUserText(p); text != "" {
+					turnID := ""
+					if p.Meta != nil {
+						turnID = p.Meta.TurnID
 					}
-				}
-				if len(texts) > 0 {
-					start(strings.Join(texts, "\n"), ts)
+					input(text, turnID, ts)
 				}
 			case p.Type == "message" && p.Role == "assistant" && cur != nil:
 				var texts []string
@@ -184,29 +230,46 @@ func ParseCodex(path string) (*Session, error) {
 				if len(texts) == 0 {
 					break
 				}
+				work()
 				text := strings.Join(texts, "\n")
 				if p.Phase == "commentary" {
 					commentary = text
 				} else if !final {
 					cur.Reply = text
+					ended = p.Phase == "final_answer"
 				}
 			case strings.HasSuffix(p.Type, "_call") && cur != nil:
+				work()
 				cur.Tools++
 			}
 		case "event_msg":
 			switch p.Type {
+			case "task_started":
+				running, fresh = true, true
+			case "task_complete", "turn_aborted":
+				running = false
+			}
+			switch p.Type {
 			case "user_message":
 				if userEvents && !injected(p.Message) {
-					start(strings.TrimSpace(p.Message), ts)
+					input(strings.TrimSpace(p.Message), p.TurnID, ts)
 				}
 			case "agent_message":
-				if cur != nil && !final && strings.TrimSpace(p.Message) != "" {
+				if cur != nil && !final && !ended && strings.TrimSpace(p.Message) != "" {
+					work()
 					cur.Reply = strings.TrimSpace(p.Message)
 				}
 			case "task_complete":
 				if cur != nil && p.LastAgentMessage != nil && strings.TrimSpace(*p.LastAgentMessage) != "" {
-					cur.Reply = strings.TrimSpace(*p.LastAgentMessage)
-					final = true
+					if fresh {
+						work()
+					}
+					last := strings.TrimSpace(*p.LastAgentMessage)
+					if n := len(cur.Earlier); cur.Reply == "" && n > 0 && cur.Earlier[n-1] == last {
+						cur.Earlier = cur.Earlier[:n-1] // the stretch said nothing new
+					}
+					cur.Reply = last
+					final, ended = true, true
 				}
 			}
 		}
@@ -217,11 +280,38 @@ func ParseCodex(path string) (*Session, error) {
 			cur.Ended = ts
 		}
 	}
-	flush()
+	flush(true)
 	if s.ID == "" {
 		return nil, nil
 	}
 	return s, nil
+}
+
+// codexUserText is what the person wrote in a user message. CLIs that tag
+// each content item with its kind say which items are the user's own;
+// older ones are judged by how the text opens.
+func codexUserText(p codexPayload) string {
+	kinds := []string(nil)
+	if p.Meta != nil && len(p.Meta.Kinds) == len(p.Content) {
+		kinds = p.Meta.Kinds
+	}
+	var texts []string
+	for i, c := range p.Content {
+		if c.Type != "input_text" {
+			continue
+		}
+		t := strings.TrimSpace(c.Text)
+		if kinds != nil {
+			// Image placeholders are tagged as user text too.
+			if kinds[i] != "user.text" || t == "" || strings.HasPrefix(t, "<image") || strings.HasPrefix(t, "</image") {
+				continue
+			}
+		} else if injected(c.Text) {
+			continue
+		}
+		texts = append(texts, t)
+	}
+	return strings.Join(texts, "\n")
 }
 
 func isSubagent(source json.RawMessage) bool {

@@ -56,10 +56,12 @@ func TestParseClaude(t *testing.T) {
 		t.Fatalf("want 2 turns, got %d: %+v", len(s.Turns), s.Turns)
 	}
 	t1, t2 := s.Turns[0], s.Turns[1]
-	if t1.Prompt != "fix the bug" || t1.Reply != "Fixed it.\n\nTests pass." || t1.Tools != 1 {
+	// No stop reasons recorded: the wakeup's text replaces the reply, and
+	// nothing is split off into Earlier.
+	if t1.Prompt != "fix the bug" || t1.Reply != "Fixed it.\n\nTests pass." || t1.Tools != 1 || len(t1.Earlier) != 0 || t1.Open {
 		t.Fatalf("turn 1: %+v", t1)
 	}
-	if t2.Prompt != "now push" || t2.Reply != "" {
+	if t2.Prompt != "now push" || t2.Reply != "" || t2.Open { // interrupted before a word
 		t.Fatalf("turn 2: %+v", t2)
 	}
 	if got := t1.Ended.Sub(t1.Started).Seconds(); got != 61 {
