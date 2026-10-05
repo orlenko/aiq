@@ -26,6 +26,7 @@ import (
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/tier"
 	"github.com/orlenko/aiq/internal/tmux"
+	"github.com/orlenko/aiq/internal/transcript"
 )
 
 // HandoffPath is where the draining agent writes its note for a workspace.
@@ -119,9 +120,9 @@ func TakeoverPrompt(workspace string, resumed bool, from string) string {
 	}
 	var b strings.Builder
 	if resumed {
-		b.WriteString("aiq moved this session to a fresh quota account; the conversation above is yours. ")
+		b.WriteString(transcript.AiqResumeNudge)
 	} else {
-		fmt.Fprintf(&b, "aiq is handing a long-running task over to you from a %s session that ran out of quota. ", from)
+		fmt.Fprintf(&b, "%s%s session that ran out of quota. ", transcript.AiqHandoffNudge, from)
 	}
 	if hasNote {
 		fmt.Fprintf(&b, "Read the handoff note at %s first. ", note)

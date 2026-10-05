@@ -12,6 +12,7 @@ import (
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/transcript"
 )
 
 func TestSessionNameAndHandoffPathAreStable(t *testing.T) {
@@ -45,6 +46,30 @@ func TestPromptsMentionTheNote(t *testing.T) {
 	p = TakeoverPrompt(ws, true, "claude")
 	if !strings.Contains(p, "Read the handoff note") || !strings.Contains(p, "conversation above is yours") {
 		t.Fatalf("%s", p)
+	}
+}
+
+// The transcript reader recognises both takeover prompts as aiq's own, so
+// they never show up as something the person typed.
+func TestTakeoverPromptsReadAsAiq(t *testing.T) {
+	t.Setenv("AIQ_DATA_DIR", t.TempDir())
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	var lines []string
+	for i, resumed := range []bool{true, false} {
+		prompt, _ := json.Marshal(TakeoverPrompt("/w", resumed, "claude"))
+		lines = append(lines,
+			fmt.Sprintf(`{"type":"user","origin":{"kind":"human"},"promptSource":"typed","timestamp":"2026-09-15T10:0%d:00Z","message":{"role":"user","content":%s}}`, i, prompt),
+			fmt.Sprintf(`{"type":"assistant","timestamp":"2026-09-15T10:0%d:01Z","message":{"id":"m%d","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}}`, i, i))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := transcript.ParseClaude(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Turns) != 2 || s.Turns[0].Source != transcript.Aiq || s.Turns[1].Source != transcript.Aiq {
+		t.Fatalf("%+v", s.Turns)
 	}
 }
 
