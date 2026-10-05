@@ -2,6 +2,7 @@ package main
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -27,10 +28,11 @@ type span struct {
 // opens with it and every reset re-applies it. text must already be free of
 // control characters: the escapes in the result are the renderer's own.
 func renderMarkdown(text string, width int, base string) string {
-	if width < 20 {
-		width = 20
-	}
+	width = max(width, 1)
 	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		lines[i] = expandTabs(l)
+	}
 	var out [][]span
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
@@ -43,7 +45,7 @@ func renderMarkdown(text string, width int, base string) string {
 				if t := strings.TrimSpace(lines[i]); strings.HasPrefix(t, fence) && strings.Trim(t, fence[:1]) == "" {
 					break
 				}
-				out = append(out, []span{{sgrCode, strings.ReplaceAll(lines[i], "\t", "    ")}})
+				out = append(out, []span{{sgrCode, lines[i]}})
 			}
 			continue
 		}
@@ -92,6 +94,27 @@ var (
 	quote          = regexp.MustCompile(`^(\s*)>\s?(.*)$`)
 	tableAlign     = regexp.MustCompile(`^\s*(:?)-+(:?)\s*$`)
 )
+
+// expandTabs turns tabs into spaces to the next stop of 4 cells: a tab
+// counted as one cell would throw table columns out of line.
+func expandTabs(line string) string {
+	if !strings.Contains(line, "\t") {
+		return line
+	}
+	var b strings.Builder
+	col := 0
+	for _, r := range line {
+		if r == '\t' {
+			n := 4 - col%4
+			b.WriteString(strings.Repeat(" ", n))
+			col += n
+			continue
+		}
+		b.WriteRune(r)
+		col += runeCells(r)
+	}
+	return b.String()
+}
 
 // codeFence returns the fence (``` or ~~~, or a longer run) a line opens a
 // code block with, else "".
@@ -166,11 +189,14 @@ func tableCells(line string) []string {
 }
 
 // renderTable draws rows (the first is the header) as a box no wider than
-// width, shrinking the widest columns and wrapping their cells to fit.
+// width, shrinking the widest columns and wrapping their cells to fit. A
+// column is never narrower than its widest character; when the box cannot
+// fit at those widths, each row becomes "header: value" lines.
 func renderTable(rows [][]string, aligns []align, width int) [][]span {
 	n := len(aligns)
 	cells := make([][][]span, len(rows))
 	natural := make([]int, n)
+	least := make([]int, n)
 	for r, row := range rows {
 		cells[r] = make([][]span, n)
 		for c := 0; c < n; c++ {
@@ -183,23 +209,23 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 				style = sgrBold
 			}
 			cells[r][c] = inlineMarkdown(text, style)
-			natural[c] = max(natural[c], max(1, spansCells(cells[r][c])))
+			natural[c] = max(natural[c], 1, spansCells(cells[r][c]))
+			least[c] = max(least[c], widestRune(cells[r][c]))
 		}
 	}
 	room := width - (3*n + 1) // borders and a space either side of each cell
-	if room < n {
-		// No room for even one cell per column: the table as written.
-		var out [][]span
-		for _, row := range rows {
-			out = append(out, []span{{"", "| " + strings.Join(row, " | ") + " |"}})
-		}
-		return out
+	widths := make([]int, n)
+	for c := range widths {
+		widths[c] = max(natural[c], least[c])
+		least[c] = min(widths[c], max(least[c], 2)) // shrink no column below 2 cells
 	}
-	widths := append([]int(nil), natural...)
+	if room < sum(least) {
+		return tableAsLines(cells, width)
+	}
 	for total := sum(widths); total > room; total-- {
-		widest := 0
+		widest := -1
 		for c := range widths {
-			if widths[c] > widths[widest] {
+			if widths[c] > least[c] && (widest < 0 || widths[c] > widths[widest]) {
 				widest = c
 			}
 		}
@@ -235,7 +261,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 				if r == 0 {
 					a = alignCenter // Claude Code centres the header
 				}
-				gap := w - spansCells(cell)
+				gap := max(0, w-spansCells(cell))
 				left := 0
 				switch a {
 				case alignCenter:
@@ -253,6 +279,38 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 	return append(out, rule("└", "┴", "┘"))
 }
 
+// tableAsLines is a table too wide for any box: each body row as
+// "header: value" lines wrapped to width, rows apart by a blank line.
+func tableAsLines(cells [][][]span, width int) [][]span {
+	var out [][]span
+	for r := 1; r < len(cells); r++ {
+		if r > 1 {
+			out = append(out, nil)
+		}
+		for c, value := range cells[r] {
+			line := append(append([]span(nil), cells[0][c]...), span{sgrBold, ":"}, span{"", " "})
+			out = append(out, wrapSpans(append(line, value...), width)...)
+		}
+	}
+	if len(cells) == 1 {
+		for _, head := range cells[0] {
+			out = append(out, wrapSpans(head, width)...)
+		}
+	}
+	return out
+}
+
+// widestRune is the most cells one character of spans takes.
+func widestRune(spans []span) int {
+	w := 0
+	for _, sp := range spans {
+		for _, r := range sp.text {
+			w = max(w, runeCells(r))
+		}
+	}
+	return w
+}
+
 func sum(xs []int) int {
 	n := 0
 	for _, x := range xs {
@@ -262,8 +320,66 @@ func sum(xs []int) int {
 }
 
 // inlineMarkdown renders emphasis, code spans and links in one line, with
-// style under all of it.
+// style under all of it. It indexes the line once, so a line full of
+// delimiters that never close costs no more than one that is plain.
 func inlineMarkdown(s, style string) []span {
+	ix := indexInline(s)
+	return ix.render(0, len(s), style)
+}
+
+// inlineIndex is where each kind of closing delimiter sits in one line.
+type inlineIndex struct {
+	s string
+	// closers holds, for each emphasis delimiter (* or _, run of 1 or 2),
+	// the sorted positions of runs that can close it.
+	closers map[emphasisKey][]int
+	ticks   map[int][]int // backtick runs by length, sorted
+	bracket []int         // the next ] at or after each position, else -1
+	urls    []int         // where each bare http(s):// run ends, by start; -1 elsewhere
+}
+
+type emphasisKey struct {
+	c byte
+	n int
+}
+
+func indexInline(s string) *inlineIndex {
+	ix := &inlineIndex{s: s, closers: map[emphasisKey][]int{}, ticks: map[int][]int{}, bracket: make([]int, len(s)+1)}
+	for j := 0; j < len(s); {
+		c := s[j]
+		if c != '*' && c != '_' && c != '`' {
+			j++
+			continue
+		}
+		run := runLength(s, j, c)
+		if c == '`' {
+			ix.ticks[run] = append(ix.ticks[run], j)
+		} else if run <= 2 && canClose(s, j, run, c) {
+			ix.closers[emphasisKey{c, run}] = append(ix.closers[emphasisKey{c, run}], j)
+		}
+		j += run
+	}
+	next := -1
+	for j := len(s); j >= 0; j-- {
+		if j < len(s) && s[j] == ']' {
+			next = j
+		}
+		ix.bracket[j] = next
+	}
+	return ix
+}
+
+// first is the first position in list after from, if it lies before limit.
+func first(list []int, from, limit int) int {
+	k := sort.SearchInts(list, from+1)
+	if k < len(list) && list[k] < limit {
+		return list[k]
+	}
+	return -1
+}
+
+func (ix *inlineIndex) render(lo, hi int, style string) []span {
+	s := ix.s
 	var out []span
 	var plain strings.Builder
 	flush := func() {
@@ -272,16 +388,25 @@ func inlineMarkdown(s, style string) []span {
 			plain.Reset()
 		}
 	}
-	for i := 0; i < len(s); {
+	for i := lo; i < hi; {
 		c := s[i]
 		switch {
-		case c == '\\' && i+1 < len(s) && strings.IndexByte("\\`*_[]()#+-.!|>~", s[i+1]) >= 0:
+		case c == '\\' && i+1 < hi && strings.IndexByte("\\`*_[]()#+-.!|>~", s[i+1]) >= 0:
 			plain.WriteByte(s[i+1])
 			i += 2
 			continue
+		case (c == 'h' || c == 'H') && bareURL(s, i):
+			// A URL is written as it is: its _ and * are not emphasis.
+			end := i
+			for end < hi && !isSpace(s[end]) {
+				end++
+			}
+			plain.WriteString(s[i:end])
+			i = end
+			continue
 		case c == '`':
 			n := runLength(s, i, '`')
-			if end := closingTicks(s, i+n, n); end >= 0 {
+			if end := first(ix.ticks[n], i, hi); end >= 0 {
 				code := s[i+n : end]
 				if len(code) > 1 && code[0] == ' ' && code[len(code)-1] == ' ' && strings.Trim(code, " ") != "" {
 					code = code[1 : len(code)-1]
@@ -295,25 +420,28 @@ func inlineMarkdown(s, style string) []span {
 			i += n
 			continue
 		case c == '[':
-			if text, url, end, ok := link(s, i); ok {
+			if textEnd, urlStart, urlEnd, ok := ix.link(i, hi); ok {
 				flush()
-				out = append(out, inlineMarkdown(text, style)...)
-				out = append(out, span{style, " ("}, span{style + sgrDim, url}, span{style, ")"})
-				i = end
+				out = append(out, ix.render(i+1, textEnd, style)...)
+				out = append(out, span{style, " ("}, span{style + sgrDim, s[urlStart:urlEnd]}, span{style, ")"})
+				i = urlEnd + 1
 				continue
 			}
 		case c == '*' || c == '_':
 			run := runLength(s, i, c)
 			n := min(run, 2)
-			if end := closingEmphasis(s, i, n, c); end >= 0 {
-				code := sgrItalic
-				if n == 2 {
-					code = sgrBold
+			if canOpen(s, i, n, c) {
+				// The closer must leave something between: past i+n.
+				if end := first(ix.closers[emphasisKey{c, n}], i+n, hi); end >= 0 && end+n <= hi {
+					code := sgrItalic
+					if n == 2 {
+						code = sgrBold
+					}
+					flush()
+					out = append(out, ix.render(i+n, end, style+code)...)
+					i = end + n
+					continue
 				}
-				flush()
-				out = append(out, inlineMarkdown(s[i+n:end], style+code)...)
-				i = end + n
-				continue
 			}
 			plain.WriteString(s[i : i+run])
 			i += run
@@ -334,44 +462,52 @@ func runLength(s string, i int, c byte) int {
 	return n
 }
 
-// closingTicks finds the run of exactly n backticks that closes a code span
-// opened before from.
-func closingTicks(s string, from, n int) int {
-	for j := from; j < len(s); {
-		if s[j] != '`' {
-			j++
-			continue
-		}
-		run := runLength(s, j, '`')
-		if run == n {
-			return j
-		}
-		j += run
+// canOpen says a run of n delimiters c at i opens emphasis: text follows
+// it, and a slash on neither side (src/**/*.go is a path). Single * and
+// either _ also need a word boundary before, so a*b*c and snake_case stay;
+// none opens straight after a letter when punctuation follows it.
+func canOpen(s string, i, n int, c byte) bool {
+	if i+n >= len(s) {
+		return false
 	}
-	return -1
+	next, prev := s[i+n], byte(' ')
+	if i > 0 {
+		prev = s[i-1]
+	}
+	switch {
+	case isSpace(next) || next == '/' || prev == '/':
+		return false
+	case (c == '_' || n == 1) && isWordByte(prev):
+		return false
+	case isWordByte(prev) && isPunct(next):
+		return false
+	}
+	return true
 }
 
-// closingEmphasis finds where the emphasis that a run of n delimiters c
-// opens at i ends, or -1 when it does not open one. A delimiter opens when
-// text follows it and closes when text precedes it. Single * and either _
-// also need a word boundary outside, so a*b*c and snake_case_names stay.
-func closingEmphasis(s string, i, n int, c byte) int {
-	boundary := c == '_' || n == 1
-	if i+n >= len(s) || isSpace(s[i+n]) || boundary && i > 0 && isWordByte(s[i-1]) {
-		return -1
+// canClose is canOpen mirrored, for a run of n delimiters c at j.
+func canClose(s string, j, n int, c byte) bool {
+	if j == 0 {
+		return false
 	}
-	for j := i + n; j < len(s); {
-		if s[j] != c {
-			j++
-			continue
-		}
-		run := runLength(s, j, c)
-		if run == n && j > i+n && !isSpace(s[j-1]) && !(boundary && j+n < len(s) && isWordByte(s[j+n])) {
-			return j
-		}
-		j += run
+	prev, next := s[j-1], byte(' ')
+	if j+n < len(s) {
+		next = s[j+n]
 	}
-	return -1
+	switch {
+	case isSpace(prev) || prev == '/' || next == '/':
+		return false
+	case (c == '_' || n == 1) && isWordByte(next):
+		return false
+	case isWordByte(next) && isPunct(prev):
+		return false
+	}
+	return true
+}
+
+func bareURL(s string, i int) bool {
+	rest := strings.ToLower(s[i:min(len(s), i+8)])
+	return strings.HasPrefix(rest, "http://") || strings.HasPrefix(rest, "https://")
 }
 
 func isSpace(b byte) bool { return b == ' ' || b == '\t' }
@@ -381,21 +517,40 @@ func isWordByte(b byte) bool {
 	return b >= 0x80 || unicode.IsLetter(rune(b)) || unicode.IsDigit(rune(b))
 }
 
-// link parses [text](url) at i.
-func link(s string, i int) (text, url string, end int, ok bool) {
-	close := strings.IndexByte(s[i:], ']')
-	if close < 0 || i+close+1 >= len(s) || s[i+close+1] != '(' {
-		return "", "", 0, false
+func isPunct(b byte) bool {
+	return b < 0x80 && unicode.IsPunct(rune(b)) || b < 0x80 && unicode.IsSymbol(rune(b))
+}
+
+// linkDestinationMax bounds how far a link's (url) is looked for, so a
+// line of unclosed "[x](" stays cheap.
+const linkDestinationMax = 2048
+
+// link parses [text](url) at i, within hi: the text ends at textEnd, the
+// URL spans urlStart..urlEnd, and its parentheses may nest.
+func (ix *inlineIndex) link(i, hi int) (textEnd, urlStart, urlEnd int, ok bool) {
+	s := ix.s
+	close := ix.bracket[i]
+	if close < 0 || close+1 >= hi || s[close+1] != '(' || close == i+1 {
+		return 0, 0, 0, false
 	}
-	paren := strings.IndexByte(s[i+close+2:], ')')
-	if paren < 0 {
-		return "", "", 0, false
+	depth := 0
+	for j := close + 2; j < hi && j < close+2+linkDestinationMax; j++ {
+		switch s[j] {
+		case ' ', '\t':
+			return 0, 0, 0, false
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				if j == close+2 {
+					return 0, 0, 0, false
+				}
+				return close, close + 2, j, true
+			}
+			depth--
+		}
 	}
-	text, url = s[i+1:i+close], s[i+close+2:i+close+2+paren]
-	if text == "" || url == "" || strings.ContainsAny(url, " \t") {
-		return "", "", 0, false
-	}
-	return text, url, i + close + 2 + paren + 1, true
+	return 0, 0, 0, false
 }
 
 func spansCells(spans []span) int {

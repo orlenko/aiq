@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/rand"
 	"regexp"
 	"strings"
 	"testing"
@@ -152,5 +153,135 @@ func TestMarkdownCannotSmuggleEscapes(t *testing.T) {
 	}
 	if !strings.Contains(out, "x]52;c;Zm9vy") || !strings.Contains(out, sgrCode+"q[2Jr"+sgrReset) {
 		t.Fatalf("text lost:\n%q", out)
+	}
+}
+
+// widest is the widest line of a rendering, in cells, styles stripped.
+func widest(out string) int {
+	w := 0
+	for _, l := range strings.Split(sgrPattern.ReplaceAllString(out, ""), "\n") {
+		w = max(w, cells(l))
+	}
+	return w
+}
+
+// Wide characters in columns shrunk past them used to make negative
+// padding, and a panic.
+func TestMarkdownTableWideCharactersInNarrowColumns(t *testing.T) {
+	cases := map[string]int{
+		"| a | b | c | d |\n|---|---|---|---|\n| 日本 | 日本 | 日本 | 日本 |":                                           20,
+		"|" + strings.Repeat(" ✅ |", 8) + "\n|" + strings.Repeat("--:|", 8) + "\n|" + strings.Repeat(" ✅ |", 8): 40,
+	}
+	for src, width := range cases {
+		for w := 1; w <= width; w++ {
+			out := renderMarkdown(src, w, "")
+			if got := widest(out); got > max(w, 2) {
+				t.Errorf("width %d: a line is %d cells:\n%s", w, got, sgrPattern.ReplaceAllString(out, ""))
+			}
+		}
+	}
+	// Too narrow for a box: the rows as header: value lines.
+	got := plainMD("| Name | Note |\n|---|---|\n| a | b c |", 9)
+	if got != "Name: a\nNote: b c" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestMarkdownTabsKeepColumnsAligned(t *testing.T) {
+	got := plainMD("| k | v |\n|---|---|\n| a\tb | 1 |\n| abcdefgh | 2 |", 80)
+	want := `┌──────────┬───┐
+│    k     │ v │
+├──────────┼───┤
+│ a b      │ 1 │
+├──────────┼───┤
+│ abcdefgh │ 2 │
+└──────────┴───┘`
+	if got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestMarkdownPathsGlobsAndURLs(t *testing.T) {
+	for _, src := range []string{
+		"src/**/*.go and lib/**/*.rs",
+		"**/*.ts",
+		"a/**/b",
+		"see https://x.io/a_b_c_d/*x*/e and http://h/__init__",
+		"x**.y** and 2*3*4",
+	} {
+		if got := renderMarkdown(src, 80, ""); got != src {
+			t.Errorf("%q became %q", src, got)
+		}
+	}
+	if got := renderMarkdown("at https://x.io/a_b and *it*", 80, ""); got != "at https://x.io/a_b and "+sgrItalic+"it"+sgrReset {
+		t.Errorf("got %q", got)
+	}
+	if got := renderMarkdown("[docs](https://e.com/a_(b)_c) and (more)", 80, ""); got != "docs ("+sgrDim+"https://e.com/a_(b)_c"+sgrReset+") and (more)" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// A line of delimiters that never close renders in linear time.
+func TestMarkdownPathologicalLinesAreFast(t *testing.T) {
+	for _, unit := range []string{"_a ", "*a ", "**a ", "`a ", "[a](", "[[", "a](", "__a_ ", "http://x "} {
+		src := strings.Repeat(unit, 200_000/len(unit))
+		start := time.Now()
+		renderMarkdown(src, 100, "")
+		if d := time.Since(start); d > 100*time.Millisecond {
+			t.Errorf("%q × %d took %v", unit, len(src)/len(unit), d)
+		}
+	}
+}
+
+// Random tables of ASCII, wide, emoji, combining and tab cells at random
+// widths: no panic, and no line wider than the width.
+func TestMarkdownTablesFitAnyWidth(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	pieces := []string{"a", "word", "longerword", "日本語", "✅", "é́", "\t", " ", "**b**", "`c d`", "_i_", "x\\|y", "https://x.io/a_b", "[l](u)"}
+	cell := func() string {
+		var b strings.Builder
+		for k := rng.Intn(6); k > 0; k-- {
+			b.WriteString(pieces[rng.Intn(len(pieces))])
+			if rng.Intn(2) == 0 {
+				b.WriteString(" ")
+			}
+		}
+		return b.String()
+	}
+	for iter := 0; iter < 1500; iter++ {
+		cols := 1 + rng.Intn(6)
+		row := func() string {
+			cs := make([]string, cols)
+			for c := range cs {
+				cs[c] = cell()
+			}
+			return "| " + strings.Join(cs, " | ") + " |"
+		}
+		lines := []string{row(), "|" + strings.Repeat(":---:|", cols)}
+		for r := rng.Intn(4); r > 0; r-- {
+			lines = append(lines, row())
+		}
+		src := strings.Join(lines, "\n")
+		width := 5 + rng.Intn(116)
+		if got := widest(renderMarkdown(src, width, sgrDim)); got > width {
+			t.Fatalf("width %d: a line is %d cells; source:\n%s\nrendered:\n%s", width, got, src, plainMD(src, width))
+		}
+	}
+	for width := 10; width <= 120; width++ {
+		if got := widest(renderMarkdown("x\n\n---\n\n| A | B |\n|---|---|\n| 1 | 2 |", width, "")); got > width {
+			t.Errorf("width %d: a line is %d cells", width, got)
+		}
+	}
+}
+
+// A renderer that panics costs the answer its styling, not the view.
+func TestConvoSurvivesARendererPanic(t *testing.T) {
+	saved := markdownRenderer
+	defer func() { markdownRenderer = saved }()
+	markdownRenderer = func(string, int, string) string { panic("bug") }
+	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
+	s := &transcript.Session{Provider: "claude", Turns: []transcript.Turn{{Prompt: "p", Reply: "**raw** answer", Started: at, Ended: at}}}
+	if out := renderConvo(s, convoTarget{}, 0, true, at); !strings.Contains(out, "**raw** answer") {
+		t.Fatalf("got %q", out)
 	}
 }

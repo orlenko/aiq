@@ -768,10 +768,29 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 	if width <= 0 {
 		width = 100
 	}
+	rendered, ok := safeRender(sanitize(strings.TrimRight(body, "\n")), width, base)
+	if !ok {
+		p.block(b, false, headSGR, head, base, body)
+		return
+	}
 	b.WriteString("\n" + p.paint(headSGR, head) + "\n")
-	// Cleaned before rendering: the escapes the renderer writes are its own.
-	b.WriteString(renderMarkdown(sanitize(strings.TrimRight(body, "\n")), width, base) + "\n")
+	b.WriteString(rendered + "\n")
 }
+
+// safeRender renders Markdown that was cleaned before (the escapes the
+// renderer writes are its own), and reports false if the renderer panics,
+// so a bug in it costs one answer its styling, not the whole view.
+func safeRender(text string, width int, base string) (out string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			out, ok = "", false
+		}
+	}()
+	return markdownRenderer(text, width, base), true
+}
+
+// markdownRenderer is renderMarkdown; tests swap it.
+var markdownRenderer = renderMarkdown
 
 // paint colours each line on its own, so a pager that starts mid-block
 // still shows it right. Everything it paints is cleaned of control
