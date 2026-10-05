@@ -271,7 +271,9 @@ only what was typed into the session and what the agent answered: each
 prompt, anything typed while the agent worked, and the agent's final reply
 to each turn. Answers it gave before going on (after a background task or
 another agent's message) show as `earlier`. Prompts that aiq, another agent
-or a notifier typed in fold to one line with the start of the reply.
+or a notifier typed in show as one dim line, with the first line of each
+answer under it; once you type into such a turn, its answers show in full.
+Agent-team idle notifications are left out.
 
 ```text
 aiq convo                   the agent in this tmux pane, else the one live session in this directory
