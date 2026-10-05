@@ -691,7 +691,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				continue // a local command: the parser drops it if nothing comes of it
 			}
 			if human {
-				p.block(&b, true, sgrBoldCyan, "▌ you · "+whenLabel(t.Started, time.Now()), sgrBold, t.Prompt)
+				p.human(&b, "▌ you · "+whenLabel(t.Started, time.Now()), t.Prompt)
 			} else {
 				b.WriteString("\n" + p.paint(sgrDim, "· "+sourceLabel(t.Source)+": "+firstLine(t.Prompt)) + "\n")
 			}
@@ -699,7 +699,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			seen.head = true
 		}
 		for ; seen.steers < len(t.Steers); seen.steers++ {
-			p.block(&b, true, sgrBoldCyan, "▌ you, while it worked", sgrBold, t.Steers[seen.steers])
+			p.human(&b, "▌ you, while it worked", t.Steers[seen.steers])
 			p.note(k, "steer", t.Steers[seen.steers])
 		}
 		head := "▌ " + p.provider
@@ -755,6 +755,40 @@ func (p *convoPrinter) block(b *strings.Builder, human bool, headSGR, head, body
 	}
 	b.WriteString(p.paint(headSGR, head) + "\n")
 	b.WriteString(p.paint(bodySGR, strings.TrimRight(body, "\n")) + "\n")
+}
+
+// sgrBand is the background behind what the person typed.
+const sgrBand = "\x1b[48;5;236m"
+
+// human writes what the person typed. With colour it is a band of grey the
+// width of the terminal, header on top and an empty line below, so it
+// stands apart from the agent's answers at a glance.
+func (p *convoPrinter) human(b *strings.Builder, head, body string) {
+	if !p.color {
+		p.block(b, true, sgrBoldCyan, head, sgrBold, body)
+		return
+	}
+	width := p.width
+	if width <= 0 {
+		width = 100
+	}
+	// Lines fill the width exactly: tmux and less hold the wrap at the last
+	// column, and the newline that follows adds no blank line.
+	width = max(width, 10)
+	// One style per line, so the only reset is the last thing on it: the
+	// grey has no holes and never bleeds into what comes next.
+	line := func(sgr, text string) string {
+		return sgrBand + sgr + text + strings.Repeat(" ", max(0, width-cells(text))) + sgrReset + "\n"
+	}
+	b.WriteString("\n")
+	if p.marks {
+		b.WriteString(osc133Prompt)
+	}
+	b.WriteString(line(sgrBoldCyan, truncate(sanitize(head), width)))
+	for _, l := range wrap(sanitize(strings.TrimRight(body, "\n")), width) {
+		b.WriteString(line(sgrBold, l))
+	}
+	b.WriteString(line("", ""))
 }
 
 // answer writes an agent's answer under its header. With colour it renders

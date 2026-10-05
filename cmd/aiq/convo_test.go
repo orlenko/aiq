@@ -93,7 +93,7 @@ func TestRenderConvoColorAndLast(t *testing.T) {
 	if !strings.Contains(out, "(6 earlier turns not shown)") || strings.Contains(out, "first question") {
 		t.Fatalf("--last 1 shows:\n%s", out)
 	}
-	if !strings.Contains(out, sgrBoldCyan+"▌ you, while it worked"+sgrReset) {
+	if !strings.Contains(out, sgrBand+sgrBoldCyan+"▌ you, while it worked ") {
 		t.Errorf("no coloured header:\n%q", out)
 	}
 	if strings.Contains(out, osc133Prompt) {
@@ -624,13 +624,13 @@ func TestConvoStripsControlCharacters(t *testing.T) {
 	}}
 	for _, color := range []bool{false, true} {
 		out := renderConvo(s, convoTarget{}, 0, color, time.Now())
-		out = strings.NewReplacer(sgrReset, "", sgrBold, "", sgrDim, "", sgrBoldCyan, "", sgrBoldGreen, "").Replace(out)
+		out = strings.NewReplacer(sgrReset, "", sgrBold, "", sgrDim, "", sgrBoldCyan, "", sgrBoldGreen, "", sgrBand, "").Replace(out)
 		for _, r := range out {
 			if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f || r >= 0x80 && r <= 0x9f {
 				t.Fatalf("color=%v: control character %U in\n%q", color, r, out)
 			}
 		}
-		if !strings.Contains(out, "ok]52;c;cm0gLXJmIH4=]0;title]133;A\\\ufffd2Jdone\tend\nline\ufffd") {
+		if !strings.Contains(out, "ok]52;c;cm0gLXJmIH4=]0;title]133;A\\\ufffd2Jdone") || !strings.Contains(out, "\nline\ufffd") {
 			t.Errorf("color=%v: text around the controls lost:\n%q", color, out)
 		}
 	}
@@ -788,6 +788,50 @@ func TestFollowDoesNotHoldAStaleSession(t *testing.T) {
 		got := f.emit(p, s, time.Now())
 		if held := !strings.Contains(got, "Done."); held == stale {
 			t.Errorf("stale=%v: held=%v\n%s", stale, held, got)
+		}
+	}
+}
+
+// What the person typed is a grey band the width of the terminal: every
+// line the same width, opened with the background, closed by one reset.
+func TestHumanBlocksAreAFullWidthBand(t *testing.T) {
+	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
+	prompt := "fix the build, then 東京都の天気を調べて and a verylongwordthatcannotfitinsideoneline" +
+		"atallbecauseitgoesonandon\n\n  indented line\x1b]52;c;eA==\x07"
+	s := &transcript.Session{Provider: "claude", Turns: []transcript.Turn{
+		{Prompt: prompt, Steers: []string{"日本語日本語日本語日本語日本語日本語日本語"}, Reply: "**done**", Started: at, Ended: at},
+	}}
+	for _, width := range []int{10, 23, 40, 80} {
+		p := newConvoPrinter("claude", true, true)
+		p.width = width
+		out := p.emit(s)
+		var band []string
+		for _, l := range strings.Split(out, "\n") {
+			l = strings.TrimPrefix(l, osc133Prompt)
+			if strings.Contains(l, sgrBand) {
+				band = append(band, l)
+			}
+		}
+		if len(band) < 8 {
+			t.Fatalf("width %d: %d band lines:\n%q", width, len(band), out)
+		}
+		for _, l := range band {
+			if !strings.HasPrefix(l, sgrBand) || !strings.HasSuffix(l, sgrReset) || strings.Count(l, sgrReset) != 1 {
+				t.Errorf("width %d: band line not opened by the grey and closed by one reset: %q", width, l)
+			}
+			if w := cells(sgrPattern.ReplaceAllString(l, "")); w != width {
+				t.Errorf("width %d: band line is %d cells: %q", width, w, l)
+			}
+			if strings.Contains(l, "\x1b]52") {
+				t.Errorf("escape survived: %q", l)
+			}
+		}
+		if strings.Count(out, osc133Prompt) != 2 || !strings.Contains(out, "\n"+osc133Prompt+sgrBand+sgrBoldCyan+"▌ you · ") {
+			t.Errorf("width %d: prompt marks: %q", width, out)
+		}
+		// The answer is no band.
+		if !strings.Contains(out, "\n"+sgrBold+"done"+sgrReset+"\n") {
+			t.Errorf("width %d: answer: %q", width, out)
 		}
 	}
 }
