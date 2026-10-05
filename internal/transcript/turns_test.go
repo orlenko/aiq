@@ -596,3 +596,18 @@ func TestClaudeQueuedMetaIsNotASteer(t *testing.T) {
 	}
 	wantPrompts(t, s, "you: fix it")
 }
+
+// A task woken without a prompt is at work as soon as it reasons.
+func TestCodexWakeupReasoningIsWork(t *testing.T) {
+	var c codexLines
+	c.started("a")
+	c.user("a", `["user.text"]`, "watch CI")
+	c.say("final_answer", "Watching.")
+	c.complete("a", "Watching.")
+	c.started("b")
+	c.add("response_item", `{"type":"reasoning","encrypted_content":"x"}`)
+	s := c.parse(t)
+	if len(s.Turns) != 1 || !s.Turns[0].Open || len(s.Turns[0].Earlier) != 1 {
+		t.Fatalf("%+v", s.Turns)
+	}
+}

@@ -196,6 +196,9 @@ func ParseCodex(path string) (*Session, error) {
 			if cur != nil && !ts.IsZero() && (h.typ == "response_item" || h.typ == "event_msg") {
 				cur.Ended = ts
 			}
+			if cur != nil && h.typ == "response_item" && h.payload == "reasoning" {
+				work() // a task woken without a prompt is at work once it reasons
+			}
 		}
 		if err == io.EOF && len(line) == 0 {
 			break

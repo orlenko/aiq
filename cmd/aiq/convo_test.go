@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -778,10 +779,10 @@ func TestDepth(t *testing.T) {
 // A stopped session writes nothing more, so an Unfinished file is final.
 func TestFollowDoesNotHoldAStaleSession(t *testing.T) {
 	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
-	s := &transcript.Session{Provider: "claude", Unfinished: true, Turns: []transcript.Turn{
-		{Prompt: "go", Reply: "Done.", Started: at, Ended: at},
-	}}
 	for _, stale := range []bool{false, true} {
+		s := &transcript.Session{Provider: "claude", Unfinished: true, Turns: []transcript.Turn{
+			{Prompt: "go", Reply: "Done.", Started: at, Ended: at},
+		}}
 		f := &convoFollow{tgt: convoTarget{stale: stale}, quiet: time.Hour}
 		p := newConvoPrinter("claude", false, false)
 		p.live = true
@@ -833,5 +834,35 @@ func TestHumanBlocksAreAFullWidthBand(t *testing.T) {
 		if !strings.Contains(out, "\n"+sgrBold+"done"+sgrReset+"\n") {
 			t.Errorf("width %d: answer: %q", width, out)
 		}
+	}
+}
+
+// While a held reply may still be coming, --follow says the agent works on.
+func TestFollowShowsAHeldTurnAsWorking(t *testing.T) {
+	at := time.Now().Add(-time.Minute)
+	s := &transcript.Session{Provider: "claude", Unfinished: true, Turns: []transcript.Turn{
+		{Prompt: "go", Reply: "Let me check.", Started: at, Ended: at},
+	}}
+	f := &convoFollow{quiet: time.Hour}
+	p := newConvoPrinter("claude", false, false)
+	p.live = true
+	out := f.emit(p, s, time.Now())
+	if strings.Contains(out, "Let me check.") || !p.pending || workingLabel(s, time.Now()) == "" {
+		t.Errorf("pending=%v working=%q\n%s", p.pending, workingLabel(s, time.Now()), out)
+	}
+}
+
+func TestTurnKeyTellsTurnsWithTheSameStartApart(t *testing.T) {
+	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
+	a, b := transcript.Turn{Prompt: "again", Started: at}, transcript.Turn{Prompt: "again", Started: at}
+	if turnKey(0, a) == turnKey(1, b) {
+		t.Error("same key for two turns")
+	}
+}
+
+func TestAmbiguousErrIsTyped(t *testing.T) {
+	var err error = ambiguousErr("2 live sessions")
+	if !errors.As(err, new(ambiguousErr)) {
+		t.Error("errors.As misses ambiguousErr")
 	}
 }

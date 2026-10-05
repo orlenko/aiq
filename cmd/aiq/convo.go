@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -270,8 +271,12 @@ func (r *convoResolver) resolve(o convoOpts) (convoTarget, error) {
 			return t, nil
 		}
 		// A shell pane beside the agent: the directory may still name it.
-		if t, derr := r.resolveDir(dir); derr == nil {
+		t, derr := r.resolveDir(dir)
+		if derr == nil {
 			return t, nil
+		}
+		if errors.As(derr, new(ambiguousErr)) {
+			return convoTarget{}, derr // the ids to choose from say more
 		}
 		return convoTarget{}, err
 	}
@@ -292,6 +297,11 @@ func (r *convoResolver) resolvePane(pane string) (convoTarget, error) {
 	// under it (an interactive claude a tool opened) runs deeper.
 	var in []claudeLive
 	for _, c := range liveClaude() {
+		// A Claude that a leased Codex or Antigravity agent started is
+		// that agent's tool, not the pane's agent.
+		if leased && leaseProvider(lease) != "claude" && c.PID != lease.PID && descends(parents, c.PID, lease.PID) {
+			continue
+		}
 		if c.inPane(info, parents) {
 			in = append(in, c)
 		}
@@ -398,8 +408,13 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 		}
 		fmt.Fprintf(&b, "   %s", t.label())
 	}
-	return convoTarget{}, fmt.Errorf("%s", b.String())
+	return convoTarget{}, ambiguousErr(b.String())
 }
+
+// ambiguousErr is resolveDir finding more than one live session.
+type ambiguousErr string
+
+func (e ambiguousErr) Error() string { return string(e) }
 
 // resolveID finds a session of dir by id, the way aiq resume does.
 func (r *convoResolver) resolveID(dir, id string) (convoTarget, error) {
@@ -411,7 +426,27 @@ func (r *convoResolver) resolveID(dir, id string) (convoTarget, error) {
 	if err != nil {
 		return convoTarget{}, err
 	}
-	return convoTarget{provider: s.Provider, path: s.Path, id: s.ID, stale: !r.running(s.ID)}, nil
+	t := convoTarget{provider: s.Provider, path: s.Path, id: s.ID}
+	t.stale = r.stale(t)
+	return t, nil
+}
+
+// staleAfter is how long a session aiq can't see running must go unwritten
+// before it counts as stopped.
+const staleAfter = 30 * time.Minute
+
+// stale says no CLI writes t's transcript any more. Claude publishes every
+// running session, and aiq knows its leases; a Codex or Antigravity session
+// started without aiq long shows only as a transcript that keeps changing.
+func (r *convoResolver) stale(t convoTarget) bool {
+	if r.running(t.id) {
+		return false
+	}
+	if t.provider == "claude" {
+		return true
+	}
+	_, mod := statFile(t.path)
+	return time.Since(mod) > staleAfter
 }
 
 // running reports whether a live Claude process or a lease holds session id.
@@ -885,7 +920,7 @@ func turnKey(i int, t transcript.Turn) string {
 	if t.Started.IsZero() {
 		return fmt.Sprintf("#%d", i)
 	}
-	return fmt.Sprintf("%d|%s", t.Started.UnixNano(), truncate(t.Prompt, 40))
+	return fmt.Sprintf("%d|%d|%s", i, t.Started.UnixNano(), truncate(t.Prompt, 40))
 }
 
 // idleNotice is an agent-team teammate reporting it went idle: a peer
@@ -1019,7 +1054,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 		if f.r != nil && f.tgt.pane == "" && f.tgt.id != "" && now.Sub(lastResolve) >= f.resolveEvery {
 			// Read by id: the CLI that writes it can start or stop.
 			lastResolve = now
-			if stale := !f.r.running(f.tgt.id); stale != f.tgt.stale {
+			if stale := f.r.stale(f.tgt); stale != f.tgt.stale {
 				f.tgt.stale = stale
 				dirty, lastParse = true, time.Time{}
 			}
@@ -1081,9 +1116,20 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 // emit prints what s adds, holding the last reply while the transcript,
 // last written at mod, may still be writing it.
 func (f *convoFollow) emit(p *convoPrinter, s *transcript.Session, mod time.Time) string {
-	p.hold = !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet
+	hold := !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet
+	if hold && len(s.Turns) > 0 {
+		// As in a snapshot: the turn runs on while its reply may still be
+		// on its way, so the status line says so.
+		last := &s.Turns[len(s.Turns)-1]
+		last.Open, last.Reply = true, ""
+	}
+	p.hold = hold
 	p.width = termWidth(80) // a resized split shapes what comes next
-	return p.emit(s)
+	out := p.emit(s)
+	if hold {
+		p.pending = true // parse again once the file has been quiet long enough
+	}
+	return out
 }
 
 func (f *convoFollow) printer(s *transcript.Session) *convoPrinter {
