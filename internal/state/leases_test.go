@@ -68,3 +68,29 @@ func TestLongLaunchesNewestFirst(t *testing.T) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }
+
+// A viewer reads leases without ever writing the database.
+func TestOpenReadOnlyReadsLeasesAndRefusesWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.AddLease(Lease{AccountID: "codex/a", Hostname: "here", PID: 1, Mode: ModeLong, Pane: "%4", StartedAt: time.Now().Unix()})
+	st.Close()
+
+	ro, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	if l, err := ro.LongLeaseByPane("%4"); err != nil || l.AccountID != "codex/a" {
+		t.Fatalf("LongLeaseByPane = %+v, %v", l, err)
+	}
+	if _, err := ro.AddLease(Lease{AccountID: "codex/b", Mode: ModeLong}); err == nil {
+		t.Fatal("a read-only store accepted a write")
+	}
+	if _, err := OpenReadOnly(filepath.Join(t.TempDir(), "missing.db")); err == nil {
+		t.Fatal("OpenReadOnly created a missing database")
+	}
+}

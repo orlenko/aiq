@@ -109,6 +109,10 @@ Sessions in this directory (Claude, Codex and Antigravity transcripts):
                                     the selected one on a routed account, through
                                     the launcher it ran under (b: without it)
   aiq resume --print [--all] [<id>] list sessions, or print one session's turns
+  aiq convo [--pane <id>] [--follow] [--last N] [<id>]
+                                    only what was typed and what the agent answered,
+                                    of the session in this tmux pane or directory;
+                                    --follow keeps printing (tmux bindings: aiq convo --help)
 
 Machine:
   aiq shim install|uninstall|path
@@ -229,6 +233,8 @@ func main() {
 		err = cmdLong(args)
 	case "resume":
 		err = cmdResume(args)
+	case "convo":
+		err = cmdConvo(args)
 	case "launcher":
 		err = cmdLauncher(args)
 	case "claude-hook":

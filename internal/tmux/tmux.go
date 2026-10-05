@@ -149,6 +149,21 @@ func parsePanes(out string) []Pane {
 	return panes
 }
 
+// PaneInfo describes one pane: its session, pid, and in StartCommand the
+// command running in its foreground now (pane_current_command).
+func PaneInfo(pane string) (Pane, error) {
+	out, err := run("display-message", "-p", "-t", pane, "#{pane_id}:#{pane_pid}:#{pane_dead}:#{session_name}:#{pane_current_command}")
+	if err != nil {
+		return Pane{}, err
+	}
+	// tmux 3.7 prints empty fields and exits 0 for a pane that is gone.
+	panes := parsePanes(out)
+	if len(panes) != 1 || panes[0].ID == "" {
+		return Pane{}, fmt.Errorf("tmux: no pane %s", pane)
+	}
+	return panes[0], nil
+}
+
 // Respawn kills whatever runs in pane and starts command there.
 func Respawn(pane, dir, command string) error {
 	_, err := run("respawn-pane", "-k", "-c", dir, "-t", pane, command)
