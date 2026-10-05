@@ -159,7 +159,7 @@ func cmdConvo(args []string) error {
 	tty := term.IsTerminal(int(os.Stdout.Fd()))
 	if o.follow {
 		f := &convoFollow{r: r, tgt: tgt, w: os.Stdout, tty: tty, last: o.last,
-			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: 20 * time.Second}
+			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: 90 * time.Second}
 		stop := make(chan struct{})
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -725,7 +725,7 @@ func sanitize(s string) string {
 			return '\n'
 		case r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f:
 			return -1
-		case r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069:
+		case r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == 0x200e || r == 0x200f || r == 0x061c:
 			return -1 // bidi embeddings and isolates, which can reorder what a terminal shows
 		}
 		return r
@@ -741,7 +741,7 @@ func slashCommand(prompt string) bool {
 
 // firstLine is the first non-blank line of s, cut to fit a one-liner.
 func firstLine(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(sanitize(s))
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
@@ -856,8 +856,8 @@ type convoFollow struct {
 	// quiet is how long an Unfinished transcript must go unwritten before
 	// its last reply counts as final. Current Claude Code closes a turn
 	// with system records, which ends the wait at once; older versions
-	// don't. The longest gap seen between a final message's thinking and
-	// text records was 12 s.
+	// don't. Across 4,143 final messages the thinking and text records were
+	// at most 62.5 s apart (p99 12 s).
 	quiet time.Duration
 
 	status string // on screen now

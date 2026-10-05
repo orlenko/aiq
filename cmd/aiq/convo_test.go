@@ -749,3 +749,15 @@ func TestSlashCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeDropsDirectionMarks(t *testing.T) {
+	if got := sanitize("a‎b‏c؜d"); got != "abcd" {
+		t.Errorf("sanitize = %q", got)
+	}
+}
+
+func TestFirstLineStopsAtALineSeparator(t *testing.T) {
+	if got := firstLine("ok ▌ you · fake"); got != "ok" {
+		t.Errorf("firstLine = %q", got)
+	}
+}
