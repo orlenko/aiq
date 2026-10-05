@@ -264,6 +264,60 @@ the pool picks, with `claude --resume <id>` or `codex resume <id>`.
 - Subagent transcripts are not listed. Their work appears in the parent
   session's turns as tool calls.
 
+## Reading a running session
+
+A long session buries the conversation under tool calls. `aiq convo` prints
+only what was typed into the session and what the agent answered: each
+prompt, anything typed while the agent worked, and the agent's final reply
+to each turn. Answers it gave before going on (after a background task or
+another agent's message) show as `earlier`. Prompts that aiq, another agent
+or a notifier typed in show as one dim line, with the first line of each
+answer under it; once you type into such a turn, its answers show in full.
+Agent-team idle notifications are left out.
+
+```text
+aiq convo                   the agent in this tmux pane, else the one live session here
+aiq convo --pane %5         the agent in tmux pane %5
+aiq convo <id>              any session of this directory (a unique prefix is enough)
+aiq convo --last 3          only the last three prompts and what followed
+aiq convo --follow          keep printing as the conversation goes on
+```
+
+On a terminal the conversation opens at its end in `$PAGER` (else
+`less -R +G`), with the agent's Markdown drawn the way Claude Code draws
+it: bold and code styled, pipe tables as boxes that fit the terminal's
+width. What you typed sits on a grey band across the terminal, so it stands
+out from the answers. Anywhere else it prints plain text, Markdown as written. `--follow` never redraws:
+new prompts and replies are appended, a status line at the bottom says how
+long the agent has been working, and each prompt carries a mark that tmux
+copy mode's `previous-prompt` / `next-prompt` jump to. When the pane moves to
+a new transcript (`/clear`, Codex `/new`, a takeover by another provider),
+`--follow` prints a divider and goes on with the new one.
+
+A pane is matched through the agent's own records: Claude Code's
+`sessions/<pid>.json`, else the pane's `aiq long` lease. Either counts only
+while its process is alive and runs in that pane, since tmux reuses pane ids
+after a restart. A `claude -p` worker the agent starts is never taken for the
+agent. Outside the agent's pane, `aiq convo` looks for the session running in
+this directory or one holding it: an open Claude session or an `aiq long`
+session. A Codex session started without `aiq long` is found by id only.
+`--follow` does not support Antigravity sessions yet.
+
+Two tmux bindings make it a keystroke from any agent pane. aiq never installs
+them; `aiq convo --help` prints them with the path of your aiq binary. Use the
+absolute path: tmux runs them with its own `PATH`.
+
+```tmux
+# prefix a: this pane's conversation in a popup; q closes it, and an error stays up until Escape
+bind-key a run-shell "tmux display-popup -c '#{client_name}' -w 90% -h 90% -EE '/opt/homebrew/bin/aiq convo --pane #{pane_id}' || true"
+# prefix A: the same, live, in a split beside the agent (focus stays on the agent)
+bind-key A run-shell "tmux split-window -h -d -l 40% -t '#{pane_id}' '/opt/homebrew/bin/aiq convo --follow --pane #{pane_id}'"
+```
+
+Both go through `run-shell` because it is where tmux expands `#{pane_id}`:
+`display-popup` and `split-window` pass their command on unexpanded, and
+inside a popup `$TMUX_PANE` is empty.
+
 ## Automatic provider and model selection
 
 ```bash
@@ -630,6 +684,8 @@ aiq reset <provider>/<name>          consume a Codex or Claude reset credit
 
 aiq resume [--all] [--print] [--launcher <name> | --bare] [<id>] [-- args]
                                      this directory's sessions: browse turns, resume one
+aiq convo [--pane <id>] [--follow] [--last N] [<id>]
+                                     only the prompts and replies of a running session
 
 aiq shim install|uninstall|path
 aiq statusline install|uninstall|status   Claude status-line multiplexer

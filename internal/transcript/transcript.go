@@ -40,24 +40,43 @@ type Session struct {
 	// Bypass records that the session ran with the permission bypass
 	// (Claude bypassPermissions, Codex never-ask + full access).
 	Bypass bool
+	// Unfinished says the file ends on an agent record with nothing after
+	// it. Claude Code writes one message as several records (thinking,
+	// then text) and closes a turn with system records, so the last turn's
+	// reply may still be on its way.
+	Unfinished bool
 }
 
-// Turn is one human prompt and what the agent did with it.
+// Source says who put a turn's prompt into the conversation.
+type Source uint8
+
+const (
+	Human  Source = iota // typed (or queued) by the person at the terminal
+	Aiq                  // aiq's own takeover nudge
+	Peer                 // another agent session's message
+	Notice               // a notifier tool typed it in (agent-nudge, Agent Orchestra)
+)
+
+// Turn is one prompt and what the agent did with it.
 type Turn struct {
 	Prompt  string
-	Reply   string // the agent's last message of the turn
+	Source  Source
+	Steers  []string // human input that arrived while the turn ran
+	Reply   string   // the agent's final message of the turn; "" while Open
+	Earlier []string // final messages of the turn's earlier stretches, when a background wakeup or peer message made the agent go on after answering
+	Open    bool     // the agent is still working on it
 	Started time.Time
 	Ended   time.Time
 	Tools   int // tool calls made during the turn
 }
 
-// Label is the session's name, else its first prompt.
+// Label is the session's name, else its first human prompt.
 func (s Session) Label() string {
 	if s.Title != "" {
 		return s.Title
 	}
 	for _, t := range s.Turns {
-		if t.Prompt != "" {
+		if t.Prompt != "" && t.Source == Human {
 			return t.Prompt
 		}
 	}
@@ -230,6 +249,63 @@ func parseTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
 		return time.Time{}
+	}
+	return t
+}
+
+// The prompts aiq types into a session it moved to a fresh account start
+// with these; longrun builds its prompts from them so the two never drift.
+const (
+	AiqResumeNudge  = "aiq moved this session to a fresh quota account; the conversation above is yours. "
+	AiqHandoffNudge = "aiq is handing a long-running task over to you from a "
+)
+
+// peerPrefix opens a message another Claude session sent to this one.
+// Claude Code 2.1.268–284 records it with no origin.
+const peerPrefix = "Another Claude session sent a message"
+
+// noticePrefixes open what notifier tools type into a session.
+var noticePrefixes = []string{"[agent-nudge]", "Agent Orchestra local inbox notice."}
+
+// prefixSource names who sent a prompt by how it opens. Text typed in with
+// tmux send-keys records as typed by a human, so the prefix decides.
+func prefixSource(text string) Source {
+	t := strings.TrimSpace(text)
+	switch {
+	case strings.HasPrefix(t, strings.TrimSpace(AiqResumeNudge)), strings.HasPrefix(t, AiqHandoffNudge):
+		return Aiq
+	case strings.HasPrefix(t, peerPrefix):
+		return Peer
+	}
+	for _, p := range noticePrefixes {
+		if strings.HasPrefix(t, p) {
+			return Notice
+		}
+	}
+	return Human
+}
+
+// peerBody strips the header line, the wrapping tag and the advice the CLI
+// appends after it from a peer message, leaving what the other session said.
+func peerBody(text string) string {
+	t := strings.TrimSpace(text)
+	if strings.HasPrefix(t, peerPrefix) {
+		if i := strings.IndexByte(t, '\n'); i >= 0 {
+			t = strings.TrimSpace(t[i+1:])
+		}
+	}
+	if strings.HasPrefix(t, "<") {
+		end := strings.IndexAny(t, " >")
+		if end > 1 && isTagName(t[1:end]) {
+			closing := "</" + t[1:end] + ">"
+			gt, end := strings.IndexByte(t, '>'), strings.Index(t, closing)
+			if gt > 0 && end > gt {
+				t = strings.TrimSpace(t[gt+1 : end])
+			}
+		}
+	}
+	if t == "" {
+		return strings.TrimSpace(text)
 	}
 	return t
 }

@@ -56,10 +56,12 @@ func TestParseClaude(t *testing.T) {
 		t.Fatalf("want 2 turns, got %d: %+v", len(s.Turns), s.Turns)
 	}
 	t1, t2 := s.Turns[0], s.Turns[1]
-	if t1.Prompt != "fix the bug" || t1.Reply != "Fixed it.\n\nTests pass." || t1.Tools != 1 {
+	// No stop reasons recorded: the wakeup's text replaces the reply, and
+	// nothing is split off into Earlier.
+	if t1.Prompt != "fix the bug" || t1.Reply != "Fixed it.\n\nTests pass." || t1.Tools != 1 || len(t1.Earlier) != 0 || t1.Open {
 		t.Fatalf("turn 1: %+v", t1)
 	}
-	if t2.Prompt != "now push" || t2.Reply != "" {
+	if t2.Prompt != "now push" || t2.Reply != "" || t2.Open { // interrupted before a word
 		t.Fatalf("turn 2: %+v", t2)
 	}
 	if got := t1.Ended.Sub(t1.Started).Seconds(); got != 61 {
@@ -222,6 +224,33 @@ func TestInjected(t *testing.T) {
 	} {
 		if got := injected(text); got != want {
 			t.Errorf("injected(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+func TestClaudeUnfinished(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	user := `{"type":"user","timestamp":"2026-09-01T14:00:00Z","sessionId":"s","cwd":"/w","message":{"role":"user","content":"go"}}`
+	think := `{"type":"assistant","timestamp":"2026-09-01T14:00:05Z","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"hm"}]}}`
+	text := `{"type":"assistant","timestamp":"2026-09-01T14:00:12Z","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}`
+	closed := `{"type":"system","subtype":"turn_duration","timestamp":"2026-09-01T14:00:13Z","durationMs":13000}`
+	for _, c := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"ends on thinking", user + "\n" + think + "\n", true},
+		{"ends on text", user + "\n" + think + "\n" + text + "\n", true},
+		{"turn closed", user + "\n" + think + "\n" + text + "\n" + closed + "\n", false},
+		{"half-written line after thinking", user + "\n" + think + "\n" + text[:40], true},
+		{"only the prompt", user + "\n", false},
+	} {
+		if err := os.WriteFile(path, []byte(c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := ParseClaude(path)
+		if err != nil || s.Unfinished != c.want {
+			t.Errorf("%s: Unfinished = %v, %v; want %v", c.name, s.Unfinished, err, c.want)
 		}
 	}
 }

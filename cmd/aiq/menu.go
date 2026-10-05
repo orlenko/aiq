@@ -348,11 +348,7 @@ func (m *menu) hint(r menuRow) string {
 		case s.count == 0:
 			return "No sessions have run in this directory yet."
 		default:
-			title := s.latest.Title
-			if title == "" && len(s.latest.Turns) > 0 {
-				title = s.latest.Turns[0].Prompt
-			}
-			title = strings.Join(strings.Fields(title), " ")
+			title := strings.Join(strings.Fields(s.latest.Label()), " ")
 			return fmt.Sprintf("Opens the browser of this directory's %d session%s; r resumes the one you pick. Latest, %s: %s",
 				s.count, plural(s.count), whenLabel(s.latest.Updated, time.Now()), title)
 		}

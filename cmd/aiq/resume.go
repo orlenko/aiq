@@ -303,6 +303,8 @@ func renderSessionsPlain(dir string, list []transcript.Session, live map[string]
 	return b.String()
 }
 
+// renderTurnsPlain prints every turn of s; one whose prompt came from aiq,
+// another agent or a notifier says so in its heading.
 func renderTurnsPlain(s transcript.Session, origins map[string]origin) string {
 	var b strings.Builder
 	agent := agentLabel(s)
@@ -311,15 +313,28 @@ func renderTurnsPlain(s transcript.Session, origins map[string]origin) string {
 	}
 	fmt.Fprintf(&b, "%s session %s · %s · %s\n", s.Provider, s.ID, agent, truncate(transcript.Clean(s.Label()), 100))
 	for i, t := range s.Turns {
-		fmt.Fprintf(&b, "\n## Turn %d · %s · %s · %d tools\n\n", i+1, t.Started.Local().Format("2006-01-02 15:04"), durationLabel(t.Ended.Sub(t.Started)), t.Tools)
+		from := ""
+		if t.Source != transcript.Human {
+			from = " (" + sourceLabel(t.Source) + ")"
+		}
+		fmt.Fprintf(&b, "\n## Turn %d%s · %s · %s · %d tools\n\n", i+1, from, t.Started.Local().Format("2006-01-02 15:04"), durationLabel(t.Ended.Sub(t.Started)), t.Tools)
 		fmt.Fprintf(&b, "> %s\n\n", strings.ReplaceAll(t.Prompt, "\n", "\n> "))
-		if t.Reply != "" {
-			fmt.Fprintf(&b, "%s\n", t.Reply)
+		if r := turnReply(t); r != "" {
+			fmt.Fprintf(&b, "%s\n", r)
 		} else {
 			b.WriteString("(no reply)\n")
 		}
 	}
 	return b.String()
+}
+
+// turnReply is the turn's final answer, else (a turn still running, or one
+// its CLI never finished) the last answer it gave before going on.
+func turnReply(t transcript.Turn) string {
+	if t.Reply == "" && len(t.Earlier) > 0 {
+		return t.Earlier[len(t.Earlier)-1]
+	}
+	return t.Reply
 }
 
 func shortID(id string) string {

@@ -56,26 +56,36 @@ func claudeFiles(roots []string, dir string) []found {
 }
 
 type claudeRecord struct {
-	Type             string `json:"type"`
-	IsMeta           bool   `json:"isMeta"`
-	IsSidechain      bool   `json:"isSidechain"`
-	IsCompactSummary bool   `json:"isCompactSummary"`
-	Cwd              string `json:"cwd"`
-	SessionID        string `json:"sessionId"`
-	Timestamp        string `json:"timestamp"`
-	Entrypoint       string `json:"entrypoint"`
-	GitBranch        string `json:"gitBranch"`
-	CustomTitle      string `json:"customTitle"`
-	PermissionMode   string `json:"permissionMode"`
-	PromptSource     string `json:"promptSource"`
-	Origin           *struct {
-		Kind string `json:"kind"`
-	} `json:"origin"`
-	Message *struct {
-		ID      string          `json:"id"`
-		Model   string          `json:"model"`
-		Content json.RawMessage `json:"content"`
+	Type             string        `json:"type"`
+	IsMeta           bool          `json:"isMeta"`
+	IsSidechain      bool          `json:"isSidechain"`
+	IsCompactSummary bool          `json:"isCompactSummary"`
+	Cwd              string        `json:"cwd"`
+	SessionID        string        `json:"sessionId"`
+	Timestamp        string        `json:"timestamp"`
+	Entrypoint       string        `json:"entrypoint"`
+	GitBranch        string        `json:"gitBranch"`
+	CustomTitle      string        `json:"customTitle"`
+	PermissionMode   string        `json:"permissionMode"`
+	PromptSource     string        `json:"promptSource"`
+	Origin           *claudeOrigin `json:"origin"`
+	Message          *struct {
+		ID         string          `json:"id"`
+		Model      string          `json:"model"`
+		StopReason string          `json:"stop_reason"`
+		Content    json.RawMessage `json:"content"`
 	} `json:"message"`
+	Attachment *struct {
+		Type        string          `json:"type"`
+		Prompt      json.RawMessage `json:"prompt"`
+		CommandMode string          `json:"commandMode"`
+		Origin      *claudeOrigin   `json:"origin"`
+		IsMeta      bool            `json:"isMeta"`
+	} `json:"attachment"`
+}
+
+type claudeOrigin struct {
+	Kind string `json:"kind"`
 }
 
 type contentPart struct {
@@ -84,12 +94,21 @@ type contentPart struct {
 }
 
 // claudeTypes are the record types the parser reads; the rest (file
-// snapshots, attachments, progress) can be large and are skipped unparsed.
+// snapshots, other attachments, progress) can be large and are skipped
+// unparsed.
 var claudeTypes = [][]byte{
 	[]byte(`"type":"user"`), []byte(`"type":"assistant"`), []byte(`"type":"custom-title"`), []byte(`"type":"permission-mode"`),
+	[]byte(`"type":"queued_command"`),
 }
 
 // ParseClaude reads one Claude Code session transcript.
+//
+// A turn opens with a human prompt, or with an aiq, peer or notifier
+// message that arrives while no turn is open. Everything else (tool
+// results, background task notifications, a message sent mid-turn) is
+// part of the turn it arrives in. An assistant message that stops for any
+// reason but a tool call ends a stretch of the turn; when the agent goes on
+// after that, its earlier answer moves to Earlier.
 func ParseClaude(path string) (*Session, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -101,20 +120,59 @@ func ParseClaude(path string) (*Session, error) {
 	var cur *Turn
 	curCommand := false
 	lastTextMsg := ""
-	flush := func() {
+	// ended says the current stretch of cur reached its end with message
+	// endMsg; sawStop says some reply of cur recorded why it stopped
+	// (older CLIs never do, and their turns are never shown as open).
+	ended, endMsg, sawStop, replied := false, "", false, false
+	open := func() bool { return cur != nil && !ended && (sawStop || !replied) }
+	// synthetic says cur.Reply is an error the CLI wrote (API error, usage
+	// limit), not the agent's answer.
+	synthetic := false
+	flush := func(last bool) {
 		if cur == nil {
 			return
 		}
+		cur.Open = last && open()
+		if cur.Open {
+			cur.Reply = ""
+		} else if cur.Reply == "" && len(cur.Earlier) > 0 {
+			// The last stretch said nothing: the answer before it stands.
+			cur.Reply = cur.Earlier[len(cur.Earlier)-1]
+			cur.Earlier = cur.Earlier[:len(cur.Earlier)-1]
+		}
 		// A local command such as /model leaves no work behind.
-		if !(curCommand && cur.Reply == "" && cur.Tools == 0) {
+		if !(curCommand && cur.Reply == "" && cur.Tools == 0 && len(cur.Earlier) == 0) {
 			s.Turns = append(s.Turns, *cur)
 		}
 		cur = nil
+	}
+	start := func(t Turn, command bool) {
+		flush(false)
+		cur, curCommand, lastTextMsg, synthetic = &t, command, "", false
+		ended, endMsg, sawStop, replied = false, "", false, false
+	}
+	// input handles a message from someone other than the person at the
+	// terminal: it continues an open turn and opens one of its own when
+	// none is.
+	input := func(src Source, text string, ts time.Time) {
+		if open() {
+			if !ts.IsZero() {
+				cur.Ended = ts
+			}
+			return
+		}
+		if src == Peer {
+			text = peerBody(text)
+		}
+		start(Turn{Prompt: text, Source: src, Started: ts, Ended: ts}, false)
 	}
 
 	r := bufio.NewReaderSize(f, 1<<16)
 	for {
 		line, err := r.ReadBytes('\n')
+		if err == nil {
+			s.Unfinished = false // a complete line; an assistant record sets it again
+		}
 		if len(line) > 0 && wanted(line) {
 			var rec claudeRecord
 			if json.Unmarshal(line, &rec) == nil {
@@ -134,33 +192,100 @@ func ParseClaude(path string) (*Session, error) {
 					s.Title = rec.CustomTitle
 				case "permission-mode":
 					s.Bypass = rec.PermissionMode == "bypassPermissions"
+				case "attachment":
+					a := rec.Attachment
+					if rec.IsSidechain || a == nil || a.Type != "queued_command" {
+						break
+					}
+					// A prompt typed while the agent worked and handed to it
+					// mid-turn. Without an origin (older CLIs) the command
+					// mode alone says it was typed; without either, it can't
+					// be told from a task notification.
+					human := a.Origin != nil && a.Origin.Kind == "human" && (a.CommandMode == "" || a.CommandMode == "prompt") ||
+						a.Origin == nil && a.CommandMode == "prompt" && !a.IsMeta && !rec.IsMeta
+					text, _ := claudeText(a.Prompt, "")
+					if !human || text == "" {
+						break
+					}
+					if src := prefixSource(text); src != Human {
+						input(src, text, ts)
+						break
+					}
+					if open() {
+						cur.Steers = append(cur.Steers, text)
+						if !ts.IsZero() {
+							cur.Ended = ts
+						}
+						break
+					}
+					start(Turn{Prompt: text, Started: ts, Ended: ts}, false)
 				case "user":
-					if rec.IsMeta || rec.IsSidechain || rec.IsCompactSummary || rec.Message == nil {
+					if rec.IsSidechain || rec.IsCompactSummary || rec.Message == nil {
 						break
 					}
 					if rec.PermissionMode != "" {
 						s.Bypass = rec.PermissionMode == "bypassPermissions"
 					}
 					text, toolResults := claudeText(rec.Message.Content, "user")
-					prompt, command, ok := claudePrompt(text)
+					if strings.HasPrefix(text, "[Request interrupted") {
+						ended, endMsg = true, lastTextMsg
+						break
+					}
+					// Who sent it, by how it opens, before anything the
+					// record claims about itself: send-keys text records as
+					// typed.
+					src := prefixSource(text)
+					if rec.Origin != nil && rec.Origin.Kind == "peer" {
+						src = Peer
+					}
+					if src != Human {
+						input(src, text, ts)
+						break
+					}
 					// Task notifications and other messages the CLI sends on
 					// its own continue the turn they arrive in.
-					system := rec.PromptSource == "system" || (rec.Origin != nil && rec.Origin.Kind != "" && rec.Origin.Kind != "human")
-					if !ok || system || (toolResults && text == "") {
+					if rec.IsMeta || rec.PromptSource == "system" || rec.Origin != nil && rec.Origin.Kind != "" && rec.Origin.Kind != "human" || toolResults && text == "" {
 						if cur != nil && !ts.IsZero() {
 							cur.Ended = ts // a tool result is still this turn's work
 						}
 						break
 					}
-					flush()
-					cur, curCommand, lastTextMsg = &Turn{Prompt: prompt, Started: ts, Ended: ts}, command, ""
+					// What the person typed is a prompt even when it opens
+					// with a tag, such as pasted content.
+					typed := rec.Origin != nil && rec.Origin.Kind == "human" &&
+						(rec.PromptSource == "typed" || rec.PromptSource == "queued" || rec.PromptSource == "suggestion_accepted")
+					prompt, command, ok := claudePrompt(text, typed)
+					if !ok {
+						if curCommand && strings.Contains(text, "<local-command-stdout>") {
+							ended = true // the command ran; nothing more comes of it
+						}
+						if cur != nil && !ts.IsZero() {
+							cur.Ended = ts
+						}
+						break
+					}
+					start(Turn{Prompt: prompt, Started: ts, Ended: ts}, command)
 				case "assistant":
 					if rec.IsSidechain || rec.Message == nil || cur == nil {
 						break
 					}
+					s.Unfinished = err == nil
 					if m := rec.Message.Model; m != "" && m != "<synthetic>" {
 						s.Model = m
 					}
+					if ended && rec.Message.Model == "<synthetic>" {
+						break // an API error noted after the answer was complete
+					}
+					if ended && (rec.Message.ID == "" || rec.Message.ID != endMsg) {
+						// The agent went on after answering: a background
+						// task woke it, or a hook sent it back to work.
+						if cur.Reply != "" && !synthetic {
+							cur.Earlier = append(cur.Earlier, cur.Reply)
+						}
+						cur.Reply, lastTextMsg, ended = "", "", false
+					}
+					replied = true
+					called := false
 					var parts []json.RawMessage
 					json.Unmarshal(rec.Message.Content, &parts)
 					for _, raw := range parts {
@@ -169,6 +294,7 @@ func ParseClaude(path string) (*Session, error) {
 						switch p.Type {
 						case "tool_use", "server_tool_use":
 							cur.Tools++
+							called = true
 						case "text":
 							text := strings.TrimSpace(p.Text)
 							if text == "" {
@@ -181,7 +307,18 @@ func ParseClaude(path string) (*Session, error) {
 							} else {
 								cur.Reply = text
 							}
-							lastTextMsg = rec.Message.ID
+							lastTextMsg, synthetic = rec.Message.ID, rec.Message.Model == "<synthetic>"
+						}
+					}
+					if !sawStop && rec.Message.StopReason == "" && called {
+						// No stop reasons (older CLIs): a tool call means
+						// the agent is still at work.
+						replied = false
+					}
+					if sr := rec.Message.StopReason; sr != "" {
+						sawStop = true
+						if sr != "tool_use" && sr != "pause_turn" {
+							ended, endMsg = true, rec.Message.ID
 						}
 					}
 					if !ts.IsZero() {
@@ -197,7 +334,7 @@ func ParseClaude(path string) (*Session, error) {
 			return nil, err
 		}
 	}
-	flush()
+	flush(true)
 	if s.Updated.IsZero() {
 		if info, err := f.Stat(); err == nil {
 			s.Updated = info.ModTime()
@@ -247,7 +384,9 @@ func claudeText(raw json.RawMessage, role string) (string, bool) {
 		case "tool_result":
 			tools = true
 		case "text":
-			if role == "user" && injected(p.Text) && !strings.Contains(p.Text, "<command-name>") {
+			// Pasted text is the person's, though it opens with a tag;
+			// whether the record as a whole is a prompt is decided later.
+			if role == "user" && injected(p.Text) && !strings.Contains(p.Text, "<command-name>") && !strings.HasPrefix(strings.TrimSpace(p.Text), "<pasted_content") {
 				continue
 			}
 			if t := strings.TrimSpace(p.Text); t != "" {
@@ -264,12 +403,14 @@ var (
 )
 
 // claudePrompt decides whether a user record is a human prompt. A slash
-// command comes back as "/name args" with command set.
-func claudePrompt(text string) (prompt string, command, ok bool) {
+// command comes back as "/name args" with command set. typed says the CLI
+// recorded the text as typed by the person, so a tag it opens with (pasted
+// content) does not make it the CLI's own.
+func claudePrompt(text string, typed bool) (prompt string, command, ok bool) {
 	if text == "" || strings.HasPrefix(text, "[Request interrupted") {
 		return "", false, false
 	}
-	if m := commandName.FindStringSubmatch(text); m != nil {
+	if m := commandName.FindStringSubmatch(text); m != nil && (!typed || strings.HasPrefix(text, "<command-")) {
 		name := m[1]
 		if !strings.HasPrefix(name, "/") {
 			name = "/" + name
@@ -279,7 +420,7 @@ func claudePrompt(text string) (prompt string, command, ok bool) {
 		}
 		return name, true, true
 	}
-	if injected(text) {
+	if !typed && injected(text) {
 		return "", false, false
 	}
 	return text, false, true
