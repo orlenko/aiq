@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -56,11 +60,11 @@ func TestRenderConvoPlain(t *testing.T) {
 		"claude opus-5 · claude/a · /w · session abcdef12 · pane %3\n",
 		"\n▌ you · " + whenLabel(s.Turns[0].Started, time.Now()) + "\nfirst question\n",
 		"\n▌ claude · 3m · 2 tools\nfirst answer\n",
-		"\n· aiq: aiq moved this session to claude/b → Picking up where it left off. more\n",
+		"\n· aiq: aiq moved this session to claude/b\n  → Picking up where it left off.\n",
 		"\n▌ you, while it worked\nalso run the tests\n",
 		"\n▌ claude · earlier\nBuild fixed; waiting on CI.\n",
 		"\n▌ claude · 12m · 47 tools\nCI is green.\n",
-		"\n· peer agent: Another Claude session sent a message: hi → Replied to the peer.\n",
+		"\n· peer agent: Another Claude session sent a message: hi\n  → Replied to the peer.\n",
 		"\n· notice: [agent-nudge] PR #4 has a review\n",
 		"\n▌ claude · 1m\n(no reply)\n",
 		"\n▌ you, while it worked\nwait for me\n\n▌ claude · earlier\nTagged.\n",
@@ -199,7 +203,7 @@ func TestClaudeLiveInPane(t *testing.T) {
 		{claudeLive{PID: 100, Tmux: "aiq-ops-1:@4.%5"}, true},
 		{claudeLive{PID: 300, Tmux: "aiq-ops-1:@4.%5"}, true},  // under a launcher
 		{claudeLive{PID: 400, Tmux: "aiq-ops-1:@4.%5"}, false}, // names the pane but runs elsewhere: a reused id
-		{claudeLive{PID: 100, Tmux: "other:@4.%5"}, false},
+		{claudeLive{PID: 100, Tmux: "renamed:@4.%5"}, true},    // the tmux session was renamed
 		{claudeLive{PID: 100, Tmux: "aiq-ops-1:@4.%15"}, false},
 		{claudeLive{PID: 100}, false},
 	}
@@ -361,5 +365,337 @@ func TestTurnReplyFallsBackToTheLastEarlierAnswer(t *testing.T) {
 	}
 	if got := turnReply(transcript.Turn{Open: true}); got != "" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// fixtureLines builds Claude Code transcript records, one timestamp each.
+type fixtureLines struct {
+	lines []string
+	sec   int
+}
+
+func (c *fixtureLines) ts() string {
+	c.sec++
+	return fmt.Sprintf("2026-09-15T10:%02d:%02dZ", c.sec/60, c.sec%60)
+}
+
+func (c *fixtureLines) user(extra, content string) {
+	c.lines = append(c.lines, `{"type":"user","isSidechain":false,`+extra+`"cwd":"/w","sessionId":"s","timestamp":"`+c.ts()+`","message":{"role":"user","content":`+content+`}}`)
+}
+
+func (c *fixtureLines) typed(text string) {
+	c.user(`"origin":{"kind":"human"},"promptSource":"typed",`, strconv.Quote(text))
+}
+
+func (c *fixtureLines) notification() {
+	c.user(`"origin":{"kind":"task-notification"},"promptSource":"system",`, strconv.Quote("<task-notification>done</task-notification>"))
+}
+
+func (c *fixtureLines) assistant(id, stop, part string) {
+	c.lines = append(c.lines, `{"type":"assistant","isSidechain":false,"cwd":"/w","sessionId":"s","timestamp":"`+c.ts()+
+		`","message":{"id":"`+id+`","model":"claude-opus-5","stop_reason":"`+stop+`","role":"assistant","content":[`+part+`]}}`)
+}
+
+// answer is a final message as Claude Code writes it: a thinking record and
+// a text record, both carrying the stop reason.
+func (c *fixtureLines) answer(id, text string) {
+	c.assistant(id, "end_turn", `{"type":"thinking","thinking":"hm"}`)
+	c.assistant(id, "end_turn", `{"type":"text","text":`+strconv.Quote(text)+`}`)
+}
+
+func (c *fixtureLines) tool(id string) {
+	c.assistant(id, "tool_use", `{"type":"text","text":"Checking."}`)
+	c.assistant(id, "tool_use", `{"type":"tool_use","id":"t`+id+`","name":"Bash","input":{}}`)
+	c.user(`"promptSource":"system",`, `[{"type":"tool_result","tool_use_id":"t`+id+`","content":"ok"}]`)
+}
+
+func (c *fixtureLines) steer(text string) {
+	c.lines = append(c.lines, `{"type":"attachment","isSidechain":false,"attachment":{"type":"queued_command","prompt":`+strconv.Quote(text)+
+		`,"commandMode":"prompt","origin":{"kind":"human"}},"timestamp":"`+c.ts()+`","sessionId":"s"}`)
+}
+
+func claudeConvoFixtures() map[string][]string {
+	out := map[string][]string{}
+	var c fixtureLines
+	// The answer, then a background task wakes the agent, which ends with
+	// nothing to say: the parser moves the answer back to Reply.
+	c.typed("check the deploy")
+	c.answer("m1", "The deploy is fine.")
+	c.notification()
+	c.tool("m2")
+	c.assistant("m3", "end_turn", `{"type":"thinking","thinking":"nothing to add"}`)
+	out["answer moves back"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("run the suite")
+	c.tool("m1")
+	c.answer("m2", "The suite runs in the background.")
+	c.notification()
+	c.tool("m3")
+	c.answer("m4", "The suite passed.")
+	out["wakeup with a new answer"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("refactor the parser")
+	c.tool("m1")
+	c.steer("also rename the package")
+	c.tool("m2")
+	c.answer("m3", "Refactored and renamed.")
+	out["steer"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("[agent-nudge] 1 message waiting")
+	c.tool("m1")
+	c.steer("here is the context Jerry pasted")
+	c.tool("m2")
+	c.answer("m3", "Replied to Jerry with the context.")
+	out["steer in a notice"] = c.lines
+
+	c = fixtureLines{}
+	c.user("", strconv.Quote("<command-name>/model</command-name>\n<command-args>opus</command-args>"))
+	c.user("", strconv.Quote("<local-command-stdout>Set model to opus</local-command-stdout>"))
+	c.typed("hello")
+	c.answer("m1", "Hi.")
+	out["local command"] = c.lines
+
+	var all []string
+	for _, name := range []string{"answer moves back", "wakeup with a new answer", "steer", "steer in a notice", "local command"} {
+		all = append(all, out[name]...)
+	}
+	out["all of them"] = all
+	return out
+}
+
+func codexConvoFixture() []string {
+	sec := 0
+	var lines []string
+	add := func(typ, payload string) {
+		sec++
+		lines = append(lines, fmt.Sprintf(`{"timestamp":"2026-09-15T21:%02d:%02dZ","type":"%s","payload":%s}`, sec/60, sec%60, typ, payload))
+	}
+	user := func(turn, text string) {
+		add("response_item", `{"type":"message","role":"user","content":[{"type":"input_text","text":`+strconv.Quote(text)+
+			`}],"internal_chat_message_metadata_passthrough":{"turn_id":"`+turn+`","content_item_kinds":["user.text"]}}`)
+	}
+	say := func(phase, text string) {
+		add("response_item", `{"type":"message","role":"assistant","phase":"`+phase+`","content":[{"type":"output_text","text":`+strconv.Quote(text)+`}]}`)
+	}
+	add("session_meta", `{"id":"c","cwd":"/w","source":"cli"}`)
+	add("event_msg", `{"type":"task_started","turn_id":"a"}`)
+	user("a", "deploy the site")
+	say("commentary", "Building.")
+	user("a", "use the staging bucket")
+	add("response_item", `{"type":"custom_tool_call","name":"exec"}`)
+	say("final_answer", "Deployed to staging.")
+	add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Deployed to staging."}`)
+	add("event_msg", `{"type":"task_started","turn_id":"b"}`)
+	user("b", "Agent Orchestra local inbox notice. 1 message")
+	say("final_answer", "Nothing for you.")
+	add("event_msg", `{"type":"task_complete","turn_id":"b","last_agent_message":"Nothing for you."}`)
+	add("event_msg", `{"type":"task_started","turn_id":"w"}`)
+	add("response_item", `{"type":"function_call","name":"wait"}`)
+	say("final_answer", "The build is green.")
+	add("event_msg", `{"type":"task_complete","turn_id":"w","last_agent_message":"The build is green."}`)
+	add("event_msg", `{"type":"task_started","turn_id":"c"}`)
+	user("c", "thanks")
+	say("final_answer", "Welcome.")
+	add("event_msg", `{"type":"task_complete","turn_id":"c","last_agent_message":"Welcome."}`)
+	return lines
+}
+
+// pieces collects what a printer prints, per turn: "kind\x00text".
+func pieces(p *convoPrinter) map[string][]string {
+	got := map[string][]string{}
+	p.piece = func(key, kind, text string) { got[key] = append(got[key], kind+"\x00"+text) }
+	return got
+}
+
+// checkFollowMatchesSnapshot parses every line-prefix of a growing
+// transcript into one --follow printer, then holds what it printed against
+// a snapshot of the whole file: per turn the same prompts, steers and
+// answers, nothing twice, and no "(no reply)" for a turn that has an answer.
+func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse func(string) (*transcript.Session, error)) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
+	follow := newConvoPrinter("x", false, false)
+	follow.live = true
+	followed := pieces(follow)
+	var s *transcript.Session
+	for n := 1; n <= len(lines); n++ {
+		if err := os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		if s, err = parse(path); err != nil {
+			t.Fatal(err)
+		}
+		follow.emit(s)
+	}
+	if follow.pending {
+		follow.emit(s) // the follow loop parses again while a reply is held
+	}
+	snap := newConvoPrinter("x", false, false)
+	snapped := pieces(snap)
+	snap.emit(s)
+
+	without := func(list []string, kind string) []string {
+		var out []string
+		for _, p := range list {
+			if !strings.HasPrefix(p, kind+"\x00") {
+				out = append(out, p)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	keys := map[string]bool{}
+	for k := range followed {
+		keys[k] = true
+	}
+	for k := range snapped {
+		keys[k] = true
+	}
+	for k := range keys {
+		f, sn := without(followed[k], "none"), without(snapped[k], "none")
+		if !reflect.DeepEqual(f, sn) {
+			t.Errorf("%s, turn %s:\nfollow   %q\nsnapshot %q", name, k, f, sn)
+		}
+		for i := 1; i < len(f); i++ {
+			if f[i] == f[i-1] {
+				t.Errorf("%s, turn %s: printed twice: %q", name, k, f[i])
+			}
+		}
+		answered := len(without(snapped[k], "none")) > len(without(snapped[k], "answer"))
+		if answered && (len(followed[k]) != len(f) || len(snapped[k]) != len(sn)) {
+			t.Errorf("%s, turn %s: (no reply) for a turn that has an answer", name, k)
+		}
+	}
+}
+
+func TestFollowMatchesSnapshotAtEveryLine(t *testing.T) {
+	for name, lines := range claudeConvoFixtures() {
+		checkFollowMatchesSnapshot(t, name, lines, transcript.ParseClaude)
+	}
+	checkFollowMatchesSnapshot(t, "codex", codexConvoFixture(), transcript.ParseCodex)
+}
+
+// The fixtures say what they mean to: the steer shows, the moved answer
+// is the reply, the local command leaves no turn.
+func TestConvoFixturesRender(t *testing.T) {
+	render := func(lines []string, parse func(string) (*transcript.Session, error)) string {
+		path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
+		os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+		s, err := parse(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return renderConvo(s, convoTarget{}, 0, false, time.Now())
+	}
+	f := claudeConvoFixtures()
+	if out := render(f["answer moves back"], transcript.ParseClaude); strings.Contains(out, "(no reply)") || strings.Count(out, "The deploy is fine.") != 1 {
+		t.Errorf("answer moves back:\n%s", out)
+	}
+	out := render(f["steer in a notice"], transcript.ParseClaude)
+	for _, w := range []string{"· notice: [agent-nudge] 1 message waiting\n", "\n▌ you, while it worked\nhere is the context Jerry pasted\n", "\nReplied to Jerry with the context.\n"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("steer in a notice lacks %q:\n%s", w, out)
+		}
+	}
+	if out := render(f["local command"], transcript.ParseClaude); strings.Contains(out, "/model") || !strings.Contains(out, "\nHi.\n") {
+		t.Errorf("local command:\n%s", out)
+	}
+	out = render(codexConvoFixture(), transcript.ParseCodex)
+	for _, w := range []string{"\nuse the staging bucket\n", "· notice: Agent Orchestra local inbox notice. 1 message\n  → Nothing for you.\n  → The build is green.\n", "\nWelcome.\n"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("codex lacks %q:\n%s", w, out)
+		}
+	}
+}
+
+// Transcript text cannot drive the terminal: no clipboard writes (OSC 52),
+// no title, no fake prompt marks, no 8-bit controls.
+func TestConvoStripsControlCharacters(t *testing.T) {
+	evil := "ok\x1b]52;c;cm0gLXJmIH4=\x07\x1b]0;title\x07\x1b]133;A\x1b\\\x9b2J\x7f\rdone\tend\n\xc2\x9dline\xff"
+	s := &transcript.Session{Provider: "claude", Model: "m\x1b[31m", Turns: []transcript.Turn{
+		{Prompt: evil, Steers: []string{evil}, Earlier: []string{evil + " 1"}, Reply: evil + " 2", Started: time.Now(), Ended: time.Now()},
+		{Prompt: evil, Source: transcript.Notice, Reply: evil},
+	}}
+	for _, color := range []bool{false, true} {
+		out := renderConvo(s, convoTarget{}, 0, color, time.Now())
+		out = strings.NewReplacer(sgrReset, "", sgrBold, "", sgrDim, "", sgrBoldCyan, "", sgrBoldGreen, "").Replace(out)
+		for _, r := range out {
+			if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f || r >= 0x80 && r <= 0x9f {
+				t.Fatalf("color=%v: control character %U in\n%q", color, r, out)
+			}
+		}
+		if !strings.Contains(out, "ok]52;c;cm0gLXJmIH4=]0;title]133;A\\\ufffd2Jdone\tend\nline\ufffd") {
+			t.Errorf("color=%v: text around the controls lost:\n%q", color, out)
+		}
+	}
+	var b bytes.Buffer
+	f := &convoFollow{w: &b, tty: true}
+	f.setStatus("pane %1 runs \x1b]52;c;eA==\x07x")
+	if strings.Contains(b.String(), "]52;c;eA==\x07") {
+		t.Errorf("status line not cleaned: %q", b.String())
+	}
+}
+
+func TestConvoBindingsQuoteOnlyPlainPaths(t *testing.T) {
+	popup, split, note := convoBindings("/opt/homebrew/bin/aiq")
+	if note != "" || !strings.Contains(popup, "-EE '/opt/homebrew/bin/aiq convo --pane #{pane_id}' || true") ||
+		!strings.Contains(split, "'/opt/homebrew/bin/aiq convo --follow --pane #{pane_id}'") {
+		t.Fatalf("plain path:\n%s\n%s\n%s", popup, split, note)
+	}
+	for _, exe := range []string{"/Users/a b/bin/aiq", "/x/it's/aiq", `/x/"q"/aiq`, "/x/$(id)/aiq"} {
+		popup, split, note := convoBindings(exe)
+		if note == "" || !strings.Contains(popup, "'aiq convo --pane #{pane_id}'") || !strings.Contains(split, "'aiq convo --follow") ||
+			strings.Contains(popup+split, exe) {
+			t.Errorf("%q:\n%s\n%s\n%s", exe, popup, split, note)
+		}
+	}
+}
+
+func TestParseConvoArgsRejectsAnEmptyPane(t *testing.T) {
+	for _, args := range [][]string{{"--pane="}, {"--pane", ""}} {
+		if _, err := parseConvoArgs(args); err == nil {
+			t.Errorf("%q: want an error", args)
+		}
+	}
+}
+
+// A local command shows no header while it may still come to nothing: the
+// parser drops it once the next prompt starts.
+func TestConvoHoldsBackALocalCommand(t *testing.T) {
+	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
+	p := newConvoPrinter("claude", false, false)
+	out := p.emit(&transcript.Session{Turns: []transcript.Turn{{Prompt: "/model opus", Open: true, Started: at}}})
+	out += p.emit(&transcript.Session{Turns: []transcript.Turn{{Prompt: "hello", Reply: "Hi.", Started: at.Add(time.Minute), Ended: at.Add(time.Minute)}}})
+	if strings.Contains(out, "/model") || !strings.Contains(out, "\nhello\n") {
+		t.Fatalf("got:\n%s", out)
+	}
+	// One that does work shows up.
+	out = p.emit(&transcript.Session{Turns: []transcript.Turn{{Prompt: "/review", Open: true, Tools: 1, Started: at.Add(time.Hour)}}})
+	if !strings.Contains(out, "/review") {
+		t.Fatalf("got:\n%s", out)
+	}
+}
+
+// A session nobody runs any more: its open turn is over, and the answer it
+// gave last is its reply.
+func TestLoadConvoGivesAStaleTurnItsLastAnswer(t *testing.T) {
+	var c fixtureLines
+	c.typed("check the deploy")
+	c.answer("m1", "The deploy is fine.")
+	c.notification()
+	c.tool("m2")
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	os.WriteFile(path, []byte(strings.Join(c.lines, "\n")+"\n"), 0o600)
+	live, err := loadConvo(convoTarget{provider: "claude", path: path})
+	if err != nil || !live.Turns[0].Open {
+		t.Fatalf("live: %+v, %v", live, err)
+	}
+	stale, err := loadConvo(convoTarget{provider: "claude", path: path, stale: true})
+	if tr := stale.Turns[0]; err != nil || tr.Open || tr.Reply != "The deploy is fine." || len(tr.Earlier) != 0 {
+		t.Fatalf("stale: %+v, %v", tr, err)
 	}
 }

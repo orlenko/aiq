@@ -44,12 +44,18 @@ tmux key bindings (add them to ~/.tmux.conf yourself; aiq never installs them):
 // display-popup nor split-window expands formats in its command, and inside
 // a popup TMUX_PANE is empty. -EE keeps the popup open when aiq convo fails,
 // so its error stays readable (Escape closes it); || true stops run-shell
-// from reporting that failure again over the pane.
-func convoBindings(exe string) (popup, split string) {
+// from reporting that failure again over the pane. A path these quotes
+// cannot carry gives lines that name plain aiq, with a note saying so.
+func convoBindings(exe string) (popup, split, note string) {
+	if !plainPath.MatchString(exe) {
+		exe, note = "aiq", "# aiq must be on the tmux server's PATH: the path to this binary needs quoting these lines can't do"
+	}
 	popup = fmt.Sprintf(`bind-key a run-shell "tmux display-popup -c '#{client_name}' -w 90%% -h 90%% -EE '%s convo --pane #{pane_id}' || true"`, exe)
 	split = fmt.Sprintf(`bind-key A run-shell "tmux split-window -h -d -l 40%% -t '#{pane_id}' '%s convo --follow --pane #{pane_id}'"`, exe)
-	return popup, split
+	return popup, split, note
 }
+
+var plainPath = regexp.MustCompile(`^[A-Za-z0-9/._+-]+$`)
 
 type convoOpts struct {
 	pane   string
@@ -77,6 +83,9 @@ func parseConvoArgs(args []string) (convoOpts, error) {
 			v, err := value("--pane")
 			if err != nil {
 				return o, err
+			}
+			if v == "" {
+				return o, fmt.Errorf("--pane requires a pane id, such as %%5")
 			}
 			// tmux prints pane ids as %N; accept the bare number too.
 			if _, err := strconv.Atoi(v); err == nil {
@@ -123,8 +132,12 @@ func convoHelp() string {
 			exe = abs
 		}
 	}
-	popup, split := convoBindings(exe)
-	return fmt.Sprintf(convoUsage, popup, split)
+	popup, split, note := convoBindings(exe)
+	help := fmt.Sprintf(convoUsage, popup, split)
+	if note != "" {
+		help += "\n  " + note
+	}
+	return help
 }
 
 func cmdConvo(args []string) error {
@@ -203,6 +216,7 @@ type convoTarget struct {
 	// stale says no running CLI is known to write the transcript (read by
 	// id), so a turn left open is one the CLI never finished.
 	stale bool
+	id    string // the session id it was asked for by, if any
 }
 
 func (t convoTarget) label() string {
@@ -287,7 +301,7 @@ func (r *convoResolver) paneLease(p tmux.Pane, parents map[int]int) (state.Lease
 		return state.Lease{}, false
 	}
 	l, err := r.st.LongLeaseByPane(p.ID)
-	if err != nil || !proc.Alive(l.PID) || !descends(parents, l.PID, p.PID) {
+	if err != nil || l.Hostname != hostname() || !proc.Alive(l.PID) || !descends(parents, l.PID, p.PID) {
 		return state.Lease{}, false
 	}
 	return l, true
@@ -315,7 +329,7 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 	if r.st != nil {
 		leases, _ := r.st.ListLeases()
 		for _, l := range leases {
-			if l.Transcript != "" && proc.Alive(l.PID) && canonicalPath(l.Cwd) == dir {
+			if l.Transcript != "" && l.Hostname == hostname() && proc.Alive(l.PID) && canonicalPath(l.Cwd) == dir {
 				add(convoTarget{provider: leaseProvider(l), path: l.Transcript, account: l.AccountID, pane: l.Pane})
 			}
 		}
@@ -356,7 +370,7 @@ func (r *convoResolver) resolveID(dir, id string) (convoTarget, error) {
 	if err != nil {
 		return convoTarget{}, err
 	}
-	return convoTarget{provider: s.Provider, path: s.Path, stale: !r.running(s.ID)}, nil
+	return convoTarget{provider: s.Provider, path: s.Path, id: s.ID, stale: !r.running(s.ID)}, nil
 }
 
 // running reports whether a live Claude process or a lease holds session id.
@@ -371,7 +385,7 @@ func (r *convoResolver) running(id string) bool {
 	}
 	leases, _ := r.st.ListLeases()
 	for _, l := range leases {
-		if l.SessionID == id && proc.Alive(l.PID) {
+		if l.SessionID == id && l.Hostname == hostname() && proc.Alive(l.PID) {
 			return true
 		}
 	}
@@ -391,8 +405,14 @@ func loadConvo(t convoTarget) (*transcript.Session, error) {
 	default:
 		return nil, fmt.Errorf("aiq convo cannot read %s transcripts", t.provider)
 	}
-	if err == nil && t.stale && len(s.Turns) > 0 {
-		s.Turns[len(s.Turns)-1].Open = false
+	if err == nil && t.stale && len(s.Turns) > 0 && s.Turns[len(s.Turns)-1].Open {
+		// The turn ended with the CLI: its last answer is its reply.
+		last := &s.Turns[len(s.Turns)-1]
+		last.Open = false
+		if last.Reply == "" && len(last.Earlier) > 0 {
+			last.Reply = last.Earlier[len(last.Earlier)-1]
+			last.Earlier = last.Earlier[:len(last.Earlier)-1]
+		}
 	}
 	return s, err
 }
@@ -474,11 +494,11 @@ func (c claudeLive) pane() string {
 	return pane
 }
 
-// inPane reports whether the session file names pane p of p's tmux session
-// and its process runs in that pane.
+// inPane reports whether the session file names pane p and its process
+// runs in that pane. The tmux session name is not compared: a renamed
+// session keeps its panes.
 func (c claudeLive) inPane(p tmux.Pane, parents map[int]int) bool {
-	sess, _, _ := strings.Cut(c.Tmux, ":")
-	return c.pane() != "" && sess == p.Session && c.pane() == p.ID && descends(parents, c.PID, p.PID)
+	return c.pane() != "" && c.pane() == p.ID && descends(parents, c.PID, p.PID)
 }
 
 var claudeNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
@@ -543,15 +563,27 @@ type convoPrinter struct {
 	provider string
 	color    bool
 	marks    bool
-	seen     map[string]*turnSeen
+	// live holds back the last turn's end while following: its reply is
+	// printed once two parses agree on it, and "(no reply)" not at all.
+	// Claude Code writes a final message as several records, and a parse
+	// between them sees the narration before it as the reply.
+	live bool
+	// pending says emit held a reply back; parse again even if the file
+	// has not changed.
+	pending bool
+	seen    map[string]*turnSeen
+	// piece, if set, hears every text printed: the turn's key, the kind
+	// (prompt, steer, answer, none) and the text.
+	piece func(key, kind, text string)
 }
 
 type turnSeen struct {
 	hidden  bool // left out by --last
 	head    bool
 	steers  int
-	answers int  // agent texts printed: earlier answers, then the reply
-	closed  bool // the turn's end has been shown
+	answers map[string]bool // agent texts printed, by text: the parser can move one between Earlier and Reply
+	noReply bool
+	held    string // the last turn's reply, seen once and not yet printed
 }
 
 func newConvoPrinter(provider string, color, marks bool) *convoPrinter {
@@ -565,49 +597,45 @@ func (p *convoPrinter) skip(turns []transcript.Turn) {
 	}
 }
 
-// emit returns what of s has not been printed yet. A turn still running
-// shows its prompt, steers and earlier answers; its reply, or a notice's
-// one-line summary, waits until it ends. A turn that ended can go on (a
-// background task or a peer message wakes the agent): what was printed as
-// its reply stays, and the new reply follows it.
+// emit returns what of s has not been printed yet. A turn shows its prompt
+// and steers as they come and each answer once, by text; a turn that ended
+// can go on (a background task or a peer message wakes the agent), and its
+// new answers follow what was printed. A prompt aiq, a peer or a notifier
+// sent is a dim line, its answers dim one-liners under it, unless the
+// person typed into that turn: then its answers print in full.
 func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
+	p.pending = false
 	for i, t := range s.Turns {
 		k := turnKey(i, t)
 		seen := p.seen[k]
 		if seen == nil {
-			seen = &turnSeen{}
+			seen = &turnSeen{answers: map[string]bool{}}
 			p.seen[k] = seen
 		}
 		if seen.hidden || idleNotice(t) {
 			continue
 		}
-		texts := t.Earlier
-		if !t.Open && t.Reply != "" {
-			texts = append(texts[:len(texts):len(texts)], t.Reply)
+		answers := t.Earlier
+		if t.Reply != "" {
+			answers = append(answers[:len(answers):len(answers)], t.Reply)
 		}
-		if t.Source != transcript.Human {
-			switch {
-			case !seen.head && !t.Open:
-				line := fmt.Sprintf("· %s: %s", sourceLabel(t.Source), truncate(transcript.Clean(t.Prompt), 70))
-				if t.Reply != "" {
-					line += " → " + truncate(transcript.Clean(t.Reply), 100)
-				}
-				b.WriteString("\n" + p.paint(sgrDim, line) + "\n")
-				seen.head, seen.answers = true, len(texts)
-			case seen.head:
-				for ; seen.answers < len(texts); seen.answers++ {
-					b.WriteString(p.paint(sgrDim, "  → "+truncate(transcript.Clean(texts[seen.answers]), 100)) + "\n")
-				}
-			}
-			continue
-		}
+		human := t.Source == transcript.Human
 		if !seen.head {
-			p.block(&b, true, sgrBoldCyan, "▌ you · "+whenLabel(t.Started, time.Now()), sgrBold, t.Prompt)
+			if human && t.Open && t.Tools == 0 && len(answers) == 0 && strings.HasPrefix(t.Prompt, "/") {
+				continue // a local command: the parser drops it if nothing comes of it
+			}
+			if human {
+				p.block(&b, true, sgrBoldCyan, "▌ you · "+whenLabel(t.Started, time.Now()), sgrBold, t.Prompt)
+			} else {
+				b.WriteString("\n" + p.paint(sgrDim, "· "+sourceLabel(t.Source)+": "+firstLine(t.Prompt)) + "\n")
+			}
+			p.note(k, "prompt", t.Prompt)
 			seen.head = true
 		}
 		for ; seen.steers < len(t.Steers); seen.steers++ {
 			p.block(&b, true, sgrBoldCyan, "▌ you, while it worked", sgrBold, t.Steers[seen.steers])
+			p.note(k, "steer", t.Steers[seen.steers])
 		}
 		head := "▌ " + p.provider
 		if !t.Started.IsZero() && !t.Ended.IsZero() {
@@ -616,22 +644,40 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		if t.Tools > 0 {
 			head += fmt.Sprintf(" · %d tool%s", t.Tools, plural(t.Tools))
 		}
-		for ; seen.answers < len(texts); seen.answers++ {
-			if seen.answers < len(t.Earlier) {
-				p.block(&b, false, sgrDim, "▌ "+p.provider+" · earlier", sgrDim, texts[seen.answers])
-			} else {
-				p.block(&b, false, sgrBoldGreen, head, "", texts[seen.answers])
-				seen.closed = true
+		last := i == len(s.Turns)-1
+		for j, a := range answers {
+			if seen.answers[a] {
+				continue
 			}
+			final := j == len(answers)-1 && t.Reply != ""
+			if final && p.live && last && seen.held != a {
+				seen.held, p.pending = a, true
+				continue
+			}
+			seen.answers[a] = true
+			switch {
+			case !human && len(t.Steers) == 0:
+				b.WriteString(p.paint(sgrDim, "  → "+firstLine(a)) + "\n")
+			case final:
+				p.block(&b, false, sgrBoldGreen, head, "", a)
+			default:
+				p.block(&b, false, sgrDim, "▌ "+p.provider+" · earlier", sgrDim, a)
+			}
+			p.note(k, "answer", a)
 		}
-		if t.Open {
-			seen.closed = false
-		} else if !seen.closed {
+		if human && !t.Open && len(seen.answers) == 0 && !seen.noReply && !(p.live && last) {
 			p.block(&b, false, sgrBoldGreen, head, sgrDim, "(no reply)")
-			seen.closed = true
+			p.note(k, "none", "")
+			seen.noReply = true
 		}
 	}
 	return b.String()
+}
+
+func (p *convoPrinter) note(key, kind, text string) {
+	if p.piece != nil {
+		p.piece(key, kind, text)
+	}
 }
 
 // block writes a header line and its text after a blank line. A human
@@ -646,8 +692,10 @@ func (p *convoPrinter) block(b *strings.Builder, human bool, headSGR, head, body
 }
 
 // paint colours each line on its own, so a pager that starts mid-block
-// still shows it right.
+// still shows it right. Everything it paints is cleaned of control
+// characters first.
 func (p *convoPrinter) paint(sgr, text string) string {
+	text = sanitize(text)
 	if !p.color || sgr == "" {
 		return text
 	}
@@ -658,6 +706,31 @@ func (p *convoPrinter) paint(sgr, text string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// sanitize drops control characters from text a transcript holds, so
+// nothing an agent or a pasted file wrote can move the cursor, retitle the
+// terminal, set the clipboard (OSC 52) or fake a prompt mark. Newlines and
+// tabs stay; bytes that are not UTF-8 become U+FFFD.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// firstLine is the first non-blank line of s, cut to fit a one-liner.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return truncate(strings.TrimSpace(s), 100)
 }
 
 // turnKey names a turn across re-parses: by its start, which does not move
@@ -716,7 +789,7 @@ func convoHeader(s *transcript.Session, t convoTarget, hidden int, color bool) s
 	if t.pane != "" {
 		parts = append(parts, "pane "+t.pane)
 	}
-	head := strings.Join(parts, " · ")
+	head := sanitize(strings.Join(parts, " · "))
 	if color {
 		head = sgrBold + head + sgrReset
 	}
@@ -777,13 +850,13 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 	if err != nil {
 		return err
 	}
-	p := newConvoPrinter(s.Provider, f.tty, f.tty)
+	p := f.printer(s)
 	from := convoStart(s.Turns, f.last)
 	p.skip(s.Turns[:from])
 	f.print(convoHeader(s, f.tgt, from, f.tty) + p.emit(s))
 
 	lastParse, lastResolve := time.Now(), time.Now()
-	dirty := false
+	dirty := p.pending
 	note := ""
 	tick := time.NewTicker(f.statEvery)
 	defer tick.Stop()
@@ -795,6 +868,14 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 		case <-tick.C:
 		}
 		now := time.Now()
+		if f.r != nil && f.tgt.pane == "" && f.tgt.id != "" && now.Sub(lastResolve) >= f.resolveEvery {
+			// Read by id: the CLI that writes it can start or stop.
+			lastResolve = now
+			if stale := !f.r.running(f.tgt.id); stale != f.tgt.stale {
+				f.tgt.stale = stale
+				dirty, lastParse = true, time.Time{}
+			}
+		}
 		if f.r != nil && f.tgt.pane != "" && now.Sub(lastResolve) >= f.resolveEvery {
 			lastResolve = now
 			t, err := f.r.resolvePane(f.tgt.pane)
@@ -810,7 +891,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 				}
 				note = ""
 				f.tgt, s = t, ns
-				p = newConvoPrinter(s.Provider, f.tty, f.tty)
+				p = f.printer(s)
 				from := convoStart(s.Turns, f.last)
 				p.skip(s.Turns[:from])
 				line := fmt.Sprintf("── moved to %s · session %s · %s ──", t.label(), shortID(s.ID), now.Format("15:04"))
@@ -819,7 +900,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 				}
 				f.print("\n" + p.paint(sgrYellow, line) + "\n" + p.emit(s))
 				size, mod = sz, m
-				lastParse, dirty = now, false
+				lastParse, dirty = now, p.pending
 			default:
 				note = ""
 				f.tgt.account = t.account
@@ -834,6 +915,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 				s = ns
 				f.print(p.emit(s))
 			}
+			dirty = p.pending
 		}
 		// A pane that no longer answers says more than a turn that may
 		// never end now.
@@ -843,6 +925,12 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 		}
 		f.setStatus(status)
 	}
+}
+
+func (f *convoFollow) printer(s *transcript.Session) *convoPrinter {
+	p := newConvoPrinter(s.Provider, f.tty, f.tty)
+	p.live = true
+	return p
 }
 
 // print writes new conversation text, erasing the status line first.
@@ -860,6 +948,7 @@ func (f *convoFollow) print(text string) {
 // setStatus rewrites the status line in place. It never ends in a newline
 // and is cut to fit, so \r always returns to its start.
 func (f *convoFollow) setStatus(s string) {
+	s = sanitize(s)
 	if !f.tty || s == f.status {
 		return
 	}
