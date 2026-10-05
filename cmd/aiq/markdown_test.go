@@ -227,7 +227,9 @@ func TestMarkdownPathologicalLinesAreFast(t *testing.T) {
 		src := strings.Repeat(unit, 200_000/len(unit))
 		start := time.Now()
 		renderMarkdown(src, 100, "")
-		if d := time.Since(start); d > 100*time.Millisecond {
+		// The quadratic matcher this guards against took seconds per line;
+		// the bound leaves room for slow shared CI runners.
+		if d := time.Since(start); d > time.Second {
 			t.Errorf("%q × %d took %v", unit, len(src)/len(unit), d)
 		}
 	}
