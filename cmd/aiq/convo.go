@@ -622,6 +622,9 @@ type convoPrinter struct {
 	provider string
 	color    bool
 	marks    bool
+	// width is the terminal's, for rendering the agent's Markdown (with
+	// colour only); 0 means unknown.
+	width int
 	// live says the printer follows a running session: the last turn's
 	// "(no reply)" is never printed, since more may come.
 	live bool
@@ -722,9 +725,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			case !human && len(t.Steers) == 0:
 				b.WriteString(p.paint(sgrDim, "  → "+firstLine(a)) + "\n")
 			case final:
-				p.block(&b, false, sgrBoldGreen, head, "", a)
+				p.answer(&b, sgrBoldGreen, head, "", a)
 			default:
-				p.block(&b, false, sgrDim, "▌ "+p.provider+" · earlier", sgrDim, a)
+				p.answer(&b, sgrDim, "▌ "+p.provider+" · earlier", sgrDim, a)
 			}
 			p.note(k, "answer", a)
 		}
@@ -752,6 +755,22 @@ func (p *convoPrinter) block(b *strings.Builder, human bool, headSGR, head, body
 	}
 	b.WriteString(p.paint(headSGR, head) + "\n")
 	b.WriteString(p.paint(bodySGR, strings.TrimRight(body, "\n")) + "\n")
+}
+
+// answer writes an agent's answer under its header. With colour it renders
+// the Markdown for the terminal; without, it is the block as written.
+func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body string) {
+	if !p.color {
+		p.block(b, false, headSGR, head, base, body)
+		return
+	}
+	width := p.width
+	if width <= 0 {
+		width = 100
+	}
+	b.WriteString("\n" + p.paint(headSGR, head) + "\n")
+	// Cleaned before rendering: the escapes the renderer writes are its own.
+	b.WriteString(renderMarkdown(sanitize(strings.TrimRight(body, "\n")), width, base) + "\n")
 }
 
 // paint colours each line on its own, so a pager that starts mid-block
@@ -891,6 +910,7 @@ func workingLabel(s *transcript.Session, now time.Time) string {
 func renderConvo(s *transcript.Session, t convoTarget, last int, color bool, now time.Time) string {
 	from := convoStart(s.Turns, last)
 	p := newConvoPrinter(s.Provider, color, false)
+	p.width = termWidth(100) // read before the pager takes the terminal
 	p.skip(s.Turns[:from])
 	out := convoHeader(s, t, from, color) + p.emit(s)
 	if w := workingLabel(s, now); w != "" {
@@ -1009,6 +1029,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 // last written at mod, may still be writing it.
 func (f *convoFollow) emit(p *convoPrinter, s *transcript.Session, mod time.Time) string {
 	p.hold = !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet
+	p.width = termWidth(80) // a resized split shapes what comes next
 	return p.emit(s)
 }
 
@@ -1037,15 +1058,20 @@ func (f *convoFollow) setStatus(s string) {
 	if !f.tty || s == f.status {
 		return
 	}
-	width := 80
-	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 1 {
-		width = w
-	}
+	width := termWidth(80)
 	f.status = s
 	fmt.Fprint(f.w, "\r\x1b[K")
 	if s != "" {
 		fmt.Fprint(f.w, sgrDim+truncate(s, width-1)+sgrReset)
 	}
+}
+
+// termWidth is the width of the terminal on stdout, else fallback.
+func termWidth(fallback int) int {
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 1 {
+		return w
+	}
+	return fallback
 }
 
 func statFile(path string) (int64, time.Time) {

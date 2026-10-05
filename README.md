@@ -284,7 +284,9 @@ aiq convo --follow          keep printing as the conversation goes on
 ```
 
 On a terminal the conversation opens at its end in `$PAGER` (else
-`less -R +G`); anywhere else it prints plain text. `--follow` never redraws:
+`less -R +G`), with the agent's Markdown drawn the way Claude Code draws
+it: bold and code styled, pipe tables as boxes that fit the terminal's
+width; anywhere else it prints plain text, Markdown as written. `--follow` never redraws:
 new prompts and replies are appended, a status line at the bottom says how
 long the agent has been working, and each prompt carries a mark that tmux
 copy mode's `previous-prompt` / `next-prompt` jump to. When the pane moves to
