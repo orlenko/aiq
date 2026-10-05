@@ -200,6 +200,9 @@ type convoTarget struct {
 	path     string
 	account  string // provider/name, when a lease says
 	pane     string
+	// stale says no running CLI is known to write the transcript (read by
+	// id), so a turn left open is one the CLI never finished.
+	stale bool
 }
 
 func (t convoTarget) label() string {
@@ -353,19 +356,45 @@ func (r *convoResolver) resolveID(dir, id string) (convoTarget, error) {
 	if err != nil {
 		return convoTarget{}, err
 	}
-	return convoTarget{provider: s.Provider, path: s.Path}, nil
+	return convoTarget{provider: s.Provider, path: s.Path, stale: !r.running(s.ID)}, nil
+}
+
+// running reports whether a live Claude process or a lease holds session id.
+func (r *convoResolver) running(id string) bool {
+	for _, c := range liveClaude() {
+		if c.SessionID == id {
+			return true
+		}
+	}
+	if r.st == nil {
+		return false
+	}
+	leases, _ := r.st.ListLeases()
+	for _, l := range leases {
+		if l.SessionID == id && proc.Alive(l.PID) {
+			return true
+		}
+	}
+	return false
 }
 
 func loadConvo(t convoTarget) (*transcript.Session, error) {
+	var s *transcript.Session
+	var err error
 	switch t.provider {
 	case "claude":
-		return transcript.ParseClaude(t.path)
+		s, err = transcript.ParseClaude(t.path)
 	case "codex":
-		return transcript.ParseCodex(t.path)
+		s, err = transcript.ParseCodex(t.path)
 	case "agy":
-		return transcript.ParseAgy(t.path)
+		s, err = transcript.ParseAgy(t.path)
+	default:
+		return nil, fmt.Errorf("aiq convo cannot read %s transcripts", t.provider)
 	}
-	return nil, fmt.Errorf("aiq convo cannot read %s transcripts", t.provider)
+	if err == nil && t.stale && len(s.Turns) > 0 {
+		s.Turns[len(s.Turns)-1].Open = false
+	}
+	return s, err
 }
 
 func leaseProvider(l state.Lease) string {
@@ -550,7 +579,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			seen = &turnSeen{}
 			p.seen[k] = seen
 		}
-		if seen.hidden {
+		if seen.hidden || idleNotice(t) {
 			continue
 		}
 		texts := t.Earlier
@@ -638,6 +667,12 @@ func turnKey(i int, t transcript.Turn) string {
 		return fmt.Sprintf("#%d", i)
 	}
 	return fmt.Sprintf("%d|%s", t.Started.UnixNano(), truncate(t.Prompt, 40))
+}
+
+// idleNotice is an agent-team teammate reporting it went idle: a peer
+// message with nothing in it for the person reading.
+func idleNotice(t transcript.Turn) bool {
+	return t.Source == transcript.Peer && strings.HasPrefix(t.Prompt, `{"type":"idle_notification"`)
 }
 
 func sourceLabel(s transcript.Source) string {

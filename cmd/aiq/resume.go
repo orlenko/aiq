@@ -319,13 +319,22 @@ func renderTurnsPlain(s transcript.Session, origins map[string]origin) string {
 		}
 		fmt.Fprintf(&b, "\n## Turn %d%s · %s · %s · %d tools\n\n", i+1, from, t.Started.Local().Format("2006-01-02 15:04"), durationLabel(t.Ended.Sub(t.Started)), t.Tools)
 		fmt.Fprintf(&b, "> %s\n\n", strings.ReplaceAll(t.Prompt, "\n", "\n> "))
-		if t.Reply != "" {
-			fmt.Fprintf(&b, "%s\n", t.Reply)
+		if r := turnReply(t); r != "" {
+			fmt.Fprintf(&b, "%s\n", r)
 		} else {
 			b.WriteString("(no reply)\n")
 		}
 	}
 	return b.String()
+}
+
+// turnReply is the turn's final answer, else (a turn still running, or one
+// its CLI never finished) the last answer it gave before going on.
+func turnReply(t transcript.Turn) string {
+	if t.Reply == "" && len(t.Earlier) > 0 {
+		return t.Earlier[len(t.Earlier)-1]
+	}
+	return t.Reply
 }
 
 func shortID(id string) string {

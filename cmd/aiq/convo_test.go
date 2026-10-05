@@ -316,3 +316,50 @@ func TestRenderTurnsPlainMarksNonHumanTurns(t *testing.T) {
 		t.Fatalf("got:\n%s", out)
 	}
 }
+
+func TestConvoHidesIdleNotifications(t *testing.T) {
+	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
+	s := &transcript.Session{Provider: "claude", Turns: []transcript.Turn{
+		{Prompt: `{"type":"idle_notification","from":"worker"}`, Source: transcript.Peer, Reply: "noted", Started: at, Ended: at},
+		{Prompt: "worker finished the migration", Source: transcript.Peer, Reply: "merged it", Started: at.Add(time.Minute), Ended: at.Add(time.Minute)},
+	}}
+	out := renderConvo(s, convoTarget{}, 0, false, at)
+	if strings.Contains(out, "idle_notification") || strings.Contains(out, "noted") {
+		t.Errorf("idle notification shown:\n%s", out)
+	}
+	if !strings.Contains(out, "worker finished the migration") {
+		t.Errorf("real peer message hidden:\n%s", out)
+	}
+}
+
+func TestLoadConvoClosesTheOpenTurnOfAStaleSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	lines := []string{
+		`{"type":"user","timestamp":"2026-09-01T14:00:00Z","sessionId":"s","cwd":"/w","message":{"role":"user","content":"do it"}}`,
+		`{"type":"assistant","timestamp":"2026-09-01T14:00:05Z","message":{"id":"m1","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	live, err := loadConvo(convoTarget{provider: "claude", path: path})
+	if err != nil || len(live.Turns) != 1 || !live.Turns[0].Open {
+		t.Fatalf("live: want one open turn, got %+v, %v", live, err)
+	}
+	stale, err := loadConvo(convoTarget{provider: "claude", path: path, stale: true})
+	if err != nil || len(stale.Turns) != 1 || stale.Turns[0].Open {
+		t.Fatalf("stale: want the turn closed, got %+v, %v", stale, err)
+	}
+}
+
+func TestTurnReplyFallsBackToTheLastEarlierAnswer(t *testing.T) {
+	if got := turnReply(transcript.Turn{Reply: "final", Earlier: []string{"a"}}); got != "final" {
+		t.Errorf("got %q", got)
+	}
+	if got := turnReply(transcript.Turn{Open: true, Earlier: []string{"a", "b"}}); got != "b" {
+		t.Errorf("got %q", got)
+	}
+	if got := turnReply(transcript.Turn{Open: true}); got != "" {
+		t.Errorf("got %q", got)
+	}
+}

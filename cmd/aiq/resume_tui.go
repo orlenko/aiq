@@ -477,13 +477,17 @@ func (b *browser) renderTurns() (head, body, foot []line) {
 		if t.Tools > 0 {
 			info += fmt.Sprintf(" · %d tool%s", t.Tools, plural(t.Tools))
 		}
-		reply := transcript.Clean(t.Reply)
+		reply := transcript.Clean(turnReply(t))
 		if reply == "" {
 			reply = "(no reply)"
 		}
+		prompt := transcript.Clean(t.Prompt)
+		if t.Source != transcript.Human {
+			prompt = "[" + sourceLabel(t.Source) + "] " + prompt
+		}
 		body = append(body,
 			line{info, numStyle},
-			line{"     › " + transcript.Clean(t.Prompt), sgrBold},
+			line{"     › " + prompt, sgrBold},
 			line{"     ‹ " + reply, ""},
 		)
 	}
@@ -501,12 +505,12 @@ func (b *browser) renderTurn() (head, body, foot []line) {
 	}
 	width := b.w - 4
 	var text []line
-	text = append(text, line{" YOU", sgrCyan + sgrBold})
+	text = append(text, line{" " + strings.ToUpper(sourceLabel(t.Source)), sgrCyan + sgrBold})
 	for _, l := range wrap(t.Prompt, width) {
 		text = append(text, line{"   " + l, ""})
 	}
 	text = append(text, line{}, line{" " + strings.ToUpper(s.Provider), sgrCyan + sgrBold})
-	reply := t.Reply
+	reply := turnReply(t)
 	if reply == "" {
 		reply = "(no reply)"
 	}
