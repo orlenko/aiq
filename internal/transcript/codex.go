@@ -113,14 +113,21 @@ type codexPayload struct {
 // with no prompt of its own (a background wakeup) is a later stretch of
 // the turn before it.
 func ParseCodex(path string) (*Session, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 	// Older CLIs log each prompt twice: as a response item and as a
 	// user_message event. The event is the typed text alone, so it wins
 	// when present.
-	userEvents := bytes.Contains(data, []byte(`"type":"user_message"`))
+	userEvents, err := contains(f, []byte(`"type":"user_message"`))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
 
 	s := &Session{Provider: "codex", Path: path}
 	var cur *Turn
@@ -175,8 +182,25 @@ func ParseCodex(path string) (*Session, error) {
 		cur = &Turn{Prompt: prompt, Source: src, Started: ts, Ended: ts}
 		curTurn, fresh, ended = turnID, false, false
 	}
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		if len(bytes.TrimSpace(line)) == 0 {
+	r := bufio.NewReaderSize(f, 1<<16)
+	var buf []byte
+	for {
+		line, h, err := codexLine(r, &buf)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if h.skip {
+			// Only its time matters; see codexLine.
+			ts := parseTime(h.ts)
+			s.touch(ts)
+			if cur != nil && !ts.IsZero() && (h.typ == "response_item" || h.typ == "event_msg") {
+				cur.Ended = ts
+			}
+		}
+		if err == io.EOF && len(line) == 0 {
+			break
+		}
+		if h.skip || len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var rec codexRecord
@@ -312,6 +336,125 @@ func codexUserText(p codexPayload) string {
 		texts = append(texts, t)
 	}
 	return strings.Join(texts, "\n")
+}
+
+// codexHead is what the opening bytes of a rollout line say about it.
+type codexHead struct {
+	ts, typ, payload string
+	skip             bool // the parser needs nothing from the line but its time
+}
+
+// codexLine reads one rollout line. Lines can run to many megabytes (tool
+// output, reasoning, compaction history), and most of them matter only
+// for their timestamp, so a line whose opening names a record the parser
+// ignores is read past without being kept or decoded; it comes back
+// empty with h.skip set. A skipped line must end in "}" and a newline, so a partial
+// line at the end of a growing file is left out, as a failed decode
+// would leave it out. Any other line comes back whole; one longer than
+// the reader's buffer is gathered in *buf, which keeps its storage for the
+// next.
+func codexLine(r *bufio.Reader, buf *[]byte) (line []byte, h codexHead, err error) {
+	line, err = r.ReadSlice('\n')
+	if err != bufio.ErrBufferFull {
+		if h = codexHeadOf(line); h.skip {
+			t := bytes.TrimRight(line, " \t\r\n")
+			if h.skip = len(t) > 0 && t[len(t)-1] == '}' && bytes.HasSuffix(line, []byte("\n")); h.skip {
+				return nil, h, err
+			}
+		}
+		return line, codexHead{}, err
+	}
+	if h = codexHeadOf(line); h.skip {
+		last := byte(0)
+		for err == bufio.ErrBufferFull {
+			if t := bytes.TrimRight(line, " \t\r\n"); len(t) > 0 {
+				last = t[len(t)-1]
+			}
+			line, err = r.ReadSlice('\n')
+		}
+		if t := bytes.TrimRight(line, " \t\r\n"); len(t) > 0 {
+			last = t[len(t)-1]
+		}
+		h.skip = last == '}' && bytes.HasSuffix(line, []byte("\n"))
+		return nil, h, err
+	}
+	b := append((*buf)[:0], line...)
+	for err == bufio.ErrBufferFull {
+		line, err = r.ReadSlice('\n')
+		b = append(b, line...)
+	}
+	*buf = b
+	return b, codexHead{}, err
+}
+
+// codexHeadOf reads the record and payload types and the time from a
+// line's opening, `{"timestamp":"…","ordinal":N,"type":"…","payload":{"type":"…"`.
+// A line in any other shape is not skipped.
+func codexHeadOf(line []byte) (h codexHead) {
+	rest, ok := bytes.CutPrefix(line, []byte(`{"timestamp":"`))
+	if !ok {
+		return h
+	}
+	if h.ts, rest, ok = cutString(rest); !ok {
+		return h
+	}
+	if r, ok := bytes.CutPrefix(rest, []byte(`,"ordinal":`)); ok {
+		rest = bytes.TrimLeft(r, "0123456789")
+	}
+	if rest, ok = bytes.CutPrefix(rest, []byte(`,"type":"`)); !ok {
+		return h
+	}
+	if h.typ, rest, ok = cutString(rest); !ok {
+		return h
+	}
+	if r, ok := bytes.CutPrefix(rest, []byte(`,"payload":{"type":"`)); ok {
+		h.payload, _, _ = cutString(r)
+	}
+	switch h.typ {
+	case "session_meta", "turn_context":
+	case "response_item":
+		h.skip = h.payload != "" && h.payload != "message" && !strings.HasSuffix(h.payload, "_call")
+	case "event_msg":
+		switch h.payload {
+		case "", "task_started", "task_complete", "turn_aborted", "user_message", "agent_message":
+		default:
+			h.skip = true
+		}
+	default:
+		h.skip = true
+	}
+	return h
+}
+
+// cutString reads a JSON string body up to its closing quote. One with
+// escapes is refused rather than decoded.
+func cutString(b []byte) (string, []byte, bool) {
+	i := bytes.IndexAny(b, `"\`)
+	if i < 0 || b[i] != '"' {
+		return "", b, false
+	}
+	return string(b[:i]), b[i+1:], true
+}
+
+// contains reports whether pat occurs anywhere in r, reading it in chunks.
+func contains(r io.Reader, pat []byte) (bool, error) {
+	buf := make([]byte, 1<<20)
+	keep := 0
+	for {
+		n, err := r.Read(buf[keep:])
+		n += keep
+		if bytes.Contains(buf[:n], pat) {
+			return true, nil
+		}
+		if err == io.EOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		keep = min(len(pat)-1, n)
+		copy(buf, buf[n-keep:n])
+	}
 }
 
 func isSubagent(source json.RawMessage) bool {

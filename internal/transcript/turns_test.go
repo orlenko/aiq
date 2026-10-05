@@ -2,10 +2,12 @@ package transcript
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 // claudeLines builds Claude records in the shape Claude Code 2.1.28x
@@ -508,5 +510,59 @@ func TestClaudeNoStopReasonSources(t *testing.T) {
 	wantPrompts(t, s, "you: fix it", "aiq: "+AiqResumeNudge+"Continue.", "peer: hello", "you: thanks")
 	if s.Turns[0].Reply != "Fixed." || s.Turns[2].Reply != "Hi back." {
 		t.Fatalf("%+v", s.Turns)
+	}
+}
+
+// Rollout lines can be many megabytes. A long line the parser needs comes
+// back whole; a long line it ignores still moves the times; a partial line
+// at the end of a growing file is left out.
+func TestCodexLongLines(t *testing.T) {
+	big := strings.Repeat("x", 300<<10) // well past bufio's and the reader's buffers
+	var c codexLines
+	c.started("a")
+	c.user("a", `["user.text"]`, "review this: "+big)
+	c.add("response_item", `{"type":"reasoning","encrypted_content":"`+big+`"}`)
+	c.add("compacted", `{"message":"","replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"`+big+`"}]}]}`)
+	c.say("final_answer", "Reviewed.")
+	c.complete("a", "Reviewed.")
+	c.add("event_msg", `{"type":"token_count","info":"`+big+`"}`)
+	// Ordinals as Codex writes them, which the fast path reads past.
+	for i := range c.lines {
+		c.lines[i] = strings.Replace(c.lines[i], `Z","type"`, `Z","ordinal":`+fmt.Sprint(i)+`,"type"`, 1)
+	}
+	path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
+	lines := append([]string{`{"timestamp":"2026-09-15T21:00:00Z","type":"session_meta","payload":{"id":"c","cwd":"/w","source":"cli"}}`}, c.lines...)
+	writeLines(t, path, lines...)
+	// A skipped record cut off mid-write.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(`{"timestamp":"2026-09-15T23:00:00Z","ordinal":99,"type":"event_msg","payload":{"type":"token_count","info":"` + big)
+	f.Close()
+
+	s, err := ParseCodex(path)
+	if err != nil || s == nil {
+		t.Fatal(s, err)
+	}
+	if len(s.Turns) != 1 || s.Turns[0].Prompt != "review this: "+big || s.Turns[0].Reply != "Reviewed." {
+		t.Fatalf("turns: %d, reply %q", len(s.Turns), s.Turns[0].Reply)
+	}
+	// The token count after task_complete is the last whole record.
+	if got := s.Turns[0].Ended.Format("15:04:05"); got != "21:00:07" {
+		t.Fatalf("turn ended %s", got)
+	}
+	if got := s.Updated.Format("15:04:05"); got != "21:00:07" {
+		t.Fatalf("session updated %s", got)
+	}
+}
+
+func TestContainsAcrossReads(t *testing.T) {
+	data := strings.Repeat("a", 5000) + `"type":"user_message"` + "b"
+	for _, pat := range []string{`"type":"user_message"`, `"type":"user_messages"`} {
+		got, err := contains(iotest.OneByteReader(strings.NewReader(data)), []byte(pat))
+		if err != nil || got != strings.Contains(data, pat) {
+			t.Errorf("contains(%q) = %v, %v", pat, got, err)
+		}
 	}
 }
