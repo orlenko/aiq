@@ -42,22 +42,36 @@ type Session struct {
 	Bypass bool
 }
 
-// Turn is one human prompt and what the agent did with it.
+// Source says who put a turn's prompt into the conversation.
+type Source uint8
+
+const (
+	Human  Source = iota // typed (or queued) by the person at the terminal
+	Aiq                  // aiq's own takeover nudge
+	Peer                 // another agent session's message
+	Notice               // a notifier tool typed it in (agent-nudge, Agent Orchestra)
+)
+
+// Turn is one prompt and what the agent did with it.
 type Turn struct {
 	Prompt  string
-	Reply   string // the agent's last message of the turn
+	Source  Source
+	Steers  []string // human input that arrived while the turn ran
+	Reply   string   // the agent's final message of the turn; "" while Open
+	Earlier []string // final messages of the turn's earlier stretches, when a background wakeup or peer message made the agent go on after answering
+	Open    bool     // the agent is still working on it
 	Started time.Time
 	Ended   time.Time
 	Tools   int // tool calls made during the turn
 }
 
-// Label is the session's name, else its first prompt.
+// Label is the session's name, else its first human prompt.
 func (s Session) Label() string {
 	if s.Title != "" {
 		return s.Title
 	}
 	for _, t := range s.Turns {
-		if t.Prompt != "" {
+		if t.Prompt != "" && t.Source == Human {
 			return t.Prompt
 		}
 	}
