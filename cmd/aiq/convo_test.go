@@ -151,6 +151,44 @@ func TestConvoPrinterIsAppendOnly(t *testing.T) {
 	}
 }
 
+// A turn can end, go on when a background task or a peer message wakes the
+// agent, and end again. The first answer stays where it was printed and
+// the new reply follows; nothing is lost or printed twice.
+func TestConvoPrinterFollowsATurnThatGoesOn(t *testing.T) {
+	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
+	session := func(turns ...transcript.Turn) *transcript.Session {
+		return &transcript.Session{Provider: "codex", Turns: turns}
+	}
+	human := transcript.Turn{Prompt: "deploy", Started: at}
+	notice := transcript.Turn{Prompt: "[agent-nudge] CI failed", Source: transcript.Notice, Started: at.Add(time.Hour)}
+	with := func(t transcript.Turn, open bool, reply string, earlier ...string) transcript.Turn {
+		t.Open, t.Reply, t.Earlier = open, reply, earlier
+		return t
+	}
+	steps := []*transcript.Session{
+		session(with(human, false, "Deploy started.")),
+		session(with(human, true, "", "Deploy started.")),
+		session(with(human, false, "Deploy finished.", "Deploy started.")),
+		session(with(human, false, "Deploy finished.", "Deploy started."), with(notice, false, "Looking at CI.")),
+		session(with(human, false, "Deploy finished.", "Deploy started."), with(notice, true, "", "Looking at CI.")),
+		session(with(human, false, "Deploy finished.", "Deploy started."), with(notice, false, "CI fixed.", "Looking at CI.")),
+	}
+	p := newConvoPrinter("codex", false, false)
+	var b strings.Builder
+	for _, s := range steps {
+		b.WriteString(p.emit(s))
+	}
+	out := b.String()
+	for _, w := range []string{"\nDeploy started.\n", "\nDeploy finished.\n", "→ Looking at CI.\n", "  → CI fixed.\n"} {
+		if strings.Count(out, w) != 1 {
+			t.Errorf("%q printed %d times:\n%s", w, strings.Count(out, w), out)
+		}
+	}
+	if strings.Contains(out, "(no reply)") || strings.Index(out, "Deploy started.") > strings.Index(out, "Deploy finished.") {
+		t.Errorf("got:\n%s", out)
+	}
+}
+
 func TestClaudeLiveInPane(t *testing.T) {
 	parents := map[int]int{300: 200, 200: 100, 100: 1, 400: 1}
 	pane := tmux.Pane{ID: "%5", Session: "aiq-ops-1", PID: 100}
@@ -245,15 +283,11 @@ func TestFollowPrintsWhatTheFileGains(t *testing.T) {
 		return `{"type":"assistant",` + c + `,"timestamp":"` + ts + `","message":{"id":"` + id + `","model":"claude-opus-5","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"` + text + `"}]}}` + "\n"
 	}
 	os.WriteFile(path, []byte(user("2026-09-15T10:00:00Z", "first")+reply("2026-09-15T10:01:00Z", "m1", "one")), 0o644)
-	s, err := transcript.ParseClaude(path)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var b bytes.Buffer
 	f := &convoFollow{tgt: convoTarget{provider: "claude", path: path}, w: &b,
 		statEvery: 10 * time.Millisecond, parseGap: 30 * time.Millisecond, resolveEvery: time.Hour}
 	stop, done := make(chan struct{}), make(chan struct{})
-	go func() { f.run(s, stop); close(done) }()
+	go func() { f.run(stop); close(done) }()
 
 	time.Sleep(50 * time.Millisecond)
 	fh, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)

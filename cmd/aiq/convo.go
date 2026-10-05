@@ -116,6 +116,13 @@ func convoHelp() string {
 	if err != nil {
 		exe = "aiq"
 	}
+	// On Linux os.Executable resolves symlinks to a versioned path that an
+	// upgrade removes; the PATH entry that leads to the same file lasts.
+	if lp, err := exec.LookPath("aiq"); err == nil {
+		if abs, err := filepath.Abs(lp); err == nil && canonicalPath(abs) == canonicalPath(exe) {
+			exe = abs
+		}
+	}
 	popup, split := convoBindings(exe)
 	return fmt.Sprintf(convoUsage, popup, split)
 }
@@ -136,10 +143,6 @@ func cmdConvo(args []string) error {
 	if err != nil {
 		return err
 	}
-	s, err := loadConvo(tgt)
-	if err != nil {
-		return err
-	}
 	tty := term.IsTerminal(int(os.Stdout.Fd()))
 	if o.follow {
 		f := &convoFollow{r: r, tgt: tgt, w: os.Stdout, tty: tty, last: o.last,
@@ -148,7 +151,11 @@ func cmdConvo(args []string) error {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		go func() { <-sig; close(stop) }()
-		return f.run(s, stop)
+		return f.run(stop)
+	}
+	s, err := loadConvo(tgt)
+	if err != nil {
+		return err
 	}
 	text := renderConvo(s, tgt, o.last, tty, time.Now())
 	if !tty {
@@ -177,11 +184,12 @@ func page(text string) error {
 	if os.Getenv("LESS") == "" {
 		cmd.Env = append(os.Environ(), "LESS=R")
 	}
-	if err := cmd.Run(); err != nil {
-		if _, ok := err.(*exec.ExitError); ok {
-			return nil // the pager's own exit (q, a signal) is not aiq's failure
-		}
-		fmt.Print(text)
+	err := cmd.Run()
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() != 127 {
+		return nil // the pager's own exit (q, a signal) is not aiq's failure
+	}
+	if err != nil {
+		fmt.Print(text) // no pager to run
 	}
 	return nil
 }
@@ -314,7 +322,7 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 			continue
 		}
 		if p := claudeTranscript(r.roots.ClaudeProjects, c.Cwd, c.SessionID); p != "" {
-			add(convoTarget{provider: "claude", path: p})
+			add(convoTarget{provider: "claude", path: p, pane: c.pane()})
 		}
 	}
 	switch len(found) {
@@ -430,15 +438,18 @@ func liveClaude() []claudeLive {
 	return out
 }
 
+// pane is the tmux pane id the session file names, if any.
+func (c claudeLive) pane() string {
+	_, rest, _ := strings.Cut(c.Tmux, ":")
+	_, pane, _ := strings.Cut(rest, ".")
+	return pane
+}
+
 // inPane reports whether the session file names pane p of p's tmux session
 // and its process runs in that pane.
 func (c claudeLive) inPane(p tmux.Pane, parents map[int]int) bool {
-	sess, rest, ok := strings.Cut(c.Tmux, ":")
-	if !ok {
-		return false
-	}
-	_, pane, ok := strings.Cut(rest, ".")
-	return ok && sess == p.Session && pane == p.ID && descends(parents, c.PID, p.PID)
+	sess, _, _ := strings.Cut(c.Tmux, ":")
+	return c.pane() != "" && sess == p.Session && c.pane() == p.ID && descends(parents, c.PID, p.PID)
 }
 
 var claudeNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
@@ -507,10 +518,11 @@ type convoPrinter struct {
 }
 
 type turnSeen struct {
+	hidden  bool // left out by --last
 	head    bool
 	steers  int
-	earlier int
-	done    bool
+	answers int  // agent texts printed: earlier answers, then the reply
+	closed  bool // the turn's end has been shown
 }
 
 func newConvoPrinter(provider string, color, marks bool) *convoPrinter {
@@ -520,13 +532,15 @@ func newConvoPrinter(provider string, color, marks bool) *convoPrinter {
 // skip marks turns as already shown (those --last leaves out).
 func (p *convoPrinter) skip(turns []transcript.Turn) {
 	for i, t := range turns {
-		p.seen[turnKey(i, t)] = &turnSeen{done: true}
+		p.seen[turnKey(i, t)] = &turnSeen{hidden: true}
 	}
 }
 
 // emit returns what of s has not been printed yet. A turn still running
 // shows its prompt, steers and earlier answers; its reply, or a notice's
-// one-line summary, waits until it ends.
+// one-line summary, waits until it ends. A turn that ended can go on (a
+// background task or a peer message wakes the agent): what was printed as
+// its reply stays, and the new reply follows it.
 func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	for i, t := range s.Turns {
@@ -536,17 +550,26 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			seen = &turnSeen{}
 			p.seen[k] = seen
 		}
-		if seen.done {
+		if seen.hidden {
 			continue
 		}
+		texts := t.Earlier
+		if !t.Open && t.Reply != "" {
+			texts = append(texts[:len(texts):len(texts)], t.Reply)
+		}
 		if t.Source != transcript.Human {
-			if !t.Open {
+			switch {
+			case !seen.head && !t.Open:
 				line := fmt.Sprintf("· %s: %s", sourceLabel(t.Source), truncate(transcript.Clean(t.Prompt), 70))
 				if t.Reply != "" {
 					line += " → " + truncate(transcript.Clean(t.Reply), 100)
 				}
 				b.WriteString("\n" + p.paint(sgrDim, line) + "\n")
-				seen.done = true
+				seen.head, seen.answers = true, len(texts)
+			case seen.head:
+				for ; seen.answers < len(texts); seen.answers++ {
+					b.WriteString(p.paint(sgrDim, "  → "+truncate(transcript.Clean(texts[seen.answers]), 100)) + "\n")
+				}
 			}
 			continue
 		}
@@ -557,12 +580,6 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		for ; seen.steers < len(t.Steers); seen.steers++ {
 			p.block(&b, true, sgrBoldCyan, "▌ you, while it worked", sgrBold, t.Steers[seen.steers])
 		}
-		for ; seen.earlier < len(t.Earlier); seen.earlier++ {
-			p.block(&b, false, sgrDim, "▌ "+p.provider+" · earlier", sgrDim, t.Earlier[seen.earlier])
-		}
-		if t.Open {
-			continue
-		}
 		head := "▌ " + p.provider
 		if !t.Started.IsZero() && !t.Ended.IsZero() {
 			head += " · " + durationLabel(t.Ended.Sub(t.Started))
@@ -570,12 +587,20 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		if t.Tools > 0 {
 			head += fmt.Sprintf(" · %d tool%s", t.Tools, plural(t.Tools))
 		}
-		if t.Reply != "" {
-			p.block(&b, false, sgrBoldGreen, head, "", t.Reply)
-		} else {
-			p.block(&b, false, sgrBoldGreen, head, sgrDim, "(no reply)")
+		for ; seen.answers < len(texts); seen.answers++ {
+			if seen.answers < len(t.Earlier) {
+				p.block(&b, false, sgrDim, "▌ "+p.provider+" · earlier", sgrDim, texts[seen.answers])
+			} else {
+				p.block(&b, false, sgrBoldGreen, head, "", texts[seen.answers])
+				seen.closed = true
+			}
 		}
-		seen.done = true
+		if t.Open {
+			seen.closed = false
+		} else if !seen.closed {
+			p.block(&b, false, sgrBoldGreen, head, sgrDim, "(no reply)")
+			seen.closed = true
+		}
 	}
 	return b.String()
 }
@@ -709,13 +734,19 @@ type convoFollow struct {
 	status string // on screen now
 }
 
-func (f *convoFollow) run(s *transcript.Session, stop <-chan struct{}) error {
+func (f *convoFollow) run(stop <-chan struct{}) error {
+	// The file is looked at before each parse, never after, so a write
+	// that lands during a parse shows as a change on the next tick.
+	size, mod := statFile(f.tgt.path)
+	s, err := loadConvo(f.tgt)
+	if err != nil {
+		return err
+	}
 	p := newConvoPrinter(s.Provider, f.tty, f.tty)
 	from := convoStart(s.Turns, f.last)
 	p.skip(s.Turns[:from])
 	f.print(convoHeader(s, f.tgt, from, f.tty) + p.emit(s))
 
-	size, mod := statFile(f.tgt.path)
 	lastParse, lastResolve := time.Now(), time.Now()
 	dirty := false
 	note := ""
@@ -736,6 +767,7 @@ func (f *convoFollow) run(s *transcript.Session, stop <-chan struct{}) error {
 			case err != nil:
 				note = err.Error()
 			case canonicalPath(t.path) != canonicalPath(f.tgt.path):
+				sz, m := statFile(t.path)
 				ns, err := loadConvo(t)
 				if err != nil {
 					note = err.Error()
@@ -744,9 +776,14 @@ func (f *convoFollow) run(s *transcript.Session, stop <-chan struct{}) error {
 				note = ""
 				f.tgt, s = t, ns
 				p = newConvoPrinter(s.Provider, f.tty, f.tty)
+				from := convoStart(s.Turns, f.last)
+				p.skip(s.Turns[:from])
 				line := fmt.Sprintf("── moved to %s · session %s · %s ──", t.label(), shortID(s.ID), now.Format("15:04"))
+				if from > 0 {
+					line += fmt.Sprintf("\n(%d earlier turn%s not shown)", from, plural(from))
+				}
 				f.print("\n" + p.paint(sgrYellow, line) + "\n" + p.emit(s))
-				size, mod = statFile(t.path)
+				size, mod = sz, m
 				lastParse, dirty = now, false
 			default:
 				note = ""
@@ -763,9 +800,11 @@ func (f *convoFollow) run(s *transcript.Session, stop <-chan struct{}) error {
 				f.print(p.emit(s))
 			}
 		}
-		status := workingLabel(s, now)
-		if status == "" && note != "" {
-			status = note
+		// A pane that no longer answers says more than a turn that may
+		// never end now.
+		status := note
+		if status == "" {
+			status = workingLabel(s, now)
 		}
 		f.setStatus(status)
 	}
