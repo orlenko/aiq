@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/orlenko/aiq/internal/binpath"
+	"github.com/orlenko/aiq/internal/cliupdate"
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/paths"
@@ -80,12 +82,21 @@ func (s *Server) pollLoop() {
 		interval = 5 * time.Minute
 	}
 	s.poll(nil)
+	updater := s.updater()
+	if updater != nil {
+		updater.Tick(time.Now())
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			s.poll(nil)
+			// Between polls, on the poll goroutine: the daemon's own
+			// scheduled polls never start a CLI mid-reinstall.
+			if updater != nil {
+				updater.Tick(time.Now())
+			}
 		case ids := <-s.pollCh:
 			// Coalesce a burst of requests.
 			time.Sleep(2 * time.Second)
@@ -99,6 +110,23 @@ func (s *Server) pollLoop() {
 			}
 			s.poll(ids)
 		}
+	}
+}
+
+// updater keeps npm-installed CLIs current; nil when updates are off.
+func (s *Server) updater() *cliupdate.Updater {
+	if !s.cfg.Updates.Enabled {
+		return nil
+	}
+	return &cliupdate.Updater{
+		Resolve: func(provider string) (string, error) {
+			return binpath.Resolve(provider, s.cfg.Provider(provider).Binary, paths.ShimsDir(), nil)
+		},
+		Interval: time.Duration(s.cfg.Updates.IntervalHours * float64(time.Hour)),
+		Logf:     s.log.Printf,
+		Event: func(provider, detail string) {
+			s.pool.St.LogEvent(provider, "", "update", detail, time.Now())
+		},
 	}
 }
 

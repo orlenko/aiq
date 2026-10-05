@@ -176,6 +176,17 @@ finds the transcript.
 
 Handoff notes live in `~/.local/share/aiq/handoff/`.
 
+**Fresh CLIs without stopping work.** Once a day the daemon checks whether
+an npm-installed Codex or Claude Code has a newer release and, if so,
+installs that exact version with the installation's own npm (`npm install -g
+--prefix <its prefix> <package>@<version>`), then runs `<cli> --version`; a
+release that will not start is replaced by the version that was there.
+Running sessions keep the binary they started with; the next start, by hand
+or by a takeover, gets the new one. While a reinstall runs, a marker in
+`~/.local/share/aiq/updating/` holds every launch (up to five minutes) so
+nothing starts a half-installed CLI. Claude Code from the native installer
+updates itself and is left alone. `[updates] enabled = false` turns this off.
+
 ## Antigravity
 
 `agy`, Google's Antigravity CLI, joins the pool as a third provider with one
@@ -787,6 +798,10 @@ idle_grace_seconds = 20
 idle_rotate_pct = 15.0          # move a quiet session off an account this low (0 = off)
 idle_rotate_minutes = 15        # ...once it has been quiet this long
 tmux_prefix = "aiq"
+
+[updates]
+enabled = true                  # keep npm-installed codex/claude current
+interval_hours = 24
 
 [telemetry]
 claude_statusline = true

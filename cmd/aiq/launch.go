@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/orlenko/aiq/internal/binpath"
+	"github.com/orlenko/aiq/internal/cliupdate"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/proc"
 )
@@ -175,6 +176,11 @@ func (a *app) execProvider(provider string, args []string, env []string, launche
 		c = chain{provider: provider, pid: os.Getpid()}
 	}
 	c.pid = os.Getpid()
+	// The daemon may be reinstalling this CLI; starting it half-installed
+	// fails, or runs a mix of two versions.
+	cliupdate.Wait(provider, 5*time.Minute, func() {
+		fmt.Fprintf(os.Stderr, "aiq: %s is being updated; waiting for it to finish\n", provider)
+	})
 	bin, err := a.resolveNext(provider, c)
 	if err != nil && envHas(env, "AIQ_LONG", "1") {
 		// A takeover can land while the CLI updates itself (an npm

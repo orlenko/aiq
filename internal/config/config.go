@@ -223,6 +223,16 @@ type Long struct {
 	TmuxPrefix string `toml:"tmux_prefix"`
 }
 
+// Updates configures the daemon's background updates of npm-installed CLIs
+// (Codex, and Claude Code where it came from npm rather than the native
+// installer, which updates itself). A session picks the new version up the
+// next time it starts, by hand or by a takeover.
+type Updates struct {
+	Enabled bool `toml:"enabled"`
+	// IntervalHours is how often each CLI is checked for a newer version.
+	IntervalHours float64 `toml:"interval_hours"`
+}
+
 type Telemetry struct {
 	ClaudeStatusline bool `toml:"claude_statusline"`
 	// ClaudeStatuslineInstalled records that the multiplexer was installed
@@ -256,6 +266,7 @@ type Config struct {
 	Auto      Auto      `toml:"auto"`
 	Long      Long      `toml:"long"`
 	Telemetry Telemetry `toml:"telemetry"`
+	Updates   Updates   `toml:"updates"`
 	// Launchers are named programs that start a CLI in an environment of
 	// their own, keyed by the name typed after `aiq`.
 	Launchers map[string]Launcher `toml:"launchers,omitempty"`
@@ -314,6 +325,7 @@ func Default() *Config {
 		IdleRotatePct: 15, IdleRotateMinutes: 15, TmuxPrefix: "aiq"}
 	c.Telemetry.ClaudeStatusline = true
 	c.Telemetry.AgyStatusline = true
+	c.Updates = Updates{Enabled: true, IntervalHours: 24}
 	c.Launchers = map[string]Launcher{}
 	return c
 }
@@ -398,6 +410,9 @@ func Load() (*Config, error) {
 	}
 	if c.Long.TmuxPrefix == "" {
 		c.Long.TmuxPrefix = "aiq"
+	}
+	if c.Updates.IntervalHours <= 0 {
+		c.Updates.IntervalHours = 24
 	}
 	return c, nil
 }
