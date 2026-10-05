@@ -761,3 +761,16 @@ func TestFirstLineStopsAtALineSeparator(t *testing.T) {
 		t.Errorf("firstLine = %q", got)
 	}
 }
+
+func TestSessionIDOfAntigravity(t *testing.T) {
+	if got := sessionIDOf("/h/.gemini/antigravity/brain/abc-123/.system_generated/logs/transcript.jsonl"); got != "abc-123" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestDepth(t *testing.T) {
+	parents := map[int]int{10: 1, 20: 10, 30: 20}
+	if depth(parents, 30) != 3 || depth(parents, 10) != 1 {
+		t.Errorf("depth: %d %d", depth(parents, 30), depth(parents, 10))
+	}
+}

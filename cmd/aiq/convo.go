@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,8 +26,10 @@ import (
 
 const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [<session-id>]
   what was typed into an agent session and what the agent answered, without the tool calls
-  no id, in tmux    the agent in this pane, else the one live session in this directory
-  no id, elsewhere  the one live session in this directory
+  no id, in tmux    the agent in this pane, else the one live session here
+  no id, elsewhere  the one live session here: a Claude session or an aiq long
+                    session whose directory is this one or holds it (a plain
+                    Codex session is found by id only)
   <session-id>      that session of this directory (a unique prefix is enough)
   --pane <id>       the agent in tmux pane <id> (key bindings pass #{pane_id})
   --follow          keep printing as the conversation goes on (for a side split)
@@ -140,6 +143,13 @@ func convoHelp() string {
 	return help
 }
 
+// convoQuiet is how long an Unfinished transcript must go unwritten before
+// its last reply counts as final. Current Claude Code closes a turn with
+// system records, which ends the wait at once; older versions don't. Across
+// 4,143 final messages the thinking and text records were at most 62.5 s
+// apart (p99 12 s).
+const convoQuiet = 90 * time.Second
+
 func cmdConvo(args []string) error {
 	o, err := parseConvoArgs(args)
 	if err != nil {
@@ -157,18 +167,30 @@ func cmdConvo(args []string) error {
 		return err
 	}
 	tty := term.IsTerminal(int(os.Stdout.Fd()))
+	if o.follow && tgt.provider == "agy" {
+		// ParseAgy has no notion of a running turn or of narration, so a
+		// live follow would print every planner message as an answer.
+		return configErr("bad-flags", "aiq convo --follow cannot follow Antigravity sessions yet; aiq convo without --follow prints one")
+	}
 	if o.follow {
 		f := &convoFollow{r: r, tgt: tgt, w: os.Stdout, tty: tty, last: o.last,
-			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: 90 * time.Second}
+			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: convoQuiet}
 		stop := make(chan struct{})
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		go func() { <-sig; close(stop) }()
 		return f.run(stop)
 	}
+	_, mod := statFile(tgt.path)
 	s, err := loadConvo(tgt)
 	if err != nil {
 		return err
+	}
+	if s.Unfinished && time.Since(mod) < convoQuiet && len(s.Turns) > 0 {
+		// The last reply may still be on its way (see convoFollow.quiet):
+		// show the turn as running rather than its narration as the answer.
+		last := &s.Turns[len(s.Turns)-1]
+		last.Open, last.Reply = true, ""
 	}
 	text := renderConvo(s, tgt, o.last, tty, time.Now())
 	if !tty {
@@ -266,10 +288,16 @@ func (r *convoResolver) resolvePane(pane string) (convoTarget, error) {
 	}
 	parents := processParents()
 	lease, leased := r.paneLease(info, parents)
+	// The agent is the Claude closest to the pane's shell; one started
+	// under it (an interactive claude a tool opened) runs deeper.
+	var in []claudeLive
 	for _, c := range liveClaude() {
-		if !c.inPane(info, parents) {
-			continue
+		if c.inPane(info, parents) {
+			in = append(in, c)
 		}
+	}
+	sort.SliceStable(in, func(i, j int) bool { return depth(parents, in[i].PID) < depth(parents, in[j].PID) })
+	for _, c := range in {
 		t := convoTarget{provider: "claude", pane: info.ID}
 		if leased && leaseProvider(lease) == "claude" {
 			t.account = lease.AccountID
@@ -312,7 +340,23 @@ func (r *convoResolver) paneLease(p tmux.Pane, parents map[int]int) (state.Lease
 func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 	dir = canonicalPath(dir)
 	var found []convoTarget
-	add := func(t convoTarget) {
+	// A session counts here when it runs in dir or in a directory holding
+	// it (but not the home directory or /, which hold everything); the
+	// sessions closest to dir win.
+	home, _ := os.UserHomeDir()
+	home = canonicalPath(home)
+	best := -1
+	add := func(cwd string, t convoTarget) {
+		cwd = canonicalPath(cwd)
+		if cwd != dir && (cwd == home || cwd == "/" || !strings.HasPrefix(dir, strings.TrimSuffix(cwd, "/")+"/")) {
+			return
+		}
+		switch {
+		case len(cwd) < best:
+			return
+		case len(cwd) > best:
+			best, found = len(cwd), nil
+		}
 		for i, f := range found {
 			if canonicalPath(f.path) == canonicalPath(t.path) {
 				if found[i].account == "" {
@@ -329,17 +373,14 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 	if r.st != nil {
 		leases, _ := r.st.ListLeases()
 		for _, l := range leases {
-			if l.Transcript != "" && l.Hostname == hostname() && proc.Alive(l.PID) && canonicalPath(l.Cwd) == dir {
-				add(convoTarget{provider: leaseProvider(l), path: l.Transcript, account: l.AccountID, pane: l.Pane})
+			if l.Transcript != "" && l.Hostname == hostname() && proc.Alive(l.PID) {
+				add(l.Cwd, convoTarget{provider: leaseProvider(l), path: l.Transcript, account: l.AccountID, pane: l.Pane})
 			}
 		}
 	}
 	for _, c := range liveClaude() {
-		if canonicalPath(c.Cwd) != dir {
-			continue
-		}
 		if p := claudeTranscript(r.roots.ClaudeProjects, c.Cwd, c.SessionID); p != "" {
-			add(convoTarget{provider: "claude", path: p, pane: c.pane()})
+			add(c.Cwd, convoTarget{provider: "claude", path: p, pane: c.pane()})
 		}
 	}
 	switch len(found) {
@@ -428,6 +469,12 @@ func leaseProvider(l state.Lease) string {
 // sessionIDOf is the session id in a transcript's file name: Claude's
 // <id>.jsonl, Codex's rollout-<time>-<id>.jsonl.
 func sessionIDOf(path string) string {
+	// Antigravity: brain/<id>/.system_generated/logs/transcript.jsonl
+	if filepath.Base(path) == "transcript.jsonl" {
+		if dir := filepath.Dir(filepath.Dir(filepath.Dir(path))); filepath.Base(filepath.Dir(dir)) == "brain" {
+			return filepath.Base(dir)
+		}
+	}
 	base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	if strings.HasPrefix(base, "rollout-") && len(base) > 36 {
 		return base[len(base)-36:]
@@ -454,6 +501,9 @@ type claudeLive struct {
 	SessionID string `json:"sessionId"` // follows /clear
 	Cwd       string `json:"cwd"`
 	Tmux      string `json:"tmux"` // "<session>:@<window>.%<pane>", inside tmux
+	// Entrypoint is "sdk-cli" for claude -p. A worker an agent starts
+	// inherits its pane and directory, so it must not pass for the agent.
+	Entrypoint string `json:"entrypoint"`
 }
 
 // liveClaude reads the session files of running Claude processes, from the
@@ -477,7 +527,7 @@ func liveClaude() []claudeLive {
 				continue
 			}
 			var c claudeLive
-			if json.Unmarshal(data, &c) != nil || c.PID <= 0 || c.SessionID == "" || seen[c.PID] || !proc.Alive(c.PID) {
+			if json.Unmarshal(data, &c) != nil || c.PID <= 0 || c.SessionID == "" || seen[c.PID] || !proc.Alive(c.PID) || strings.HasPrefix(c.Entrypoint, "sdk") {
 				continue
 			}
 			seen[c.PID] = true
@@ -537,6 +587,15 @@ func processParents() map[int]int {
 }
 
 // descends reports whether pid is ancestor or runs under it.
+// depth is how many parents pid has.
+func depth(parents map[int]int, pid int) int {
+	n := 0
+	for ; pid > 1 && n < 64; n++ {
+		pid = parents[pid]
+	}
+	return n
+}
+
 func descends(parents map[int]int, pid, ancestor int) bool {
 	for i := 0; pid > 1 && i < 64; i++ {
 		if pid == ancestor {
@@ -853,12 +912,7 @@ type convoFollow struct {
 	statEvery    time.Duration // how often to look at the file
 	parseGap     time.Duration // minimum time between re-parses
 	resolveEvery time.Duration // how often to ask the pane what it runs
-	// quiet is how long an Unfinished transcript must go unwritten before
-	// its last reply counts as final. Current Claude Code closes a turn
-	// with system records, which ends the wait at once; older versions
-	// don't. Across 4,143 final messages the thinking and text records were
-	// at most 62.5 s apart (p99 12 s).
-	quiet time.Duration
+	quiet        time.Duration // see convoQuiet
 
 	status string // on screen now
 }

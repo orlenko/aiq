@@ -284,6 +284,7 @@ func ParseClaude(path string) (*Session, error) {
 						cur.Reply, lastTextMsg, ended = "", "", false
 					}
 					replied = true
+					called := false
 					var parts []json.RawMessage
 					json.Unmarshal(rec.Message.Content, &parts)
 					for _, raw := range parts {
@@ -292,6 +293,7 @@ func ParseClaude(path string) (*Session, error) {
 						switch p.Type {
 						case "tool_use", "server_tool_use":
 							cur.Tools++
+							called = true
 						case "text":
 							text := strings.TrimSpace(p.Text)
 							if text == "" {
@@ -306,6 +308,11 @@ func ParseClaude(path string) (*Session, error) {
 							}
 							lastTextMsg, synthetic = rec.Message.ID, rec.Message.Model == "<synthetic>"
 						}
+					}
+					if !sawStop && rec.Message.StopReason == "" && called {
+						// No stop reasons (older CLIs): a tool call means
+						// the agent is still at work.
+						replied = false
 					}
 					if sr := rec.Message.StopReason; sr != "" {
 						sawStop = true

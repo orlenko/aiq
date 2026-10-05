@@ -276,7 +276,7 @@ answer under it; once you type into such a turn, its answers show in full.
 Agent-team idle notifications are left out.
 
 ```text
-aiq convo                   the agent in this tmux pane, else the one live session in this directory
+aiq convo                   the agent in this tmux pane, else the one live session here
 aiq convo --pane %5         the agent in tmux pane %5
 aiq convo <id>              any session of this directory (a unique prefix is enough)
 aiq convo --last 3          only the last three prompts and what followed
@@ -294,7 +294,11 @@ a new transcript (`/clear`, Codex `/new`, a takeover by another provider),
 A pane is matched through the agent's own records: Claude Code's
 `sessions/<pid>.json`, else the pane's `aiq long` lease. Either counts only
 while its process is alive and runs in that pane, since tmux reuses pane ids
-after a restart.
+after a restart. A `claude -p` worker the agent starts is never taken for the
+agent. Outside the agent's pane, `aiq convo` looks for the session running in
+this directory or one holding it: an open Claude session or an `aiq long`
+session. A Codex session started without `aiq long` is found by id only.
+`--follow` does not support Antigravity sessions yet.
 
 Two tmux bindings make it a keystroke from any agent pane. aiq never installs
 them; `aiq convo --help` prints them with the path of your aiq binary. Use the

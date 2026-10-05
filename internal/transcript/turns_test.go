@@ -566,3 +566,19 @@ func TestContainsAcrossReads(t *testing.T) {
 		}
 	}
 }
+
+// Without stop reasons, input that arrives while a tool runs joins the turn.
+func TestClaudeNoStopReasonToolKeepsTurnOpen(t *testing.T) {
+	var c claudeLines
+	c.typed("fix it")
+	c.assistant("m1", "", `{"type":"tool_use","id":"t","name":"Bash","input":{}}`)
+	c.queued(`"prompt":"also the tests","commandMode":"prompt"`)
+	c.user(``, quote("[agent-nudge] CI finished"))
+	c.user(`"promptSource":"system",`, `[{"type":"tool_result","tool_use_id":"t","content":"ok"}]`)
+	c.say("m2", "", "Fixed, tests too.")
+	s := c.parse(t)
+	wantPrompts(t, s, "you: fix it")
+	if got := s.Turns[0]; got.Reply != "Fixed, tests too." || len(got.Steers) != 1 || got.Steers[0] != "also the tests" || got.Open {
+		t.Fatalf("%+v", got)
+	}
+}
