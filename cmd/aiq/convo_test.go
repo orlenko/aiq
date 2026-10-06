@@ -1107,7 +1107,29 @@ func claudeReplyFixtures() map[string][]string {
 	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
 	interrupt(&c, "1")
 	out["notice turn interrupted"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("deploy it")
+	c.assistant("m0", "tool_use", text("Checking."))
+	call(&c, "m0")
+	c.answer("m1", "Deploy started; I'll report when CI ends.")
+	c.notification()
+	call(&c, "m2") // a wakeup's long tool call
+	c.answer("m3", "CI is green.")
+	out["wakeup while a tool runs"] = c.lines
 	return out
+}
+
+// probeFiveLines is "wakeup while a tool runs" cut while the wakeup's tool
+// call runs: the file ends on that call.
+func probeFiveLines() []string {
+	lines := claudeReplyFixtures()["wakeup while a tool runs"]
+	for i, l := range lines {
+		if strings.Contains(l, `"id":"tm2"`) {
+			return lines[:i+1]
+		}
+	}
+	panic("no m2 call")
 }
 
 func TestFollowMatchesSnapshotWithReplies(t *testing.T) {
@@ -1233,5 +1255,37 @@ func TestPromotedAnswers(t *testing.T) {
 	}}}})
 	if !strings.Contains(out, "  · "+strings.TrimSpace(long)+"\n") {
 		t.Errorf("said line cut without a terminal:\n%s", out)
+	}
+}
+
+// While a wakeup's tool call runs, the answer the stretch before it gave is
+// settled: the snapshot and --follow both show it, as earlier, and only an
+// answer still being written is held back.
+func TestHoldKeepsSettledAnswers(t *testing.T) {
+	lines := probeFiveLines()
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	s, err := transcript.ParseClaude(path)
+	if err != nil || !s.Unfinished {
+		t.Fatalf("want an unfinished file: %v", err)
+	}
+	holdLastTurn(s)
+	snap := renderConvo(s, convoTarget{}, 0, false, time.Now())
+	want := "\n▌ claude · earlier\nDeploy started; I'll report when CI ends.\n"
+	if !strings.Contains(snap, want) || strings.Contains(snap, "earlier\nChecking.") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	p := newConvoPrinter("claude", false, false)
+	p.live = true
+	var out strings.Builder
+	for n := 1; n <= len(lines); n++ {
+		os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600)
+		s, _ = transcript.ParseClaude(path)
+		out.WriteString(followEmit(p, s, s.Unfinished))
+	}
+	// --follow printed the answer when it was the turn's final, with that
+	// heading; it shows once, and in full.
+	if got := out.String(); !strings.Contains(got, "\nDeploy started; I'll report when CI ends.\n") || strings.Contains(got, "earlier\nChecking.") || strings.Count(got, "Deploy started") != 1 {
+		t.Errorf("follow:\n%s", got)
 	}
 }

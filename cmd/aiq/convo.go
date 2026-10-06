@@ -1315,21 +1315,20 @@ func followEmit(p *convoPrinter, s *transcript.Session, hold bool) string {
 }
 
 // holdLastTurn shows the last turn of a transcript that may still be
-// writing as running: no final answer, and none of the answers at its end.
-// Claude Code writes thinking and text as separate records, seconds
-// apart, and a parse between them sees the narration before them as the
-// stretch's answer; those answers settle only when the file does.
+// writing as running: no final answer, and not the answer of the stretch
+// still being written (Provisional). Claude Code writes thinking and text
+// as separate records, seconds apart, and a parse between them sees the
+// narration before them as the stretch's answer. An answer something has
+// come after since stays.
 func holdLastTurn(s *transcript.Session) {
 	if len(s.Turns) == 0 {
 		return
 	}
 	last := &s.Turns[len(s.Turns)-1]
 	last.Open, last.Reply = true, ""
-	n := len(last.Items)
-	for n > 0 && last.Items[n-1].Kind == transcript.ItemAnswer {
-		n--
+	if n := len(last.Items); n > 0 && last.Items[n-1].Provisional {
+		last.Items = last.Items[:n-1]
 	}
-	last.Items = last.Items[:n]
 }
 
 func (f *convoFollow) printer(s *transcript.Session) *convoPrinter {

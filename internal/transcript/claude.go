@@ -121,6 +121,9 @@ func ParseClaude(path string) (*Session, error) {
 	curCommand := false
 	lastTextMsg := ""
 	replyAt := time.Time{} // when cur.Reply's text came
+	// lastMsg is the message of the last assistant record, "" once input
+	// (a tool result, a notification, a prompt) came after it.
+	lastMsg := ""
 	// ended says the current stretch of cur reached its end with message
 	// endMsg; sawStop says some reply of cur recorded why it stopped
 	// (older CLIs never do, and their turns are never shown as open).
@@ -136,6 +139,11 @@ func ParseClaude(path string) (*Session, error) {
 		cur.Open = last && open()
 		if !cur.Open && cur.Reply != "" && !synthetic {
 			cur.addAnswer(cur.Reply, replyAt) // the last stretch's answer
+			// Nothing came after the message that closed the stretch, or
+			// (no stop reasons) after the one the answer is from.
+			if last && lastMsg != "" && (ended && lastMsg == endMsg || lastMsg == lastTextMsg) {
+				cur.Items[len(cur.Items)-1].Provisional = true
+			}
 		}
 		if cur.Open {
 			cur.Reply = ""
@@ -201,6 +209,7 @@ func ParseClaude(path string) (*Session, error) {
 					if rec.IsSidechain || a == nil || a.Type != "queued_command" {
 						break
 					}
+					lastMsg = ""
 					// A prompt typed while the agent worked and handed to it
 					// mid-turn. Without an origin (older CLIs) the command
 					// mode alone says it was typed; without either, it can't
@@ -228,6 +237,7 @@ func ParseClaude(path string) (*Session, error) {
 					if rec.IsSidechain || rec.IsCompactSummary || rec.Message == nil {
 						break
 					}
+					lastMsg = ""
 					if rec.PermissionMode != "" {
 						s.Bypass = rec.PermissionMode == "bypassPermissions"
 					}
@@ -274,6 +284,7 @@ func ParseClaude(path string) (*Session, error) {
 					if rec.IsSidechain || rec.Message == nil || cur == nil {
 						break
 					}
+					lastMsg = rec.Message.ID
 					s.Unfinished = err == nil
 					if m := rec.Message.Model; m != "" && m != "<synthetic>" {
 						s.Model = m

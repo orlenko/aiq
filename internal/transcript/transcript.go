@@ -96,6 +96,11 @@ type TurnItem struct {
 	// an interrupt) or on commentary (an aborted Codex turn), or a final
 	// answer that says again what the last commentary said.
 	Promotes bool
+	// Provisional marks the answer of a stretch whose closing message is
+	// the last thing in the file: Claude Code may still be writing it (its
+	// text comes as a record after its thinking), so the answer can still
+	// change. Anything after that message settles it.
+	Provisional bool
 }
 
 // addAnswer records an answer that ended a stretch.
