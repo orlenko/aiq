@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -41,28 +42,76 @@ func TestParseOSC11(t *testing.T) {
 	}
 }
 
-func TestReadReply(t *testing.T) {
-	// The reply arrives in pieces: read stops as soon as it is whole.
-	pieces := []string{"\x1b]11;rgb:ff", "ff/ffff/ff", "ff\x1b\\", "after"}
-	read := func(b []byte) (int, error) {
-		if len(pieces) == 0 {
-			return 0, nil
+// fakeTerminal hands out its chunks one read at a time, each once its
+// time has come; then nothing.
+type fakeTerminal struct {
+	start  time.Time
+	chunks []timedChunk
+	reads  int
+}
+
+type timedChunk struct {
+	at   time.Duration
+	data string
+}
+
+func (f *fakeTerminal) read(wait time.Duration) []byte {
+	f.reads++
+	if len(f.chunks) == 0 || time.Since(f.start) < f.chunks[0].at {
+		if wait > 0 {
+			time.Sleep(min(wait, 5*time.Millisecond))
 		}
-		n := copy(b, pieces[0])
-		pieces = pieces[1:]
-		return n, nil
+		return nil
 	}
-	if got := string(readReply(read, time.Second)); got != "\x1b]11;rgb:ffff/ffff/ffff\x1b\\" {
-		t.Errorf("got %q", got)
+	c := f.chunks[0]
+	f.chunks = f.chunks[1:]
+	return []byte(c.data)
+}
+
+func TestReadUntilDA1(t *testing.T) {
+	const osc = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+	const da1 = "\x1b[?62;22c"
+	cases := []struct {
+		name   string
+		chunks []timedChunk
+		limit  time.Duration
+		want   string
+		within time.Duration
+	}{
+		// A slow terminal answers the colour late; DA1 still comes after
+		// it, so the reply is read rather than left on the input.
+		{"late reply, then DA1", []timedChunk{{40 * time.Millisecond, osc}, {41 * time.Millisecond, da1}}, time.Second, osc, 500 * time.Millisecond},
+		{"no colour, only DA1", []timedChunk{{0, da1}}, time.Second, "", 100 * time.Millisecond},
+		{"colour split across reads", []timedChunk{{0, "\x1b]11;rgb:ff"}, {0, "ff/ffff/ff"}, {0, "ff\x1b\\\x1b[?6"}, {0, "2;22c"}}, time.Second, osc, 100 * time.Millisecond},
+		// Nothing answers at all: give up at the limit, and take what
+		// turned up by then.
+		{"nothing", nil, 60 * time.Millisecond, "", 300 * time.Millisecond},
+		{"no DA1, a stray key at the limit", []timedChunk{{70 * time.Millisecond, "q"}}, 60 * time.Millisecond, "", 300 * time.Millisecond},
 	}
-	// Nothing comes: it gives up at the timeout.
+	for _, c := range cases {
+		term := &fakeTerminal{start: time.Now(), chunks: c.chunks}
+		start := time.Now()
+		got := string(readUntilDA1(term.read, nil, c.limit))
+		if d := time.Since(start); d > c.within {
+			t.Errorf("%s: took %v", c.name, d)
+		}
+		if c.name == "nothing" && time.Since(start) < c.limit {
+			t.Errorf("%s: gave up before the limit", c.name)
+		}
+		if got != c.want && !(c.name == "no DA1, a stray key at the limit" && (got == "" || got == "q")) {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+		if r, g, b, ok := parseOSC11([]byte(got)); c.want != "" && (!ok || r != 1 || g != 1 || b != 1) {
+			t.Errorf("%s: %q does not parse", c.name, got)
+		}
+	}
+	// A signal ends the wait at once.
+	stop := make(chan struct{})
+	close(stop)
 	start := time.Now()
-	silent := func([]byte) (int, error) { return 0, nil }
-	if got := readReply(silent, 60*time.Millisecond); len(got) != 0 {
-		t.Errorf("got %q", got)
-	}
-	if d := time.Since(start); d < 60*time.Millisecond || d > 500*time.Millisecond {
-		t.Errorf("gave up after %v", d)
+	readUntilDA1((&fakeTerminal{start: time.Now()}).read, stop, time.Second)
+	if d := time.Since(start); d > 100*time.Millisecond {
+		t.Errorf("a stop took %v", d)
 	}
 }
 
@@ -103,28 +152,28 @@ func TestColorFGBG(t *testing.T) {
 }
 
 func TestThemeChoice(t *testing.T) {
-	t.Setenv("AIQ_THEME", "light")
-	if got, _ := themeChoice("dark"); got != "dark" {
-		t.Errorf("the flag lost to the environment: %q", got)
+	var warn strings.Builder
+	cases := []struct{ flag, env, want, warned string }{
+		{"dark", "light", "dark", ""}, // the flag wins
+		{"", "light", "light", ""},
+		{"", "LIGHT", "light", ""},
+		{"", " Dark ", "dark", ""},
+		{"", "", "", ""},
+		{"", "solarized", "", "aiq: ignoring AIQ_THEME=solarized; use auto, light or dark\n"},
 	}
-	if got, _ := themeChoice(""); got != "light" {
-		t.Errorf("the environment was not read: %q", got)
-	}
-	t.Setenv("AIQ_THEME", "")
-	if got, _ := themeChoice(""); got != "" {
-		t.Errorf("got %q", got)
-	}
-	t.Setenv("AIQ_THEME", "solarized")
-	if _, err := themeChoice(""); err == nil {
-		t.Error("a bad AIQ_THEME passed")
+	for _, c := range cases {
+		warn.Reset()
+		if got := themeChoice(c.flag, c.env, &warn); got != c.want || warn.String() != c.warned {
+			t.Errorf("flag %q env %q: got %q, warned %q", c.flag, c.env, got, warn.String())
+		}
 	}
 	if _, err := parseConvoArgs([]string{"--theme", "pink"}); err == nil {
 		t.Error("a bad --theme passed")
 	}
-	if o, err := parseConvoArgs([]string{"--theme=light"}); err != nil || o.theme != "light" {
+	if o, err := parseConvoArgs([]string{"--theme=Light"}); err != nil || o.theme != "light" {
 		t.Errorf("got %+v, %v", o, err)
 	}
-	if choosePalette("light", "") != lightPalette || choosePalette("dark", "") != darkPalette {
+	if choosePalette("light", "", nil) != lightPalette || choosePalette("dark", "", nil) != darkPalette {
 		t.Error("an explicit theme was not taken")
 	}
 }
@@ -255,3 +304,20 @@ func TestClientTheme(t *testing.T) {
 }
 
 func ct(client, theme string) tmux.ClientTheme { return tmux.ClientTheme{Client: client, Theme: theme} }
+
+// A SIGCONT that discard is handling never lands after restore's stty.
+func TestMutedInputRestoreWinsOverSIGCONT(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		var stty fakeStty
+		m, err := muteInput(stty.run, &lockedReader{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.cont <- syscall.SIGCONT
+		m.restore()
+		calls := stty.calls()
+		if calls[len(calls)-1] != "saved-state" {
+			t.Fatalf("stty calls end %q", calls)
+		}
+	}
+}

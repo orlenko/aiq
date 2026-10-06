@@ -119,10 +119,10 @@ func parseConvoArgs(args []string) (convoOpts, error) {
 			if err != nil {
 				return o, err
 			}
-			if v != "auto" && v != "light" && v != "dark" {
+			o.theme = strings.ToLower(v)
+			if o.theme != "auto" && o.theme != "light" && o.theme != "dark" {
 				return o, fmt.Errorf("--theme takes auto, light or dark, not %q", v)
 			}
-			o.theme = v
 		case a == "--follow" || a == "-f":
 			o.follow = true
 		case a == "-h" || a == "--help":
@@ -180,35 +180,40 @@ func cmdConvo(args []string) error {
 		r.st = st
 		defer st.Close()
 	}
-	theme, err := themeChoice(o.theme)
-	if err != nil {
-		return configErr("bad-flags", "%v", err)
-	}
 	tgt, err := r.resolve(o)
 	if err != nil {
 		return err
-	}
-	tty := term.IsTerminal(int(os.Stdout.Fd()))
-	if tty {
-		// Before --follow takes the keyboard and before a pager starts:
-		// the terminal's answer comes on the same input.
-		pal = choosePalette(theme, tgt.pane)
 	}
 	if o.follow && tgt.provider == "agy" {
 		// ParseAgy has no notion of a running turn or of narration, so a
 		// live follow would print every planner message as an answer.
 		return configErr("bad-flags", "aiq convo --follow cannot follow Antigravity sessions yet; aiq convo without --follow prints one")
 	}
+	// Signals are caught before the terminal changes mode (the theme
+	// query, --follow's muted input), so every way out puts it back.
+	stop := make(chan struct{})
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	go func() { <-sig; close(stop) }()
+	tty := term.IsTerminal(int(os.Stdout.Fd()))
+	if tty {
+		// Before --follow takes the keyboard and before a pager starts:
+		// the terminal's answer comes on the same input.
+		pal = choosePalette(themeChoice(o.theme, os.Getenv("AIQ_THEME"), os.Stderr), tgt.pane, stop)
+	}
+	select {
+	case <-stop:
+		return nil
+	default:
+	}
 	if o.follow {
 		f := &convoFollow{r: r, tgt: tgt, w: os.Stdout, tty: tty, last: o.last,
 			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: convoQuiet,
 			mute: tty && term.IsTerminal(int(os.Stdin.Fd()))}
-		stop := make(chan struct{})
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-		go func() { <-sig; close(stop) }()
 		return f.run(stop)
 	}
+	// The snapshot leaves signals to their defaults again, as before.
+	signal.Stop(sig)
 	_, mod := statFile(tgt.path)
 	s, err := loadConvo(tgt)
 	if err != nil {

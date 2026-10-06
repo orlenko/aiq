@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -179,11 +180,15 @@ func ClientThemes(target string) ([]ClientTheme, error) {
 	if target != "" {
 		args = append(args, "-t", target)
 	}
-	out, err := run(args...)
+	// A theme is a nicety: a server that does not answer within a second
+	// does not hold up what was asked for.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", args...).Output()
 	if err != nil {
 		return nil, err
 	}
-	return parseClientThemes(out), nil
+	return parseClientThemes(string(out)), nil
 }
 
 func parseClientThemes(out string) []ClientTheme {

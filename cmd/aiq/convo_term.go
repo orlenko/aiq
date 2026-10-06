@@ -6,11 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"github.com/orlenko/aiq/internal/tmux"
@@ -45,30 +47,31 @@ var (
 	pal = darkPalette
 )
 
-// themeChoice is --theme, else AIQ_THEME, else auto.
-func themeChoice(flag string) (string, error) {
+// themeChoice is --theme (already checked), else AIQ_THEME, else auto. A
+// mistyped AIQ_THEME is reported once on warn and read as auto.
+func themeChoice(flag, env string, warn io.Writer) string {
 	if flag != "" {
-		return flag, nil
+		return flag
 	}
-	switch env := os.Getenv("AIQ_THEME"); env {
+	switch v := strings.ToLower(strings.TrimSpace(env)); v {
 	case "", "auto", "light", "dark":
-		return env, nil
-	default:
-		return "", fmt.Errorf("AIQ_THEME is %q; it takes auto, light or dark", env)
+		return v
 	}
+	fmt.Fprintf(warn, "aiq: ignoring AIQ_THEME=%s; use auto, light or dark\n", env)
+	return ""
 }
 
 // choosePalette settles the theme: light or dark as asked, else what the
 // terminal says its background is (OSC 11), else the theme tmux learned
 // from the terminals showing pane, else $COLORFGBG, else dark.
-func choosePalette(choice, pane string) convoPalette {
+func choosePalette(choice, pane string, stop <-chan struct{}) convoPalette {
 	light := false
 	switch choice {
 	case "light":
 		light = true
 	case "dark":
 	default:
-		light = detectLight(pane)
+		light = detectLight(pane, stop)
 	}
 	if light {
 		return lightPalette
@@ -76,18 +79,19 @@ func choosePalette(choice, pane string) convoPalette {
 	return darkPalette
 }
 
-func detectLight(pane string) bool {
+func detectLight(pane string, stop <-chan struct{}) bool {
 	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
-		if light, ok := queryBackground(150 * time.Millisecond); ok {
+		if light, ok := queryBackground(stop); ok {
 			return light
 		}
 	}
 	// tmux does not answer OSC 11 in a popup, but knows the theme its
-	// clients' terminals reported.
+	// clients' terminals reported. Only the clients of the pane's own
+	// session count; without a pane there is no telling which they are.
 	if pane == "" {
 		pane = os.Getenv("TMUX_PANE")
 	}
-	if pane != "" || os.Getenv("TMUX") != "" {
+	if pane != "" {
 		if light, ok := clientTheme(tmux.ClientThemes, pane, os.Getenv("AIQ_TMUX_CLIENT")); ok {
 			return light
 		}
@@ -143,30 +147,31 @@ func colorFGBG(v string) (light, ok bool) {
 }
 
 // queryBackground asks the terminal for its background colour (OSC 11) and
-// reports whether it is light. The reply comes on the terminal's input, so
-// it is read with echo off and line editing off, and whatever is left
-// after it (a late reply, a key) is drained before the mode comes back.
-// tmux answers in a pane when it knows the colour; in a popup it does not.
-func queryBackground(timeout time.Duration) (light, ok bool) {
+// reports whether it is light. Primary Device Attributes (DA1) goes out
+// right after it: every terminal answers that, and in order, so once its
+// reply is in, an OSC 11 reply has come before it or is not coming, and
+// nothing is left to turn up later on the shell's or the pager's input.
+// The terminal is in raw mode meanwhile (no echo, keys are bytes, not
+// signals); a stop, or a second with no DA1 reply, ends the wait early.
+func queryBackground(stop <-chan struct{}) (light, ok bool) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return false, false
 	}
 	defer tty.Close()
-	stty := func(args ...string) (string, error) { return sttyOn(tty, args...) }
-	saved, err := stty("-g")
+	fd := int(tty.Fd())
+	saved, err := term.MakeRaw(fd)
 	if err != nil {
 		return false, false
 	}
-	defer stty(saved)
-	if _, err := stty("-icanon", "-echo", "min", "0", "time", "1"); err != nil {
+	defer term.Restore(fd, saved)
+	if err := unix.SetNonblock(fd, true); err != nil {
 		return false, false
 	}
-	if _, err := tty.WriteString("\x1b]11;?\x1b\\"); err != nil {
+	if _, err := tty.WriteString("\x1b]11;?\x1b\\\x1b[c"); err != nil {
 		return false, false
 	}
-	reply := readReply(tty.Read, timeout)
-	drain(stty, tty)
+	reply := readUntilDA1(func(wait time.Duration) []byte { return pollRead(fd, wait) }, stop, time.Second)
 	r, g, b, ok := parseOSC11(reply)
 	if !ok {
 		return false, false
@@ -174,24 +179,48 @@ func queryBackground(timeout time.Duration) (light, ok bool) {
 	return luminance(r, g, b) > 0.5, true
 }
 
-// readReply reads until an OSC reply is complete or timeout has passed.
-// read must return within a short while when nothing comes (the terminal
-// is in min 0 time 1 mode: a tenth of a second).
-func readReply(read func([]byte) (int, error), timeout time.Duration) []byte {
+// pollRead returns what fd has to read within wait (nothing if nothing
+// came). It waits in select(2): poll(2) does not work on terminals on
+// macOS. fd is non-blocking, so a read never waits past what select saw.
+func pollRead(fd int, wait time.Duration) []byte {
+	var set unix.FdSet
+	set.Set(fd)
+	tv := unix.NsecToTimeval(wait.Nanoseconds())
+	if n, err := unix.Select(fd+1, &set, nil, nil, &tv); err != nil || n == 0 {
+		return nil
+	}
+	buf := make([]byte, 512)
+	n, _ := unix.Read(fd, buf)
+	return buf[:max(n, 0)]
+}
+
+// da1Reply is a Primary Device Attributes answer: ESC [ ? params c.
+var da1Reply = regexp.MustCompile("\x1b\\[\\?[0-9;]*c")
+
+// readUntilDA1 collects input until the DA1 reply is in, stop closes, or
+// limit passes; then it takes whatever else is already waiting. It returns
+// what came before the DA1 reply (or all of it, without one).
+func readUntilDA1(read func(wait time.Duration) []byte, stop <-chan struct{}, limit time.Duration) []byte {
 	var got []byte
-	buf := make([]byte, 256)
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		n, err := read(buf)
-		got = append(got, buf[:n]...)
-		if _, _, _, ok := parseOSC11(got); ok {
+	deadline := time.Now().Add(limit)
+	for {
+		if loc := da1Reply.FindIndex(got); loc != nil {
+			return got[:loc[0]]
+		}
+		select {
+		case <-stop:
+			return got
+		default:
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			for b := read(0); len(b) > 0; b = read(0) {
+				got = append(got, b...) // drain what turned up
+			}
 			return got
 		}
-		if n == 0 || err != nil {
-			time.Sleep(10 * time.Millisecond)
-		}
+		got = append(got, read(min(left, 50*time.Millisecond))...)
 	}
-	return got
 }
 
 // drain throws away input that is waiting, so none of it reaches the
@@ -274,6 +303,7 @@ type mutedInput struct {
 	r     io.Reader
 	saved string // stty -g, to restore
 	done  chan struct{}
+	gone  chan struct{} // closed when discard has returned
 	cont  chan os.Signal
 }
 
@@ -285,7 +315,7 @@ func muteInput(stty func(args ...string) (string, error), r io.Reader) (*mutedIn
 	if _, err := stty(muteMode...); err != nil {
 		return nil, err
 	}
-	m := &mutedInput{stty: stty, r: r, saved: saved, done: make(chan struct{}), cont: make(chan os.Signal, 1)}
+	m := &mutedInput{stty: stty, r: r, saved: saved, done: make(chan struct{}), gone: make(chan struct{}), cont: make(chan os.Signal, 1)}
 	// After Ctrl-Z and fg the shell may have put its own mode back.
 	signal.Notify(m.cont, syscall.SIGCONT)
 	go m.discard()
@@ -293,6 +323,7 @@ func muteInput(stty func(args ...string) (string, error), r io.Reader) (*mutedIn
 }
 
 func (m *mutedInput) discard() {
+	defer close(m.gone)
 	buf := make([]byte, 256)
 	for {
 		select {
@@ -309,18 +340,20 @@ func (m *mutedInput) discard() {
 }
 
 // restore drops what is still waiting to be read and puts the terminal
-// back as --follow found it.
+// back as --follow found it. discard has returned first, so a SIGCONT it
+// was handling cannot put the muted mode back after this.
 func (m *mutedInput) restore() {
 	signal.Stop(m.cont)
 	close(m.done)
+	<-m.gone
 	drain(m.stty, m.r)
 	m.stty(m.saved)
 }
 
 // withMutedInput runs body and restores the terminal however body ends: a
 // return, an error, or a panic (deferred calls run while a panic unwinds,
-// so the panic keeps its stack). SIGINT, SIGTERM and SIGHUP end body
-// through its stop channel, so they come here too.
+// so the panic keeps its stack). SIGINT, SIGTERM, SIGHUP and SIGQUIT end
+// body through its stop channel, so they come here too.
 func withMutedInput(m *mutedInput, body func() error) error {
 	if m != nil {
 		defer m.restore()
