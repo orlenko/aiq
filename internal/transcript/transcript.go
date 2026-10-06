@@ -113,18 +113,30 @@ type TurnItem struct {
 
 // addAnswer records an answer that ended a stretch. It Promotes the last
 // thing said when it repeats it: the whole message, all of its text
-// blocks joined, as the stretch's answer joins them.
+// blocks joined, as the stretch's answer joins them, and only when that
+// message is the turn's last item. When the person typed something after
+// it, it is not promoted to answer what they typed: it stands for the
+// answer where it is, and the answer is not recorded again.
 func (t *Turn) addAnswer(text string, at time.Time) {
-	t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at, Promotes: t.lastSaid() == text})
+	if n := len(t.Items); n > 0 && t.Items[n-1].Kind == ItemSaid && t.saidEndingAt(n-1) == text {
+		t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at, Promotes: true})
+		return
+	}
+	if i := t.lastAgent(); i >= 0 && t.Items[i].Kind == ItemSaid && t.saidEndingAt(i) == text {
+		return
+	}
+	t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at})
 }
 
-// lastSaid is the text of the agent's last message if it was said on the
-// way (its items joined), else "".
-func (t *Turn) lastSaid() string {
+// answered reports whether the agent's last item is an answer saying text.
+func (t *Turn) answered(text string) bool {
 	i := t.lastAgent()
-	if i < 0 || t.Items[i].Kind != ItemSaid {
-		return ""
-	}
+	return i >= 0 && t.Items[i].Kind == ItemAnswer && t.Items[i].Text == text
+}
+
+// saidEndingAt is the message said on the way whose last part is item i,
+// its parts joined.
+func (t *Turn) saidEndingAt(i int) string {
 	j := i
 	for j > 0 && t.Items[j-1].Kind == ItemSaid && t.Items[i].MsgID != "" && t.Items[j-1].MsgID == t.Items[i].MsgID {
 		j--
