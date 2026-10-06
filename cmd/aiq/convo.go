@@ -241,11 +241,8 @@ func cmdConvo(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !tgt.stale && s.Unfinished && time.Since(mod) < convoQuiet && len(s.Turns) > 0 {
-		// The last reply may still be on its way (see convoFollow.quiet):
-		// show the turn as running rather than its narration as the answer.
-		last := &s.Turns[len(s.Turns)-1]
-		last.Open, last.Reply = true, ""
+	if !tgt.stale && s.Unfinished && time.Since(mod) < convoQuiet {
+		holdLastTurn(s) // see convoFollow.quiet
 	}
 	text := renderConvo(s, tgt, o.last, tty, time.Now())
 	if !tty {
@@ -1298,20 +1295,41 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 // emit prints what s adds, holding the last reply while the transcript,
 // last written at mod, may still be writing it.
 func (f *convoFollow) emit(p *convoPrinter, s *transcript.Session, mod time.Time) string {
-	hold := !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet
-	if hold && len(s.Turns) > 0 {
-		// As in a snapshot: the turn runs on while its reply may still be
-		// on its way, so the status line says so.
-		last := &s.Turns[len(s.Turns)-1]
-		last.Open, last.Reply = true, ""
+	p.width = termWidth(80) // a resized split shapes what comes next
+	return followEmit(p, s, !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet)
+}
+
+// followEmit is one print of --follow. hold says the last turn's reply may
+// still be on its way: the turn shows as running, and the printer is asked
+// back once the file has been quiet long enough.
+func followEmit(p *convoPrinter, s *transcript.Session, hold bool) string {
+	if hold {
+		holdLastTurn(s)
 	}
 	p.hold = hold
-	p.width = termWidth(80) // a resized split shapes what comes next
 	out := p.emit(s)
 	if hold {
 		p.pending = true // parse again once the file has been quiet long enough
 	}
 	return out
+}
+
+// holdLastTurn shows the last turn of a transcript that may still be
+// writing as running: no final answer, and none of the answers at its end.
+// Claude Code writes thinking and text as separate records, seconds
+// apart, and a parse between them sees the narration before them as the
+// stretch's answer; those answers settle only when the file does.
+func holdLastTurn(s *transcript.Session) {
+	if len(s.Turns) == 0 {
+		return
+	}
+	last := &s.Turns[len(s.Turns)-1]
+	last.Open, last.Reply = true, ""
+	n := len(last.Items)
+	for n > 0 && last.Items[n-1].Kind == transcript.ItemAnswer {
+		n--
+	}
+	last.Items = last.Items[:n]
 }
 
 func (f *convoFollow) printer(s *transcript.Session) *convoPrinter {

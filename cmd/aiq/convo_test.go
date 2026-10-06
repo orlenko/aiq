@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -528,35 +529,63 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 	followed := pieces(follow)
 	var s *transcript.Session
 	var followText strings.Builder
-	for n := 1; n <= len(lines); n++ {
-		if err := os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	load := func() {
 		var err error
 		if s, err = parse(path); err != nil {
 			t.Fatal(err)
 		}
-		follow.hold = s.Unfinished // just written: not yet quiet
-		followText.WriteString(follow.emit(s))
 	}
+	for n := 1; n <= len(lines); n++ {
+		if err := os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		load()
+		// As convoFollow.emit does: each line just written, the file is
+		// not quiet yet.
+		followText.WriteString(followEmit(follow, s, s.Unfinished))
+	}
+	load()
 	if follow.pending {
-		follow.hold = false // the file went quiet
-		followText.WriteString(follow.emit(s))
+		followText.WriteString(followEmit(follow, s, false)) // the file went quiet
+		load()
 	}
 	snap := newConvoPrinter("x", false, false)
 	snapped := pieces(snap)
 	snapText := snap.emit(s)
 
-	// dropRepeated leaves out said lines a later answer repeats.
+	// dropRepeated leaves out a said line that the answer printed next
+	// (steers aside) repeats.
 	dropRepeated := func(list []string) []string {
 		var out []string
 		for i, p := range list {
-			if text, ok := strings.CutPrefix(p, "said\x00"); ok && slices.Contains(list[i+1:], "answer\x00"+text) {
-				continue
+			if text, ok := strings.CutPrefix(p, "said\x00"); ok {
+				j := i + 1
+				for j < len(list) && strings.HasPrefix(list[j], "steer\x00") {
+					j++
+				}
+				if j < len(list) && list[j] == "answer\x00"+text {
+					continue
+				}
 			}
 			out = append(out, p)
 		}
 		return out
+	}
+	// lineOnly says which turns show answers as "→ first line": a
+	// notifier's turn, before the person's first steer.
+	lineOnly := map[string]map[string]bool{}
+	for i, tr := range s.Turns {
+		if tr.Source == transcript.Human {
+			continue
+		}
+		before := map[string]bool{}
+		for _, pc := range turnPieces(tr) {
+			if pc.kind == transcript.ItemSteer {
+				break
+			}
+			before[pc.text] = true
+		}
+		lineOnly[turnKey(i, tr)] = before
 	}
 	without := func(list []string, kind string, keepOrder ...string) []string {
 		var out []string
@@ -597,12 +626,43 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 		for _, p := range snapped[k] {
 			if text, ok := strings.CutPrefix(p, "answer\x00"); ok {
 				for out, which := range map[string]string{snapText: "snapshot", followText.String(): "follow"} {
-					if !strings.Contains(out, "\n"+text+"\n") && !strings.Contains(out, "  → "+firstLine(text)) {
+					if !strings.Contains(out, "\n"+text+"\n") && !(lineOnly[k][text] && strings.Contains(out, "  → "+firstLine(text))) {
 						t.Errorf("%s, turn %s: the %s shows %q only in part:\n%s", name, k, which, text, out)
 					}
 				}
 			}
 		}
+	}
+}
+
+// The real --follow path on a Claude turn whose answer comes as a thinking
+// record and then a text record: the narration before it is never shown as
+// an answer, and the answer shows once, as the final, with its heading.
+func TestFollowHoldsTheAnswerUntilItSettles(t *testing.T) {
+	var c fixtureLines
+	c.typed("check the pool")
+	c.tool("m1")
+	c.answer("m2", "Pool is fine.")
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	p := newConvoPrinter("claude", false, false)
+	p.live = true
+	var out strings.Builder
+	var s *transcript.Session
+	for n := 1; n <= len(c.lines); n++ {
+		os.WriteFile(path, []byte(strings.Join(c.lines[:n], "\n")+"\n"), 0o600)
+		s, _ = transcript.ParseClaude(path)
+		out.WriteString(followEmit(p, s, s.Unfinished))
+	}
+	if p.pending {
+		s, _ = transcript.ParseClaude(path)
+		out.WriteString(followEmit(p, s, false))
+	}
+	got := out.String()
+	if !regexp.MustCompile(`\n▌ claude · \d+s · 1 tool\nPool is fine\.\n`).MatchString(got) || strings.Count(got, "Pool is fine.") != 1 {
+		t.Errorf("the final lacks its heading:\n%s", got)
+	}
+	if strings.Contains(got, "earlier") || strings.Count(got, "Checking.") != 1 {
+		t.Errorf("the narration shows as an answer:\n%s", got)
 	}
 }
 
