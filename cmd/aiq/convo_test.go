@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -513,8 +514,12 @@ func pieces(p *convoPrinter) map[string][]string {
 
 // checkFollowMatchesSnapshot parses every line-prefix of a growing
 // transcript into one --follow printer, then holds what it printed against
-// a snapshot of the whole file: per turn the same prompts, steers and
-// answers, nothing twice, and no "(no reply)" for a turn that has an answer.
+// a snapshot of the whole file: per turn the same prompts, steers, said
+// lines and answers, in the same order, and no "(no reply)" for a turn
+// that has an answer. One difference is allowed: a line --follow printed
+// as said on the way, which a later answer then repeats in full (the
+// snapshot shows only the answer). And in the rendered text of both,
+// every answer shows whole, never only as its one-line summary.
 func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse func(string) (*transcript.Session, error)) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
@@ -522,6 +527,7 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 	follow.live = true
 	followed := pieces(follow)
 	var s *transcript.Session
+	var followText strings.Builder
 	for n := 1; n <= len(lines); n++ {
 		if err := os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -531,16 +537,27 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 			t.Fatal(err)
 		}
 		follow.hold = s.Unfinished // just written: not yet quiet
-		follow.emit(s)
+		followText.WriteString(follow.emit(s))
 	}
 	if follow.pending {
 		follow.hold = false // the file went quiet
-		follow.emit(s)
+		followText.WriteString(follow.emit(s))
 	}
 	snap := newConvoPrinter("x", false, false)
 	snapped := pieces(snap)
-	snap.emit(s)
+	snapText := snap.emit(s)
 
+	// dropRepeated leaves out said lines a later answer repeats.
+	dropRepeated := func(list []string) []string {
+		var out []string
+		for i, p := range list {
+			if text, ok := strings.CutPrefix(p, "said\x00"); ok && slices.Contains(list[i+1:], "answer\x00"+text) {
+				continue
+			}
+			out = append(out, p)
+		}
+		return out
+	}
 	without := func(list []string, kind string, keepOrder ...string) []string {
 		var out []string
 		for _, p := range list {
@@ -561,18 +578,30 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 		keys[k] = true
 	}
 	for k := range keys {
-		f, sn := without(followed[k], "none"), without(snapped[k], "none")
+		fl := dropRepeated(followed[k])
+		f, sn := without(fl, "none"), without(snapped[k], "none")
 		if !reflect.DeepEqual(f, sn) {
 			t.Errorf("%s, turn %s:\nfollow   %q\nsnapshot %q", name, k, f, sn)
 		}
 		// The same order, too: --follow prints each piece where it
 		// belongs, never one it skipped later on.
-		if fo, so := without(followed[k], "none", "keep order"), without(snapped[k], "none", "keep order"); !reflect.DeepEqual(fo, so) {
+		if fo, so := without(fl, "none", "keep order"), without(snapped[k], "none", "keep order"); !reflect.DeepEqual(fo, so) {
 			t.Errorf("%s, turn %s: order differs:\nfollow   %q\nsnapshot %q", name, k, fo, so)
 		}
-		answered := len(without(snapped[k], "none")) > len(without(snapped[k], "answer"))
-		if answered && (len(followed[k]) != len(f) || len(snapped[k]) != len(sn)) {
+		answered := slices.ContainsFunc(snapped[k], func(p string) bool { return strings.HasPrefix(p, "answer\x00") })
+		if answered && (slices.ContainsFunc(followed[k], func(p string) bool { return strings.HasPrefix(p, "none\x00") }) ||
+			slices.ContainsFunc(snapped[k], func(p string) bool { return strings.HasPrefix(p, "none\x00") })) {
 			t.Errorf("%s, turn %s: (no reply) for a turn that has an answer", name, k)
+		}
+		// Every answer shows whole in both renderings.
+		for _, p := range snapped[k] {
+			if text, ok := strings.CutPrefix(p, "answer\x00"); ok {
+				for out, which := range map[string]string{snapText: "snapshot", followText.String(): "follow"} {
+					if !strings.Contains(out, "\n"+text+"\n") && !strings.Contains(out, "  → "+firstLine(text)) {
+						t.Errorf("%s, turn %s: the %s shows %q only in part:\n%s", name, k, which, text, out)
+					}
+				}
+			}
 		}
 	}
 }
@@ -945,6 +974,16 @@ func codexReplyFixtures() map[string][]string {
 	c.say("final_answer", "Still green after the nightly run.")
 	c.add("event_msg", `{"type":"task_complete","turn_id":"w","last_agent_message":"Still green after the nightly run."}`)
 	out["wakeup"] = c.rollout()
+
+	c = codexLines{}
+	c.started("a")
+	c.user("a", "go")
+	c.say("commentary", "Starting.")
+	c.call()
+	c.say("commentary", "Done: line one\nline two")
+	c.say("final_answer", "Done: line one\nline two")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Done: line one\nline two"}`)
+	out["final answer repeats the last commentary"] = c.rollout()
 	return out
 }
 
@@ -988,6 +1027,26 @@ func claudeReplyFixtures() map[string][]string {
 	c.user(`"promptSource":"system",`, `[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]`)
 	plain("m2", text("Two files changed."))
 	out["legacy, no stop reasons"] = c.lines
+
+	// Esc after narration: the narration is the turn's answer.
+	interrupt := func(c *fixtureLines, id string) {
+		c.user(`"origin":{"kind":"human"},"promptSource":"typed",`, `[{"type":"tool_result","tool_use_id":"t`+id+`","content":"x"},{"type":"text","text":"[Request interrupted by user for tool use]"}]`)
+	}
+	c = fixtureLines{}
+	c.typed("run the suite")
+	c.assistant("m0", "tool_use", text("Starting."))
+	call(&c, "m0")
+	c.assistant("m1", "tool_use", text("Suite running; 3 failures so far:\n- a\n- b"))
+	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	interrupt(&c, "1")
+	out["interrupted after a multi-line message"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("[agent-nudge] PR #4 has a review")
+	c.assistant("m1", "tool_use", text("Reading the review comments on PR 4."))
+	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	interrupt(&c, "1")
+	out["notice turn interrupted"] = c.lines
 	return out
 }
 
@@ -1083,5 +1142,36 @@ func TestReplyEdgeCases(t *testing.T) {
 			t.Fatalf("lacks %q (in order):\n%s", w, got)
 		}
 		rest = rest[i+len(w):]
+	}
+}
+
+// An answer that was first said on the way shows whole, and a notifier's
+// turn keeps the answer it ended on.
+func TestPromotedAnswers(t *testing.T) {
+	got := renderFixture(t, claudeReplyFixtures()["interrupted after a multi-line message"], transcript.ParseClaude)
+	if !strings.Contains(got, "\nSuite running; 3 failures so far:\n- a\n- b\n") || strings.Contains(got, "  · Suite running") {
+		t.Errorf("interrupted:\n%s", got)
+	}
+	got = renderFixture(t, claudeReplyFixtures()["notice turn interrupted"], transcript.ParseClaude)
+	if !strings.Contains(got, "· notice: [agent-nudge] PR #4 has a review\n  → Reading the review comments on PR 4.\n") {
+		t.Errorf("notice:\n%s", got)
+	}
+	got = renderFixture(t, codexReplyFixtures()["final answer repeats the last commentary"], transcript.ParseCodex)
+	if strings.Count(got, "Done: line one") != 1 || !strings.Contains(got, "\nDone: line one\nline two\n") {
+		t.Errorf("codex:\n%s", got)
+	}
+	got = renderFixture(t, codexReplyFixtures()["aborted, commentary only"], transcript.ParseCodex)
+	if strings.Count(got, "Halfway there.") != 1 || strings.Contains(got, "  · Halfway") {
+		t.Errorf("aborted:\n%s", got)
+	}
+	// Without a terminal a said line keeps its whole first line.
+	long := strings.Repeat("word ", 40)
+	p := newConvoPrinter("codex", false, false)
+	at := time.Date(2026, 10, 6, 20, 0, 0, 0, time.UTC)
+	out := p.emit(&transcript.Session{Turns: []transcript.Turn{{Prompt: "go", Open: true, Started: at, Items: []transcript.TurnItem{
+		{Kind: transcript.ItemSaid, Text: "first", At: at}, {Kind: transcript.ItemSaid, Text: long + "\nmore", At: at},
+	}}}})
+	if !strings.Contains(out, "  · "+strings.TrimSpace(long)+"\n") {
+		t.Errorf("said line cut without a terminal:\n%s", out)
 	}
 }

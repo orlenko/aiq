@@ -736,7 +736,8 @@ type turnSeen struct {
 	hidden  bool // left out by --last
 	head    bool
 	steers  int
-	answers map[string]int // how often each agent text was printed: the parser can move one between Earlier and Reply, and an agent can say the same thing twice
+	answers map[string]int // how often each answer text was printed: the parser can move one between Earlier and Reply, and an agent can say the same thing twice
+	said    map[string]int // the same, for what the agent said on the way
 	noReply bool
 }
 
@@ -769,7 +770,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		k := turnKey(i, t)
 		seen := p.seen[k]
 		if seen == nil {
-			seen = &turnSeen{answers: map[string]int{}}
+			seen = &turnSeen{answers: map[string]int{}, said: map[string]int{}}
 			p.seen[k] = seen
 		}
 		if seen.hidden || idleNotice(t) {
@@ -799,7 +800,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		last := i == len(s.Turns)-1
 		full := human     // the person has typed into the turn
 		awaiting := human // the agent has not answered what they typed yet
-		steers, occ := 0, map[string]int{}
+		steers, occ, occSaid := 0, map[string]int{}, map[string]int{}
 		for _, pc := range pieces {
 			if pc.kind == transcript.ItemSteer {
 				if steers++; steers > seen.steers {
@@ -810,19 +811,29 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				full, awaiting = true, true
 				continue
 			}
+			if pc.promoted {
+				continue // an answer repeats it in full right after
+			}
 			reply := awaiting
 			awaiting = false
-			if !full && pc.kind == transcript.ItemSaid {
+			said := pc.kind == transcript.ItemSaid && !pc.final
+			if said && !full {
 				continue // a notifier's turn shows its answers only
 			}
-			if occ[pc.text]++; occ[pc.text] <= seen.answers[pc.text] {
+			// Said and answered texts are counted apart: an answer that
+			// repeats a line already said prints in full all the same.
+			count, printed := occ, seen.answers
+			if said {
+				count, printed = occSaid, seen.said
+			}
+			if count[pc.text]++; count[pc.text] <= printed[pc.text] {
 				continue
 			}
 			if pc.final && last && p.hold {
 				p.pending = true
 				continue
 			}
-			seen.answers[pc.text]++
+			printed[pc.text]++
 			switch {
 			case !full:
 				b.WriteString(p.paint(pal.dim, "  → "+firstLine(pc.text)) + "\n")
@@ -835,9 +846,13 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			default:
 				p.said(&b, pc.text)
 			}
-			p.note(k, "answer", pc.text)
+			if said {
+				p.note(k, "said", pc.text)
+			} else {
+				p.note(k, "answer", pc.text)
+			}
 		}
-		if human && !t.Open && len(seen.answers) == 0 && !seen.noReply && !(p.live && last) {
+		if human && !t.Open && len(seen.answers)+len(seen.said) == 0 && !seen.noReply && !(p.live && last) {
 			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
 			p.note(k, "none", "")
 			seen.noReply = true
@@ -848,10 +863,11 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 
 // piece is one thing a turn shows after its prompt.
 type piece struct {
-	kind  transcript.ItemKind
-	text  string
-	at    time.Time
-	final bool // the turn's final answer
+	kind     transcript.ItemKind
+	text     string
+	at       time.Time
+	final    bool // the turn's final answer
+	promoted bool // said on the way, then repeated as an answer: only the answer shows
 }
 
 // turnPieces is what a turn shows after its prompt, in order: its items,
@@ -861,6 +877,14 @@ func turnPieces(t transcript.Turn) []piece {
 	var out []piece
 	agent := false
 	for _, it := range t.Items {
+		if it.Promotes {
+			for j := len(out) - 1; j >= 0; j-- {
+				if out[j].kind != transcript.ItemSteer {
+					out[j].promoted = out[j].kind == transcript.ItemSaid && out[j].text == it.Text
+					break
+				}
+			}
+		}
 		out = append(out, piece{kind: it.Kind, text: it.Text, at: it.At})
 		agent = agent || it.Kind != transcript.ItemSteer
 	}
@@ -879,7 +903,7 @@ func turnPieces(t transcript.Turn) []piece {
 		return out
 	}
 	for j := len(out) - 1; j >= 0 && agent; j-- {
-		if out[j].kind != transcript.ItemSteer && out[j].text == t.Reply {
+		if out[j].kind != transcript.ItemSteer && !out[j].promoted && out[j].text == t.Reply {
 			out[j].final = true
 			return out
 		}
@@ -887,13 +911,27 @@ func turnPieces(t transcript.Turn) []piece {
 	return append(out, piece{kind: transcript.ItemAnswer, text: t.Reply, final: true})
 }
 
-// said writes a message the agent sent on the way as one dim line.
+// said writes a message the agent sent on the way as one dim line: cut to
+// the terminal's width, or whole without a terminal, so a search of the
+// output finds it.
 func (p *convoPrinter) said(b *strings.Builder, text string) {
-	width := p.width
-	if width <= 0 {
-		width = 100
+	line := "  · " + firstLineWhole(text)
+	if p.color {
+		line = truncate(line, max(p.width, 20))
+		if p.width <= 0 {
+			line = truncate("  · "+firstLineWhole(text), 100)
+		}
 	}
-	b.WriteString(p.paint(pal.dim, truncate("  · "+firstLine(text), width)) + "\n")
+	b.WriteString(p.paint(pal.dim, line) + "\n")
+}
+
+// firstLineWhole is the first non-blank line of s, not cut.
+func firstLineWhole(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 // clockLabel is the time of day a reply came, to the second.
