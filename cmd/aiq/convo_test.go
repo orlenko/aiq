@@ -553,25 +553,48 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 	snapped := pieces(snap)
 	snapText := snap.emit(s)
 
-	// dropRepeated leaves out a said line that the answer printed next
-	// (steers aside) repeats.
+	// What a later item replaced, from the final parse: the parts of a
+	// message said on the way that an answer then repeated, and an answer
+	// a later one replaced. --follow may have printed them before the
+	// replacement came; the snapshot shows only the replacement.
+	replacedBy := map[string]string{} // "said\x00part" or "answer\x00text" -> "answer\x00replacement"
+	for _, tr := range s.Turns {
+		ps := turnPieces(tr)
+		for i, pc := range ps {
+			if !pc.promoted && !pc.replaced {
+				continue
+			}
+			for j := i + 1; j < len(ps); j++ {
+				if ps[j].kind == transcript.ItemAnswer && !ps[j].replaced {
+					kind := "said"
+					if pc.replaced {
+						kind = "answer"
+					}
+					replacedBy[kind+"\x00"+pc.text] = "answer\x00" + ps[j].text
+					break
+				}
+			}
+		}
+	}
+	// dropRepeated leaves out what --follow printed before its
+	// replacement, when the replacement is what it printed next (steers,
+	// and other parts of the same message, aside).
 	dropRepeated := func(list []string) []string {
 		var out []string
 		for i, p := range list {
-			if text, ok := strings.CutPrefix(p, "said\x00"); ok {
+			if by, ok := replacedBy[p]; ok {
 				j := i + 1
-				for j < len(list) && strings.HasPrefix(list[j], "steer\x00") {
+				for j < len(list) && (strings.HasPrefix(list[j], "steer\x00") || replacedBy[list[j]] == by && list[j] != by) {
 					j++
 				}
-				if j < len(list) && list[j] == "answer\x00"+text {
+				if j < len(list) && list[j] == by {
 					continue
 				}
 			}
 			out = append(out, p)
 		}
 		return out
-	}
-	// lineOnly says which turns show answers as "→ first line": a
+	} // lineOnly says which turns show answers as "→ first line": a
 	// notifier's turn, before the person's first steer.
 	lineOnly := map[string]map[string]bool{}
 	for i, tr := range s.Turns {
@@ -1044,6 +1067,14 @@ func codexReplyFixtures() map[string][]string {
 	c.say("final_answer", "Done: line one\nline two")
 	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Done: line one\nline two"}`)
 	out["final answer repeats the last commentary"] = c.rollout()
+
+	c = codexLines{}
+	c.started("a")
+	c.user("a", "draft it")
+	c.say("commentary", "Writing.")
+	c.say("final_answer", "Draft ready.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Draft ready (final)."}`)
+	out["task_complete names another last message"] = c.rollout()
 	return out
 }
 
@@ -1117,6 +1148,28 @@ func claudeReplyFixtures() map[string][]string {
 	call(&c, "m2") // a wakeup's long tool call
 	c.answer("m3", "CI is green.")
 	out["wakeup while a tool runs"] = c.lines
+
+	// One message, several text blocks or several records: one reply, one
+	// line.
+	c = fixtureLines{}
+	c.typed("check the cache")
+	c.assistant("m1", "tool_use", text("Part one.")+","+text("Part two."))
+	call(&c, "m1")
+	c.assistant("m2", "tool_use", text("Narration A."))
+	c.assistant("m2", "tool_use", text("Narration B."))
+	call(&c, "m2")
+	c.answer("m3", "Cache is warm.")
+	out["one message, several texts"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("run it")
+	c.assistant("m0", "tool_use", text("Starting."))
+	call(&c, "m0")
+	c.assistant("m1", "tool_use", text("Line one."))
+	c.assistant("m1", "tool_use", text("Line two:\n- x\n- y"))
+	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	interrupt(&c, "1")
+	out["several texts, then interrupted"] = c.lines
 	return out
 }
 
@@ -1287,5 +1340,74 @@ func TestHoldKeepsSettledAnswers(t *testing.T) {
 	// heading; it shows once, and in full.
 	if got := out.String(); !strings.Contains(got, "\nDeploy started; I'll report when CI ends.\n") || strings.Contains(got, "earlier\nChecking.") || strings.Count(got, "Deploy started") != 1 {
 		t.Errorf("follow:\n%s", got)
+	}
+}
+
+// followRender is the real --follow path over every line-prefix.
+func followRender(t *testing.T, lines []string, parse func(string) (*transcript.Session, error)) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
+	p := newConvoPrinter("x", false, false)
+	p.live = true
+	var out strings.Builder
+	var s *transcript.Session
+	for n := 1; n <= len(lines); n++ {
+		os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600)
+		s, _ = parse(path)
+		out.WriteString(followEmit(p, s, s.Unfinished))
+	}
+	if p.pending {
+		s, _ = parse(path)
+		out.WriteString(followEmit(p, s, false))
+	}
+	return out.String()
+}
+
+func TestCodexTaskCompleteReplacesTheAnswer(t *testing.T) {
+	lines := codexReplyFixtures()["task_complete names another last message"]
+	snap := renderFixture(t, lines, transcript.ParseCodex)
+	if !regexp.MustCompile(`\n▌ codex · \d+s\nDraft ready \(final\)\.\n`).MatchString(snap) || strings.Contains(snap, "\nDraft ready.\n") || strings.Contains(snap, "earlier") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	follow := followRender(t, lines, transcript.ParseCodex)
+	if !regexp.MustCompile(`\n▌ x · \d+s\nDraft ready \(final\)\.\n`).MatchString(follow) || strings.Contains(follow, "earlier") {
+		t.Errorf("follow:\n%s", follow)
+	}
+}
+
+func TestOneMessageSeveralTexts(t *testing.T) {
+	f := claudeReplyFixtures()
+	snap := renderFixture(t, f["one message, several texts"], transcript.ParseClaude)
+	if !regexp.MustCompile(`\n▌ claude · \d\d:\d\d:\d\d\nPart one\.\n\nPart two\.\n  · Narration A\.\n\n▌ claude · `).MatchString(snap) || strings.Contains(snap, "Narration B") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	if follow := followRender(t, f["one message, several texts"], transcript.ParseClaude); !strings.Contains(follow, "\nPart one.\n\nPart two.\n  · Narration A.\n") || strings.Contains(follow, "Narration B") {
+		t.Errorf("follow:\n%s", follow)
+	}
+	// Said in two records, then the answer by an interrupt: the snapshot
+	// shows the answer once, whole; --follow may show the parts first.
+	snap = renderFixture(t, f["several texts, then interrupted"], transcript.ParseClaude)
+	if strings.Count(snap, "Line one.") != 1 || !strings.Contains(snap, "\nLine one.\n\nLine two:\n- x\n- y\n") || strings.Contains(snap, "  · Line") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	follow := followRender(t, f["several texts, then interrupted"], transcript.ParseClaude)
+	if !regexp.MustCompile(`\n▌ x · \d+s · 2 tools\nLine one\.\n\nLine two:\n- x\n- y\n`).MatchString(follow) {
+		t.Errorf("follow:\n%s", follow)
+	}
+}
+
+// A said line is one line, even when its text holds a Unicode line or
+// paragraph separator.
+func TestSaidLineStaysOneLine(t *testing.T) {
+	at := time.Date(2026, 10, 6, 20, 0, 0, 0, time.UTC)
+	for _, color := range []bool{false, true} {
+		p := newConvoPrinter("codex", color, false)
+		out := p.emit(&transcript.Session{Turns: []transcript.Turn{{Prompt: "go", Open: true, Started: at, Items: []transcript.TurnItem{
+			{Kind: transcript.ItemSaid, Text: "first", At: at}, {Kind: transcript.ItemSaid, Text: "one\u2028two\u2029three", At: at},
+		}}}})
+		plain := sgrPattern.ReplaceAllString(out, "")
+		if !strings.Contains(plain, "  · one\n") || strings.Contains(plain, "two") {
+			t.Errorf("color=%v:\n%q", color, out)
+		}
 	}
 }

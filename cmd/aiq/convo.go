@@ -733,8 +733,9 @@ type turnSeen struct {
 	hidden  bool // left out by --last
 	head    bool
 	steers  int
-	answers map[string]int // how often each answer text was printed: the parser can move one between Earlier and Reply, and an agent can say the same thing twice
-	said    map[string]int // the same, for what the agent said on the way
+	answers map[string]int    // how often each answer text was printed: the parser can move one between Earlier and Reply, and an agent can say the same thing twice
+	said    map[string]int    // the same, for what the agent said on the way
+	msgMode map[string]string // how a said message's first part printed: reply, line or hidden; its later parts follow suit
 	noReply bool
 }
 
@@ -767,7 +768,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		k := turnKey(i, t)
 		seen := p.seen[k]
 		if seen == nil {
-			seen = &turnSeen{answers: map[string]int{}, said: map[string]int{}}
+			seen = &turnSeen{answers: map[string]int{}, said: map[string]int{}, msgMode: map[string]string{}}
 			p.seen[k] = seen
 		}
 		if seen.hidden || idleNotice(t) {
@@ -808,13 +809,26 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				full, awaiting = true, true
 				continue
 			}
-			if pc.promoted {
-				continue // an answer repeats it in full right after
+			if pc.promoted || pc.replaced {
+				continue // an answer after it says it in full
+			}
+			if pc.cont {
+				// A later part of a message already begun: it goes on the
+				// reply it belongs to, and adds nothing to a one-liner.
+				if occSaid[pc.text]++; occSaid[pc.text] > seen.said[pc.text] {
+					seen.said[pc.text]++
+					if seen.msgMode[pc.msg] == "reply" {
+						p.answer(&b, "", "", "", pc.text)
+						p.note(k, "said", pc.text)
+					}
+				}
+				continue
 			}
 			reply := awaiting
 			awaiting = false
 			said := pc.kind == transcript.ItemSaid && !pc.final
 			if said && !full {
+				seen.msgMode[pc.msg] = "hidden"
 				continue // a notifier's turn shows its answers only
 			}
 			// Said and answered texts are counted apart: an answer that
@@ -840,8 +854,10 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				p.answer(&b, pal.dim, "▌ "+p.provider+" · earlier", pal.dim, pc.text)
 			case reply:
 				p.answer(&b, pal.agent, "▌ "+p.provider+" · "+clockLabel(pc.at), "", pc.text)
+				seen.msgMode[pc.msg] = "reply"
 			default:
 				p.said(&b, pc.text)
+				seen.msgMode[pc.msg] = "line"
 			}
 			if said {
 				p.note(k, "said", pc.text)
@@ -863,8 +879,11 @@ type piece struct {
 	kind     transcript.ItemKind
 	text     string
 	at       time.Time
-	final    bool // the turn's final answer
-	promoted bool // said on the way, then repeated as an answer: only the answer shows
+	msg      string // the agent message a said piece is part of
+	cont     bool   // a later part of the message the piece before it began
+	final    bool   // the turn's final answer
+	promoted bool   // said on the way, then repeated as an answer: only the answer shows
+	replaced bool   // an answer the next one replaces: only that one shows
 }
 
 // turnPieces is what a turn shows after its prompt, in order: its items,
@@ -873,16 +892,32 @@ type piece struct {
 func turnPieces(t transcript.Turn) []piece {
 	var out []piece
 	agent := false
+	lastAgent := func() int {
+		for j := len(out) - 1; j >= 0; j-- {
+			if out[j].kind != transcript.ItemSteer {
+				return j
+			}
+		}
+		return -1
+	}
 	for _, it := range t.Items {
-		if it.Promotes {
-			for j := len(out) - 1; j >= 0; j-- {
-				if out[j].kind != transcript.ItemSteer {
-					out[j].promoted = out[j].kind == transcript.ItemSaid && out[j].text == it.Text
+		j := lastAgent()
+		switch {
+		case it.Promotes && j >= 0 && out[j].kind == transcript.ItemSaid:
+			// The whole message it repeats, every part of it.
+			for ; j >= 0 && out[j].kind == transcript.ItemSaid; j-- {
+				out[j].promoted = true
+				if !out[j].cont {
 					break
 				}
 			}
+		case it.Supersedes && j >= 0 && out[j].kind == transcript.ItemAnswer:
+			out[j].replaced = true
 		}
-		out = append(out, piece{kind: it.Kind, text: it.Text, at: it.At})
+		pc := piece{kind: it.Kind, text: it.Text, at: it.At, msg: it.MsgID}
+		pc.cont = it.Kind == transcript.ItemSaid && it.MsgID != "" && j >= 0 && j == len(out)-1 &&
+			out[j].kind == transcript.ItemSaid && out[j].msg == it.MsgID
+		out = append(out, pc)
 		agent = agent || it.Kind != transcript.ItemSteer
 	}
 	if len(t.Items) == 0 {
@@ -900,7 +935,7 @@ func turnPieces(t transcript.Turn) []piece {
 		return out
 	}
 	for j := len(out) - 1; j >= 0 && agent; j-- {
-		if out[j].kind != transcript.ItemSteer && !out[j].promoted && out[j].text == t.Reply {
+		if out[j].kind != transcript.ItemSteer && !out[j].promoted && !out[j].replaced && out[j].text == t.Reply {
 			out[j].final = true
 			return out
 		}
@@ -924,7 +959,7 @@ func (p *convoPrinter) said(b *strings.Builder, text string) {
 
 // firstLineWhole is the first non-blank line of s, not cut.
 func firstLineWhole(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(sanitize(s)) // U+2028 and U+2029 become line breaks
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
@@ -992,7 +1027,12 @@ func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 
 // answer writes an agent's answer under its header. With colour it renders
 // the Markdown for the terminal; without, it is the block as written.
+// With no head, the text goes on the block before it, after a blank line.
 func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body string) {
+	if head == "" && !p.color {
+		b.WriteString("\n" + p.paint(base, strings.TrimRight(body, "\n")) + "\n")
+		return
+	}
 	if !p.color {
 		p.block(b, false, headSGR, head, base, body)
 		return
@@ -1006,7 +1046,11 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 		p.block(b, false, headSGR, head, base, body)
 		return
 	}
-	b.WriteString("\n" + p.paint(headSGR, head) + "\n")
+	if head != "" {
+		b.WriteString("\n" + p.paint(headSGR, head) + "\n")
+	} else {
+		b.WriteString("\n")
+	}
 	b.WriteString(rendered + "\n")
 }
 
