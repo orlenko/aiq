@@ -138,10 +138,12 @@ func ParseClaude(path string) (*Session, error) {
 		}
 		cur.Open = last && open()
 		if !cur.Open && cur.Reply != "" && !synthetic {
+			n := len(cur.Items)
 			cur.addAnswer(cur.Reply, replyAt) // the last stretch's answer
 			// Nothing came after the message that closed the stretch, or
-			// (no stop reasons) after the one the answer is from.
-			if last && lastMsg != "" && (ended && lastMsg == endMsg || lastMsg == lastTextMsg) {
+			// (no stop reasons) after the one the answer is from. Only an
+			// answer just added can be provisional, never a steer before it.
+			if last && len(cur.Items) > n && lastMsg != "" && (ended && lastMsg == endMsg || lastMsg == lastTextMsg) {
 				cur.Items[len(cur.Items)-1].Provisional = true
 			}
 		}

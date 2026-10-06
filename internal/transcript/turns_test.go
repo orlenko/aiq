@@ -662,3 +662,22 @@ func TestItemsInOrder(t *testing.T) {
 		t.Errorf("open claude turn %q: %+v", itemKinds(tr), tr)
 	}
 }
+
+// A steer after the narration blocks its promotion; the steer itself must
+// never be marked provisional (the hold would hide it).
+func TestSteerIsNeverProvisional(t *testing.T) {
+	var c claudeLines
+	c.typed("fix it")
+	c.assistant("m1", "tool_use", `{"type":"text","text":"Looking at the imports."},{"type":"tool_use","id":"t","name":"Bash","input":{}}`)
+	c.queued(`"prompt":"also the tests","commandMode":"prompt","origin":{"kind":"human"}`)
+	c.assistant("m2", "end_turn", `{"type":"thinking","thinking":"hm"}`)
+	s := c.parse(t)
+	if !s.Unfinished {
+		t.Fatal("want an unfinished file")
+	}
+	for _, it := range s.Turns[len(s.Turns)-1].Items {
+		if it.Provisional && it.Kind != ItemAnswer {
+			t.Fatalf("non-answer item marked provisional: %+v", it)
+		}
+	}
+}
