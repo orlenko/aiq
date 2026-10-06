@@ -751,12 +751,17 @@ func (p *convoPrinter) skip(turns []transcript.Turn) {
 	}
 }
 
-// emit returns what of s has not been printed yet. A turn shows its prompt
-// and steers as they come and each answer once, by text; a turn that ended
-// can go on (a background task or a peer message wakes the agent), and its
-// new answers follow what was printed. A prompt aiq, a peer or a notifier
-// sent is a dim line, its answers dim one-liners under it, unless the
-// person typed into that turn: then its answers print in full.
+// emit returns what of s has not been printed yet. A turn shows what
+// happened in it in the order it happened: the prompt, the agent's reply
+// to it, what the agent said on the way (one dim line each), each steer
+// and the reply to it, answers that ended a stretch, and the final answer.
+// The reply to something the person typed is the agent's first message
+// after it, in full; one message after several steers answers them all.
+// Each agent text prints once, by text, so the parser moving one between
+// Earlier, Reply and what was said does not print it twice. A prompt aiq,
+// a peer or a notifier sent is a dim line, its answers dim one-liners
+// under it, until the person types into that turn: from there on, as in
+// a turn of their own.
 func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	p.pending = false
@@ -770,13 +775,10 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		if seen.hidden || idleNotice(t) {
 			continue
 		}
-		answers := t.Earlier
-		if t.Reply != "" {
-			answers = append(answers[:len(answers):len(answers)], t.Reply)
-		}
+		pieces := turnPieces(t)
 		human := t.Source == transcript.Human
 		if !seen.head {
-			if human && t.Open && t.Tools == 0 && len(answers) == 0 && slashCommand(t.Prompt) {
+			if human && t.Open && t.Tools == 0 && len(pieces) == 0 && slashCommand(t.Prompt) {
 				continue // a local command: the parser drops it if nothing comes of it
 			}
 			if human {
@@ -787,10 +789,6 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			p.note(k, "prompt", t.Prompt)
 			seen.head = true
 		}
-		for ; seen.steers < len(t.Steers); seen.steers++ {
-			p.human(&b, "▌ you, while it worked", t.Steers[seen.steers])
-			p.note(k, "steer", t.Steers[seen.steers])
-		}
 		head := "▌ " + p.provider
 		if !t.Started.IsZero() && !t.Ended.IsZero() {
 			head += " · " + durationLabel(t.Ended.Sub(t.Started))
@@ -799,26 +797,45 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			head += fmt.Sprintf(" · %d tool%s", t.Tools, plural(t.Tools))
 		}
 		last := i == len(s.Turns)-1
-		occ := map[string]int{}
-		for j, a := range answers {
-			if occ[a]++; occ[a] <= seen.answers[a] {
+		full := human     // the person has typed into the turn
+		awaiting := human // the agent has not answered what they typed yet
+		steers, occ := 0, map[string]int{}
+		for _, pc := range pieces {
+			if pc.kind == transcript.ItemSteer {
+				if steers++; steers > seen.steers {
+					p.human(&b, "▌ you, while it worked", pc.text)
+					p.note(k, "steer", pc.text)
+					seen.steers = steers
+				}
+				full, awaiting = true, true
 				continue
 			}
-			final := j == len(answers)-1 && t.Reply != ""
-			if final && last && p.hold {
+			reply := awaiting
+			awaiting = false
+			if !full && pc.kind == transcript.ItemSaid {
+				continue // a notifier's turn shows its answers only
+			}
+			if occ[pc.text]++; occ[pc.text] <= seen.answers[pc.text] {
+				continue
+			}
+			if pc.final && last && p.hold {
 				p.pending = true
 				continue
 			}
-			seen.answers[a]++
+			seen.answers[pc.text]++
 			switch {
-			case !human && len(t.Steers) == 0:
-				b.WriteString(p.paint(pal.dim, "  → "+firstLine(a)) + "\n")
-			case final:
-				p.answer(&b, pal.agent, head, "", a)
+			case !full:
+				b.WriteString(p.paint(pal.dim, "  → "+firstLine(pc.text)) + "\n")
+			case pc.final:
+				p.answer(&b, pal.agent, head, "", pc.text)
+			case pc.kind == transcript.ItemAnswer:
+				p.answer(&b, pal.dim, "▌ "+p.provider+" · earlier", pal.dim, pc.text)
+			case reply:
+				p.answer(&b, pal.agent, "▌ "+p.provider+" · "+clockLabel(pc.at), "", pc.text)
 			default:
-				p.answer(&b, pal.dim, "▌ "+p.provider+" · earlier", pal.dim, a)
+				p.said(&b, pc.text)
 			}
-			p.note(k, "answer", a)
+			p.note(k, "answer", pc.text)
 		}
 		if human && !t.Open && len(seen.answers) == 0 && !seen.noReply && !(p.live && last) {
 			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
@@ -827,6 +844,64 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		}
 	}
 	return b.String()
+}
+
+// piece is one thing a turn shows after its prompt.
+type piece struct {
+	kind  transcript.ItemKind
+	text  string
+	at    time.Time
+	final bool // the turn's final answer
+}
+
+// turnPieces is what a turn shows after its prompt, in order: its items,
+// with the one that holds the final answer marked, or the final answer
+// after them when no item holds it (a parser that keeps no agent items).
+func turnPieces(t transcript.Turn) []piece {
+	var out []piece
+	agent := false
+	for _, it := range t.Items {
+		out = append(out, piece{kind: it.Kind, text: it.Text, at: it.At})
+		agent = agent || it.Kind != transcript.ItemSteer
+	}
+	if len(t.Items) == 0 {
+		for _, st := range t.Steers { // a parser that keeps no items
+			out = append(out, piece{kind: transcript.ItemSteer, text: st})
+		}
+	}
+	if !agent {
+		// Only steers, if anything: the answers are Earlier and Reply.
+		for _, e := range t.Earlier {
+			out = append(out, piece{kind: transcript.ItemAnswer, text: e})
+		}
+	}
+	if t.Open || t.Reply == "" {
+		return out
+	}
+	for j := len(out) - 1; j >= 0 && agent; j-- {
+		if out[j].kind != transcript.ItemSteer && out[j].text == t.Reply {
+			out[j].final = true
+			return out
+		}
+	}
+	return append(out, piece{kind: transcript.ItemAnswer, text: t.Reply, final: true})
+}
+
+// said writes a message the agent sent on the way as one dim line.
+func (p *convoPrinter) said(b *strings.Builder, text string) {
+	width := p.width
+	if width <= 0 {
+		width = 100
+	}
+	b.WriteString(p.paint(pal.dim, truncate("  · "+firstLine(text), width)) + "\n")
+}
+
+// clockLabel is the time of day a reply came, to the second.
+func clockLabel(t time.Time) string {
+	if t.IsZero() {
+		return "reply"
+	}
+	return t.Local().Format("15:04:05")
 }
 
 func (p *convoPrinter) note(key, kind, text string) {

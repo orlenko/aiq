@@ -541,14 +541,16 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 	snapped := pieces(snap)
 	snap.emit(s)
 
-	without := func(list []string, kind string) []string {
+	without := func(list []string, kind string, keepOrder ...string) []string {
 		var out []string
 		for _, p := range list {
 			if !strings.HasPrefix(p, kind+"\x00") {
 				out = append(out, p)
 			}
 		}
-		sort.Strings(out)
+		if len(keepOrder) == 0 {
+			sort.Strings(out)
+		}
 		return out
 	}
 	keys := map[string]bool{}
@@ -563,10 +565,10 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 		if !reflect.DeepEqual(f, sn) {
 			t.Errorf("%s, turn %s:\nfollow   %q\nsnapshot %q", name, k, f, sn)
 		}
-		for i := 1; i < len(f); i++ {
-			if f[i] == f[i-1] {
-				t.Errorf("%s, turn %s: printed twice: %q", name, k, f[i])
-			}
+		// The same order, too: --follow prints each piece where it
+		// belongs, never one it skipped later on.
+		if fo, so := without(followed[k], "none", "keep order"), without(snapped[k], "none", "keep order"); !reflect.DeepEqual(fo, so) {
+			t.Errorf("%s, turn %s: order differs:\nfollow   %q\nsnapshot %q", name, k, fo, so)
 		}
 		answered := len(without(snapped[k], "none")) > len(without(snapped[k], "answer"))
 		if answered && (len(followed[k]) != len(f) || len(snapped[k]) != len(sn)) {
@@ -864,5 +866,222 @@ func TestAmbiguousErrIsTyped(t *testing.T) {
 	var err error = ambiguousErr("2 live sessions")
 	if !errors.As(err, new(ambiguousErr)) {
 		t.Error("errors.As misses ambiguousErr")
+	}
+}
+
+// codexLines builds a Codex rollout, one second a record.
+type codexLines struct {
+	lines []string
+	sec   int
+}
+
+func (c *codexLines) add(typ, payload string) {
+	c.sec++
+	c.lines = append(c.lines, fmt.Sprintf(`{"timestamp":"2026-10-06T20:%02d:%02dZ","type":"%s","payload":%s}`, 31+c.sec/60, c.sec%60, typ, payload))
+}
+
+func (c *codexLines) started(turn string) {
+	c.add("event_msg", `{"type":"task_started","turn_id":"`+turn+`"}`)
+}
+
+func (c *codexLines) user(turn, text string) {
+	c.add("response_item", `{"type":"message","role":"user","content":[{"type":"input_text","text":`+strconv.Quote(text)+
+		`}],"internal_chat_message_metadata_passthrough":{"turn_id":"`+turn+`","content_item_kinds":["user.text"]}}`)
+}
+
+func (c *codexLines) say(phase, text string) {
+	c.add("response_item", `{"type":"message","role":"assistant","phase":"`+phase+`","content":[{"type":"output_text","text":`+strconv.Quote(text)+`}]}`)
+}
+
+func (c *codexLines) call() { c.add("response_item", `{"type":"custom_tool_call","name":"exec"}`) }
+
+func (c *codexLines) rollout() []string {
+	return append([]string{`{"timestamp":"2026-10-06T20:30:00Z","type":"session_meta","payload":{"id":"c","cwd":"/w","source":"cli"}}`}, c.lines...)
+}
+
+// opsSixRollout is the shape of the session the feature came from: the
+// person steers a long Codex turn, and Codex answers each steer within
+// seconds in commentary, between commentary that answers nothing.
+func opsSixRollout() []string {
+	var c codexLines
+	c.started("a")
+	c.user("a", "fix the review table")
+	c.say("commentary", "Looking at the review page first.")
+	c.call()
+	c.say("commentary", "The second batch confirms three issues:\n\n- Finding detail hides the table")
+	c.user("a", "QQ: why are you opening the video files in quicktime?")
+	c.say("commentary", "QuickTime is only a permission bridge. macOS lets this session read the files through it.")
+	c.call()
+	c.user("a", "oh, it was the Findings that has the table.")
+	c.user("a", "review still shows cards")
+	c.say("commentary", "Correct. Findings already has a table; Review is still the cards.\n\nI'll move Review onto the table.")
+	c.call()
+	c.say("commentary", "One Mill maintenance incident to surface now: Accordion armed a watcher.")
+	c.call()
+	c.say("final_answer", "Review now uses the **issue table**:\n\n- rows keep their order\n- filters persist")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Review now uses the **issue table**:\n\n- rows keep their order\n- filters persist"}`)
+	return c.rollout()
+}
+
+func codexReplyFixtures() map[string][]string {
+	out := map[string][]string{"ops6": opsSixRollout()}
+	var c codexLines
+	c.started("a")
+	c.user("a", "tidy the logs")
+	c.say("commentary", "Starting with the API logs.")
+	c.call()
+	c.say("commentary", "Halfway there.")
+	c.add("event_msg", `{"type":"turn_aborted","turn_id":"a"}`)
+	out["aborted, commentary only"] = c.rollout()
+
+	c = codexLines{}
+	c.started("a")
+	c.user("a", "status?")
+	c.say("final_answer", "All green.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"All green."}`)
+	c.started("w") // a wakeup: the same turn goes on
+	c.call()
+	c.say("commentary", "The nightly run finished.")
+	c.say("final_answer", "Still green after the nightly run.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"w","last_agent_message":"Still green after the nightly run."}`)
+	out["wakeup"] = c.rollout()
+	return out
+}
+
+func claudeReplyFixtures() map[string][]string {
+	out := map[string][]string{}
+	text := func(s string) string { return `{"type":"text","text":` + strconv.Quote(s) + `}` }
+	call := func(c *fixtureLines, id string) {
+		c.assistant(id, "tool_use", `{"type":"tool_use","id":"t`+id+`","name":"Bash","input":{}}`)
+		c.user(`"promptSource":"system",`, `[{"type":"tool_result","tool_use_id":"t`+id+`","content":"ok"}]`)
+	}
+	var c fixtureLines
+	c.typed("make the plans persist")
+	c.assistant("m1", "tool_use", text("Looking at how plans are stored."))
+	call(&c, "m1")
+	c.steer("will they replay after a day?")
+	c.assistant("m2", "tool_use", text("Mostly yes. The plans persist; their results expire after a day."))
+	call(&c, "m2")
+	c.assistant("m3", "tool_use", text("Running the storage tests."))
+	call(&c, "m3")
+	c.answer("m4", "Plans persist now. Results still expire after **24 hours**.")
+	out["steer answered mid-turn"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("find the leak")
+	c.assistant("m1", "tool_use", text("Checking the pool."))
+	call(&c, "m1")
+	c.assistant("m2", "tool_use", text("Found it: the pool never closes idle conns."))
+	call(&c, "m2")
+	c.assistant("m3", "end_turn", `{"type":"thinking","thinking":"done"}`)
+	out["thinking-only final"] = c.lines
+
+	// Records without a stop reason, as older CLIs wrote them.
+	c = fixtureLines{}
+	plain := func(id, part string) {
+		c.lines = append(c.lines, `{"type":"assistant","isSidechain":false,"cwd":"/w","sessionId":"s","timestamp":"`+c.ts()+
+			`","message":{"id":"`+id+`","model":"claude-opus-4","role":"assistant","content":[`+part+`]}}`)
+	}
+	c.typed("summarise the diff")
+	plain("m1", text("Reading the diff."))
+	plain("m1", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	c.user(`"promptSource":"system",`, `[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]`)
+	plain("m2", text("Two files changed."))
+	out["legacy, no stop reasons"] = c.lines
+	return out
+}
+
+func TestFollowMatchesSnapshotWithReplies(t *testing.T) {
+	for name, lines := range claudeReplyFixtures() {
+		checkFollowMatchesSnapshot(t, name, lines, transcript.ParseClaude)
+	}
+	for name, lines := range codexReplyFixtures() {
+		checkFollowMatchesSnapshot(t, name, lines, transcript.ParseCodex)
+	}
+}
+
+func renderFixture(t *testing.T, lines []string, parse func(string) (*transcript.Session, error)) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := renderConvo(s, convoTarget{}, 0, false, time.Now())
+	_, body, _ := strings.Cut(out, "\n") // the header names the run's time zone
+	return body
+}
+
+// The reply to each steer shows in full, the rest of the commentary as one
+// line each, all in the order it happened.
+func TestOpsSixGolden(t *testing.T) {
+	at := func(m, s int) string { return time.Date(2026, 10, 6, 20, m, s, 0, time.UTC).Local().Format("15:04:05") }
+	want := `
+▌ you · ` + whenLabel(time.Date(2026, 10, 6, 20, 31, 2, 0, time.UTC), time.Now()) + `
+fix the review table
+
+▌ codex · ` + at(31, 3) + `
+Looking at the review page first.
+  · The second batch confirms three issues:
+
+▌ you, while it worked
+QQ: why are you opening the video files in quicktime?
+
+▌ codex · ` + at(31, 7) + `
+QuickTime is only a permission bridge. macOS lets this session read the files through it.
+
+▌ you, while it worked
+oh, it was the Findings that has the table.
+
+▌ you, while it worked
+review still shows cards
+
+▌ codex · ` + at(31, 11) + `
+Correct. Findings already has a table; Review is still the cards.
+
+I'll move Review onto the table.
+  · One Mill maintenance incident to surface now: Accordion armed a watcher.
+
+▌ codex · 14s · 4 tools
+Review now uses the **issue table**:
+
+- rows keep their order
+- filters persist
+`
+	if got := renderFixture(t, opsSixRollout(), transcript.ParseCodex); got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestReplyEdgeCases(t *testing.T) {
+	// An aborted Codex turn: its last commentary is the reply, shown once.
+	got := renderFixture(t, codexReplyFixtures()["aborted, commentary only"], transcript.ParseCodex)
+	if strings.Count(got, "Halfway there.") != 1 || !strings.Contains(got, "\nStarting with the API logs.\n") {
+		t.Errorf("aborted:\n%s", got)
+	}
+	// Claude's thinking-only final: the last text is the reply, once.
+	got = renderFixture(t, claudeReplyFixtures()["thinking-only final"], transcript.ParseClaude)
+	if strings.Count(got, "Found it") != 1 || !strings.Contains(got, "▌ claude · ") || strings.Contains(got, "(no reply)") {
+		t.Errorf("thinking-only:\n%s", got)
+	}
+	// No stop reasons: nothing can be told apart, so it reads as before.
+	got = renderFixture(t, claudeReplyFixtures()["legacy, no stop reasons"], transcript.ParseClaude)
+	if strings.Contains(got, "Reading the diff.") || !strings.Contains(got, "\nTwo files changed.\n") {
+		t.Errorf("legacy:\n%s", got)
+	}
+	// A steer answered mid-turn: the answer in full under it, then the
+	// narration on one line, then the final.
+	got = renderFixture(t, claudeReplyFixtures()["steer answered mid-turn"], transcript.ParseClaude)
+	order := []string{"\nLooking at how plans are stored.\n", "will they replay after a day?", "\nMostly yes. The plans persist", "  · Running the storage tests.", "Plans persist now."}
+	rest := got
+	for _, w := range order {
+		i := strings.Index(rest, w)
+		if i < 0 {
+			t.Fatalf("lacks %q (in order):\n%s", w, got)
+		}
+		rest = rest[i+len(w):]
 	}
 }
