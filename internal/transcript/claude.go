@@ -120,6 +120,10 @@ func ParseClaude(path string) (*Session, error) {
 	var cur *Turn
 	curCommand := false
 	lastTextMsg := ""
+	replyAt := time.Time{} // when cur.Reply's text came
+	// lastMsg is the message of the last assistant record, "" once input
+	// (a tool result, a notification, a prompt) came after it.
+	lastMsg := ""
 	// ended says the current stretch of cur reached its end with message
 	// endMsg; sawStop says some reply of cur recorded why it stopped
 	// (older CLIs never do, and their turns are never shown as open).
@@ -133,6 +137,16 @@ func ParseClaude(path string) (*Session, error) {
 			return
 		}
 		cur.Open = last && open()
+		if !cur.Open && cur.Reply != "" && !synthetic {
+			n := len(cur.Items)
+			cur.addAnswer(cur.Reply, replyAt) // the last stretch's answer
+			// Nothing came after the message that closed the stretch, or
+			// (no stop reasons) after the one the answer is from. Only an
+			// answer just added can be provisional, never a steer before it.
+			if last && len(cur.Items) > n && lastMsg != "" && (ended && lastMsg == endMsg || lastMsg == lastTextMsg) {
+				cur.Items[len(cur.Items)-1].Provisional = true
+			}
+		}
 		if cur.Open {
 			cur.Reply = ""
 		} else if cur.Reply == "" && len(cur.Earlier) > 0 {
@@ -197,6 +211,7 @@ func ParseClaude(path string) (*Session, error) {
 					if rec.IsSidechain || a == nil || a.Type != "queued_command" {
 						break
 					}
+					lastMsg = ""
 					// A prompt typed while the agent worked and handed to it
 					// mid-turn. Without an origin (older CLIs) the command
 					// mode alone says it was typed; without either, it can't
@@ -213,6 +228,7 @@ func ParseClaude(path string) (*Session, error) {
 					}
 					if open() {
 						cur.Steers = append(cur.Steers, text)
+						cur.Items = append(cur.Items, TurnItem{Kind: ItemSteer, Text: text, At: ts})
 						if !ts.IsZero() {
 							cur.Ended = ts
 						}
@@ -223,6 +239,7 @@ func ParseClaude(path string) (*Session, error) {
 					if rec.IsSidechain || rec.IsCompactSummary || rec.Message == nil {
 						break
 					}
+					lastMsg = ""
 					if rec.PermissionMode != "" {
 						s.Bypass = rec.PermissionMode == "bypassPermissions"
 					}
@@ -269,6 +286,7 @@ func ParseClaude(path string) (*Session, error) {
 					if rec.IsSidechain || rec.Message == nil || cur == nil {
 						break
 					}
+					lastMsg = rec.Message.ID
 					s.Unfinished = err == nil
 					if m := rec.Message.Model; m != "" && m != "<synthetic>" {
 						s.Model = m
@@ -281,6 +299,7 @@ func ParseClaude(path string) (*Session, error) {
 						// task woke it, or a hook sent it back to work.
 						if cur.Reply != "" && !synthetic {
 							cur.Earlier = append(cur.Earlier, cur.Reply)
+							cur.addAnswer(cur.Reply, replyAt)
 						}
 						cur.Reply, lastTextMsg, ended = "", "", false
 					}
@@ -305,9 +324,15 @@ func ParseClaude(path string) (*Session, error) {
 							if rec.Message.ID != "" && rec.Message.ID == lastTextMsg && cur.Reply != "" {
 								cur.Reply += "\n\n" + text
 							} else {
-								cur.Reply = text
+								cur.Reply, replyAt = text, ts
 							}
 							lastTextMsg, synthetic = rec.Message.ID, rec.Message.Model == "<synthetic>"
+							// Text before a tool call is said on the way. A
+							// record without a stop reason (older CLIs)
+							// cannot tell, and adds nothing.
+							if sr := rec.Message.StopReason; (sr == "tool_use" || sr == "pause_turn") && !synthetic {
+								cur.Items = append(cur.Items, TurnItem{Kind: ItemSaid, Text: text, At: ts, MsgID: rec.Message.ID})
+							}
 						}
 					}
 					if !sawStop && rec.Message.StopReason == "" && called {

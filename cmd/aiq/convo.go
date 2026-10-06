@@ -241,11 +241,8 @@ func cmdConvo(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !tgt.stale && s.Unfinished && time.Since(mod) < convoQuiet && len(s.Turns) > 0 {
-		// The last reply may still be on its way (see convoFollow.quiet):
-		// show the turn as running rather than its narration as the answer.
-		last := &s.Turns[len(s.Turns)-1]
-		last.Open, last.Reply = true, ""
+	if !tgt.stale && s.Unfinished && time.Since(mod) < convoQuiet {
+		holdLastTurn(s) // see convoFollow.quiet
 	}
 	text := renderConvo(s, tgt, o.last, tty, time.Now())
 	if !tty {
@@ -733,10 +730,16 @@ type convoPrinter struct {
 }
 
 type turnSeen struct {
-	hidden  bool // left out by --last
-	head    bool
-	steers  int
-	answers map[string]int // how often each agent text was printed: the parser can move one between Earlier and Reply, and an agent can say the same thing twice
+	hidden bool // left out by --last
+	head   bool
+	steers int
+	// done holds the agent texts printed, each by kind, text and which
+	// occurrence of that text in the turn it is: the parser can move an
+	// answer between Earlier and Reply, an agent can say the same thing
+	// twice, and a piece skipped as promoted or replaced still takes up
+	// its occurrence.
+	done    map[string]bool
+	msgMode map[string]string // how a said message's first part printed: reply, line or hidden; its later parts follow suit
 	noReply bool
 }
 
@@ -751,12 +754,17 @@ func (p *convoPrinter) skip(turns []transcript.Turn) {
 	}
 }
 
-// emit returns what of s has not been printed yet. A turn shows its prompt
-// and steers as they come and each answer once, by text; a turn that ended
-// can go on (a background task or a peer message wakes the agent), and its
-// new answers follow what was printed. A prompt aiq, a peer or a notifier
-// sent is a dim line, its answers dim one-liners under it, unless the
-// person typed into that turn: then its answers print in full.
+// emit returns what of s has not been printed yet. A turn shows what
+// happened in it in the order it happened: the prompt, the agent's reply
+// to it, what the agent said on the way (one dim line each), each steer
+// and the reply to it, answers that ended a stretch, and the final answer.
+// The reply to something the person typed is the agent's first message
+// after it, in full; one message after several steers answers them all.
+// Each agent text prints once, by text, so the parser moving one between
+// Earlier, Reply and what was said does not print it twice. A prompt aiq,
+// a peer or a notifier sent is a dim line, its answers dim one-liners
+// under it, until the person types into that turn: from there on, as in
+// a turn of their own.
 func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	p.pending = false
@@ -764,19 +772,16 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		k := turnKey(i, t)
 		seen := p.seen[k]
 		if seen == nil {
-			seen = &turnSeen{answers: map[string]int{}}
+			seen = &turnSeen{done: map[string]bool{}, msgMode: map[string]string{}}
 			p.seen[k] = seen
 		}
 		if seen.hidden || idleNotice(t) {
 			continue
 		}
-		answers := t.Earlier
-		if t.Reply != "" {
-			answers = append(answers[:len(answers):len(answers)], t.Reply)
-		}
+		pieces := turnPieces(t)
 		human := t.Source == transcript.Human
 		if !seen.head {
-			if human && t.Open && t.Tools == 0 && len(answers) == 0 && slashCommand(t.Prompt) {
+			if human && t.Open && t.Tools == 0 && len(pieces) == 0 && slashCommand(t.Prompt) {
 				continue // a local command: the parser drops it if nothing comes of it
 			}
 			if human {
@@ -787,10 +792,6 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			p.note(k, "prompt", t.Prompt)
 			seen.head = true
 		}
-		for ; seen.steers < len(t.Steers); seen.steers++ {
-			p.human(&b, "▌ you, while it worked", t.Steers[seen.steers])
-			p.note(k, "steer", t.Steers[seen.steers])
-		}
 		head := "▌ " + p.provider
 		if !t.Started.IsZero() && !t.Ended.IsZero() {
 			head += " · " + durationLabel(t.Ended.Sub(t.Started))
@@ -799,34 +800,198 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			head += fmt.Sprintf(" · %d tool%s", t.Tools, plural(t.Tools))
 		}
 		last := i == len(s.Turns)-1
-		occ := map[string]int{}
-		for j, a := range answers {
-			if occ[a]++; occ[a] <= seen.answers[a] {
+		full := human     // the person has typed into the turn
+		awaiting := human // the agent has not answered what they typed yet
+		steers, occ := 0, map[string]int{}
+		// once names this occurrence of a text of the kind, and reports
+		// whether it was printed before.
+		once := func(kind, text string) (string, bool) {
+			occ[kind+"\x00"+text]++
+			id := fmt.Sprintf("%s\x00%s\x00%d", kind, text, occ[kind+"\x00"+text])
+			return id, seen.done[id]
+		}
+		for _, pc := range pieces {
+			if pc.kind == transcript.ItemSteer {
+				if steers++; steers > seen.steers {
+					p.human(&b, "▌ you, while it worked", pc.text)
+					p.note(k, "steer", pc.text)
+					seen.steers = steers
+				}
+				full, awaiting = true, true
 				continue
 			}
-			final := j == len(answers)-1 && t.Reply != ""
-			if final && last && p.hold {
+			said := pc.kind == transcript.ItemSaid && !pc.final
+			// A said item that holds the final answer (no answer was
+			// recorded after it) keeps its identity as said: --follow may
+			// have printed it before the turn ended.
+			kind := "answer"
+			if pc.kind == transcript.ItemSaid {
+				kind = "said"
+			}
+			id, printed := once(kind, pc.text)
+			if pc.promoted || pc.replaced {
+				continue // an answer after it says it in full
+			}
+			if pc.cont {
+				// A later part of a message already begun: it goes on the
+				// reply it belongs to, and adds nothing to a one-liner.
+				if !printed {
+					seen.done[id] = true
+					if seen.msgMode[pc.msg] == "reply" {
+						p.answer(&b, "", "", "", pc.text)
+						p.note(k, "said", pc.text)
+					}
+				}
+				continue
+			}
+			reply := awaiting
+			awaiting = false
+			if said && !full {
+				seen.msgMode[pc.msg] = "hidden"
+				continue // a notifier's turn shows its answers only
+			}
+			// Said and answered texts are told apart: an answer that
+			// repeats a line already said prints in full all the same.
+			if printed {
+				continue
+			}
+			if pc.final && last && p.hold {
 				p.pending = true
 				continue
 			}
-			seen.answers[a]++
+			seen.done[id] = true
 			switch {
-			case !human && len(t.Steers) == 0:
-				b.WriteString(p.paint(pal.dim, "  → "+firstLine(a)) + "\n")
-			case final:
-				p.answer(&b, pal.agent, head, "", a)
+			case !full:
+				b.WriteString(p.paint(pal.dim, "  → "+firstLine(pc.text)) + "\n")
+			case pc.final:
+				p.answer(&b, pal.agent, head, "", pc.text)
+			case pc.kind == transcript.ItemAnswer:
+				p.answer(&b, pal.dim, "▌ "+p.provider+" · earlier", pal.dim, pc.text)
+			case reply:
+				p.answer(&b, pal.agent, "▌ "+p.provider+" · "+clockLabel(pc.at), "", pc.text)
+				seen.msgMode[pc.msg] = "reply"
 			default:
-				p.answer(&b, pal.dim, "▌ "+p.provider+" · earlier", pal.dim, a)
+				p.said(&b, pc.text)
+				seen.msgMode[pc.msg] = "line"
 			}
-			p.note(k, "answer", a)
+			p.note(k, kind, pc.text)
 		}
-		if human && !t.Open && len(seen.answers) == 0 && !seen.noReply && !(p.live && last) {
+		if human && !t.Open && len(seen.done) == 0 && !seen.noReply && !(p.live && last) {
 			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
 			p.note(k, "none", "")
 			seen.noReply = true
 		}
 	}
 	return b.String()
+}
+
+// piece is one thing a turn shows after its prompt.
+type piece struct {
+	kind     transcript.ItemKind
+	text     string
+	at       time.Time
+	msg      string // the agent message a said piece is part of
+	cont     bool   // a later part of the message the piece before it began
+	final    bool   // the turn's final answer
+	promoted bool   // said on the way, then repeated as an answer: only the answer shows
+	replaced bool   // an answer the next one replaces: only that one shows
+}
+
+// turnPieces is what a turn shows after its prompt, in order: its items,
+// with the one that holds the final answer marked, or the final answer
+// after them when no item holds it (a parser that keeps no agent items).
+func turnPieces(t transcript.Turn) []piece {
+	var out []piece
+	agent := false
+	lastAgent := func() int {
+		for j := len(out) - 1; j >= 0; j-- {
+			if out[j].kind != transcript.ItemSteer {
+				return j
+			}
+		}
+		return -1
+	}
+	for _, it := range t.Items {
+		j := lastAgent()
+		switch {
+		case it.Promotes && j >= 0 && j == len(out)-1 && out[j].kind == transcript.ItemSaid:
+			// The whole message it repeats, every part of it.
+			for ; j >= 0 && out[j].kind == transcript.ItemSaid; j-- {
+				out[j].promoted = true
+				if !out[j].cont {
+					break
+				}
+			}
+		case it.Supersedes && j >= 0 && out[j].kind == transcript.ItemAnswer:
+			out[j].replaced = true
+		}
+		pc := piece{kind: it.Kind, text: it.Text, at: it.At, msg: it.MsgID}
+		pc.cont = it.Kind == transcript.ItemSaid && it.MsgID != "" && j >= 0 && j == len(out)-1 &&
+			out[j].kind == transcript.ItemSaid && out[j].msg == it.MsgID
+		out = append(out, pc)
+		agent = agent || it.Kind != transcript.ItemSteer
+	}
+	if len(t.Items) == 0 {
+		for _, st := range t.Steers { // a parser that keeps no items
+			out = append(out, piece{kind: transcript.ItemSteer, text: st})
+		}
+	}
+	// Earlier answers no item stands for (a parser that keeps no agent
+	// items, or an answer it could not place) follow the items.
+	shown := map[string]int{}
+	for _, pc := range out {
+		if pc.kind != transcript.ItemSteer && !pc.replaced {
+			shown[pc.text]++
+		}
+	}
+	for _, e := range t.Earlier {
+		if shown[e] > 0 {
+			shown[e]--
+			continue
+		}
+		out = append(out, piece{kind: transcript.ItemAnswer, text: e})
+	}
+	if t.Open || t.Reply == "" {
+		return out
+	}
+	for j := len(out) - 1; j >= 0 && agent; j-- {
+		if out[j].kind != transcript.ItemSteer && !out[j].promoted && !out[j].replaced && out[j].text == t.Reply {
+			out[j].final = true
+			return out
+		}
+	}
+	return append(out, piece{kind: transcript.ItemAnswer, text: t.Reply, final: true})
+}
+
+// said writes a message the agent sent on the way as one dim line: cut to
+// the terminal's width, or whole without a terminal, so a search of the
+// output finds it.
+func (p *convoPrinter) said(b *strings.Builder, text string) {
+	line := "  · " + firstLineWhole(text)
+	if p.color {
+		line = truncate(line, max(p.width, 20))
+		if p.width <= 0 {
+			line = truncate("  · "+firstLineWhole(text), 100)
+		}
+	}
+	b.WriteString(p.paint(pal.dim, line) + "\n")
+}
+
+// firstLineWhole is the first non-blank line of s, not cut.
+func firstLineWhole(s string) string {
+	s = strings.TrimSpace(sanitize(s)) // U+2028 and U+2029 become line breaks
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// clockLabel is the time of day a reply came, to the second.
+func clockLabel(t time.Time) string {
+	if t.IsZero() {
+		return "reply"
+	}
+	return t.Local().Format("15:04:05")
 }
 
 func (p *convoPrinter) note(key, kind, text string) {
@@ -882,7 +1047,12 @@ func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 
 // answer writes an agent's answer under its header. With colour it renders
 // the Markdown for the terminal; without, it is the block as written.
+// With no head, the text goes on the block before it, after a blank line.
 func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body string) {
+	if head == "" && !p.color {
+		b.WriteString("\n" + p.paint(base, strings.TrimRight(body, "\n")) + "\n")
+		return
+	}
 	if !p.color {
 		p.block(b, false, headSGR, head, base, body)
 		return
@@ -896,7 +1066,11 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 		p.block(b, false, headSGR, head, base, body)
 		return
 	}
-	b.WriteString("\n" + p.paint(headSGR, head) + "\n")
+	if head != "" {
+		b.WriteString("\n" + p.paint(headSGR, head) + "\n")
+	} else {
+		b.WriteString("\n")
+	}
 	b.WriteString(rendered + "\n")
 }
 
@@ -1185,20 +1359,40 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 // emit prints what s adds, holding the last reply while the transcript,
 // last written at mod, may still be writing it.
 func (f *convoFollow) emit(p *convoPrinter, s *transcript.Session, mod time.Time) string {
-	hold := !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet
-	if hold && len(s.Turns) > 0 {
-		// As in a snapshot: the turn runs on while its reply may still be
-		// on its way, so the status line says so.
-		last := &s.Turns[len(s.Turns)-1]
-		last.Open, last.Reply = true, ""
+	p.width = termWidth(80) // a resized split shapes what comes next
+	return followEmit(p, s, !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet)
+}
+
+// followEmit is one print of --follow. hold says the last turn's reply may
+// still be on its way: the turn shows as running, and the printer is asked
+// back once the file has been quiet long enough.
+func followEmit(p *convoPrinter, s *transcript.Session, hold bool) string {
+	if hold {
+		holdLastTurn(s)
 	}
 	p.hold = hold
-	p.width = termWidth(80) // a resized split shapes what comes next
 	out := p.emit(s)
 	if hold {
 		p.pending = true // parse again once the file has been quiet long enough
 	}
 	return out
+}
+
+// holdLastTurn shows the last turn of a transcript that may still be
+// writing as running: no final answer, and not the answer of the stretch
+// still being written (Provisional). Claude Code writes thinking and text
+// as separate records, seconds apart, and a parse between them sees the
+// narration before them as the stretch's answer. An answer something has
+// come after since stays.
+func holdLastTurn(s *transcript.Session) {
+	if len(s.Turns) == 0 {
+		return
+	}
+	last := &s.Turns[len(s.Turns)-1]
+	last.Open, last.Reply = true, ""
+	if n := len(last.Items); n > 0 && last.Items[n-1].Provisional {
+		last.Items = last.Items[:n-1]
+	}
 }
 
 func (f *convoFollow) printer(s *transcript.Session) *convoPrinter {

@@ -132,6 +132,7 @@ func ParseCodex(path string) (*Session, error) {
 	s := &Session{Provider: "codex", Path: path}
 	var cur *Turn
 	final, commentary := false, ""
+	commentaryAt, replyAt := time.Time{}, time.Time{}
 	// curTurn is the turn_id cur answers; running says a task is under
 	// way, and fresh that it has not yet been given to a turn. ended says
 	// cur's current stretch gave its final answer.
@@ -142,6 +143,12 @@ func ParseCodex(path string) (*Session, error) {
 		if fresh || ended {
 			if cur.Reply != "" {
 				cur.Earlier = append(cur.Earlier, cur.Reply)
+				// An answer that came only as an agent_message or in
+				// task_complete has no item yet: it gets one here, before
+				// the stretch that follows it.
+				if !cur.answered(cur.Reply) {
+					cur.addAnswer(cur.Reply, replyAt)
+				}
 			}
 			cur.Reply, final, commentary = "", false, ""
 			fresh, ended = false, false
@@ -158,7 +165,8 @@ func ParseCodex(path string) (*Session, error) {
 		case cur.Open:
 			cur.Reply = ""
 		case cur.Reply == "" && commentary != "":
-			cur.Reply = commentary
+			cur.Reply = commentary // an aborted turn: its last commentary stands
+			cur.addAnswer(commentary, commentaryAt)
 		case cur.Reply == "" && len(cur.Earlier) > 0:
 			cur.Reply = cur.Earlier[len(cur.Earlier)-1]
 			cur.Earlier = cur.Earlier[:len(cur.Earlier)-1]
@@ -172,6 +180,7 @@ func ParseCodex(path string) (*Session, error) {
 		if joins {
 			if src == Human {
 				cur.Steers = append(cur.Steers, prompt)
+				cur.Items = append(cur.Items, TurnItem{Kind: ItemSteer, Text: prompt, At: ts})
 			}
 			return
 		}
@@ -262,10 +271,14 @@ func ParseCodex(path string) (*Session, error) {
 				work()
 				text := strings.Join(texts, "\n")
 				if p.Phase == "commentary" {
-					commentary = text
+					commentary, commentaryAt = text, ts
+					cur.Items = append(cur.Items, TurnItem{Kind: ItemSaid, Text: text, At: ts})
 				} else if !final {
-					cur.Reply = text
+					cur.Reply, replyAt = text, ts
 					ended = p.Phase == "final_answer"
+					if ended {
+						cur.addAnswer(text, ts)
+					}
 				}
 			case strings.HasSuffix(p.Type, "_call") && cur != nil:
 				work()
@@ -286,7 +299,7 @@ func ParseCodex(path string) (*Session, error) {
 			case "agent_message":
 				if cur != nil && !final && !ended && strings.TrimSpace(p.Message) != "" {
 					work()
-					cur.Reply = strings.TrimSpace(p.Message)
+					cur.Reply, replyAt = strings.TrimSpace(p.Message), ts
 				}
 			case "task_complete":
 				if cur != nil && p.LastAgentMessage != nil && strings.TrimSpace(*p.LastAgentMessage) != "" {
@@ -296,6 +309,15 @@ func ParseCodex(path string) (*Session, error) {
 					last := strings.TrimSpace(*p.LastAgentMessage)
 					if n := len(cur.Earlier); cur.Reply == "" && n > 0 && cur.Earlier[n-1] == last {
 						cur.Earlier = cur.Earlier[:n-1] // the stretch said nothing new
+					}
+					// A last message other than the final answer just sent
+					// replaces it.
+					if i := cur.lastAgent(); cur.Reply != "" && last != cur.Reply && i >= 0 &&
+						cur.Items[i].Kind == ItemAnswer && cur.Items[i].Text == cur.Reply {
+						cur.Items = append(cur.Items, TurnItem{Kind: ItemAnswer, Text: last, At: ts, Supersedes: true})
+					}
+					if cur.Reply != last {
+						replyAt = ts
 					}
 					cur.Reply = last
 					final, ended = true, true

@@ -611,3 +611,73 @@ func TestCodexWakeupReasoningIsWork(t *testing.T) {
 		t.Fatalf("%+v", s.Turns)
 	}
 }
+
+func itemKinds(t Turn) string {
+	var b strings.Builder
+	for _, it := range t.Items {
+		b.WriteString([]string{"S", "s", "A"}[it.Kind])
+	}
+	return b.String()
+}
+
+// Items keep what happened after the prompt in order: steers (S), what
+// the agent said on the way (s), and answers that ended a stretch (A).
+func TestItemsInOrder(t *testing.T) {
+	var c codexLines
+	c.started("a")
+	c.user("a", `["user.text"]`, "fix it")
+	c.say("commentary", "Looking.")
+	c.user("a", `["user.text"]`, "why?")
+	c.say("commentary", "Because.")
+	c.add("response_item", `{"type":"custom_tool_call","name":"exec"}`)
+	c.say("final_answer", "Fixed.")
+	c.complete("a", "Fixed.")
+	c.started("w")
+	c.say("commentary", "The nightly run finished.")
+	c.say("final_answer", "Still fixed.")
+	c.complete("w", "Still fixed.")
+	tr := c.parse(t).Turns[0]
+	if got := itemKinds(tr); got != "sSsAsA" {
+		t.Errorf("codex items %q: %+v", got, tr.Items)
+	}
+	if tr.Items[1].Text != "why?" || tr.Items[3].Text != "Fixed." || !reflect.DeepEqual(tr.Steers, []string{"why?"}) || !reflect.DeepEqual(tr.Earlier, []string{"Fixed."}) || tr.Reply != "Still fixed." {
+		t.Errorf("codex turn %+v", tr)
+	}
+
+	var l claudeLines
+	l.typed("fix it")
+	l.say("m1", "tool_use", "Looking.")
+	l.tool("m1")
+	l.queued(`"prompt":"why?","commandMode":"prompt","origin":{"kind":"human"}`)
+	l.say("m2", "tool_use", "Because.")
+	l.tool("m2")
+	l.say("m3", "end_turn", "Fixed.")
+	tr = l.parse(t).Turns[0]
+	if got := itemKinds(tr); got != "sSsA" || tr.Reply != "Fixed." {
+		t.Errorf("claude items %q: %+v", got, tr)
+	}
+	// Still running: the answer is not in yet.
+	l.lines = l.lines[:len(l.lines)-1]
+	if tr := l.parse(t).Turns[0]; itemKinds(tr) != "sSs" || !tr.Open {
+		t.Errorf("open claude turn %q: %+v", itemKinds(tr), tr)
+	}
+}
+
+// A steer after the narration blocks its promotion; the steer itself must
+// never be marked provisional (the hold would hide it).
+func TestSteerIsNeverProvisional(t *testing.T) {
+	var c claudeLines
+	c.typed("fix it")
+	c.assistant("m1", "tool_use", `{"type":"text","text":"Looking at the imports."},{"type":"tool_use","id":"t","name":"Bash","input":{}}`)
+	c.queued(`"prompt":"also the tests","commandMode":"prompt","origin":{"kind":"human"}`)
+	c.assistant("m2", "end_turn", `{"type":"thinking","thinking":"hm"}`)
+	s := c.parse(t)
+	if !s.Unfinished {
+		t.Fatal("want an unfinished file")
+	}
+	for _, it := range s.Turns[len(s.Turns)-1].Items {
+		if it.Provisional && it.Kind != ItemAnswer {
+			t.Fatalf("non-answer item marked provisional: %+v", it)
+		}
+	}
+}

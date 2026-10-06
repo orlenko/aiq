@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -513,8 +515,12 @@ func pieces(p *convoPrinter) map[string][]string {
 
 // checkFollowMatchesSnapshot parses every line-prefix of a growing
 // transcript into one --follow printer, then holds what it printed against
-// a snapshot of the whole file: per turn the same prompts, steers and
-// answers, nothing twice, and no "(no reply)" for a turn that has an answer.
+// a snapshot of the whole file: per turn the same prompts, steers, said
+// lines and answers, in the same order, and no "(no reply)" for a turn
+// that has an answer. One difference is allowed: a line --follow printed
+// as said on the way, which a later answer then repeats in full (the
+// snapshot shows only the answer). And in the rendered text of both,
+// every answer shows whole, never only as its one-line summary.
 func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse func(string) (*transcript.Session, error)) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
@@ -522,33 +528,98 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 	follow.live = true
 	followed := pieces(follow)
 	var s *transcript.Session
-	for n := 1; n <= len(lines); n++ {
-		if err := os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	var followText strings.Builder
+	load := func() {
 		var err error
 		if s, err = parse(path); err != nil {
 			t.Fatal(err)
 		}
-		follow.hold = s.Unfinished // just written: not yet quiet
-		follow.emit(s)
 	}
+	for n := 1; n <= len(lines); n++ {
+		if err := os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		load()
+		// As convoFollow.emit does: each line just written, the file is
+		// not quiet yet.
+		followText.WriteString(followEmit(follow, s, s.Unfinished))
+	}
+	load()
 	if follow.pending {
-		follow.hold = false // the file went quiet
-		follow.emit(s)
+		followText.WriteString(followEmit(follow, s, false)) // the file went quiet
+		load()
 	}
 	snap := newConvoPrinter("x", false, false)
 	snapped := pieces(snap)
-	snap.emit(s)
+	snapText := snap.emit(s)
 
-	without := func(list []string, kind string) []string {
+	// What a later item replaced, from the final parse: the parts of a
+	// message said on the way that an answer then repeated, and an answer
+	// a later one replaced. --follow may have printed them before the
+	// replacement came; the snapshot shows only the replacement.
+	replacedBy := map[string]string{} // "said\x00part" or "answer\x00text" -> "answer\x00replacement"
+	for _, tr := range s.Turns {
+		ps := turnPieces(tr)
+		for i, pc := range ps {
+			if !pc.promoted && !pc.replaced {
+				continue
+			}
+			for j := i + 1; j < len(ps); j++ {
+				if ps[j].kind == transcript.ItemAnswer && !ps[j].replaced {
+					kind := "said"
+					if pc.replaced {
+						kind = "answer"
+					}
+					replacedBy[kind+"\x00"+pc.text] = "answer\x00" + ps[j].text
+					break
+				}
+			}
+		}
+	}
+	// dropRepeated leaves out what --follow printed before its
+	// replacement, when the replacement is what it printed next (steers,
+	// and other parts of the same message, aside).
+	dropRepeated := func(list []string) []string {
+		var out []string
+		for i, p := range list {
+			if by, ok := replacedBy[p]; ok {
+				j := i + 1
+				for j < len(list) && (strings.HasPrefix(list[j], "steer\x00") || replacedBy[list[j]] == by && list[j] != by) {
+					j++
+				}
+				if j < len(list) && list[j] == by {
+					continue
+				}
+			}
+			out = append(out, p)
+		}
+		return out
+	} // lineOnly says which turns show answers as "→ first line": a
+	// notifier's turn, before the person's first steer.
+	lineOnly := map[string]map[string]bool{}
+	for i, tr := range s.Turns {
+		if tr.Source == transcript.Human {
+			continue
+		}
+		before := map[string]bool{}
+		for _, pc := range turnPieces(tr) {
+			if pc.kind == transcript.ItemSteer {
+				break
+			}
+			before[pc.text] = true
+		}
+		lineOnly[turnKey(i, tr)] = before
+	}
+	without := func(list []string, kind string, keepOrder ...string) []string {
 		var out []string
 		for _, p := range list {
 			if !strings.HasPrefix(p, kind+"\x00") {
 				out = append(out, p)
 			}
 		}
-		sort.Strings(out)
+		if len(keepOrder) == 0 {
+			sort.Strings(out)
+		}
 		return out
 	}
 	keys := map[string]bool{}
@@ -559,19 +630,62 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 		keys[k] = true
 	}
 	for k := range keys {
-		f, sn := without(followed[k], "none"), without(snapped[k], "none")
+		fl := dropRepeated(followed[k])
+		f, sn := without(fl, "none"), without(snapped[k], "none")
 		if !reflect.DeepEqual(f, sn) {
 			t.Errorf("%s, turn %s:\nfollow   %q\nsnapshot %q", name, k, f, sn)
 		}
-		for i := 1; i < len(f); i++ {
-			if f[i] == f[i-1] {
-				t.Errorf("%s, turn %s: printed twice: %q", name, k, f[i])
-			}
+		// The same order, too: --follow prints each piece where it
+		// belongs, never one it skipped later on.
+		if fo, so := without(fl, "none", "keep order"), without(snapped[k], "none", "keep order"); !reflect.DeepEqual(fo, so) {
+			t.Errorf("%s, turn %s: order differs:\nfollow   %q\nsnapshot %q", name, k, fo, so)
 		}
-		answered := len(without(snapped[k], "none")) > len(without(snapped[k], "answer"))
-		if answered && (len(followed[k]) != len(f) || len(snapped[k]) != len(sn)) {
+		answered := slices.ContainsFunc(snapped[k], func(p string) bool { return strings.HasPrefix(p, "answer\x00") })
+		if answered && (slices.ContainsFunc(followed[k], func(p string) bool { return strings.HasPrefix(p, "none\x00") }) ||
+			slices.ContainsFunc(snapped[k], func(p string) bool { return strings.HasPrefix(p, "none\x00") })) {
 			t.Errorf("%s, turn %s: (no reply) for a turn that has an answer", name, k)
 		}
+		// Every answer shows whole in both renderings.
+		for _, p := range snapped[k] {
+			if text, ok := strings.CutPrefix(p, "answer\x00"); ok {
+				for out, which := range map[string]string{snapText: "snapshot", followText.String(): "follow"} {
+					if !strings.Contains(out, "\n"+text+"\n") && !(lineOnly[k][text] && strings.Contains(out, "  → "+firstLine(text))) {
+						t.Errorf("%s, turn %s: the %s shows %q only in part:\n%s", name, k, which, text, out)
+					}
+				}
+			}
+		}
+	}
+}
+
+// The real --follow path on a Claude turn whose answer comes as a thinking
+// record and then a text record: the narration before it is never shown as
+// an answer, and the answer shows once, as the final, with its heading.
+func TestFollowHoldsTheAnswerUntilItSettles(t *testing.T) {
+	var c fixtureLines
+	c.typed("check the pool")
+	c.tool("m1")
+	c.answer("m2", "Pool is fine.")
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	p := newConvoPrinter("claude", false, false)
+	p.live = true
+	var out strings.Builder
+	var s *transcript.Session
+	for n := 1; n <= len(c.lines); n++ {
+		os.WriteFile(path, []byte(strings.Join(c.lines[:n], "\n")+"\n"), 0o600)
+		s, _ = transcript.ParseClaude(path)
+		out.WriteString(followEmit(p, s, s.Unfinished))
+	}
+	if p.pending {
+		s, _ = transcript.ParseClaude(path)
+		out.WriteString(followEmit(p, s, false))
+	}
+	got := out.String()
+	if !regexp.MustCompile(`\n▌ claude · \d+s · 1 tool\nPool is fine\.\n`).MatchString(got) || strings.Count(got, "Pool is fine.") != 1 {
+		t.Errorf("the final lacks its heading:\n%s", got)
+	}
+	if strings.Contains(got, "earlier") || strings.Count(got, "Checking.") != 1 {
+		t.Errorf("the narration shows as an answer:\n%s", got)
 	}
 }
 
@@ -864,5 +978,518 @@ func TestAmbiguousErrIsTyped(t *testing.T) {
 	var err error = ambiguousErr("2 live sessions")
 	if !errors.As(err, new(ambiguousErr)) {
 		t.Error("errors.As misses ambiguousErr")
+	}
+}
+
+// codexLines builds a Codex rollout, one second a record.
+type codexLines struct {
+	lines []string
+	sec   int
+}
+
+func (c *codexLines) add(typ, payload string) {
+	c.sec++
+	c.lines = append(c.lines, fmt.Sprintf(`{"timestamp":"2026-10-06T20:%02d:%02dZ","type":"%s","payload":%s}`, 31+c.sec/60, c.sec%60, typ, payload))
+}
+
+func (c *codexLines) started(turn string) {
+	c.add("event_msg", `{"type":"task_started","turn_id":"`+turn+`"}`)
+}
+
+func (c *codexLines) user(turn, text string) {
+	c.add("response_item", `{"type":"message","role":"user","content":[{"type":"input_text","text":`+strconv.Quote(text)+
+		`}],"internal_chat_message_metadata_passthrough":{"turn_id":"`+turn+`","content_item_kinds":["user.text"]}}`)
+}
+
+func (c *codexLines) say(phase, text string) {
+	c.add("response_item", `{"type":"message","role":"assistant","phase":"`+phase+`","content":[{"type":"output_text","text":`+strconv.Quote(text)+`}]}`)
+}
+
+func (c *codexLines) call() { c.add("response_item", `{"type":"custom_tool_call","name":"exec"}`) }
+
+func (c *codexLines) rollout() []string {
+	return append([]string{`{"timestamp":"2026-10-06T20:30:00Z","type":"session_meta","payload":{"id":"c","cwd":"/w","source":"cli"}}`}, c.lines...)
+}
+
+// opsSixRollout is the shape of the session the feature came from: the
+// person steers a long Codex turn, and Codex answers each steer within
+// seconds in commentary, between commentary that answers nothing.
+func opsSixRollout() []string {
+	var c codexLines
+	c.started("a")
+	c.user("a", "fix the review table")
+	c.say("commentary", "Looking at the review page first.")
+	c.call()
+	c.say("commentary", "The second batch confirms three issues:\n\n- Finding detail hides the table")
+	c.user("a", "QQ: why are you opening the video files in quicktime?")
+	c.say("commentary", "QuickTime is only a permission bridge. macOS lets this session read the files through it.")
+	c.call()
+	c.user("a", "oh, it was the Findings that has the table.")
+	c.user("a", "review still shows cards")
+	c.say("commentary", "Correct. Findings already has a table; Review is still the cards.\n\nI'll move Review onto the table.")
+	c.call()
+	c.say("commentary", "One Mill maintenance incident to surface now: Accordion armed a watcher.")
+	c.call()
+	c.say("final_answer", "Review now uses the **issue table**:\n\n- rows keep their order\n- filters persist")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Review now uses the **issue table**:\n\n- rows keep their order\n- filters persist"}`)
+	return c.rollout()
+}
+
+func codexReplyFixtures() map[string][]string {
+	out := map[string][]string{"ops6": opsSixRollout()}
+	var c codexLines
+	c.started("a")
+	c.user("a", "tidy the logs")
+	c.say("commentary", "Starting with the API logs.")
+	c.call()
+	c.say("commentary", "Halfway there.")
+	c.add("event_msg", `{"type":"turn_aborted","turn_id":"a"}`)
+	out["aborted, commentary only"] = c.rollout()
+
+	c = codexLines{}
+	c.started("a")
+	c.user("a", "status?")
+	c.say("final_answer", "All green.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"All green."}`)
+	c.started("w") // a wakeup: the same turn goes on
+	c.call()
+	c.say("commentary", "The nightly run finished.")
+	c.say("final_answer", "Still green after the nightly run.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"w","last_agent_message":"Still green after the nightly run."}`)
+	out["wakeup"] = c.rollout()
+
+	c = codexLines{}
+	c.started("a")
+	c.user("a", "go")
+	c.say("commentary", "Starting.")
+	c.call()
+	c.say("commentary", "Done: line one\nline two")
+	c.say("final_answer", "Done: line one\nline two")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Done: line one\nline two"}`)
+	out["final answer repeats the last commentary"] = c.rollout()
+
+	c = codexLines{}
+	c.started("a")
+	c.user("a", "draft it")
+	c.say("commentary", "Writing.")
+	c.say("final_answer", "Draft ready.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Draft ready (final)."}`)
+	out["task_complete names another last message"] = c.rollout()
+
+	// Answers that come only as an agent_message or in task_complete, then
+	// a wakeup with commentary: they stay, as earlier answers.
+	c = codexLines{}
+	c.started("a")
+	c.user("a", "check the queue")
+	c.say("commentary", "Looking.")
+	c.add("event_msg", `{"type":"agent_message","message":"Queue has 3 jobs."}`)
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Queue has 3 jobs."}`)
+	c.started("w")
+	c.call()
+	c.say("commentary", "A job finished.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"w","last_agent_message":"Queue has 2 jobs."}`)
+	c.started("w2")
+	c.call()
+	c.say("commentary", "Another finished.")
+	c.say("final_answer", "Queue has 1 job.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"w2","last_agent_message":"Queue has 1 job."}`)
+	out["answers without a final_answer, then wakeups"] = c.rollout()
+	return out
+}
+
+func claudeReplyFixtures() map[string][]string {
+	out := map[string][]string{}
+	text := func(s string) string { return `{"type":"text","text":` + strconv.Quote(s) + `}` }
+	call := func(c *fixtureLines, id string) {
+		c.assistant(id, "tool_use", `{"type":"tool_use","id":"t`+id+`","name":"Bash","input":{}}`)
+		c.user(`"promptSource":"system",`, `[{"type":"tool_result","tool_use_id":"t`+id+`","content":"ok"}]`)
+	}
+	var c fixtureLines
+	c.typed("make the plans persist")
+	c.assistant("m1", "tool_use", text("Looking at how plans are stored."))
+	call(&c, "m1")
+	c.steer("will they replay after a day?")
+	c.assistant("m2", "tool_use", text("Mostly yes. The plans persist; their results expire after a day."))
+	call(&c, "m2")
+	c.assistant("m3", "tool_use", text("Running the storage tests."))
+	call(&c, "m3")
+	c.answer("m4", "Plans persist now. Results still expire after **24 hours**.")
+	out["steer answered mid-turn"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("find the leak")
+	c.assistant("m1", "tool_use", text("Checking the pool."))
+	call(&c, "m1")
+	c.assistant("m2", "tool_use", text("Found it: the pool never closes idle conns."))
+	call(&c, "m2")
+	c.assistant("m3", "end_turn", `{"type":"thinking","thinking":"done"}`)
+	out["thinking-only final"] = c.lines
+
+	// Records without a stop reason, as older CLIs wrote them.
+	c = fixtureLines{}
+	plain := func(id, part string) {
+		c.lines = append(c.lines, `{"type":"assistant","isSidechain":false,"cwd":"/w","sessionId":"s","timestamp":"`+c.ts()+
+			`","message":{"id":"`+id+`","model":"claude-opus-4","role":"assistant","content":[`+part+`]}}`)
+	}
+	c.typed("summarise the diff")
+	plain("m1", text("Reading the diff."))
+	plain("m1", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	c.user(`"promptSource":"system",`, `[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]`)
+	plain("m2", text("Two files changed."))
+	out["legacy, no stop reasons"] = c.lines
+
+	// Esc after narration: the narration is the turn's answer.
+	interrupt := func(c *fixtureLines, id string) {
+		c.user(`"origin":{"kind":"human"},"promptSource":"typed",`, `[{"type":"tool_result","tool_use_id":"t`+id+`","content":"x"},{"type":"text","text":"[Request interrupted by user for tool use]"}]`)
+	}
+	c = fixtureLines{}
+	c.typed("run the suite")
+	c.assistant("m0", "tool_use", text("Starting."))
+	call(&c, "m0")
+	c.assistant("m1", "tool_use", text("Suite running; 3 failures so far:\n- a\n- b"))
+	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	interrupt(&c, "1")
+	out["interrupted after a multi-line message"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("[agent-nudge] PR #4 has a review")
+	c.assistant("m1", "tool_use", text("Reading the review comments on PR 4."))
+	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	interrupt(&c, "1")
+	out["notice turn interrupted"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("deploy it")
+	c.assistant("m0", "tool_use", text("Checking."))
+	call(&c, "m0")
+	c.answer("m1", "Deploy started; I'll report when CI ends.")
+	c.notification()
+	call(&c, "m2") // a wakeup's long tool call
+	c.answer("m3", "CI is green.")
+	out["wakeup while a tool runs"] = c.lines
+
+	// One message, several text blocks or several records: one reply, one
+	// line.
+	c = fixtureLines{}
+	c.typed("check the cache")
+	c.assistant("m1", "tool_use", text("Part one.")+","+text("Part two."))
+	call(&c, "m1")
+	c.assistant("m2", "tool_use", text("Narration A."))
+	c.assistant("m2", "tool_use", text("Narration B."))
+	call(&c, "m2")
+	c.answer("m3", "Cache is warm.")
+	out["one message, several texts"] = c.lines
+
+	c = fixtureLines{}
+	c.typed("run it")
+	c.assistant("m0", "tool_use", text("Starting."))
+	call(&c, "m0")
+	c.assistant("m1", "tool_use", text("Line one."))
+	c.assistant("m1", "tool_use", text("Line two:\n- x\n- y"))
+	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	interrupt(&c, "1")
+	out["several texts, then interrupted"] = c.lines
+
+	// The same narration twice: first it is the stretch's answer, then the
+	// agent says it again on the way.
+	c = fixtureLines{}
+	c.typed("watch the queue")
+	c.assistant("m1", "tool_use", text("Queue is empty."))
+	call(&c, "m1")
+	c.assistant("m2", "end_turn", `{"type":"thinking","thinking":"done"}`)
+	c.notification()
+	c.assistant("m3", "tool_use", text("Queue is empty."))
+	call(&c, "m3")
+	c.answer("m4", "Still empty; stopping.")
+	out["promoted, then said again"] = c.lines
+
+	// Narration, then the person types, then Esc: the narration is not the
+	// reply to what they typed.
+	c = fixtureLines{}
+	c.typed("rename the module")
+	c.assistant("m1", "tool_use", text("Looking at the imports."))
+	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	c.steer("stop, rename the package instead")
+	interrupt(&c, "1")
+	out["narration, steer, Esc"] = c.lines
+	return out
+}
+
+// probeFiveLines is "wakeup while a tool runs" cut while the wakeup's tool
+// call runs: the file ends on that call.
+func probeFiveLines() []string {
+	lines := claudeReplyFixtures()["wakeup while a tool runs"]
+	for i, l := range lines {
+		if strings.Contains(l, `"id":"tm2"`) {
+			return lines[:i+1]
+		}
+	}
+	panic("no m2 call")
+}
+
+func TestFollowMatchesSnapshotWithReplies(t *testing.T) {
+	for name, lines := range claudeReplyFixtures() {
+		checkFollowMatchesSnapshot(t, name, lines, transcript.ParseClaude)
+	}
+	for name, lines := range codexReplyFixtures() {
+		checkFollowMatchesSnapshot(t, name, lines, transcript.ParseCodex)
+	}
+}
+
+func renderFixture(t *testing.T, lines []string, parse func(string) (*transcript.Session, error)) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := renderConvo(s, convoTarget{}, 0, false, time.Now())
+	_, body, _ := strings.Cut(out, "\n") // the header names the run's time zone
+	return body
+}
+
+// The reply to each steer shows in full, the rest of the commentary as one
+// line each, all in the order it happened.
+func TestOpsSixGolden(t *testing.T) {
+	at := func(m, s int) string { return time.Date(2026, 10, 6, 20, m, s, 0, time.UTC).Local().Format("15:04:05") }
+	want := `
+▌ you · ` + whenLabel(time.Date(2026, 10, 6, 20, 31, 2, 0, time.UTC), time.Now()) + `
+fix the review table
+
+▌ codex · ` + at(31, 3) + `
+Looking at the review page first.
+  · The second batch confirms three issues:
+
+▌ you, while it worked
+QQ: why are you opening the video files in quicktime?
+
+▌ codex · ` + at(31, 7) + `
+QuickTime is only a permission bridge. macOS lets this session read the files through it.
+
+▌ you, while it worked
+oh, it was the Findings that has the table.
+
+▌ you, while it worked
+review still shows cards
+
+▌ codex · ` + at(31, 11) + `
+Correct. Findings already has a table; Review is still the cards.
+
+I'll move Review onto the table.
+  · One Mill maintenance incident to surface now: Accordion armed a watcher.
+
+▌ codex · 14s · 4 tools
+Review now uses the **issue table**:
+
+- rows keep their order
+- filters persist
+`
+	if got := renderFixture(t, opsSixRollout(), transcript.ParseCodex); got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestReplyEdgeCases(t *testing.T) {
+	// An aborted Codex turn: its last commentary is the reply, shown once.
+	got := renderFixture(t, codexReplyFixtures()["aborted, commentary only"], transcript.ParseCodex)
+	if strings.Count(got, "Halfway there.") != 1 || !strings.Contains(got, "\nStarting with the API logs.\n") {
+		t.Errorf("aborted:\n%s", got)
+	}
+	// Claude's thinking-only final: the last text is the reply, once.
+	got = renderFixture(t, claudeReplyFixtures()["thinking-only final"], transcript.ParseClaude)
+	if strings.Count(got, "Found it") != 1 || !strings.Contains(got, "▌ claude · ") || strings.Contains(got, "(no reply)") {
+		t.Errorf("thinking-only:\n%s", got)
+	}
+	// No stop reasons: nothing can be told apart, so it reads as before.
+	got = renderFixture(t, claudeReplyFixtures()["legacy, no stop reasons"], transcript.ParseClaude)
+	if strings.Contains(got, "Reading the diff.") || !strings.Contains(got, "\nTwo files changed.\n") {
+		t.Errorf("legacy:\n%s", got)
+	}
+	// A steer answered mid-turn: the answer in full under it, then the
+	// narration on one line, then the final.
+	got = renderFixture(t, claudeReplyFixtures()["steer answered mid-turn"], transcript.ParseClaude)
+	order := []string{"\nLooking at how plans are stored.\n", "will they replay after a day?", "\nMostly yes. The plans persist", "  · Running the storage tests.", "Plans persist now."}
+	rest := got
+	for _, w := range order {
+		i := strings.Index(rest, w)
+		if i < 0 {
+			t.Fatalf("lacks %q (in order):\n%s", w, got)
+		}
+		rest = rest[i+len(w):]
+	}
+}
+
+// An answer that was first said on the way shows whole, and a notifier's
+// turn keeps the answer it ended on.
+func TestPromotedAnswers(t *testing.T) {
+	got := renderFixture(t, claudeReplyFixtures()["interrupted after a multi-line message"], transcript.ParseClaude)
+	if !strings.Contains(got, "\nSuite running; 3 failures so far:\n- a\n- b\n") || strings.Contains(got, "  · Suite running") {
+		t.Errorf("interrupted:\n%s", got)
+	}
+	got = renderFixture(t, claudeReplyFixtures()["notice turn interrupted"], transcript.ParseClaude)
+	if !strings.Contains(got, "· notice: [agent-nudge] PR #4 has a review\n  → Reading the review comments on PR 4.\n") {
+		t.Errorf("notice:\n%s", got)
+	}
+	got = renderFixture(t, codexReplyFixtures()["final answer repeats the last commentary"], transcript.ParseCodex)
+	if strings.Count(got, "Done: line one") != 1 || !strings.Contains(got, "\nDone: line one\nline two\n") {
+		t.Errorf("codex:\n%s", got)
+	}
+	got = renderFixture(t, codexReplyFixtures()["aborted, commentary only"], transcript.ParseCodex)
+	if strings.Count(got, "Halfway there.") != 1 || strings.Contains(got, "  · Halfway") {
+		t.Errorf("aborted:\n%s", got)
+	}
+	// Without a terminal a said line keeps its whole first line.
+	long := strings.Repeat("word ", 40)
+	p := newConvoPrinter("codex", false, false)
+	at := time.Date(2026, 10, 6, 20, 0, 0, 0, time.UTC)
+	out := p.emit(&transcript.Session{Turns: []transcript.Turn{{Prompt: "go", Open: true, Started: at, Items: []transcript.TurnItem{
+		{Kind: transcript.ItemSaid, Text: "first", At: at}, {Kind: transcript.ItemSaid, Text: long + "\nmore", At: at},
+	}}}})
+	if !strings.Contains(out, "  · "+strings.TrimSpace(long)+"\n") {
+		t.Errorf("said line cut without a terminal:\n%s", out)
+	}
+}
+
+// While a wakeup's tool call runs, the answer the stretch before it gave is
+// settled: the snapshot and --follow both show it, as earlier, and only an
+// answer still being written is held back.
+func TestHoldKeepsSettledAnswers(t *testing.T) {
+	lines := probeFiveLines()
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	s, err := transcript.ParseClaude(path)
+	if err != nil || !s.Unfinished {
+		t.Fatalf("want an unfinished file: %v", err)
+	}
+	holdLastTurn(s)
+	snap := renderConvo(s, convoTarget{}, 0, false, time.Now())
+	want := "\n▌ claude · earlier\nDeploy started; I'll report when CI ends.\n"
+	if !strings.Contains(snap, want) || strings.Contains(snap, "earlier\nChecking.") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	p := newConvoPrinter("claude", false, false)
+	p.live = true
+	var out strings.Builder
+	for n := 1; n <= len(lines); n++ {
+		os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600)
+		s, _ = transcript.ParseClaude(path)
+		out.WriteString(followEmit(p, s, s.Unfinished))
+	}
+	// --follow printed the answer when it was the turn's final, with that
+	// heading; it shows once, and in full.
+	if got := out.String(); !strings.Contains(got, "\nDeploy started; I'll report when CI ends.\n") || strings.Contains(got, "earlier\nChecking.") || strings.Count(got, "Deploy started") != 1 {
+		t.Errorf("follow:\n%s", got)
+	}
+}
+
+// followRender is the real --follow path over every line-prefix.
+func followRender(t *testing.T, lines []string, parse func(string) (*transcript.Session, error)) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rollout-x.jsonl")
+	p := newConvoPrinter("x", false, false)
+	p.live = true
+	var out strings.Builder
+	var s *transcript.Session
+	for n := 1; n <= len(lines); n++ {
+		os.WriteFile(path, []byte(strings.Join(lines[:n], "\n")+"\n"), 0o600)
+		s, _ = parse(path)
+		out.WriteString(followEmit(p, s, s.Unfinished))
+	}
+	if p.pending {
+		s, _ = parse(path)
+		out.WriteString(followEmit(p, s, false))
+	}
+	return out.String()
+}
+
+func TestCodexTaskCompleteReplacesTheAnswer(t *testing.T) {
+	lines := codexReplyFixtures()["task_complete names another last message"]
+	snap := renderFixture(t, lines, transcript.ParseCodex)
+	if !regexp.MustCompile(`\n▌ codex · \d+s\nDraft ready \(final\)\.\n`).MatchString(snap) || strings.Contains(snap, "\nDraft ready.\n") || strings.Contains(snap, "earlier") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	follow := followRender(t, lines, transcript.ParseCodex)
+	if !regexp.MustCompile(`\n▌ x · \d+s\nDraft ready \(final\)\.\n`).MatchString(follow) || strings.Contains(follow, "earlier") {
+		t.Errorf("follow:\n%s", follow)
+	}
+}
+
+func TestOneMessageSeveralTexts(t *testing.T) {
+	f := claudeReplyFixtures()
+	snap := renderFixture(t, f["one message, several texts"], transcript.ParseClaude)
+	if !regexp.MustCompile(`\n▌ claude · \d\d:\d\d:\d\d\nPart one\.\n\nPart two\.\n  · Narration A\.\n\n▌ claude · `).MatchString(snap) || strings.Contains(snap, "Narration B") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	if follow := followRender(t, f["one message, several texts"], transcript.ParseClaude); !strings.Contains(follow, "\nPart one.\n\nPart two.\n  · Narration A.\n") || strings.Contains(follow, "Narration B") {
+		t.Errorf("follow:\n%s", follow)
+	}
+	// Said in two records, then the answer by an interrupt: the snapshot
+	// shows the answer once, whole; --follow may show the parts first.
+	snap = renderFixture(t, f["several texts, then interrupted"], transcript.ParseClaude)
+	if strings.Count(snap, "Line one.") != 1 || !strings.Contains(snap, "\nLine one.\n\nLine two:\n- x\n- y\n") || strings.Contains(snap, "  · Line") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	follow := followRender(t, f["several texts, then interrupted"], transcript.ParseClaude)
+	if !regexp.MustCompile(`\n▌ x · \d+s · 2 tools\nLine one\.\n\nLine two:\n- x\n- y\n`).MatchString(follow) {
+		t.Errorf("follow:\n%s", follow)
+	}
+}
+
+// A said line is one line, even when its text holds a Unicode line or
+// paragraph separator.
+func TestSaidLineStaysOneLine(t *testing.T) {
+	at := time.Date(2026, 10, 6, 20, 0, 0, 0, time.UTC)
+	for _, color := range []bool{false, true} {
+		p := newConvoPrinter("codex", color, false)
+		out := p.emit(&transcript.Session{Turns: []transcript.Turn{{Prompt: "go", Open: true, Started: at, Items: []transcript.TurnItem{
+			{Kind: transcript.ItemSaid, Text: "first", At: at}, {Kind: transcript.ItemSaid, Text: "one\u2028two\u2029three", At: at},
+		}}}})
+		plain := sgrPattern.ReplaceAllString(out, "")
+		if !strings.Contains(plain, "  · one\n") || strings.Contains(plain, "two") {
+			t.Errorf("color=%v:\n%q", color, out)
+		}
+	}
+}
+
+func TestEarlierAnswersWithoutItems(t *testing.T) {
+	lines := codexReplyFixtures()["answers without a final_answer, then wakeups"]
+	for name, out := range map[string]string{"snapshot": renderFixture(t, lines, transcript.ParseCodex), "follow": followRender(t, lines, transcript.ParseCodex)} {
+		for _, w := range []string{"\nQueue has 3 jobs.\n", "\nQueue has 2 jobs.\n", "\nQueue has 1 job.\n"} {
+			if strings.Count(out, w) != 1 {
+				t.Errorf("%s: %q shows %d times:\n%s", name, w, strings.Count(out, w), out)
+			}
+		}
+		if i, j := strings.Index(out, "Queue has 3 jobs."), strings.Index(out, "A job finished."); i < 0 || j < 0 || i > j {
+			t.Errorf("%s: the earlier answer is not before the stretch after it:\n%s", name, out)
+		}
+	}
+}
+
+func TestSaidAgainAfterItWasPromoted(t *testing.T) {
+	lines := claudeReplyFixtures()["promoted, then said again"]
+	// The snapshot labels the first an earlier answer; --follow printed it
+	// when it was the final. Either way the second shows too.
+	snap := renderFixture(t, lines, transcript.ParseClaude)
+	if !strings.Contains(snap, "earlier\nQueue is empty.\n") || !strings.Contains(snap, "  · Queue is empty.\n") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	follow := followRender(t, lines, transcript.ParseClaude)
+	if !regexp.MustCompile(`\n▌ x · [^\n]+\nQueue is empty\.\n`).MatchString(follow) || !strings.Contains(follow, "  · Queue is empty.\n") {
+		t.Errorf("follow:\n%s", follow)
+	}
+}
+
+func TestNoPromotionAcrossASteer(t *testing.T) {
+	lines := claudeReplyFixtures()["narration, steer, Esc"]
+	snap := renderFixture(t, lines, transcript.ParseClaude)
+	if strings.Count(snap, "Looking at the imports.") != 1 || strings.Index(snap, "Looking at the imports.") > strings.Index(snap, "stop, rename") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	follow := followRender(t, lines, transcript.ParseClaude)
+	if strings.Count(follow, "Looking at the imports.") != 1 || strings.Index(follow, "Looking at the imports.") > strings.Index(follow, "stop, rename") {
+		t.Errorf("follow:\n%s", follow)
 	}
 }

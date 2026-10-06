@@ -68,6 +68,94 @@ type Turn struct {
 	Started time.Time
 	Ended   time.Time
 	Tools   int // tool calls made during the turn
+	// Items is the turn after its prompt, in the order it happened: the
+	// person's steers, what the agent said while it worked, and the
+	// answers that ended a stretch (Earlier, and Reply once the turn is
+	// over). Items only grow as the file does. A parser that cannot tell
+	// work-in-progress text from an answer (an older CLI) leaves the
+	// agent's part out, and Earlier and Reply stand alone.
+	Items []TurnItem
+}
+
+// ItemKind says what a TurnItem is.
+type ItemKind uint8
+
+const (
+	ItemSteer  ItemKind = iota // the person typed it while the turn ran
+	ItemSaid                   // the agent said it on the way: Claude text before a tool call, Codex commentary
+	ItemAnswer                 // an answer that ended a stretch of the turn
+)
+
+// TurnItem is one thing that happened in a turn after its prompt.
+type TurnItem struct {
+	Kind ItemKind
+	Text string
+	At   time.Time
+	// MsgID is the agent message a said item comes from (Claude). A
+	// message with several text blocks, or written as several records,
+	// gives one item each, in a row.
+	MsgID string
+	// Promotes marks an answer that repeats the agent's last said item: a
+	// stretch that ended on its own narration (Claude's thinking-only end,
+	// an interrupt) or on commentary (an aborted Codex turn), or a final
+	// answer that says again what the last commentary said.
+	Promotes bool
+	// Provisional marks the answer of a stretch whose closing message is
+	// the last thing in the file: Claude Code may still be writing it (its
+	// text comes as a record after its thinking), so the answer can still
+	// change. Anything after that message settles it.
+	Provisional bool
+	// Supersedes marks an answer that replaces the answer just before it,
+	// of the same stretch: Codex's task_complete naming a last message
+	// other than the final_answer it had sent.
+	Supersedes bool
+}
+
+// addAnswer records an answer that ended a stretch. It Promotes the last
+// thing said when it repeats it: the whole message, all of its text
+// blocks joined, as the stretch's answer joins them, and only when that
+// message is the turn's last item. When the person typed something after
+// it, it is not promoted to answer what they typed: it stands for the
+// answer where it is, and the answer is not recorded again.
+func (t *Turn) addAnswer(text string, at time.Time) {
+	if n := len(t.Items); n > 0 && t.Items[n-1].Kind == ItemSaid && t.saidEndingAt(n-1) == text {
+		t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at, Promotes: true})
+		return
+	}
+	if i := t.lastAgent(); i >= 0 && t.Items[i].Kind == ItemSaid && t.saidEndingAt(i) == text {
+		return
+	}
+	t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at})
+}
+
+// answered reports whether the agent's last item is an answer saying text.
+func (t *Turn) answered(text string) bool {
+	i := t.lastAgent()
+	return i >= 0 && t.Items[i].Kind == ItemAnswer && t.Items[i].Text == text
+}
+
+// saidEndingAt is the message said on the way whose last part is item i,
+// its parts joined.
+func (t *Turn) saidEndingAt(i int) string {
+	j := i
+	for j > 0 && t.Items[j-1].Kind == ItemSaid && t.Items[i].MsgID != "" && t.Items[j-1].MsgID == t.Items[i].MsgID {
+		j--
+	}
+	parts := make([]string, 0, i-j+1)
+	for _, it := range t.Items[j : i+1] {
+		parts = append(parts, it.Text)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// lastAgent is the index of the agent's last item, or -1.
+func (t *Turn) lastAgent() int {
+	for i := len(t.Items) - 1; i >= 0; i-- {
+		if t.Items[i].Kind != ItemSteer {
+			return i
+		}
+	}
+	return -1
 }
 
 // Label is the session's name, else its first human prompt.
