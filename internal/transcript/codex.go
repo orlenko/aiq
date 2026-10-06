@@ -172,6 +172,7 @@ func ParseCodex(path string) (*Session, error) {
 		if joins {
 			if src == Human {
 				cur.Steers = append(cur.Steers, prompt)
+				cur.Items = append(cur.Items, TurnItem{Kind: ItemSteer, Text: prompt, At: ts})
 			}
 			return
 		}
@@ -263,9 +264,13 @@ func ParseCodex(path string) (*Session, error) {
 				text := strings.Join(texts, "\n")
 				if p.Phase == "commentary" {
 					commentary = text
+					cur.Items = append(cur.Items, TurnItem{Kind: ItemSaid, Text: text, At: ts})
 				} else if !final {
 					cur.Reply = text
 					ended = p.Phase == "final_answer"
+					if ended {
+						cur.addAnswer(text, ts)
+					}
 				}
 			case strings.HasSuffix(p.Type, "_call") && cur != nil:
 				work()

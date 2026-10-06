@@ -68,6 +68,43 @@ type Turn struct {
 	Started time.Time
 	Ended   time.Time
 	Tools   int // tool calls made during the turn
+	// Items is the turn after its prompt, in the order it happened: the
+	// person's steers, what the agent said while it worked, and the
+	// answers that ended a stretch (Earlier, and Reply once the turn is
+	// over). Items only grow as the file does. A parser that cannot tell
+	// work-in-progress text from an answer (an older CLI) leaves the
+	// agent's part out, and Earlier and Reply stand alone.
+	Items []TurnItem
+}
+
+// ItemKind says what a TurnItem is.
+type ItemKind uint8
+
+const (
+	ItemSteer  ItemKind = iota // the person typed it while the turn ran
+	ItemSaid                   // the agent said it on the way: Claude text before a tool call, Codex commentary
+	ItemAnswer                 // an answer that ended a stretch of the turn
+)
+
+// TurnItem is one thing that happened in a turn after its prompt.
+type TurnItem struct {
+	Kind ItemKind
+	Text string
+	At   time.Time
+}
+
+// addAnswer records an answer that ended a stretch, unless the agent's
+// last item already says it (a stretch that ended on its own narration).
+func (t *Turn) addAnswer(text string, at time.Time) {
+	for i := len(t.Items) - 1; i >= 0; i-- {
+		if t.Items[i].Kind != ItemSteer {
+			if t.Items[i].Text == text {
+				return
+			}
+			break
+		}
+	}
+	t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at})
 }
 
 // Label is the session's name, else its first human prompt.

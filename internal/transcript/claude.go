@@ -120,6 +120,7 @@ func ParseClaude(path string) (*Session, error) {
 	var cur *Turn
 	curCommand := false
 	lastTextMsg := ""
+	replyAt := time.Time{} // when cur.Reply's text came
 	// ended says the current stretch of cur reached its end with message
 	// endMsg; sawStop says some reply of cur recorded why it stopped
 	// (older CLIs never do, and their turns are never shown as open).
@@ -133,6 +134,9 @@ func ParseClaude(path string) (*Session, error) {
 			return
 		}
 		cur.Open = last && open()
+		if !cur.Open && ended && endMsg != "" && lastTextMsg == endMsg && cur.Reply != "" && !synthetic {
+			cur.addAnswer(cur.Reply, replyAt) // the message that ended the stretch said it
+		}
 		if cur.Open {
 			cur.Reply = ""
 		} else if cur.Reply == "" && len(cur.Earlier) > 0 {
@@ -213,6 +217,7 @@ func ParseClaude(path string) (*Session, error) {
 					}
 					if open() {
 						cur.Steers = append(cur.Steers, text)
+						cur.Items = append(cur.Items, TurnItem{Kind: ItemSteer, Text: text, At: ts})
 						if !ts.IsZero() {
 							cur.Ended = ts
 						}
@@ -281,6 +286,9 @@ func ParseClaude(path string) (*Session, error) {
 						// task woke it, or a hook sent it back to work.
 						if cur.Reply != "" && !synthetic {
 							cur.Earlier = append(cur.Earlier, cur.Reply)
+							if endMsg != "" && lastTextMsg == endMsg {
+								cur.addAnswer(cur.Reply, replyAt)
+							}
 						}
 						cur.Reply, lastTextMsg, ended = "", "", false
 					}
@@ -305,9 +313,15 @@ func ParseClaude(path string) (*Session, error) {
 							if rec.Message.ID != "" && rec.Message.ID == lastTextMsg && cur.Reply != "" {
 								cur.Reply += "\n\n" + text
 							} else {
-								cur.Reply = text
+								cur.Reply, replyAt = text, ts
 							}
 							lastTextMsg, synthetic = rec.Message.ID, rec.Message.Model == "<synthetic>"
+							// Text before a tool call is said on the way. A
+							// record without a stop reason (older CLIs)
+							// cannot tell, and adds nothing.
+							if sr := rec.Message.StopReason; (sr == "tool_use" || sr == "pause_turn") && !synthetic {
+								cur.Items = append(cur.Items, TurnItem{Kind: ItemSaid, Text: text, At: ts})
+							}
 						}
 					}
 					if !sawStop && rec.Message.StopReason == "" && called {
