@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -162,6 +163,43 @@ func PaneInfo(pane string) (Pane, error) {
 		return Pane{}, fmt.Errorf("tmux: no pane %s", pane)
 	}
 	return panes[0], nil
+}
+
+// ClientTheme is a client and the theme ("light", "dark", or "" while
+// unknown) its terminal reported to tmux.
+type ClientTheme struct {
+	Client string
+	Theme  string
+}
+
+// ClientThemes lists the clients showing target's session (every client
+// when target is ""), with their themes. tmux learns a client's theme
+// when its terminal reports one; an older tmux prints none.
+func ClientThemes(target string) ([]ClientTheme, error) {
+	args := []string{"list-clients", "-F", "#{client_name} #{client_theme}"}
+	if target != "" {
+		args = append(args, "-t", target)
+	}
+	// A theme is a nicety: a server that does not answer within a second
+	// does not hold up what was asked for.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	return parseClientThemes(string(out)), nil
+}
+
+func parseClientThemes(out string) []ClientTheme {
+	var list []ClientTheme
+	for _, line := range strings.Split(out, "\n") {
+		name, theme, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if name != "" {
+			list = append(list, ClientTheme{Client: name, Theme: theme})
+		}
+	}
+	return list
 }
 
 // Respawn kills whatever runs in pane and starts command there.

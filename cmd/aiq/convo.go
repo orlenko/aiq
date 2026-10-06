@@ -25,7 +25,7 @@ import (
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
-const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [<session-id>]
+const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--theme auto|light|dark] [<session-id>]
   what was typed into an agent session and what the agent answered, without the tool calls
   no id, in tmux    the agent in this pane, else the one live session here
   no id, elsewhere  the one live session here: a Claude session or an aiq long
@@ -35,7 +35,14 @@ const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [<sessi
   --pane <id>       the agent in tmux pane <id> (key bindings pass #{pane_id})
   --follow          keep printing as the conversation goes on (for a side split)
   --last N          only the last N prompts you typed
+  --theme T         colours for a light or dark background (also AIQ_THEME; the
+                    flag wins); auto, the default, asks the terminal for its
+                    background (OSC 11), else the theme tmux learned from the
+                    terminals showing the pane (#{client_theme}), else reads
+                    $COLORFGBG, else takes dark. tmux answers OSC 11 in a pane,
+                    not in a popup
 On a terminal the conversation opens at its end in $PAGER, else less -R +G.
+--follow ignores what is typed into it; Ctrl-C quits.
 
 tmux key bindings (add them to ~/.tmux.conf yourself; aiq never installs them):
   # prefix a: the conversation of the pane you are in, in a popup
@@ -66,6 +73,7 @@ type convoOpts struct {
 	follow bool
 	last   int
 	id     string
+	theme  string // auto, light, dark, or "" for AIQ_THEME
 }
 
 func parseConvoArgs(args []string) (convoOpts, error) {
@@ -106,6 +114,15 @@ func parseConvoArgs(args []string) (convoOpts, error) {
 				return o, fmt.Errorf("--last takes a number of prompts, not %q", v)
 			}
 			o.last = n
+		case a == "--theme" || strings.HasPrefix(a, "--theme="):
+			v, err := value("--theme")
+			if err != nil {
+				return o, err
+			}
+			o.theme = strings.ToLower(v)
+			if o.theme != "auto" && o.theme != "light" && o.theme != "dark" {
+				return o, fmt.Errorf("--theme takes auto, light or dark, not %q", v)
+			}
 		case a == "--follow" || a == "-f":
 			o.follow = true
 		case a == "-h" || a == "--help":
@@ -167,20 +184,57 @@ func cmdConvo(args []string) error {
 	if err != nil {
 		return err
 	}
-	tty := term.IsTerminal(int(os.Stdout.Fd()))
 	if o.follow && tgt.provider == "agy" {
 		// ParseAgy has no notion of a running turn or of narration, so a
 		// live follow would print every planner message as an answer.
 		return configErr("bad-flags", "aiq convo --follow cannot follow Antigravity sessions yet; aiq convo without --follow prints one")
 	}
+	// Signals are caught before the terminal changes mode (the theme
+	// query, --follow's muted input), so every way out puts it back.
+	stop := make(chan struct{})
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	// quit and gone let the snapshot hand signals back without losing one
+	// that arrived just before.
+	quit, gone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(gone)
+		select {
+		case <-sig:
+			close(stop)
+		case <-quit:
+		}
+	}()
+	tty := term.IsTerminal(int(os.Stdout.Fd()))
+	if tty {
+		// Before --follow takes the keyboard and before a pager starts:
+		// the terminal's answer comes on the same input.
+		pal = choosePalette(themeChoice(o.theme, os.Getenv("AIQ_THEME"), os.Stderr), tgt.pane, stop)
+	}
+	select {
+	case <-stop:
+		return nil
+	default:
+	}
 	if o.follow {
 		f := &convoFollow{r: r, tgt: tgt, w: os.Stdout, tty: tty, last: o.last,
-			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: convoQuiet}
-		stop := make(chan struct{})
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-		go func() { <-sig; close(stop) }()
+			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: convoQuiet,
+			// The keyboard is the controlling terminal's, wherever stdin
+			// points; run falls back when /dev/tty cannot be opened.
+			mute: tty}
 		return f.run(stop)
+	}
+	// The snapshot leaves signals to their defaults again, as before, but
+	// one that came in on the way here still ends it.
+	signal.Stop(sig)
+	close(quit)
+	<-gone
+	select {
+	case <-stop:
+		return nil
+	case <-sig:
+		return nil
+	default:
 	}
 	_, mod := statFile(tgt.path)
 	s, err := loadConvo(tgt)
@@ -728,7 +782,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			if human {
 				p.human(&b, "▌ you · "+whenLabel(t.Started, time.Now()), t.Prompt)
 			} else {
-				b.WriteString("\n" + p.paint(sgrDim, "· "+sourceLabel(t.Source)+": "+firstLine(t.Prompt)) + "\n")
+				b.WriteString("\n" + p.paint(pal.dim, "· "+sourceLabel(t.Source)+": "+firstLine(t.Prompt)) + "\n")
 			}
 			p.note(k, "prompt", t.Prompt)
 			seen.head = true
@@ -758,16 +812,16 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			seen.answers[a]++
 			switch {
 			case !human && len(t.Steers) == 0:
-				b.WriteString(p.paint(sgrDim, "  → "+firstLine(a)) + "\n")
+				b.WriteString(p.paint(pal.dim, "  → "+firstLine(a)) + "\n")
 			case final:
-				p.answer(&b, sgrBoldGreen, head, "", a)
+				p.answer(&b, pal.agent, head, "", a)
 			default:
-				p.answer(&b, sgrDim, "▌ "+p.provider+" · earlier", sgrDim, a)
+				p.answer(&b, pal.dim, "▌ "+p.provider+" · earlier", pal.dim, a)
 			}
 			p.note(k, "answer", a)
 		}
 		if human && !t.Open && len(seen.answers) == 0 && !seen.noReply && !(p.live && last) {
-			p.block(&b, false, sgrBoldGreen, head, sgrDim, "(no reply)")
+			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
 			p.note(k, "none", "")
 			seen.noReply = true
 		}
@@ -800,7 +854,7 @@ const sgrBand = "\x1b[48;5;236m"
 // stands apart from the agent's answers at a glance.
 func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 	if !p.color {
-		p.block(b, true, sgrBoldCyan, head, sgrBold, body)
+		p.block(b, true, pal.you, head, sgrBold, body)
 		return
 	}
 	width := p.width
@@ -813,13 +867,13 @@ func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 	// One style per line, so the only reset is the last thing on it: the
 	// grey has no holes and never bleeds into what comes next.
 	line := func(sgr, text string) string {
-		return sgrBand + sgr + text + strings.Repeat(" ", max(0, width-cells(text))) + sgrReset + "\n"
+		return pal.band + sgr + text + strings.Repeat(" ", max(0, width-cells(text))) + sgrReset + "\n"
 	}
 	b.WriteString("\n")
 	if p.marks {
 		b.WriteString(osc133Prompt)
 	}
-	b.WriteString(line(sgrBoldCyan, truncate(sanitize(head), width)))
+	b.WriteString(line(pal.you, truncate(sanitize(head), width)))
 	for _, l := range wrap(sanitize(strings.TrimRight(body, "\n")), width) {
 		b.WriteString(line(sgrBold, l))
 	}
@@ -1002,7 +1056,7 @@ func renderConvo(s *transcript.Session, t convoTarget, last int, color bool, now
 	p.skip(s.Turns[:from])
 	out := convoHeader(s, t, from, color) + p.emit(s)
 	if w := workingLabel(s, now); w != "" {
-		out += "\n" + p.paint(sgrYellow, w) + "\n"
+		out += "\n" + p.paint(pal.accent, w) + "\n"
 	}
 	return out
 }
@@ -1022,10 +1076,25 @@ type convoFollow struct {
 	resolveEvery time.Duration // how often to ask the pane what it runs
 	quiet        time.Duration // see convoQuiet
 
+	// mute swallows what is typed into the terminal while --follow runs.
+	mute bool
+
 	status string // on screen now
 }
 
 func (f *convoFollow) run(stop <-chan struct{}) error {
+	var m *mutedInput
+	if f.mute {
+		if tty, err := openTTY(); err == nil {
+			if m, err = muteInput(tty); err != nil { // without it, keys echo as before
+				tty.close()
+			}
+		}
+	}
+	return withMutedInput(m, func() error { return f.loop(stop) })
+}
+
+func (f *convoFollow) loop(stop <-chan struct{}) error {
 	// The file is looked at before each parse, never after, so a write
 	// that lands during a parse shows as a change on the next tick.
 	size, mod := statFile(f.tgt.path)
@@ -1084,7 +1153,7 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 				if from > 0 {
 					line += fmt.Sprintf("\n(%d earlier turn%s not shown)", from, plural(from))
 				}
-				f.print("\n" + p.paint(sgrYellow, line) + "\n" + f.emit(p, s, m))
+				f.print("\n" + p.paint(pal.accent, line) + "\n" + f.emit(p, s, m))
 				size, mod = sz, m
 				lastParse, dirty = now, p.pending
 			default:
@@ -1161,7 +1230,7 @@ func (f *convoFollow) setStatus(s string) {
 	f.status = s
 	fmt.Fprint(f.w, "\r\x1b[K")
 	if s != "" {
-		fmt.Fprint(f.w, sgrDim+truncate(s, width-1)+sgrReset)
+		fmt.Fprint(f.w, pal.dim+truncate(s, width-1)+sgrReset)
 	}
 }
 

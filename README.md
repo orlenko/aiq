@@ -281,6 +281,7 @@ aiq convo --pane %5         the agent in tmux pane %5
 aiq convo <id>              any session of this directory (a unique prefix is enough)
 aiq convo --last 3          only the last three prompts and what followed
 aiq convo --follow          keep printing as the conversation goes on
+aiq convo --theme light     colours for a light background (auto|light|dark)
 ```
 
 On a terminal the conversation opens at its end in `$PAGER` (else
@@ -292,7 +293,20 @@ new prompts and replies are appended, a status line at the bottom says how
 long the agent has been working, and each prompt carries a mark that tmux
 copy mode's `previous-prompt` / `next-prompt` jump to. When the pane moves to
 a new transcript (`/clear`, Codex `/new`, a takeover by another provider),
-`--follow` prints a divider and goes on with the new one.
+`--follow` prints a divider and goes on with the new one. It is read-only:
+what you type into it is swallowed, not echoed, and does not reach the
+session or the shell afterwards; Ctrl-C quits.
+
+The colours suit a dark background unless the terminal says it is light.
+`--theme auto` (the default) asks the terminal for its background colour
+(OSC 11), else asks tmux which theme the terminals showing the pane
+reported (`#{client_theme}`, tmux 3.7; `$AIQ_TMUX_CLIENT` picks one client
+when they disagree), else reads `$COLORFGBG`, else takes dark; `--theme light|dark`, or
+`AIQ_THEME`, settles it (the flag wins). tmux answers that query in a pane
+when it knows the colour (from the outer terminal, or a `window-style`
+background) but not in a popup; there the client theme usually settles it,
+and otherwise `set-environment -g AIQ_THEME light` or `--theme light` in the
+binding does.
 
 A pane is matched through the agent's own records: Claude Code's
 `sessions/<pid>.json`, else the pane's `aiq long` lease. Either counts only
@@ -684,7 +698,7 @@ aiq reset <provider>/<name>          consume a Codex or Claude reset credit
 
 aiq resume [--all] [--print] [--launcher <name> | --bare] [<id>] [-- args]
                                      this directory's sessions: browse turns, resume one
-aiq convo [--pane <id>] [--follow] [--last N] [<id>]
+aiq convo [--pane <id>] [--follow] [--last N] [--theme auto|light|dark] [<id>]
                                      only the prompts and replies of a running session
 
 aiq shim install|uninstall|path
