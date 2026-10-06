@@ -730,11 +730,15 @@ type convoPrinter struct {
 }
 
 type turnSeen struct {
-	hidden  bool // left out by --last
-	head    bool
-	steers  int
-	answers map[string]int    // how often each answer text was printed: the parser can move one between Earlier and Reply, and an agent can say the same thing twice
-	said    map[string]int    // the same, for what the agent said on the way
+	hidden bool // left out by --last
+	head   bool
+	steers int
+	// done holds the agent texts printed, each by kind, text and which
+	// occurrence of that text in the turn it is: the parser can move an
+	// answer between Earlier and Reply, an agent can say the same thing
+	// twice, and a piece skipped as promoted or replaced still takes up
+	// its occurrence.
+	done    map[string]bool
 	msgMode map[string]string // how a said message's first part printed: reply, line or hidden; its later parts follow suit
 	noReply bool
 }
@@ -768,7 +772,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		k := turnKey(i, t)
 		seen := p.seen[k]
 		if seen == nil {
-			seen = &turnSeen{answers: map[string]int{}, said: map[string]int{}, msgMode: map[string]string{}}
+			seen = &turnSeen{done: map[string]bool{}, msgMode: map[string]string{}}
 			p.seen[k] = seen
 		}
 		if seen.hidden || idleNotice(t) {
@@ -798,7 +802,14 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		last := i == len(s.Turns)-1
 		full := human     // the person has typed into the turn
 		awaiting := human // the agent has not answered what they typed yet
-		steers, occ, occSaid := 0, map[string]int{}, map[string]int{}
+		steers, occ := 0, map[string]int{}
+		// once names this occurrence of a text of the kind, and reports
+		// whether it was printed before.
+		once := func(kind, text string) (string, bool) {
+			occ[kind+"\x00"+text]++
+			id := fmt.Sprintf("%s\x00%s\x00%d", kind, text, occ[kind+"\x00"+text])
+			return id, seen.done[id]
+		}
 		for _, pc := range pieces {
 			if pc.kind == transcript.ItemSteer {
 				if steers++; steers > seen.steers {
@@ -809,14 +820,23 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				full, awaiting = true, true
 				continue
 			}
+			said := pc.kind == transcript.ItemSaid && !pc.final
+			// A said item that holds the final answer (no answer was
+			// recorded after it) keeps its identity as said: --follow may
+			// have printed it before the turn ended.
+			kind := "answer"
+			if pc.kind == transcript.ItemSaid {
+				kind = "said"
+			}
+			id, printed := once(kind, pc.text)
 			if pc.promoted || pc.replaced {
 				continue // an answer after it says it in full
 			}
 			if pc.cont {
 				// A later part of a message already begun: it goes on the
 				// reply it belongs to, and adds nothing to a one-liner.
-				if occSaid[pc.text]++; occSaid[pc.text] > seen.said[pc.text] {
-					seen.said[pc.text]++
+				if !printed {
+					seen.done[id] = true
 					if seen.msgMode[pc.msg] == "reply" {
 						p.answer(&b, "", "", "", pc.text)
 						p.note(k, "said", pc.text)
@@ -826,25 +846,20 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			}
 			reply := awaiting
 			awaiting = false
-			said := pc.kind == transcript.ItemSaid && !pc.final
 			if said && !full {
 				seen.msgMode[pc.msg] = "hidden"
 				continue // a notifier's turn shows its answers only
 			}
-			// Said and answered texts are counted apart: an answer that
+			// Said and answered texts are told apart: an answer that
 			// repeats a line already said prints in full all the same.
-			count, printed := occ, seen.answers
-			if said {
-				count, printed = occSaid, seen.said
-			}
-			if count[pc.text]++; count[pc.text] <= printed[pc.text] {
+			if printed {
 				continue
 			}
 			if pc.final && last && p.hold {
 				p.pending = true
 				continue
 			}
-			printed[pc.text]++
+			seen.done[id] = true
 			switch {
 			case !full:
 				b.WriteString(p.paint(pal.dim, "  → "+firstLine(pc.text)) + "\n")
@@ -859,13 +874,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				p.said(&b, pc.text)
 				seen.msgMode[pc.msg] = "line"
 			}
-			if said {
-				p.note(k, "said", pc.text)
-			} else {
-				p.note(k, "answer", pc.text)
-			}
+			p.note(k, kind, pc.text)
 		}
-		if human && !t.Open && len(seen.answers)+len(seen.said) == 0 && !seen.noReply && !(p.live && last) {
+		if human && !t.Open && len(seen.done) == 0 && !seen.noReply && !(p.live && last) {
 			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
 			p.note(k, "none", "")
 			seen.noReply = true
@@ -903,7 +914,7 @@ func turnPieces(t transcript.Turn) []piece {
 	for _, it := range t.Items {
 		j := lastAgent()
 		switch {
-		case it.Promotes && j >= 0 && out[j].kind == transcript.ItemSaid:
+		case it.Promotes && j >= 0 && j == len(out)-1 && out[j].kind == transcript.ItemSaid:
 			// The whole message it repeats, every part of it.
 			for ; j >= 0 && out[j].kind == transcript.ItemSaid; j-- {
 				out[j].promoted = true
@@ -925,11 +936,20 @@ func turnPieces(t transcript.Turn) []piece {
 			out = append(out, piece{kind: transcript.ItemSteer, text: st})
 		}
 	}
-	if !agent {
-		// Only steers, if anything: the answers are Earlier and Reply.
-		for _, e := range t.Earlier {
-			out = append(out, piece{kind: transcript.ItemAnswer, text: e})
+	// Earlier answers no item stands for (a parser that keeps no agent
+	// items, or an answer it could not place) follow the items.
+	shown := map[string]int{}
+	for _, pc := range out {
+		if pc.kind != transcript.ItemSteer && !pc.replaced {
+			shown[pc.text]++
 		}
+	}
+	for _, e := range t.Earlier {
+		if shown[e] > 0 {
+			shown[e]--
+			continue
+		}
+		out = append(out, piece{kind: transcript.ItemAnswer, text: e})
 	}
 	if t.Open || t.Reply == "" {
 		return out

@@ -1075,6 +1075,25 @@ func codexReplyFixtures() map[string][]string {
 	c.say("final_answer", "Draft ready.")
 	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Draft ready (final)."}`)
 	out["task_complete names another last message"] = c.rollout()
+
+	// Answers that come only as an agent_message or in task_complete, then
+	// a wakeup with commentary: they stay, as earlier answers.
+	c = codexLines{}
+	c.started("a")
+	c.user("a", "check the queue")
+	c.say("commentary", "Looking.")
+	c.add("event_msg", `{"type":"agent_message","message":"Queue has 3 jobs."}`)
+	c.add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Queue has 3 jobs."}`)
+	c.started("w")
+	c.call()
+	c.say("commentary", "A job finished.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"w","last_agent_message":"Queue has 2 jobs."}`)
+	c.started("w2")
+	c.call()
+	c.say("commentary", "Another finished.")
+	c.say("final_answer", "Queue has 1 job.")
+	c.add("event_msg", `{"type":"task_complete","turn_id":"w2","last_agent_message":"Queue has 1 job."}`)
+	out["answers without a final_answer, then wakeups"] = c.rollout()
 	return out
 }
 
@@ -1170,6 +1189,29 @@ func claudeReplyFixtures() map[string][]string {
 	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
 	interrupt(&c, "1")
 	out["several texts, then interrupted"] = c.lines
+
+	// The same narration twice: first it is the stretch's answer, then the
+	// agent says it again on the way.
+	c = fixtureLines{}
+	c.typed("watch the queue")
+	c.assistant("m1", "tool_use", text("Queue is empty."))
+	call(&c, "m1")
+	c.assistant("m2", "end_turn", `{"type":"thinking","thinking":"done"}`)
+	c.notification()
+	c.assistant("m3", "tool_use", text("Queue is empty."))
+	call(&c, "m3")
+	c.answer("m4", "Still empty; stopping.")
+	out["promoted, then said again"] = c.lines
+
+	// Narration, then the person types, then Esc: the narration is not the
+	// reply to what they typed.
+	c = fixtureLines{}
+	c.typed("rename the module")
+	c.assistant("m1", "tool_use", text("Looking at the imports."))
+	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
+	c.steer("stop, rename the package instead")
+	interrupt(&c, "1")
+	out["narration, steer, Esc"] = c.lines
 	return out
 }
 
@@ -1409,5 +1451,45 @@ func TestSaidLineStaysOneLine(t *testing.T) {
 		if !strings.Contains(plain, "  · one\n") || strings.Contains(plain, "two") {
 			t.Errorf("color=%v:\n%q", color, out)
 		}
+	}
+}
+
+func TestEarlierAnswersWithoutItems(t *testing.T) {
+	lines := codexReplyFixtures()["answers without a final_answer, then wakeups"]
+	for name, out := range map[string]string{"snapshot": renderFixture(t, lines, transcript.ParseCodex), "follow": followRender(t, lines, transcript.ParseCodex)} {
+		for _, w := range []string{"\nQueue has 3 jobs.\n", "\nQueue has 2 jobs.\n", "\nQueue has 1 job.\n"} {
+			if strings.Count(out, w) != 1 {
+				t.Errorf("%s: %q shows %d times:\n%s", name, w, strings.Count(out, w), out)
+			}
+		}
+		if i, j := strings.Index(out, "Queue has 3 jobs."), strings.Index(out, "A job finished."); i < 0 || j < 0 || i > j {
+			t.Errorf("%s: the earlier answer is not before the stretch after it:\n%s", name, out)
+		}
+	}
+}
+
+func TestSaidAgainAfterItWasPromoted(t *testing.T) {
+	lines := claudeReplyFixtures()["promoted, then said again"]
+	// The snapshot labels the first an earlier answer; --follow printed it
+	// when it was the final. Either way the second shows too.
+	snap := renderFixture(t, lines, transcript.ParseClaude)
+	if !strings.Contains(snap, "earlier\nQueue is empty.\n") || !strings.Contains(snap, "  · Queue is empty.\n") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	follow := followRender(t, lines, transcript.ParseClaude)
+	if !regexp.MustCompile(`\n▌ x · [^\n]+\nQueue is empty\.\n`).MatchString(follow) || !strings.Contains(follow, "  · Queue is empty.\n") {
+		t.Errorf("follow:\n%s", follow)
+	}
+}
+
+func TestNoPromotionAcrossASteer(t *testing.T) {
+	lines := claudeReplyFixtures()["narration, steer, Esc"]
+	snap := renderFixture(t, lines, transcript.ParseClaude)
+	if strings.Count(snap, "Looking at the imports.") != 1 || strings.Index(snap, "Looking at the imports.") > strings.Index(snap, "stop, rename") {
+		t.Errorf("snapshot:\n%s", snap)
+	}
+	follow := followRender(t, lines, transcript.ParseClaude)
+	if strings.Count(follow, "Looking at the imports.") != 1 || strings.Index(follow, "Looking at the imports.") > strings.Index(follow, "stop, rename") {
+		t.Errorf("follow:\n%s", follow)
 	}
 }
