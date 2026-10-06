@@ -194,7 +194,17 @@ func cmdConvo(args []string) error {
 	stop := make(chan struct{})
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
-	go func() { <-sig; close(stop) }()
+	// quit and gone let the snapshot hand signals back without losing one
+	// that arrived just before.
+	quit, gone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(gone)
+		select {
+		case <-sig:
+			close(stop)
+		case <-quit:
+		}
+	}()
 	tty := term.IsTerminal(int(os.Stdout.Fd()))
 	if tty {
 		// Before --follow takes the keyboard and before a pager starts:
@@ -209,11 +219,23 @@ func cmdConvo(args []string) error {
 	if o.follow {
 		f := &convoFollow{r: r, tgt: tgt, w: os.Stdout, tty: tty, last: o.last,
 			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: convoQuiet,
-			mute: tty && term.IsTerminal(int(os.Stdin.Fd()))}
+			// The keyboard is the controlling terminal's, wherever stdin
+			// points; run falls back when /dev/tty cannot be opened.
+			mute: tty}
 		return f.run(stop)
 	}
-	// The snapshot leaves signals to their defaults again, as before.
+	// The snapshot leaves signals to their defaults again, as before, but
+	// one that came in on the way here still ends it.
 	signal.Stop(sig)
+	close(quit)
+	<-gone
+	select {
+	case <-stop:
+		return nil
+	case <-sig:
+		return nil
+	default:
+	}
 	_, mod := statFile(tgt.path)
 	s, err := loadConvo(tgt)
 	if err != nil {
