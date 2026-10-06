@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"regexp"
 	"strconv"
@@ -151,27 +150,28 @@ func colorFGBG(v string) (light, ok bool) {
 // right after it: every terminal answers that, and in order, so once its
 // reply is in, an OSC 11 reply has come before it or is not coming, and
 // nothing is left to turn up later on the shell's or the pager's input.
-// The terminal is in raw mode meanwhile (no echo, keys are bytes, not
-// signals); a stop, or a second with no DA1 reply, ends the wait early.
+// The terminal is in raw mode meanwhile, but for ISIG: Ctrl-C still
+// raises SIGINT, which closes stop and ends the wait. A second with no
+// DA1 reply ends it too.
 func queryBackground(stop <-chan struct{}) (light, ok bool) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	tty, err := openTTY()
 	if err != nil {
 		return false, false
 	}
-	defer tty.Close()
-	fd := int(tty.Fd())
-	saved, err := term.MakeRaw(fd)
+	defer tty.close()
+	saved, err := term.MakeRaw(tty.fd)
 	if err != nil {
 		return false, false
 	}
-	defer term.Restore(fd, saved)
-	if err := unix.SetNonblock(fd, true); err != nil {
+	defer term.Restore(tty.fd, saved)
+	if mode, err := tty.getMode(); err == nil {
+		mode.Lflag |= unix.ISIG
+		tty.setMode(mode)
+	}
+	if _, err := unix.Write(tty.fd, []byte("\x1b]11;?\x1b\\\x1b[c")); err != nil {
 		return false, false
 	}
-	if _, err := tty.WriteString("\x1b]11;?\x1b\\\x1b[c"); err != nil {
-		return false, false
-	}
-	reply := readUntilDA1(func(wait time.Duration) []byte { return pollRead(fd, wait) }, stop, time.Second)
+	reply := readUntilDA1(tty.wait, stop, time.Second)
 	r, g, b, ok := parseOSC11(reply)
 	if !ok {
 		return false, false
@@ -179,18 +179,50 @@ func queryBackground(stop <-chan struct{}) (light, ok bool) {
 	return luminance(r, g, b) > 0.5, true
 }
 
-// pollRead returns what fd has to read within wait (nothing if nothing
+// devTTY is the controlling terminal, opened on its own and non-blocking:
+// a read never waits, in whatever mode the terminal is (a shell may put
+// it back in line mode under us after Ctrl-Z and fg).
+type devTTY struct {
+	f  *os.File
+	fd int
+}
+
+func openTTY() (*devTTY, error) {
+	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	t := &devTTY{f: f, fd: int(f.Fd())}
+	if err := unix.SetNonblock(t.fd, true); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return t, nil
+}
+
+func (t *devTTY) close() { t.f.Close() }
+
+func (t *devTTY) getMode() (*unix.Termios, error) { return unix.IoctlGetTermios(t.fd, ioctlGetTermios) }
+
+func (t *devTTY) setMode(m *unix.Termios) error {
+	return unix.IoctlSetTermios(t.fd, ioctlSetTermios, m)
+}
+
+// flush throws away input the terminal holds that nobody has read yet.
+func (t *devTTY) flush() error { return flushInput(t.fd) }
+
+// wait returns what the terminal has to read within d (nothing if nothing
 // came). It waits in select(2): poll(2) does not work on terminals on
-// macOS. fd is non-blocking, so a read never waits past what select saw.
-func pollRead(fd int, wait time.Duration) []byte {
+// macOS.
+func (t *devTTY) wait(d time.Duration) []byte {
 	var set unix.FdSet
-	set.Set(fd)
-	tv := unix.NsecToTimeval(wait.Nanoseconds())
-	if n, err := unix.Select(fd+1, &set, nil, nil, &tv); err != nil || n == 0 {
+	set.Set(t.fd)
+	tv := unix.NsecToTimeval(d.Nanoseconds())
+	if n, err := unix.Select(t.fd+1, &set, nil, nil, &tv); err != nil || n == 0 {
 		return nil
 	}
 	buf := make([]byte, 512)
-	n, _ := unix.Read(fd, buf)
+	n, _ := unix.Read(t.fd, buf) // EAGAIN (a half line in line mode) reads as nothing
 	return buf[:max(n, 0)]
 }
 
@@ -220,18 +252,6 @@ func readUntilDA1(read func(wait time.Duration) []byte, stop <-chan struct{}, li
 			return got
 		}
 		got = append(got, read(min(left, 50*time.Millisecond))...)
-	}
-}
-
-// drain throws away input that is waiting, so none of it reaches the
-// shell or a pager afterwards.
-func drain(stty func(args ...string) (string, error), r io.Reader) {
-	stty("min", "0", "time", "0")
-	buf := make([]byte, 256)
-	for i := 0; i < 64; i++ {
-		if n, _ := r.Read(buf); n == 0 {
-			return
-		}
 	}
 }
 
@@ -280,62 +300,60 @@ func luminance(r, g, b float64) float64 {
 	return 0.2126*r + 0.7152*g + 0.0722*b
 }
 
-// sttyOn runs stty on the terminal f.
-func sttyOn(f *os.File, args ...string) (string, error) {
-	cmd := exec.Command("stty", args...)
-	cmd.Stdin = f
-	out, err := cmd.Output()
-	return strings.TrimSpace(string(out)), err
+// muteTTY is what --follow needs from the terminal; tests fake it.
+type muteTTY interface {
+	getMode() (*unix.Termios, error)
+	setMode(*unix.Termios) error
+	wait(d time.Duration) []byte
+	flush() error
+	close()
 }
 
-func sttyRun(args ...string) (string, error) { return sttyOn(os.Stdin, args...) }
-
-// muteMode is the terminal --follow keeps: no echo and no line editing,
-// so keys typed into it show nowhere; Ctrl-C still quits and output is
-// processed as usual. A read gives up after a tenth of a second.
-var muteMode = []string{"-icanon", "-echo", "min", "0", "time", "1"}
-
-// mutedInput swallows what is typed while --follow runs: it reads the
-// terminal and throws everything away, so nothing looks like it reaches
-// the session and nothing is left for the shell when --follow ends.
+// mutedInput swallows what is typed while --follow runs: echo and line
+// editing are off, so keys show nowhere, and what comes in is read and
+// thrown away, so nothing looks like it reaches the session and nothing
+// is left for the shell when --follow ends. Ctrl-C still quits, and
+// output is processed as usual.
 type mutedInput struct {
-	stty  func(args ...string) (string, error)
-	r     io.Reader
-	saved string // stty -g, to restore
+	tty   muteTTY
+	saved *unix.Termios
+	muted *unix.Termios
 	done  chan struct{}
 	gone  chan struct{} // closed when discard has returned
 	cont  chan os.Signal
 }
 
-func muteInput(stty func(args ...string) (string, error), r io.Reader) (*mutedInput, error) {
-	saved, err := stty("-g")
+func muteInput(tty muteTTY) (*mutedInput, error) {
+	saved, err := tty.getMode()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := stty(muteMode...); err != nil {
+	muted := *saved
+	muted.Lflag &^= unix.ICANON | unix.ECHO
+	muted.Cc[unix.VMIN], muted.Cc[unix.VTIME] = 1, 0
+	if err := tty.setMode(&muted); err != nil {
 		return nil, err
 	}
-	m := &mutedInput{stty: stty, r: r, saved: saved, done: make(chan struct{}), gone: make(chan struct{}), cont: make(chan os.Signal, 1)}
+	m := &mutedInput{tty: tty, saved: saved, muted: &muted, done: make(chan struct{}), gone: make(chan struct{}), cont: make(chan os.Signal, 1)}
 	// After Ctrl-Z and fg the shell may have put its own mode back.
 	signal.Notify(m.cont, syscall.SIGCONT)
 	go m.discard()
 	return m, nil
 }
 
+// discard reads and drops input, a tenth of a second at a time at most,
+// so it sees done and SIGCONT promptly whatever the terminal's mode.
 func (m *mutedInput) discard() {
 	defer close(m.gone)
-	buf := make([]byte, 256)
 	for {
 		select {
 		case <-m.done:
 			return
 		case <-m.cont:
-			m.stty(muteMode...)
+			m.tty.setMode(m.muted)
 		default:
 		}
-		if n, err := m.r.Read(buf); n == 0 || err != nil {
-			time.Sleep(50 * time.Millisecond) // timed out, or the terminal is gone
-		}
+		m.tty.wait(100 * time.Millisecond)
 	}
 }
 
@@ -346,8 +364,9 @@ func (m *mutedInput) restore() {
 	signal.Stop(m.cont)
 	close(m.done)
 	<-m.gone
-	drain(m.stty, m.r)
-	m.stty(m.saved)
+	m.tty.flush()
+	m.tty.setMode(m.saved)
+	m.tty.close()
 }
 
 // withMutedInput runs body and restores the terminal however body ends: a

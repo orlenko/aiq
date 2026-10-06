@@ -1063,7 +1063,11 @@ type convoFollow struct {
 func (f *convoFollow) run(stop <-chan struct{}) error {
 	var m *mutedInput
 	if f.mute {
-		m, _ = muteInput(sttyRun, os.Stdin) // without it, keys echo as before
+		if tty, err := openTTY(); err == nil {
+			if m, err = muteInput(tty); err != nil { // without it, keys echo as before
+				tty.close()
+			}
+		}
 	}
 	return withMutedInput(m, func() error { return f.loop(stop) })
 }
