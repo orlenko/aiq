@@ -164,6 +164,39 @@ func PaneInfo(pane string) (Pane, error) {
 	return panes[0], nil
 }
 
+// ClientTheme is a client and the theme ("light", "dark", or "" while
+// unknown) its terminal reported to tmux.
+type ClientTheme struct {
+	Client string
+	Theme  string
+}
+
+// ClientThemes lists the clients showing target's session (every client
+// when target is ""), with their themes. tmux learns a client's theme
+// when its terminal reports one; an older tmux prints none.
+func ClientThemes(target string) ([]ClientTheme, error) {
+	args := []string{"list-clients", "-F", "#{client_name} #{client_theme}"}
+	if target != "" {
+		args = append(args, "-t", target)
+	}
+	out, err := run(args...)
+	if err != nil {
+		return nil, err
+	}
+	return parseClientThemes(out), nil
+}
+
+func parseClientThemes(out string) []ClientTheme {
+	var list []ClientTheme
+	for _, line := range strings.Split(out, "\n") {
+		name, theme, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if name != "" {
+			list = append(list, ClientTheme{Client: name, Theme: theme})
+		}
+	}
+	return list
+}
+
 // Respawn kills whatever runs in pane and starts command there.
 func Respawn(pane, dir, command string) error {
 	_, err := run("respawn-pane", "-k", "-c", dir, "-t", pane, command)

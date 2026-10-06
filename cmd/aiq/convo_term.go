@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/term"
+
+	"github.com/orlenko/aiq/internal/tmux"
 )
 
 // convoPalette is every colour aiq convo uses, chosen once for the
@@ -57,15 +59,16 @@ func themeChoice(flag string) (string, error) {
 }
 
 // choosePalette settles the theme: light or dark as asked, else what the
-// terminal says its background is (OSC 11), else $COLORFGBG, else dark.
-func choosePalette(choice string) convoPalette {
+// terminal says its background is (OSC 11), else the theme tmux learned
+// from the terminals showing pane, else $COLORFGBG, else dark.
+func choosePalette(choice, pane string) convoPalette {
 	light := false
 	switch choice {
 	case "light":
 		light = true
 	case "dark":
 	default:
-		light = detectLight()
+		light = detectLight(pane)
 	}
 	if light {
 		return lightPalette
@@ -73,14 +76,53 @@ func choosePalette(choice string) convoPalette {
 	return darkPalette
 }
 
-func detectLight() bool {
+func detectLight(pane string) bool {
 	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
 		if light, ok := queryBackground(150 * time.Millisecond); ok {
 			return light
 		}
 	}
+	// tmux does not answer OSC 11 in a popup, but knows the theme its
+	// clients' terminals reported.
+	if pane == "" {
+		pane = os.Getenv("TMUX_PANE")
+	}
+	if pane != "" || os.Getenv("TMUX") != "" {
+		if light, ok := clientTheme(tmux.ClientThemes, pane, os.Getenv("AIQ_TMUX_CLIENT")); ok {
+			return light
+		}
+	}
 	light, _ := colorFGBG(os.Getenv("COLORFGBG"))
 	return light
+}
+
+// clientTheme is the theme of the clients showing pane: the one named
+// prefer when it reported one, else the first that did.
+func clientTheme(list func(target string) ([]tmux.ClientTheme, error), pane, prefer string) (light, ok bool) {
+	clients, err := list(pane)
+	if err != nil {
+		return false, false
+	}
+	theme := ""
+	for _, c := range clients {
+		if c.Theme == "" {
+			continue
+		}
+		if theme == "" {
+			theme = c.Theme
+		}
+		if prefer != "" && c.Client == prefer {
+			theme = c.Theme
+			break
+		}
+	}
+	switch theme {
+	case "light":
+		return true, true
+	case "dark":
+		return false, true
+	}
+	return false, false
 }
 
 // colorFGBG reads $COLORFGBG ("fg;bg", some terminals "fg;default;bg"): a

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -123,7 +124,7 @@ func TestThemeChoice(t *testing.T) {
 	if o, err := parseConvoArgs([]string{"--theme=light"}); err != nil || o.theme != "light" {
 		t.Errorf("got %+v, %v", o, err)
 	}
-	if choosePalette("light") != lightPalette || choosePalette("dark") != darkPalette {
+	if choosePalette("light", "") != lightPalette || choosePalette("dark", "") != darkPalette {
 		t.Error("an explicit theme was not taken")
 	}
 }
@@ -222,3 +223,35 @@ func (f *fakeStty) calls() []string {
 	defer f.mu.Unlock()
 	return append([]string(nil), f.log...)
 }
+
+func TestClientTheme(t *testing.T) {
+	list := func(clients ...tmux.ClientTheme) func(string) ([]tmux.ClientTheme, error) {
+		return func(string) ([]tmux.ClientTheme, error) { return clients, nil }
+	}
+	cases := []struct {
+		name      string
+		list      func(string) ([]tmux.ClientTheme, error)
+		prefer    string
+		light, ok bool
+	}{
+		{"one light", list(ct("/dev/a", "light")), "", true, true},
+		{"first that reported", list(ct("/dev/a", ""), ct("/dev/b", "dark"), ct("/dev/c", "light")), "", false, true},
+		{"the named client", list(ct("/dev/b", "dark"), ct("/dev/c", "light")), "/dev/c", true, true},
+		{"named, but silent", list(ct("/dev/b", "dark"), ct("/dev/c", "")), "/dev/c", false, true},
+		{"none reported", list(ct("/dev/a", "")), "", false, false},
+		{"no clients", list(), "", false, false},
+		{"tmux failed", func(string) ([]tmux.ClientTheme, error) { return nil, errors.New("no server") }, "", false, false},
+	}
+	for _, c := range cases {
+		if light, ok := clientTheme(c.list, "%3", c.prefer); light != c.light || ok != c.ok {
+			t.Errorf("%s: got %v %v, want %v %v", c.name, light, ok, c.light, c.ok)
+		}
+	}
+	var asked string
+	clientTheme(func(target string) ([]tmux.ClientTheme, error) { asked = target; return nil, nil }, "%7", "")
+	if asked != "%7" {
+		t.Errorf("asked tmux about %q", asked)
+	}
+}
+
+func ct(client, theme string) tmux.ClientTheme { return tmux.ClientTheme{Client: client, Theme: theme} }

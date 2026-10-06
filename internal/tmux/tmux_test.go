@@ -32,3 +32,16 @@ func TestParsePanes(t *testing.T) {
 		t.Fatalf("got %+v", got[2])
 	}
 }
+
+func TestParseClientThemes(t *testing.T) {
+	got := parseClientThemes("/dev/ttys021 dark\n/dev/ttys004 \n/dev/pts/3 light\n\n")
+	want := []ClientTheme{{"/dev/ttys021", "dark"}, {"/dev/ttys004", ""}, {"/dev/pts/3", "light"}}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got %+v, want %+v", got[i], want[i])
+		}
+	}
+}

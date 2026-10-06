@@ -37,8 +37,10 @@ const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--them
   --last N          only the last N prompts you typed
   --theme T         colours for a light or dark background (also AIQ_THEME; the
                     flag wins); auto, the default, asks the terminal for its
-                    background (OSC 11), else reads $COLORFGBG, else takes dark.
-                    tmux answers that query in a pane, not in a popup
+                    background (OSC 11), else the theme tmux learned from the
+                    terminals showing the pane (#{client_theme}), else reads
+                    $COLORFGBG, else takes dark. tmux answers OSC 11 in a pane,
+                    not in a popup
 On a terminal the conversation opens at its end in $PAGER, else less -R +G.
 --follow ignores what is typed into it; Ctrl-C quits.
 
@@ -190,7 +192,7 @@ func cmdConvo(args []string) error {
 	if tty {
 		// Before --follow takes the keyboard and before a pager starts:
 		// the terminal's answer comes on the same input.
-		pal = choosePalette(theme)
+		pal = choosePalette(theme, tgt.pane)
 	}
 	if o.follow && tgt.provider == "agy" {
 		// ParseAgy has no notion of a running turn or of narration, so a

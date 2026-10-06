@@ -299,11 +299,14 @@ session or the shell afterwards; Ctrl-C quits.
 
 The colours suit a dark background unless the terminal says it is light.
 `--theme auto` (the default) asks the terminal for its background colour
-(OSC 11), else reads `$COLORFGBG`, else takes dark; `--theme light|dark`, or
+(OSC 11), else asks tmux which theme the terminals showing the pane
+reported (`#{client_theme}`, tmux 3.7; `$AIQ_TMUX_CLIENT` picks one client
+when they disagree), else reads `$COLORFGBG`, else takes dark; `--theme light|dark`, or
 `AIQ_THEME`, settles it (the flag wins). tmux answers that query in a pane
 when it knows the colour (from the outer terminal, or a `window-style`
-background) but not in a popup, so for the popup binding set
-`set-environment -g AIQ_THEME light` or add `--theme light` to the binding.
+background) but not in a popup; there the client theme usually settles it,
+and otherwise `set-environment -g AIQ_THEME light` or `--theme light` in the
+binding does.
 
 A pane is matched through the agent's own records: Claude Code's
 `sessions/<pid>.json`, else the pane's `aiq long` lease. Either counts only
