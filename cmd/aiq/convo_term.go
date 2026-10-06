@@ -79,7 +79,9 @@ func choosePalette(choice, pane string, stop <-chan struct{}) convoPalette {
 }
 
 func detectLight(pane string, stop <-chan struct{}) bool {
-	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+	// The query talks to /dev/tty, so where stdin points does not matter;
+	// it gives up when there is no controlling terminal.
+	if term.IsTerminal(int(os.Stdout.Fd())) {
 		if light, ok := queryBackground(stop); ok {
 			return light
 		}
