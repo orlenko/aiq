@@ -132,6 +132,7 @@ func ParseCodex(path string) (*Session, error) {
 	s := &Session{Provider: "codex", Path: path}
 	var cur *Turn
 	final, commentary := false, ""
+	commentaryAt := time.Time{}
 	// curTurn is the turn_id cur answers; running says a task is under
 	// way, and fresh that it has not yet been given to a turn. ended says
 	// cur's current stretch gave its final answer.
@@ -158,7 +159,8 @@ func ParseCodex(path string) (*Session, error) {
 		case cur.Open:
 			cur.Reply = ""
 		case cur.Reply == "" && commentary != "":
-			cur.Reply = commentary
+			cur.Reply = commentary // an aborted turn: its last commentary stands
+			cur.addAnswer(commentary, commentaryAt)
 		case cur.Reply == "" && len(cur.Earlier) > 0:
 			cur.Reply = cur.Earlier[len(cur.Earlier)-1]
 			cur.Earlier = cur.Earlier[:len(cur.Earlier)-1]
@@ -263,7 +265,7 @@ func ParseCodex(path string) (*Session, error) {
 				work()
 				text := strings.Join(texts, "\n")
 				if p.Phase == "commentary" {
-					commentary = text
+					commentary, commentaryAt = text, ts
 					cur.Items = append(cur.Items, TurnItem{Kind: ItemSaid, Text: text, At: ts})
 				} else if !final {
 					cur.Reply = text

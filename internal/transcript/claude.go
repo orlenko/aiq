@@ -134,8 +134,8 @@ func ParseClaude(path string) (*Session, error) {
 			return
 		}
 		cur.Open = last && open()
-		if !cur.Open && ended && endMsg != "" && lastTextMsg == endMsg && cur.Reply != "" && !synthetic {
-			cur.addAnswer(cur.Reply, replyAt) // the message that ended the stretch said it
+		if !cur.Open && cur.Reply != "" && !synthetic {
+			cur.addAnswer(cur.Reply, replyAt) // the last stretch's answer
 		}
 		if cur.Open {
 			cur.Reply = ""
@@ -286,9 +286,7 @@ func ParseClaude(path string) (*Session, error) {
 						// task woke it, or a hook sent it back to work.
 						if cur.Reply != "" && !synthetic {
 							cur.Earlier = append(cur.Earlier, cur.Reply)
-							if endMsg != "" && lastTextMsg == endMsg {
-								cur.addAnswer(cur.Reply, replyAt)
-							}
+							cur.addAnswer(cur.Reply, replyAt)
 						}
 						cur.Reply, lastTextMsg, ended = "", "", false
 					}

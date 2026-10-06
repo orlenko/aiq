@@ -91,20 +91,23 @@ type TurnItem struct {
 	Kind ItemKind
 	Text string
 	At   time.Time
+	// Promotes marks an answer that repeats the agent's last said item: a
+	// stretch that ended on its own narration (Claude's thinking-only end,
+	// an interrupt) or on commentary (an aborted Codex turn), or a final
+	// answer that says again what the last commentary said.
+	Promotes bool
 }
 
-// addAnswer records an answer that ended a stretch, unless the agent's
-// last item already says it (a stretch that ended on its own narration).
+// addAnswer records an answer that ended a stretch.
 func (t *Turn) addAnswer(text string, at time.Time) {
+	promotes := false
 	for i := len(t.Items) - 1; i >= 0; i-- {
 		if t.Items[i].Kind != ItemSteer {
-			if t.Items[i].Text == text {
-				return
-			}
+			promotes = t.Items[i].Kind == ItemSaid && t.Items[i].Text == text
 			break
 		}
 	}
-	t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at})
+	t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at, Promotes: promotes})
 }
 
 // Label is the session's name, else its first human prompt.
