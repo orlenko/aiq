@@ -304,6 +304,12 @@ func ParseCodex(path string) (*Session, error) {
 					if n := len(cur.Earlier); cur.Reply == "" && n > 0 && cur.Earlier[n-1] == last {
 						cur.Earlier = cur.Earlier[:n-1] // the stretch said nothing new
 					}
+					// A last message other than the final answer just sent
+					// replaces it.
+					if i := cur.lastAgent(); cur.Reply != "" && last != cur.Reply && i >= 0 &&
+						cur.Items[i].Kind == ItemAnswer && cur.Items[i].Text == cur.Reply {
+						cur.Items = append(cur.Items, TurnItem{Kind: ItemAnswer, Text: last, At: ts, Supersedes: true})
+					}
 					cur.Reply = last
 					final, ended = true, true
 				}

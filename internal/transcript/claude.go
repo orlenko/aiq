@@ -329,7 +329,7 @@ func ParseClaude(path string) (*Session, error) {
 							// record without a stop reason (older CLIs)
 							// cannot tell, and adds nothing.
 							if sr := rec.Message.StopReason; (sr == "tool_use" || sr == "pause_turn") && !synthetic {
-								cur.Items = append(cur.Items, TurnItem{Kind: ItemSaid, Text: text, At: ts})
+								cur.Items = append(cur.Items, TurnItem{Kind: ItemSaid, Text: text, At: ts, MsgID: rec.Message.ID})
 							}
 						}
 					}

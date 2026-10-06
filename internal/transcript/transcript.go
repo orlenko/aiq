@@ -91,6 +91,10 @@ type TurnItem struct {
 	Kind ItemKind
 	Text string
 	At   time.Time
+	// MsgID is the agent message a said item comes from (Claude). A
+	// message with several text blocks, or written as several records,
+	// gives one item each, in a row.
+	MsgID string
 	// Promotes marks an answer that repeats the agent's last said item: a
 	// stretch that ended on its own narration (Claude's thinking-only end,
 	// an interrupt) or on commentary (an aborted Codex turn), or a final
@@ -101,18 +105,45 @@ type TurnItem struct {
 	// text comes as a record after its thinking), so the answer can still
 	// change. Anything after that message settles it.
 	Provisional bool
+	// Supersedes marks an answer that replaces the answer just before it,
+	// of the same stretch: Codex's task_complete naming a last message
+	// other than the final_answer it had sent.
+	Supersedes bool
 }
 
-// addAnswer records an answer that ended a stretch.
+// addAnswer records an answer that ended a stretch. It Promotes the last
+// thing said when it repeats it: the whole message, all of its text
+// blocks joined, as the stretch's answer joins them.
 func (t *Turn) addAnswer(text string, at time.Time) {
-	promotes := false
+	t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at, Promotes: t.lastSaid() == text})
+}
+
+// lastSaid is the text of the agent's last message if it was said on the
+// way (its items joined), else "".
+func (t *Turn) lastSaid() string {
+	i := t.lastAgent()
+	if i < 0 || t.Items[i].Kind != ItemSaid {
+		return ""
+	}
+	j := i
+	for j > 0 && t.Items[j-1].Kind == ItemSaid && t.Items[i].MsgID != "" && t.Items[j-1].MsgID == t.Items[i].MsgID {
+		j--
+	}
+	parts := make([]string, 0, i-j+1)
+	for _, it := range t.Items[j : i+1] {
+		parts = append(parts, it.Text)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// lastAgent is the index of the agent's last item, or -1.
+func (t *Turn) lastAgent() int {
 	for i := len(t.Items) - 1; i >= 0; i-- {
 		if t.Items[i].Kind != ItemSteer {
-			promotes = t.Items[i].Kind == ItemSaid && t.Items[i].Text == text
-			break
+			return i
 		}
 	}
-	t.Items = append(t.Items, TurnItem{Kind: ItemAnswer, Text: text, At: at, Promotes: promotes})
+	return -1
 }
 
 // Label is the session's name, else its first human prompt.
