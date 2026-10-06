@@ -39,13 +39,13 @@ func renderMarkdown(text string, width int, base string) string {
 		trimmed := strings.TrimSpace(line)
 		if fence := codeFence(trimmed); fence != "" {
 			if lang := strings.TrimSpace(strings.TrimLeft(trimmed, fence[:1])); lang != "" {
-				out = append(out, []span{{sgrDim, lang}})
+				out = append(out, []span{{pal.dim, lang}})
 			}
 			for i++; i < len(lines); i++ {
 				if t := strings.TrimSpace(lines[i]); strings.HasPrefix(t, fence) && strings.Trim(t, fence[:1]) == "" {
 					break
 				}
-				out = append(out, []span{{sgrCode, lines[i]}})
+				out = append(out, []span{{pal.code, lines[i]}})
 			}
 			continue
 		}
@@ -62,7 +62,7 @@ func renderMarkdown(text string, width int, base string) string {
 		}
 		switch {
 		case horizontalRule.MatchString(line):
-			out = append(out, []span{{sgrDim, strings.Repeat("─", width)}})
+			out = append(out, []span{{pal.dim, strings.Repeat("─", width)}})
 		case heading.MatchString(line):
 			m := heading.FindStringSubmatch(line)
 			style := sgrBold
@@ -75,7 +75,7 @@ func renderMarkdown(text string, width int, base string) string {
 			out = append(out, append([]span{{"", m[1] + "• "}}, inlineMarkdown(m[3], "")...))
 		case quote.MatchString(line):
 			m := quote.FindStringSubmatch(line)
-			out = append(out, append([]span{{sgrDim, m[1] + "│ "}}, inlineMarkdown(m[2], "")...))
+			out = append(out, append([]span{{pal.dim, m[1] + "│ "}}, inlineMarkdown(m[2], "")...))
 		default:
 			out = append(out, inlineMarkdown(line, ""))
 		}
@@ -237,7 +237,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 		for c, w := range widths {
 			parts[c] = strings.Repeat("─", w+2)
 		}
-		return []span{{sgrDim, left + strings.Join(parts, mid) + right}}
+		return []span{{pal.dim, left + strings.Join(parts, mid) + right}}
 	}
 	out := [][]span{rule("┌", "┬", "┐")}
 	for r := range rows {
@@ -251,7 +251,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 			height = max(height, len(wrapped[c]))
 		}
 		for l := 0; l < height; l++ {
-			line := []span{{sgrDim, "│"}}
+			line := []span{{pal.dim, "│"}}
 			for c, w := range widths {
 				var cell []span
 				if l < len(wrapped[c]) {
@@ -271,7 +271,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 				}
 				line = append(line, span{"", " " + strings.Repeat(" ", left)})
 				line = append(line, cell...)
-				line = append(line, span{"", strings.Repeat(" ", gap-left) + " "}, span{sgrDim, "│"})
+				line = append(line, span{"", strings.Repeat(" ", gap-left) + " "}, span{pal.dim, "│"})
 			}
 			out = append(out, line)
 		}
@@ -412,7 +412,7 @@ func (ix *inlineIndex) render(lo, hi int, style string) []span {
 					code = code[1 : len(code)-1]
 				}
 				flush()
-				out = append(out, span{style + sgrCode, code})
+				out = append(out, span{style + pal.code, code})
 				i = end + n
 				continue
 			}
@@ -423,7 +423,7 @@ func (ix *inlineIndex) render(lo, hi int, style string) []span {
 			if textEnd, urlStart, urlEnd, ok := ix.link(i, hi); ok {
 				flush()
 				out = append(out, ix.render(i+1, textEnd, style)...)
-				out = append(out, span{style, " ("}, span{style + sgrDim, s[urlStart:urlEnd]}, span{style, ")"})
+				out = append(out, span{style, " ("}, span{style + pal.dim, s[urlStart:urlEnd]}, span{style, ")"})
 				i = urlEnd + 1
 				continue
 			}
