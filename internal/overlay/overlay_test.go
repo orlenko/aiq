@@ -59,6 +59,36 @@ func TestSyncLinksEverythingButExcluded(t *testing.T) {
 	}
 }
 
+func TestSyncUnlinksNewlyExcludedName(t *testing.T) {
+	real, over := setup(t)
+	os.MkdirAll(filepath.Join(real, "app-server-daemon"), 0o700)
+	Sync(Spec{Real: real, Overlay: over, Exclude: []string{"auth.json"}})
+	if _, err := os.Readlink(filepath.Join(over, "app-server-daemon")); err != nil {
+		t.Fatalf("precondition: %v", err)
+	}
+	spec := Spec{Real: real, Overlay: over, Exclude: []string{"auth.json", "app-server-daemon"}}
+	rep, err := Sync(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(over, "app-server-daemon")); !os.IsNotExist(err) {
+		t.Fatalf("stale link kept (removed %v)", rep.Removed)
+	}
+	if _, err := os.Stat(filepath.Join(real, "app-server-daemon")); err != nil {
+		t.Fatal("real directory must survive")
+	}
+	// A private copy the CLI creates afterwards is left alone.
+	os.MkdirAll(filepath.Join(over, "app-server-daemon"), 0o700)
+	write(t, filepath.Join(over, "auth.json"), "mine", old)
+	Sync(spec)
+	if info, err := os.Lstat(filepath.Join(over, "app-server-daemon")); err != nil || !info.IsDir() {
+		t.Fatalf("private directory disturbed: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(over, "auth.json")); string(data) != "mine" {
+		t.Fatal("private credential disturbed")
+	}
+}
+
 func TestSyncAdoptsNewFileAndKeepsBackups(t *testing.T) {
 	real, over := setup(t)
 	spec := Spec{Real: real, Overlay: over, Exclude: []string{"auth.json"}, SkipPrefixes: []string{".aiq-"}}
