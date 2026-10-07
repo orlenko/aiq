@@ -28,9 +28,11 @@ type Provider struct {
 // OverlaySpec describes an account home layered over the real ~/.codex.
 func OverlaySpec(home string) overlay.Spec {
 	return overlay.Spec{
-		Real:         paths.RealCodexHome(),
-		Overlay:      home,
-		Exclude:      []string{"auth.json"},
+		Real:    paths.RealCodexHome(),
+		Overlay: home,
+		// The app-server daemon runs under one account's auth and Codex
+		// refuses a symlinked state directory, so each account keeps its own.
+		Exclude:      []string{"auth.json", "app-server-daemon", "app-server-control"},
 		SkipPrefixes: []string{".DS_Store", ".aiq-"},
 		LockDir:      paths.LocksDir(),
 	}

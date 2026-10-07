@@ -6,7 +6,8 @@
 //
 //   - every entry of the real home gets a symlink of the same name;
 //   - an excluded name (the credential, a per-account state file) is never
-//     linked and never adopted;
+//     linked and never adopted, and a link to it left by an older Spec is
+//     removed;
 //   - a regular file that appeared only in the overlay (a CLI wrote a new
 //     file, or replaced a symlink with a rename-over write) is adopted: moved
 //     into the real home when it is the newer copy, then re-linked; the
@@ -124,7 +125,16 @@ func Sync(s Spec) (Report, error) {
 	for _, e := range have {
 		name := e.Name()
 		path := filepath.Join(s.Overlay, name)
-		if s.excluded(name) || s.scratch(name) {
+		if s.excluded(name) {
+			// A link aiq made before the name was excluded must go: the
+			// entry is private to this overlay now.
+			if current, err := os.Readlink(path); err == nil && current == filepath.Join(s.Real, name) {
+				os.Remove(path)
+				rep.Removed = append(rep.Removed, name)
+			}
+			continue
+		}
+		if s.scratch(name) {
 			continue
 		}
 		info, err := os.Lstat(path)
