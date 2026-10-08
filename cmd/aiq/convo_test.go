@@ -67,8 +67,6 @@ func TestRenderConvoPlain(t *testing.T) {
 		"\n▌ you, while it worked\nalso run the tests\n",
 		"\n▌ claude · earlier\nBuild fixed; waiting on CI.\n",
 		"\n▌ claude · 12m · 47 tools\nCI is green.\n",
-		"\n· peer agent: Another Claude session sent a message: hi\n  → Replied to the peer.\n",
-		"\n· notice: [agent-nudge] PR #4 has a review\n",
 		"\n▌ claude · 1m\n(no reply)\n",
 		"\n▌ you, while it worked\nwait for me\n\n▌ claude · earlier\nTagged.\n",
 		"\nworking · 12m · 5 tools\n",
@@ -83,6 +81,10 @@ func TestRenderConvoPlain(t *testing.T) {
 	}
 	if rest != "" {
 		t.Errorf("unexpected tail %q", rest)
+	}
+	// Agents talking among themselves are left out.
+	if strings.Contains(out, "peer") || strings.Contains(out, "agent-nudge") {
+		t.Errorf("peer or notice turn shown:\n%s", out)
 	}
 	// The running turn's reply is not shown before it ends.
 	if strings.Count(out, "▌ claude ·") != 5 {
@@ -167,7 +169,7 @@ func TestConvoPrinterFollowsATurnThatGoesOn(t *testing.T) {
 		return &transcript.Session{Provider: "codex", Turns: turns}
 	}
 	human := transcript.Turn{Prompt: "deploy", Started: at}
-	notice := transcript.Turn{Prompt: "[agent-nudge] CI failed", Source: transcript.Notice, Started: at.Add(time.Hour)}
+	notice := transcript.Turn{Prompt: "aiq moved this session to codex/b", Source: transcript.Aiq, Started: at.Add(time.Hour)}
 	with := func(t transcript.Turn, open bool, reply string, earlier ...string) transcript.Turn {
 		t.Open, t.Reply, t.Earlier = open, reply, earlier
 		return t
@@ -324,18 +326,15 @@ func TestRenderTurnsPlainMarksNonHumanTurns(t *testing.T) {
 	}
 }
 
-func TestConvoHidesIdleNotifications(t *testing.T) {
+func TestConvoHidesAgentChatter(t *testing.T) {
 	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
 	s := &transcript.Session{Provider: "claude", Turns: []transcript.Turn{
 		{Prompt: `{"type":"idle_notification","from":"worker"}`, Source: transcript.Peer, Reply: "noted", Started: at, Ended: at},
 		{Prompt: "worker finished the migration", Source: transcript.Peer, Reply: "merged it", Started: at.Add(time.Minute), Ended: at.Add(time.Minute)},
 	}}
 	out := renderConvo(s, convoTarget{}, 0, false, at)
-	if strings.Contains(out, "idle_notification") || strings.Contains(out, "noted") {
-		t.Errorf("idle notification shown:\n%s", out)
-	}
-	if !strings.Contains(out, "worker finished the migration") {
-		t.Errorf("real peer message hidden:\n%s", out)
+	if strings.Contains(out, "idle_notification") || strings.Contains(out, "noted") || strings.Contains(out, "worker finished") {
+		t.Errorf("peer message shown:\n%s", out)
 	}
 }
 
@@ -492,7 +491,7 @@ func codexConvoFixture() []string {
 	say("final_answer", "Deployed to staging.")
 	add("event_msg", `{"type":"task_complete","turn_id":"a","last_agent_message":"Deployed to staging."}`)
 	add("event_msg", `{"type":"task_started","turn_id":"b"}`)
-	user("b", "Agent Orchestra local inbox notice. 1 message")
+	user("b", "Agent Orchestra local inbox notice. Read the current inbox with: /p/bin/agent-orchestra inbox --claim --json\nHandle the waiting messages.")
 	say("final_answer", "Nothing for you.")
 	add("event_msg", `{"type":"task_complete","turn_id":"b","last_agent_message":"Nothing for you."}`)
 	add("event_msg", `{"type":"task_started","turn_id":"w"}`)
@@ -722,10 +721,13 @@ func TestConvoFixturesRender(t *testing.T) {
 		t.Errorf("local command:\n%s", out)
 	}
 	out = render(codexConvoFixture(), transcript.ParseCodex)
-	for _, w := range []string{"\nuse the staging bucket\n", "· notice: Agent Orchestra local inbox notice. 1 message\n  → Nothing for you.\n  → The build is green.\n", "\nWelcome.\n"} {
+	for _, w := range []string{"\nuse the staging bucket\n", "\nWelcome.\n"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("codex lacks %q:\n%s", w, out)
 		}
+	}
+	if strings.Contains(out, "orchestra") || strings.Contains(out, "Nothing for you.") {
+		t.Errorf("codex shows the Orchestra notice:\n%s", out)
 	}
 }
 
@@ -1152,11 +1154,11 @@ func claudeReplyFixtures() map[string][]string {
 	out["interrupted after a multi-line message"] = c.lines
 
 	c = fixtureLines{}
-	c.typed("[agent-nudge] PR #4 has a review")
+	c.typed(transcript.AiqResumeNudge + "Go on.")
 	c.assistant("m1", "tool_use", text("Reading the review comments on PR 4."))
 	c.assistant("m1", "tool_use", `{"type":"tool_use","id":"t1","name":"Bash","input":{}}`)
 	interrupt(&c, "1")
-	out["notice turn interrupted"] = c.lines
+	out["aiq turn interrupted"] = c.lines
 
 	c = fixtureLines{}
 	c.typed("deploy it")
@@ -1329,9 +1331,9 @@ func TestPromotedAnswers(t *testing.T) {
 	if !strings.Contains(got, "\nSuite running; 3 failures so far:\n- a\n- b\n") || strings.Contains(got, "  · Suite running") {
 		t.Errorf("interrupted:\n%s", got)
 	}
-	got = renderFixture(t, claudeReplyFixtures()["notice turn interrupted"], transcript.ParseClaude)
-	if !strings.Contains(got, "· notice: [agent-nudge] PR #4 has a review\n  → Reading the review comments on PR 4.\n") {
-		t.Errorf("notice:\n%s", got)
+	got = renderFixture(t, claudeReplyFixtures()["aiq turn interrupted"], transcript.ParseClaude)
+	if !strings.Contains(got, "· aiq: "+strings.TrimSpace(transcript.AiqResumeNudge)+" Go on.\n  → Reading the review comments on PR 4.\n") {
+		t.Errorf("aiq turn:\n%s", got)
 	}
 	got = renderFixture(t, codexReplyFixtures()["final answer repeats the last commentary"], transcript.ParseCodex)
 	if strings.Count(got, "Done: line one") != 1 || !strings.Contains(got, "\nDone: line one\nline two\n") {

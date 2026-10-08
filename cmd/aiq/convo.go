@@ -761,10 +761,11 @@ func (p *convoPrinter) skip(turns []transcript.Turn) {
 // The reply to something the person typed is the agent's first message
 // after it, in full; one message after several steers answers them all.
 // Each agent text prints once, by text, so the parser moving one between
-// Earlier, Reply and what was said does not print it twice. A prompt aiq,
-// a peer or a notifier sent is a dim line, its answers dim one-liners
-// under it, until the person types into that turn: from there on, as in
-// a turn of their own.
+// Earlier, Reply and what was said does not print it twice. A turn a peer
+// or a notifier started is left out until the person types into it. A
+// prompt aiq sent, or a peer's or notifier's the person typed into, is a
+// dim line, its answers dim one-liners under it, until the person types
+// into that turn: from there on, as in a turn of their own.
 func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	p.pending = false
@@ -779,6 +780,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			continue
 		}
 		pieces := turnPieces(t)
+		if !seen.head && chatter(t) && !typedInto(pieces) {
+			continue // agents talking among themselves; shown once the person types into it
+		}
 		human := t.Source == transcript.Human
 		if !seen.head {
 			if human && t.Open && t.Tools == 0 && len(pieces) == 0 && slashCommand(t.Prompt) {
@@ -787,7 +791,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			if human {
 				p.human(&b, "▌ you · "+whenLabel(t.Started, time.Now()), t.Prompt)
 			} else {
-				b.WriteString("\n" + p.paint(pal.dim, "· "+sourceLabel(t.Source)+": "+firstLine(t.Prompt)) + "\n")
+				b.WriteString("\n" + p.paint(pal.dim, "· "+promptLine(t)) + "\n")
 			}
 			p.note(k, "prompt", t.Prompt)
 			seen.head = true
@@ -1151,10 +1155,39 @@ func turnKey(i int, t transcript.Turn) string {
 	return fmt.Sprintf("%d|%d|%s", i, t.Started.UnixNano(), truncate(t.Prompt, 40))
 }
 
+// chatter is a turn another agent or a notifier started: agents talking
+// among themselves, not to the person reading.
+func chatter(t transcript.Turn) bool {
+	return t.Source == transcript.Peer || t.Source == transcript.Notice
+}
+
+// typedInto says the person typed into the turn while it ran.
+func typedInto(pieces []piece) bool {
+	for _, pc := range pieces {
+		if pc.kind == transcript.ItemSteer {
+			return true
+		}
+	}
+	return false
+}
+
 // idleNotice is an agent-team teammate reporting it went idle: a peer
 // message with nothing in it for the person reading.
 func idleNotice(t transcript.Turn) bool {
 	return t.Source == transcript.Peer && strings.HasPrefix(t.Prompt, `{"type":"idle_notification"`)
+}
+
+// promptLine is the dim line a prompt aiq, a peer or a notifier sent shows
+// as. An Orchestra notice says nothing but how to read the inbox, so it
+// shows as where it came from and when.
+func promptLine(t transcript.Turn) string {
+	if t.Source == transcript.Notice && strings.HasPrefix(strings.TrimSpace(t.Prompt), transcript.OrchestraNotice) {
+		if t.Started.IsZero() {
+			return "orchestra inbox"
+		}
+		return "orchestra inbox · " + clockLabel(t.Started)
+	}
+	return sourceLabel(t.Source) + ": " + firstLine(t.Prompt)
 }
 
 func sourceLabel(s transcript.Source) string {
