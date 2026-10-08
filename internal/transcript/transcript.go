@@ -352,8 +352,12 @@ const (
 // Claude Code 2.1.268–284 records it with no origin.
 const peerPrefix = "Another Claude session sent a message"
 
+// OrchestraNotice opens what Agent Orchestra types into a session when
+// mail waits: the same text every time, a command to read the inbox.
+const OrchestraNotice = "Agent Orchestra local inbox notice."
+
 // noticePrefixes open what notifier tools type into a session.
-var noticePrefixes = []string{"[agent-nudge]", "Agent Orchestra local inbox notice."}
+var noticePrefixes = []string{"[agent-nudge]", OrchestraNotice}
 
 // prefixSource names who sent a prompt by how it opens. Text typed in with
 // tmux send-keys records as typed by a human, so the prefix decides.
