@@ -300,6 +300,7 @@ func TestSuccessorKeepsTheTier(t *testing.T) {
 			cfg.Providers.Claude.ModelScope = ""
 			cfg.Providers.Codex.ModelScope = ""
 			cfg.Providers.Agy.ModelScope = ""
+			cfg.Selection.LastResort = nil // tier matching alone, in fallback order
 			s := &Supervisor{Pool: &pool.Pool{Cfg: cfg, St: st}}
 			args, _ := json.Marshal([]string{"--model", tc.model})
 			got, err := s.successor(state.Lease{AccountID: "claude/source", Provider: "claude", Fallback: "claude,agy,codex", Args: string(args)}, now)
@@ -487,5 +488,57 @@ func TestTakeoverRepollsBeforeMoving(t *testing.T) {
 	}
 	if got, _ := st.GetLease(l.ID); got.Drain != state.DrainNone {
 		t.Fatalf("drain = %q, want none: the session should stay", got.Drain)
+	}
+}
+
+// A session whose account is blocked descends in cost order: plan quota of
+// any size, then paid extra usage, then last-resort providers.
+func TestSuccessorDescendsPlanExtraLastResort(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	type acct struct {
+		id    string
+		used  float64
+		extra bool
+	}
+	for _, tc := range []struct {
+		name     string
+		accounts []acct
+		want     string
+	}{
+		{"plan first", []acct{{"codex/low", 99, false}, {"claude/extra", 100, true}, {"agy/main", 0, false}}, "codex/low"},
+		{"then extra usage", []acct{{"claude/extra", 100, true}, {"agy/main", 0, false}}, "claude/extra"},
+		{"then last resort", []acct{{"claude/dry", 100, false}, {"agy/main", 0, false}}, "agy/main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			for _, a := range append(tc.accounts, acct{"claude/source", 100, false}) {
+				provider, name, _ := strings.Cut(a.id, "/")
+				if err := st.AddAccount(state.Account{ID: a.id, Provider: provider, Name: name, Enabled: true, Native: true}); err != nil {
+					t.Fatal(err)
+				}
+				if err := st.ReplaceWindows(a.id, "test", []state.Window{{Key: "weekly", Label: "Weekly", Kind: state.KindWeekly,
+					UsedPct: a.used, ResetsAt: now.Add(time.Hour).Unix(), ObservedAt: now.Unix()}}); err != nil {
+					t.Fatal(err)
+				}
+				if a.extra {
+					st.SetUsageMeta(a.id, "", 0, "", now)
+					st.SetExtraUsage(a.id, &state.ExtraUsage{Enabled: true, Currency: "CAD", BalanceMinor: 39947, LimitMinor: 70000, ObservedAt: now.Unix()})
+				}
+			}
+			cfg := config.Default()
+			cfg.Providers.Claude.ModelScope = ""
+			cfg.Providers.Codex.ModelScope = ""
+			cfg.Providers.Agy.ModelScope = ""
+			cfg.Selection.ExtraUsage = true
+			s := &Supervisor{Pool: &pool.Pool{Cfg: cfg, St: st}}
+			got, err := s.successor(state.Lease{AccountID: "claude/source", Provider: "claude", Fallback: "claude,agy,codex"}, now)
+			if err != nil || got.ID != tc.want {
+				t.Fatalf("got %q, %v; want %s", got.ID, err, tc.want)
+			}
+		})
 	}
 }

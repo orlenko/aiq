@@ -373,3 +373,66 @@ func TestKnownAuthenticationFailureIsIneligible(t *testing.T) {
 		t.Fatalf("forcing known-bad auth should fail clearly, got %v", err)
 	}
 }
+
+// Plan quota first, then accounts whose plan is spent but which run on
+// extra usage, then last-resort providers in their order. An exhausted
+// account without extra usage stays out.
+func TestRungsOrderPlanExtraLastResort(t *testing.T) {
+	spent := func(id, extra string) Candidate {
+		c := cand(id, win(state.KindShort, 0, 3*time.Hour), win(state.KindWeekly, 100, 20*time.Hour))
+		c.ExtraUsage = extra
+		return c
+	}
+	plan := cand("claude/plan", win(state.KindShort, 10, 4*time.Hour), win(state.KindWeekly, 97, 150*time.Hour))
+	last1 := cand("agy/main", win(state.KindShort, 0, 5*time.Hour), win(state.KindWeekly, 0, 160*time.Hour))
+	last1.LastResort = 1
+	last2 := cand("copilot/main")
+	last2.LastResort = 2
+	cands := []Candidate{last2, last1, spent("claude/extra", "CAD 399.47 prepaid left"), spent("claude/dry", ""), plan}
+	for _, mode := range []string{state.ModeInteractive, state.ModeWorker} {
+		r := Rank(policy(mode), cands)
+		var got []string
+		for _, x := range r {
+			if x.Eligible {
+				got = append(got, x.ID)
+			}
+		}
+		want := "claude/plan claude/extra agy/main copilot/main"
+		if mode == state.ModeWorker {
+			// 3% weekly left is below the worker reserve: held for workers.
+			want = "claude/extra agy/main copilot/main"
+		}
+		if strings.Join(got, " ") != want {
+			t.Fatalf("%s: eligible order %v, want %s", mode, got, want)
+		}
+		if last := r[len(r)-1]; last.ID != "claude/dry" || last.Eligible {
+			t.Fatalf("%s: claude/dry should be ineligible and last: %+v", mode, last)
+		}
+	}
+}
+
+// Workers may spend an account below the weekly reserve when it has extra
+// usage behind it, after every account with plan quota.
+func TestExtraUsageWaivesReserveAfterPlan(t *testing.T) {
+	low := cand("claude/low", win(state.KindWeekly, 97, 50*time.Hour))
+	low.ExtraUsage = "CAD 10.00 prepaid left"
+	fresh := cand("claude/fresh", win(state.KindWeekly, 20, 150*time.Hour))
+	r := Rank(policy(state.ModeWorker), []Candidate{low, fresh})
+	if r[0].ID != "claude/fresh" || r[1].ID != "claude/low" || !r[1].Eligible || r[1].Rung != RungExtra {
+		t.Fatalf("ranking: %+v", r)
+	}
+}
+
+// A sticky interactive account on extra usage gives way once an account
+// with plan quota exists.
+func TestStickyLeavesExtraUsageForPlan(t *testing.T) {
+	onExtra := cand("claude/extra", win(state.KindWeekly, 100, 50*time.Hour))
+	onExtra.ExtraUsage = "CAD 10.00 prepaid left"
+	plan := cand("claude/plan", win(state.KindWeekly, 50, 150*time.Hour))
+	p := policy(state.ModeInteractive)
+	p.Sticky, p.AffinityID, p.SwitchPct = true, "claude/extra", 0
+	res, err := Select(p, []Candidate{onExtra, plan})
+	if err != nil || res.ID != "claude/plan" {
+		t.Fatalf("got %q, %v; want claude/plan", res.ID, err)
+	}
+}

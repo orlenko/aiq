@@ -178,6 +178,9 @@ func rankAuto(policies map[string]selector.Policy, candidates []selector.Candida
 		if a.Eligible != b.Eligible {
 			return a.Eligible
 		}
+		if a.Rung != b.Rung {
+			return a.Rung < b.Rung
+		}
 		if a.BelowFloor != b.BelowFloor {
 			return b.BelowFloor
 		}

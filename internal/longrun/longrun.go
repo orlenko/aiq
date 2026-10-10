@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -381,15 +382,32 @@ func (s *Supervisor) successor(l state.Lease, now time.Time) (state.Account, err
 	if acc, err := s.successorAbove(l, now, s.Pool.Cfg.Long.DrainPct); err == nil {
 		return acc, nil
 	}
+	// Once the account is blocked, plan quota of any size goes first, then
+	// paid extra usage, then the last-resort providers in their order.
 	if _, _, blocked := s.headroom(l.AccountID, l.Provider, now); blocked {
-		return s.successorAbove(l, now, 0)
+		if acc, err := s.successorAbove(l, now, 0); err == nil {
+			return acc, nil
+		}
+		if acc, err := s.successorWhere(l, now, func(r selector.Ranked, _ float64) bool { return r.Rung == selector.RungExtra }); err == nil {
+			return acc, nil
+		}
+		return s.successorWhere(l, now, func(r selector.Ranked, rem float64) bool { return r.Rung > selector.RungLastResort && rem > 0 })
 	}
 	return state.Account{}, fmt.Errorf("no account with headroom")
 }
 
 // successorAbove picks the first eligible account in fallback order with
-// more than minRemaining left.
+// plan quota and more than minRemaining left.
 func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining float64) (state.Account, error) {
+	return s.successorWhere(l, now, func(r selector.Ranked, rem float64) bool {
+		return r.Rung == selector.RungPlan && rem > minRemaining
+	})
+}
+
+// successorWhere picks the first eligible account that ok accepts, given
+// its ranking and remaining headroom. Providers go in fallback order, the
+// last-resort ones after all others in their configured order.
+func (s *Supervisor) successorWhere(l state.Lease, now time.Time, ok func(r selector.Ranked, remaining float64) bool) (state.Account, error) {
 	order := strings.Split(l.Fallback, ",")
 	if l.Fallback == "" {
 		order = append([]string{l.Provider}, s.Pool.Cfg.Long.Fallback...)
@@ -397,6 +415,10 @@ func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining f
 	// A session on a tier's model moves only to providers that have a model
 	// of the same tier; anything else would be a silent downgrade.
 	want := ArgsTier(l.Provider, splitArgs(l.Args))
+	sort.SliceStable(order, func(i, j int) bool {
+		ri, rj := s.Pool.Cfg.LastResortRank(strings.TrimSpace(order[i])), s.Pool.Cfg.LastResortRank(strings.TrimSpace(order[j]))
+		return ri < rj
+	})
 	seen := map[string]bool{}
 	for _, provider := range order {
 		provider = strings.TrimSpace(provider)
@@ -421,9 +443,8 @@ func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining f
 			if err != nil {
 				continue
 			}
-			// The successor must have real headroom, not just be eligible.
 			rem, _, _ := s.headroom(acc.ID, provider, now)
-			if rem <= minRemaining {
+			if !ok(r, rem) {
 				continue
 			}
 			return acc, nil

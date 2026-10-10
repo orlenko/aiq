@@ -182,6 +182,52 @@ type Usage struct {
 	Plan              string
 	PollError         string
 	ObservedAt        int64
+	// Extra is the account's paid extra usage (Claude), nil when never
+	// polled.
+	Extra *ExtraUsage
+}
+
+// ExtraUsage is Claude's paid overflow: once the plan's windows are spent,
+// requests draw on prepaid usage credits, up to a monthly spend limit.
+// Amounts are in minor units of Currency.
+type ExtraUsage struct {
+	Enabled        bool   `json:"enabled"`
+	Currency       string `json:"currency,omitempty"`
+	BalanceMinor   int64  `json:"balance_minor"` // prepaid credits left; -1 = unknown
+	AutoReload     bool   `json:"auto_reload"`
+	UsedMinor      int64  `json:"used_minor"`  // spent this month
+	LimitMinor     int64  `json:"limit_minor"` // monthly spend limit; 0 = none
+	LimitReached   bool   `json:"limit_reached,omitempty"`
+	DisabledReason string `json:"disabled_reason,omitempty"`
+	ObservedAt     int64  `json:"observed_at"`
+}
+
+// Spendable reports whether aiq may route work onto the account's extra
+// usage, or why not. Only prepaid credits count: with auto-reload on, or
+// with no prepaid balance, the overflow is billed to a card.
+func (e *ExtraUsage) Spendable() (bool, string) {
+	switch {
+	case e == nil:
+		return false, "extra usage unknown"
+	case !e.Enabled:
+		return false, "extra usage off"
+	case e.DisabledReason != "":
+		return false, "extra usage disabled: " + e.DisabledReason
+	case e.LimitReached || (e.LimitMinor > 0 && e.UsedMinor >= e.LimitMinor):
+		return false, "monthly spend limit reached"
+	case e.AutoReload:
+		return false, "auto-reload is on (would charge a card)"
+	case e.BalanceMinor < 0:
+		return false, "prepaid balance unknown"
+	case e.BalanceMinor == 0:
+		return false, "out of prepaid credits"
+	}
+	return true, ""
+}
+
+// Money renders a minor-unit amount: "CAD 399.47".
+func (e *ExtraUsage) Money(minor int64) string {
+	return fmt.Sprintf("%s %d.%02d", e.Currency, minor/100, minor%100)
 }
 
 type Lease struct {
@@ -262,6 +308,7 @@ func Open(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE usage ADD COLUMN exhausted_at INTEGER`)
 	db.Exec(`ALTER TABLE usage ADD COLUMN reset_credit_expires_at INTEGER`)
 	db.Exec(`ALTER TABLE usage ADD COLUMN reset_credit_id TEXT`)
+	db.Exec(`ALTER TABLE usage ADD COLUMN extra_usage TEXT`)
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
 		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
 		"launcher TEXT", "transcript TEXT", "drain_manual INTEGER"} {
@@ -509,20 +556,44 @@ func (s *Store) SetResetCreditDetail(id string, expiresAt int64, creditID string
 	return err
 }
 
+// SetExtraUsage records the account's extra-usage reading. It runs after
+// SetUsageMeta.
+func (s *Store) SetExtraUsage(id string, e *ExtraUsage) error {
+	var enc any
+	if e != nil {
+		data, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		enc = string(data)
+	}
+	_, err := s.db.Exec(`UPDATE usage SET extra_usage = ? WHERE account_id = ?`, enc, id)
+	return err
+}
+
 func (s *Store) GetUsage(id string) (Usage, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT account_id, exhausted, COALESCE(exhausted_reason,''), COALESCE(cooldown_until,0),
 		        reset_credits, COALESCE(reset_credit_expires_at,0), COALESCE(reset_credit_id,''),
-		        COALESCE(plan,''), COALESCE(poll_error,''), COALESCE(observed_at,0), COALESCE(exhausted_at,0)
+		        COALESCE(plan,''), COALESCE(poll_error,''), COALESCE(observed_at,0), COALESCE(exhausted_at,0),
+		        COALESCE(extra_usage,'')
 		 FROM usage WHERE account_id = ?`, id)
 	var u Usage
 	var exhausted int
+	var extra string
 	err := row.Scan(&u.AccountID, &exhausted, &u.ExhaustedReason, &u.CooldownUntil,
-		&u.ResetCredits, &u.ResetCreditExpiry, &u.ResetCreditID, &u.Plan, &u.PollError, &u.ObservedAt, &u.ExhaustedAt)
+		&u.ResetCredits, &u.ResetCreditExpiry, &u.ResetCreditID, &u.Plan, &u.PollError, &u.ObservedAt, &u.ExhaustedAt,
+		&extra)
 	if errors.Is(err, sql.ErrNoRows) {
 		return u, false, nil
 	}
 	u.Exhausted = exhausted != 0
+	if extra != "" {
+		var e ExtraUsage
+		if json.Unmarshal([]byte(extra), &e) == nil {
+			u.Extra = &e
+		}
+	}
 	return u, err == nil, err
 }
 

@@ -157,6 +157,33 @@ func TestAutoRanking(t *testing.T) {
 	}
 }
 
+// Copilot, with no telemetry, scores a neutral 5, and Antigravity a fresh
+// account's high score; both still go after a nearly spent plan account
+// and after extra usage, because they are last-resort providers.
+func TestAutoRankingLastResortGoesLast(t *testing.T) {
+	now := time.Now()
+	policies := map[string]selector.Policy{}
+	for _, p := range []string{"claude", "codex", "agy", "copilot"} {
+		policies[p] = selector.Policy{Now: now, Mode: state.ModeWorker, StaleAfter: 15 * time.Minute}
+	}
+	weekly := func(used float64, resetIn time.Duration) []state.Window {
+		return []state.Window{{Kind: state.KindWeekly, UsedPct: used, ResetsAt: now.Add(resetIn).Unix(), ObservedAt: now.Unix()}}
+	}
+	cands := []selector.Candidate{
+		{ID: "copilot/main", Enabled: true, HasCredential: true, LastResort: 2},
+		{ID: "agy/main", Enabled: true, HasCredential: true, LastResort: 1, Windows: weekly(0, 2*time.Hour)},
+		{ID: "claude/extra", Enabled: true, HasCredential: true, Windows: weekly(100, 50*time.Hour), ExtraUsage: "CAD 1.00 prepaid left"},
+		{ID: "codex/low", Enabled: true, HasCredential: true, Windows: weekly(90, 100*time.Hour)},
+	}
+	var got []string
+	for _, r := range rankAuto(policies, cands) {
+		got = append(got, r.ID)
+	}
+	if strings.Join(got, " ") != "codex/low claude/extra agy/main copilot/main" {
+		t.Fatalf("order: %v", got)
+	}
+}
+
 func TestAutoRankingDrainsReadyResetCredit(t *testing.T) {
 	now := time.Now()
 	policies := map[string]selector.Policy{}

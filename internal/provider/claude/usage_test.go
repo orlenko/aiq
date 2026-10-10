@@ -99,3 +99,51 @@ func TestParseOrganization(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// Shapes from the live endpoints on 2026-10-10: extra usage on with a
+// monthly limit, and a prepaid balance with auto-reload off.
+func TestParseExtraUsageAndPrepaid(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	usage := []byte(`{"extra_usage":{"is_enabled":true,"monthly_limit":70000,"used_credits":1234.0,"utilization":null,
+		"currency":"CAD","decimal_places":2,"disabled_reason":null,"user_disabled":false,"spend_limit_reached":false}}`)
+	e := ParseExtraUsage(usage, now)
+	if e == nil || !e.Enabled || e.LimitMinor != 70000 || e.UsedMinor != 1234 || e.Currency != "CAD" || e.BalanceMinor != -1 {
+		t.Fatalf("extra usage: %+v", e)
+	}
+	if ok, why := e.Spendable(); ok || why != "prepaid balance unknown" {
+		t.Fatalf("before the balance is read: %v %q", ok, why)
+	}
+	ParsePrepaid([]byte(`{"amount":39947,"currency":"CAD","balance":{"money":{"amount_minor":39947,"currency":"CAD","exponent":2},"credits":null},
+		"auto_reload_settings":null}`), e)
+	if e.BalanceMinor != 39947 || e.AutoReload {
+		t.Fatalf("prepaid: %+v", e)
+	}
+	if ok, why := e.Spendable(); !ok {
+		t.Fatalf("should be spendable: %s", why)
+	}
+	if got := e.Money(e.BalanceMinor); got != "CAD 399.47" {
+		t.Fatalf("money: %s", got)
+	}
+
+	ParsePrepaid([]byte(`{"amount":39947,"auto_reload_settings":{"enabled":true}}`), e)
+	if ok, _ := e.Spendable(); ok {
+		t.Fatal("auto-reload on must not be spendable")
+	}
+	ParsePrepaid([]byte(`{"amount":0,"auto_reload_settings":null}`), e)
+	if ok, why := e.Spendable(); ok || why != "out of prepaid credits" {
+		t.Fatalf("empty balance: %v %q", ok, why)
+	}
+
+	off := ParseExtraUsage([]byte(`{"extra_usage":{"is_enabled":false,"monthly_limit":null,"used_credits":null}}`), now)
+	if ok, _ := off.Spendable(); ok {
+		t.Fatal("disabled extra usage must not be spendable")
+	}
+	capped := ParseExtraUsage([]byte(`{"extra_usage":{"is_enabled":true,"monthly_limit":70000,"used_credits":70000}}`), now)
+	capped.BalanceMinor = 100
+	if ok, why := capped.Spendable(); ok || why != "monthly spend limit reached" {
+		t.Fatalf("capped: %v %q", ok, why)
+	}
+	if ParseExtraUsage([]byte(`{"extra_usage":null}`), now) != nil {
+		t.Fatal("a null block (skip_spend) reads as unknown")
+	}
+}

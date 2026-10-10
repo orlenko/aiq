@@ -18,6 +18,10 @@
 // the weekly reserve (workers only), disabled accounts and accounts at their
 // worker cap are filtered out first. Interactive sessions may be sticky: they
 // keep their workspace's account until it crosses the switch threshold.
+//
+// Ranking goes by rung before score: plan quota first, then accounts whose
+// plan is spent but which can run on paid extra usage, then last-resort
+// providers in their configured order.
 package selector
 
 import (
@@ -49,7 +53,24 @@ type Candidate struct {
 
 	InteractiveLeases int
 	WorkerLeases      int
+
+	// ExtraUsage is non-empty when the account may run on paid extra usage
+	// once its plan is spent; it describes what is left ("CAD 399.47
+	// prepaid left").
+	ExtraUsage string
+	// LastResort is the provider's position among the last-resort
+	// providers, from 1; 0 for every other provider.
+	LastResort int
 }
+
+// Rungs order capacity by what it costs, before any score: plan quota,
+// then paid extra usage, then last-resort providers (RungLastResort + the
+// provider's position).
+const (
+	RungPlan       = 0
+	RungExtra      = 1
+	RungLastResort = 1
+)
 
 type Policy struct {
 	Now  time.Time
@@ -86,6 +107,7 @@ type Ranked struct {
 	Terms            []string // per-window contributions, for --explain
 	ResetCreditReady bool     // final weekly allowance should be drained first
 	BelowFloor       bool     // Headroom at or below Policy.FloorPct
+	Rung             int      // RungPlan, RungExtra, or RungLastResort + n
 }
 
 type Result struct {
@@ -311,6 +333,7 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 		case c.CooldownUntil > p.Now.Unix():
 			r.Eligible, r.Reason = false, "exhausted until "+fmtReset(c.CooldownUntil, p.Now)
 		}
+		extra := ""
 		if r.Eligible {
 			if w, ok := exhaustedWindow(c.Windows, p.ModelScope, p.Now); ok {
 				name := w.Label
@@ -321,7 +344,12 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 				if w.ResetsAt > 0 {
 					when = " until " + fmtReset(w.ResetsAt, p.Now)
 				}
-				r.Eligible, r.Reason = false, fmt.Sprintf("%s window exhausted%s", strings.ToLower(name), when)
+				reason := fmt.Sprintf("%s window exhausted%s", strings.ToLower(name), when)
+				if c.ExtraUsage != "" {
+					extra = reason
+				} else {
+					r.Eligible, r.Reason = false, reason
+				}
 			}
 		}
 		// The weekly reserve is waived while the account holds a reset
@@ -331,17 +359,32 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 			if p.MaxWorkers > 0 && c.WorkerLeases >= p.MaxWorkers {
 				r.Eligible, r.Reason = false, fmt.Sprintf("at worker cap (%d)", p.MaxWorkers)
 			} else if rem := weeklyRemaining(c.Windows, p.ModelScope); rem >= 0 && rem <= p.WeeklyReservePct && c.ResetCredits == 0 {
-				r.Eligible, r.Reason = false, fmt.Sprintf("weekly %.0f%% left ≤ reserve %.0f%%", rem, p.WeeklyReservePct)
+				reason := fmt.Sprintf("weekly %.0f%% left ≤ reserve %.0f%%", rem, p.WeeklyReservePct)
+				if c.ExtraUsage != "" {
+					if extra == "" {
+						extra = reason
+					}
+				} else {
+					r.Eligible, r.Reason = false, reason
+				}
 			}
 		}
 		r.Score, r.Terms = Score(c, p)
+		if r.Eligible && extra != "" {
+			r.Rung = RungExtra
+			r.Terms = append([]string{fmt.Sprintf("%s: extra usage, %s", extra, c.ExtraUsage)}, r.Terms...)
+		}
+		if c.LastResort > 0 {
+			r.Rung = RungLastResort + c.LastResort
+			r.Terms = append([]string{fmt.Sprintf("last-resort provider #%d", c.LastResort)}, r.Terms...)
+		}
 		if p.FloorPct > 0 && r.Eligible {
 			if rem, _ := Headroom(c.Windows, p.ModelScope, p.Now); rem <= p.FloorPct {
 				r.BelowFloor = true
 				r.Terms = append([]string{fmt.Sprintf("%.0f%% left ≤ long drain floor %.0f%%: last resort", rem, p.FloorPct)}, r.Terms...)
 			}
 		}
-		if remaining, ok := resetCreditReady(c, p); r.Eligible && ok {
+		if remaining, ok := resetCreditReady(c, p); r.Eligible && ok && r.Rung == RungPlan {
 			r.ResetCreditReady = true
 			r.Terms = append([]string{fmt.Sprintf("reset credit ready after final %.0f%% weekly: drain first", remaining)}, r.Terms...)
 		}
@@ -355,6 +398,9 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 		a, b := out[i], out[j]
 		if a.Eligible != b.Eligible {
 			return a.Eligible
+		}
+		if a.Rung != b.Rung {
+			return a.Rung < b.Rung
 		}
 		if a.BelowFloor != b.BelowFloor {
 			return b.BelowFloor
@@ -448,6 +494,12 @@ func Select(p Policy, cands []Candidate) (Result, error) {
 			}
 			if eligible[p.AffinityID].BelowFloor {
 				healthy = false // a long session would be moved off it at once
+			}
+			for _, r := range res.Ranked {
+				if r.Eligible && r.Rung < eligible[p.AffinityID].Rung {
+					healthy = false // cheaper capacity exists (plan before extra usage)
+					break
+				}
 			}
 			// A nearly spent credit holder takes precedence over a healthy
 			// sticky account. If the sticky account is itself in that state,

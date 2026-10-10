@@ -100,6 +100,12 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		prev, _, _ := p.St.GetUsage(a.ID)
 		p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), u.ResetCredits, "", now)
 		p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)
+		if u.Extra != nil {
+			if u.Extra.Enabled && u.Extra.BalanceMinor < 0 && prev.Extra != nil {
+				u.Extra.BalanceMinor = prev.Extra.BalanceMinor // balance read failed; keep the last one
+			}
+			p.St.SetExtraUsage(a.ID, u.Extra)
+		}
 		p.updateIdentity(a, u.Identity)
 		return nil
 	case "codex":

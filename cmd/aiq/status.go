@@ -135,6 +135,10 @@ func renderStatus(v *pool.View, explain bool) string {
 			st = "EXHAUSTED"
 		case !acc.Eligible:
 			st = "held"
+		case acc.Rung == selector.RungExtra:
+			st = "extra"
+		case acc.Rung > selector.RungLastResort:
+			st = "last"
 		}
 		score := "  -"
 		if acc.Eligible {
@@ -158,6 +162,16 @@ func renderStatus(v *pool.View, explain bool) string {
 				note += ", next expires " + time.Unix(acc.CreditExpiry, 0).Local().Format("Mon Jan 2 15:04")
 			}
 			notes = append(notes, note)
+		}
+		if e := acc.ExtraUsage; e != nil {
+			note := "extra usage " + e.Money(e.BalanceMinor) + " prepaid"
+			if e.BalanceMinor < 0 {
+				note = "extra usage on"
+			}
+			if e.LimitMinor > 0 {
+				note += fmt.Sprintf(", %s of %s this month", e.Money(e.UsedMinor), e.Money(e.LimitMinor))
+			}
+			notes = append(notes, note+" ("+acc.ExtraUsageNote+")")
 		}
 		if acc.PollError != "" {
 			notes = append(notes, acc.PollError)
