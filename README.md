@@ -626,7 +626,7 @@ within a day. Set `auto_reset_credits = false` to leave spending to
 Ranking goes by cost class before score:
 
 1. **Plan quota.** Every account with subscription quota left, on any
-   provider.
+   provider, Antigravity included (it serves Claude Opus 5.5).
 2. **Extra usage.** A Claude account whose plan is spent but which can run
    on prepaid usage credits. Claude Code switches to them on its own once
    the plan's windows run out ("Extra usage is now covering your
@@ -638,10 +638,10 @@ Ranking goes by cost class before score:
    extra usage" or "You've hit your monthly spend limit" benches the
    account for an hour.
 3. **Last-resort providers**, `selection.last_resort` in order (default
-   Antigravity, then Copilot), for `auto` and long-session takeovers once
-   neither of the above is left. A provider still has to be allowed
-   (`auto.providers`, `--providers`, `long.fallback`), and a long session
-   on a tier-0 or tier-1 model still never moves to Antigravity.
+   Copilot), for `auto` and long-session takeovers once neither of the
+   above is left. A provider still has to be allowed (`auto.providers`,
+   `--providers`, `long.fallback`), and a long session still never moves
+   to a provider with no model of its tier.
 
 aiq reads the balance and the auto-reload setting together; a reading
 older than 15 minutes, or an auto-reload setting it cannot read as off,
@@ -892,7 +892,7 @@ min_hours = 0.25
 weekly_weight = 5.0
 auto_reset_credits = true       # redeem a Codex or Claude reset credit when a holder is blocked
 extra_usage = false             # spend Claude prepaid extra usage once plan quota is gone everywhere
-last_resort = ["agy", "copilot"]  # providers used only after plan quota and extra usage
+last_resort = ["copilot"]       # providers used only after plan quota and extra usage
 
 [worker]
 retry = true

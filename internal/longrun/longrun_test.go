@@ -557,6 +557,7 @@ func TestSuccessorDescendsPlanExtraLastResort(t *testing.T) {
 			cfg.Providers.Codex.ModelScope = ""
 			cfg.Providers.Agy.ModelScope = ""
 			cfg.Selection.ExtraUsage = true
+			cfg.Selection.LastResort = []string{"agy"}
 			s := &Supervisor{Pool: &pool.Pool{Cfg: cfg, St: st}}
 			got, err := s.successor(state.Lease{AccountID: "claude/source", Provider: "claude", Fallback: "claude,agy,codex"}, now)
 			if err != nil || got.ID != tc.want {
