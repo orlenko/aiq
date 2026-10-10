@@ -45,3 +45,18 @@ func TestParseClientThemes(t *testing.T) {
 		}
 	}
 }
+
+// tmux 3.7 exits 0 with empty formats for a missing pane; PaneState must not
+// read that as a dead pane that still exists.
+func TestPaneStateMissingPane(t *testing.T) {
+	if _, err := run("list-sessions"); err != nil {
+		t.Skip("no tmux server")
+	}
+	exists, running, err := PaneState("%999999")
+	if err != nil {
+		t.Skipf("tmux reported the missing pane as an error: %v", err)
+	}
+	if exists || running {
+		t.Fatalf("PaneState(missing) = exists %v, running %v; want false, false", exists, running)
+	}
+}
