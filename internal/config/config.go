@@ -330,7 +330,7 @@ func Default() *Config {
 		MinHours:             0.25,
 		WeeklyWeight:         5,
 		AutoResetCredits:     true,
-		LastResort:           []string{"agy", "copilot"},
+		LastResort:           []string{"copilot"},
 	}
 	c.Worker = Worker{Retry: true, RetryMaxSeconds: 60}
 	c.Poll = Poll{IntervalSeconds: 300, TimeoutSeconds: 60}

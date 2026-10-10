@@ -125,7 +125,7 @@ session named after the workspace and supervises it:
   from the note plus the working tree. The permission bypass carries over in
   the successor's spelling (`--dangerously-skip-permissions` ↔
   `--dangerously-bypass-approvals-and-sandbox`), and so do a tier model
-  (`--model opus` ↔ `--model gpt-5.6-sol`, see the tier table below) and an
+  (`--model opus` ↔ `--model gpt-6.1-sol`, see the tier table below) and an
   effort level (`--effort high` ↔ `-c model_reasoning_effort=high`). Every
   other flag is provider-specific and dropped. Fallback order is
   `long.fallback`, less any provider with no model of the session's tier.
@@ -378,24 +378,29 @@ requiring `-p`. For a supervised session that moves between accounts, use
 
 | Tier | Claude | Codex | Antigravity | Copilot |
 | --- | --- | --- | --- | --- |
-| 0 | Fable (`fable`) | Astra (`gpt-6-astra`) | — | Astra (`gpt-6-astra`) |
-| 1 (default for auto) | Opus (`opus`) | Sol (`gpt-5.6-sol`) | — | Sol (`gpt-5.6-sol`) |
-| 2 | Sonnet (`sonnet`) | Terra (`gpt-5.6-terra`) | Claude Opus 4.6 (`claude-opus-4-6-thinking`) | Terra (`gpt-5.6-terra`) |
-| 3 | Haiku (`haiku`) | Luna (`gpt-5.6-luna`) | Gemini 3.8 Flash (`gemini-3.8-flash-medium`) | Luna (`gpt-5.6-luna`) |
+| 0 | Fable 5.1 (`fable`) | Astra (`gpt-6-astra`) | — | Astra (`gpt-6-astra`) |
+| 1 (default for auto) | Opus 5.5 (`opus`) | Sol 6.1 (`gpt-6.1-sol`) | Claude Opus 5.5 (`claude-opus-5-5-high`) | Sol 5.6 (`gpt-5.6-sol`) |
+| 2 | Sonnet 5.5 (`sonnet`) | Terra (`gpt-5.6-terra`) | Claude Sonnet 5.5 (`claude-sonnet-5-5-high`) | Terra (`gpt-5.6-terra`) |
+| 3 | Haiku 5.5 (`haiku`) | Luna 6 (`gpt-6-luna`) | Gemini 3.8 Flash (`gemini-3.8-flash-high`) | Luna (`gpt-5.6-luna`) |
 
 A tier is a class of model, the same on every provider, not a provider's own
-ranking of its models. Antigravity's newest models (Claude Opus 4.6, Gemini
-3.1 Pro) are a generation behind tiers 0 and 1, so it has none there: `aiq run
-auto` at those tiers skips it, `aiq run agy --model-tier 0` is an error, and a
-long session on a tier-0 or tier-1 model never moves to it. Copilot serves the
-Codex models; which of them an account may pick depends on its Copilot plan
-(on a Copilot Free login every named model was rejected as not available).
+ranking of its models. Claude's aliases follow the newest model of each
+family; the other names are versions, current as of 2026-10-10, kept in
+`internal/tier/tier.go`. A model the table used to name (`gpt-5.6-sol`,
+`claude-opus-4-6-thinking`) keeps its tier, and a long session started on one
+is restarted on the tier's current model at its next same-provider takeover.
+Antigravity has no frontier model, so it has no tier 0: `aiq run auto
+--model-tier 0` skips it, `aiq run agy --model-tier 0` is an error, and a long
+session on a tier-0 model never moves to it. Copilot serves the Codex models,
+but no newer than the 5.6 generation below Astra; which of them an account may
+pick depends on its Copilot plan (on a Copilot Free login every named model
+was rejected as not available).
 
 The requested tier stays fixed during retries; aiq never silently downgrades it.
 Model-scoped quota windows bind only the selected model, so an exhausted Fable
 cap does not disqualify an otherwise eligible Opus account. On Antigravity the
 Gemini models share the account's main 5-hour and weekly windows; Claude
-models there draw on separate "3p" windows, which bind only tier 2.
+models there draw on separate "3p" windows, which bind only tiers 1 and 2.
 
 | Effort | Claude | Codex | Antigravity | Copilot |
 | --- | --- | --- | --- | --- |
@@ -406,7 +411,8 @@ models there draw on separate "3p" windows, which bind only tier 2.
 | 5 | max | max | high | max |
 | 6 | ultracode | ultra | high | max |
 
-Effort is optional; omission preserves the CLI default. Claude's sixth setting
+Effort defaults to high (3) for `aiq run auto` and for a model a takeover
+translates; with an explicit provider, omitting it preserves the CLI default. Claude's sixth setting
 means `xhigh` plus dynamic workflows, rather than a sixth model reasoning level;
 it requires Claude Code 2.1.203 or later. See the
 [Claude CLI reference](https://code.claude.com/docs/en/cli-reference).
@@ -620,9 +626,13 @@ within a day. Set `auto_reset_credits = false` to leave spending to
 Ranking goes by cost class before score:
 
 1. **Plan quota.** Every account with subscription quota left, on any
-   provider.
-2. **Extra usage.** A Claude account whose plan is spent but which can run
-   on prepaid usage credits. Claude Code switches to them on its own once
+   provider, Antigravity included (it serves Claude Opus 5.5).
+2. **Extra usage.** A Claude account whose plan is spent, or nearly spent,
+   but which can run on prepaid usage credits. Where one exists, plan quota
+   that is nearly spent (at or below `drain_pct` for a long session, past
+   `switch_pct` for an interactive pick) ranks after it: a few points of
+   plan buy a short stretch and another move, the credits run on. A long
+   session on such an account is not drained when its plan runs low. Claude Code switches to them on its own once
    the plan's windows run out ("Extra usage is now covering your
    requests"). aiq polls the balance and the monthly spend limit, and
    uses such an account only when `selection.extra_usage = true`, extra
@@ -632,10 +642,10 @@ Ranking goes by cost class before score:
    extra usage" or "You've hit your monthly spend limit" benches the
    account for an hour.
 3. **Last-resort providers**, `selection.last_resort` in order (default
-   Antigravity, then Copilot), for `auto` and long-session takeovers once
-   neither of the above is left. A provider still has to be allowed
-   (`auto.providers`, `--providers`, `long.fallback`), and a long session
-   on a tier-0 or tier-1 model still never moves to Antigravity.
+   Copilot), for `auto` and long-session takeovers once neither of the
+   above is left. A provider still has to be allowed (`auto.providers`,
+   `--providers`, `long.fallback`), and a long session still never moves
+   to a provider with no model of its tier.
 
 aiq reads the balance and the auto-reload setting together; a reading
 older than 15 minutes, or an auto-reload setting it cannot read as off,
@@ -886,7 +896,7 @@ min_hours = 0.25
 weekly_weight = 5.0
 auto_reset_credits = true       # redeem a Codex or Claude reset credit when a holder is blocked
 extra_usage = false             # spend Claude prepaid extra usage once plan quota is gone everywhere
-last_resort = ["agy", "copilot"]  # providers used only after plan quota and extra usage
+last_resort = ["copilot"]       # providers used only after plan quota and extra usage
 
 [worker]
 retry = true

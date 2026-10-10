@@ -108,6 +108,31 @@ type Ranked struct {
 	ResetCreditReady bool     // final weekly allowance should be drained first
 	BelowFloor       bool     // Headroom at or below Policy.FloorPct
 	Rung             int      // RungPlan, RungExtra, or RungLastResort + n
+	// Low marks plan quota that is nearly spent (Headroom at or below the
+	// long drain floor, or past switch_pct for an interactive pick) with
+	// no extra usage behind it. Where some account can run on extra usage,
+	// a Low one ranks after it: a few points of plan buy a short stretch
+	// and then a move, extra usage runs until the balance does.
+	Low bool
+}
+
+// CostOrder returns the cost class each ranking entry sorts by: its rung,
+// with Low plan quota placed after extra usage when any entry in rs can run
+// on it.
+func CostOrder(rs []Ranked) func(Ranked) float64 {
+	extra := false
+	for _, r := range rs {
+		if r.Eligible && r.Rung == RungExtra {
+			extra = true
+			break
+		}
+	}
+	return func(r Ranked) float64 {
+		if extra && r.Low && r.Rung == RungPlan {
+			return float64(RungExtra) + 0.5
+		}
+		return float64(r.Rung)
+	}
 }
 
 type Result struct {
@@ -378,14 +403,27 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 			r.Rung = RungLastResort + c.LastResort
 			r.Terms = append([]string{fmt.Sprintf("last-resort provider #%d", c.LastResort)}, r.Terms...)
 		}
-		if p.FloorPct > 0 && r.Eligible {
-			if rem, _ := Headroom(c.Windows, p.ModelScope, p.Now); rem <= p.FloorPct {
-				r.BelowFloor = true
-				r.Terms = append([]string{fmt.Sprintf("%.0f%% left ≤ long drain floor %.0f%%: last resort", rem, p.FloorPct)}, r.Terms...)
+		low := p.FloorPct
+		if low == 0 && p.Mode == state.ModeInteractive && p.SwitchPct > 0 {
+			low = 100 - p.SwitchPct
+		}
+		if rem, _ := Headroom(c.Windows, p.ModelScope, p.Now); r.Eligible && r.Rung == RungPlan && low > 0 && rem <= low {
+			if c.ExtraUsage != "" {
+				// The rest of the plan, then extra usage: the account does not
+				// run out where the plan does.
+				r.Rung = RungExtra
+				r.Terms = append([]string{fmt.Sprintf("%.0f%% plan left, then extra usage, %s", rem, c.ExtraUsage)}, r.Terms...)
+			} else {
+				r.Low = true
+				if p.FloorPct > 0 {
+					r.BelowFloor = true
+					r.Terms = append([]string{fmt.Sprintf("%.0f%% left ≤ long drain floor %.0f%%: last resort", rem, p.FloorPct)}, r.Terms...)
+				}
 			}
 		}
 		if remaining, ok := resetCreditReady(c, p); r.Eligible && ok && r.Rung == RungPlan {
 			r.ResetCreditReady = true
+			r.Low = false // finishing this allowance unlocks a free credit
 			r.Terms = append([]string{fmt.Sprintf("reset credit ready after final %.0f%% weekly: drain first", remaining)}, r.Terms...)
 		}
 		out = append(out, r)
@@ -394,13 +432,14 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 	for _, c := range cands {
 		byID[c.ID] = c
 	}
+	cost := CostOrder(out)
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Eligible != b.Eligible {
 			return a.Eligible
 		}
-		if a.Rung != b.Rung {
-			return a.Rung < b.Rung
+		if ca, cb := cost(a), cost(b); ca != cb {
+			return ca < cb
 		}
 		if a.BelowFloor != b.BelowFloor {
 			return b.BelowFloor
@@ -496,8 +535,9 @@ func Select(p Policy, cands []Candidate) (Result, error) {
 				healthy = false // a long session would be moved off it at once
 			}
 			cheaper := false
+			cost := CostOrder(res.Ranked)
 			for _, r := range res.Ranked {
-				if r.Eligible && r.Rung < eligible[p.AffinityID].Rung {
+				if r.Eligible && cost(r) < cost(eligible[p.AffinityID]) {
 					cheaper = true // plan before extra usage
 					break
 				}

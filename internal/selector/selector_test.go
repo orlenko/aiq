@@ -383,7 +383,7 @@ func TestRungsOrderPlanExtraLastResort(t *testing.T) {
 		c.ExtraUsage = extra
 		return c
 	}
-	plan := cand("claude/plan", win(state.KindShort, 10, 4*time.Hour), win(state.KindWeekly, 97, 150*time.Hour))
+	plan := cand("claude/plan", win(state.KindShort, 10, 4*time.Hour), win(state.KindWeekly, 50, 150*time.Hour))
 	last1 := cand("agy/main", win(state.KindShort, 0, 5*time.Hour), win(state.KindWeekly, 0, 160*time.Hour))
 	last1.LastResort = 1
 	last2 := cand("copilot/main")
@@ -398,10 +398,6 @@ func TestRungsOrderPlanExtraLastResort(t *testing.T) {
 			}
 		}
 		want := "claude/plan claude/extra agy/main copilot/main"
-		if mode == state.ModeWorker {
-			// 3% weekly left is below the worker reserve: held for workers.
-			want = "claude/extra agy/main copilot/main"
-		}
 		if strings.Join(got, " ") != want {
 			t.Fatalf("%s: eligible order %v, want %s", mode, got, want)
 		}
@@ -450,5 +446,32 @@ func TestStickyKeepsExtraUsageWhenNothingCheaper(t *testing.T) {
 	res, err := Select(p, []Candidate{mk("claude/a"), mk("claude/b")})
 	if err != nil || res.ID != "claude/b" {
 		t.Fatalf("got %q, %v; want claude/b", res.ID, err)
+	}
+}
+
+// Where some account runs on extra usage, plan quota that is nearly spent
+// (past switch_pct for an interactive pick) ranks after it, and an account
+// with a few points of plan and extra usage behind them counts as extra.
+// With no extra usage anywhere, the score alone orders plan accounts.
+func TestNearlySpentPlanRanksAfterExtraUsage(t *testing.T) {
+	low := cand("claude/low", win(state.KindShort, 0, 4*time.Hour), win(state.KindWeekly, 97, 2*time.Hour))
+	behind := cand("claude/behind", win(state.KindWeekly, 97, 80*time.Hour))
+	behind.ExtraUsage = "CAD 10.00 prepaid left"
+	fresh := cand("claude/fresh", win(state.KindWeekly, 30, 150*time.Hour))
+	order := func(cs ...Candidate) string {
+		var ids []string
+		for _, r := range Rank(policy(state.ModeInteractive), cs) {
+			if r.Eligible {
+				ids = append(ids, r.ID)
+			}
+		}
+		return strings.Join(ids, " ")
+	}
+	if got := order(low, behind, fresh); got != "claude/fresh claude/behind claude/low" {
+		t.Fatalf("with extra usage: %s", got)
+	}
+	// Without it, the soon-resetting 3% outscores the fresh account.
+	if got := order(low, fresh); got != "claude/low claude/fresh" {
+		t.Fatalf("without extra usage: %s", got)
 	}
 }
