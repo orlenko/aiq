@@ -63,10 +63,12 @@ func TestRenderConvoPlain(t *testing.T) {
 		"claude opus-5 · claude/a · /w · session abcdef12 · pane %3\n",
 		"\n▌ you · " + whenLabel(s.Turns[0].Started, time.Now()) + "\nfirst question\n",
 		"\n▌ claude · 3m · 2 tools\nfirst answer\n",
-		"\n· aiq: aiq moved this session to claude/b\n  → Picking up where it left off.\n",
+		"\n· aiq: aiq moved this session to claude/b\n\n▌ claude · 1m\nPicking up where it left off.\nmore\n",
 		"\n▌ you, while it worked\nalso run the tests\n",
 		"\n▌ claude · earlier\nBuild fixed; waiting on CI.\n",
 		"\n▌ claude · 12m · 47 tools\nCI is green.\n",
+		"\n· peer agent: Another Claude session sent a message: hi\n\n▌ claude · 1m\nReplied to the peer.\n",
+		"\n· notice: [agent-nudge] PR #4 has a review\n",
 		"\n▌ claude · 1m\n(no reply)\n",
 		"\n▌ you, while it worked\nwait for me\n\n▌ claude · earlier\nTagged.\n",
 		"\nworking · 12m · 5 tools\n",
@@ -82,13 +84,9 @@ func TestRenderConvoPlain(t *testing.T) {
 	if rest != "" {
 		t.Errorf("unexpected tail %q", rest)
 	}
-	// Agents talking among themselves are left out.
-	if strings.Contains(out, "peer") || strings.Contains(out, "agent-nudge") {
-		t.Errorf("peer or notice turn shown:\n%s", out)
-	}
 	// The running turn's reply is not shown before it ends.
-	if strings.Count(out, "▌ claude ·") != 5 {
-		t.Errorf("want 5 reply headers (3 replies, 2 earlier):\n%s", out)
+	if strings.Count(out, "▌ claude ·") != 7 {
+		t.Errorf("want 7 reply headers (5 replies, 2 earlier):\n%s", out)
 	}
 }
 
@@ -188,7 +186,7 @@ func TestConvoPrinterFollowsATurnThatGoesOn(t *testing.T) {
 		b.WriteString(p.emit(s))
 	}
 	out := b.String()
-	for _, w := range []string{"\nDeploy started.\n", "\nDeploy finished.\n", "→ Looking at CI.\n", "  → CI fixed.\n"} {
+	for _, w := range []string{"\nDeploy started.\n", "\nDeploy finished.\n", "\nLooking at CI.\n", "\nCI fixed.\n"} {
 		if strings.Count(out, w) != 1 {
 			t.Errorf("%q printed %d times:\n%s", w, strings.Count(out, w), out)
 		}
@@ -326,15 +324,18 @@ func TestRenderTurnsPlainMarksNonHumanTurns(t *testing.T) {
 	}
 }
 
-func TestConvoHidesAgentChatter(t *testing.T) {
+// A teammate's idle notice says nothing; what the agent did with a peer's
+// message shows, under the message.
+func TestConvoShowsWhatPeersStarted(t *testing.T) {
 	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
 	s := &transcript.Session{Provider: "claude", Turns: []transcript.Turn{
 		{Prompt: `{"type":"idle_notification","from":"worker"}`, Source: transcript.Peer, Reply: "noted", Started: at, Ended: at},
 		{Prompt: "worker finished the migration", Source: transcript.Peer, Reply: "merged it", Started: at.Add(time.Minute), Ended: at.Add(time.Minute)},
 	}}
 	out := renderConvo(s, convoTarget{}, 0, false, at)
-	if strings.Contains(out, "idle_notification") || strings.Contains(out, "noted") || strings.Contains(out, "worker finished") {
-		t.Errorf("peer message shown:\n%s", out)
+	if strings.Contains(out, "idle_notification") || strings.Contains(out, "noted") ||
+		!strings.Contains(out, "\n· peer agent: worker finished the migration\n\n▌ claude · 0s\nmerged it\n") {
+		t.Errorf("got:\n%s", out)
 	}
 }
 
@@ -593,21 +594,6 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 			out = append(out, p)
 		}
 		return out
-	} // lineOnly says which turns show answers as "→ first line": a
-	// notifier's turn, before the person's first steer.
-	lineOnly := map[string]map[string]bool{}
-	for i, tr := range s.Turns {
-		if tr.Source == transcript.Human {
-			continue
-		}
-		before := map[string]bool{}
-		for _, pc := range turnPieces(tr) {
-			if pc.kind == transcript.ItemSteer {
-				break
-			}
-			before[pc.text] = true
-		}
-		lineOnly[turnKey(i, tr)] = before
 	}
 	without := func(list []string, kind string, keepOrder ...string) []string {
 		var out []string
@@ -648,7 +634,7 @@ func checkFollowMatchesSnapshot(t *testing.T, name string, lines []string, parse
 		for _, p := range snapped[k] {
 			if text, ok := strings.CutPrefix(p, "answer\x00"); ok {
 				for out, which := range map[string]string{snapText: "snapshot", followText.String(): "follow"} {
-					if !strings.Contains(out, "\n"+text+"\n") && !(lineOnly[k][text] && strings.Contains(out, "  → "+firstLine(text))) {
+					if !strings.Contains(out, "\n"+text+"\n") {
 						t.Errorf("%s, turn %s: the %s shows %q only in part:\n%s", name, k, which, text, out)
 					}
 				}
@@ -726,8 +712,10 @@ func TestConvoFixturesRender(t *testing.T) {
 			t.Errorf("codex lacks %q:\n%s", w, out)
 		}
 	}
-	if strings.Contains(out, "orchestra") || strings.Contains(out, "Nothing for you.") {
-		t.Errorf("codex shows the Orchestra notice:\n%s", out)
+	// An Orchestra notice shows as one line, what came of it in full.
+	if strings.Contains(out, "agent-orchestra") || !regexp.MustCompile(`\n· orchestra inbox · \d\d:\d\d:\d\d\n`).MatchString(out) ||
+		!strings.Contains(out, "\nNothing for you.\n") {
+		t.Errorf("codex Orchestra notice:\n%s", out)
 	}
 }
 
@@ -1332,7 +1320,7 @@ func TestPromotedAnswers(t *testing.T) {
 		t.Errorf("interrupted:\n%s", got)
 	}
 	got = renderFixture(t, claudeReplyFixtures()["aiq turn interrupted"], transcript.ParseClaude)
-	if !strings.Contains(got, "· aiq: "+strings.TrimSpace(transcript.AiqResumeNudge)+" Go on.\n  → Reading the review comments on PR 4.\n") {
+	if !regexp.MustCompile(`· aiq: ` + regexp.QuoteMeta(strings.TrimSpace(transcript.AiqResumeNudge)) + ` Go on\.\n\n▌ claude · \d+s · 1 tool\nReading the review comments on PR 4\.\n`).MatchString(got) {
 		t.Errorf("aiq turn:\n%s", got)
 	}
 	got = renderFixture(t, codexReplyFixtures()["final answer repeats the last commentary"], transcript.ParseCodex)

@@ -279,9 +279,10 @@ before a tool call) shows as one dim line each, and a line that turns out
 to be an answer shows as that answer instead. Answers it gave before going
 on (after a background task or another agent's message) show as `earlier`.
 Prompts that aiq, another agent or a notifier typed in show as one dim
-line, with only the first line of each of its answers under it, until you
-type into such a turn; from your first message on, the same rules as for
-your own turns apply. Agent-team idle notifications are left out.
+line (an Agent Orchestra inbox notice as `orchestra inbox · <time>`); what
+the agent did with one shows by the same rules as your own turns, since
+its answers report work you want to know about. Agent-team idle
+notifications are left out.
 
 ```text
 aiq convo                   the agent in this tmux pane, else the one live session here
