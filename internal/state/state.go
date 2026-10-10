@@ -191,10 +191,13 @@ type Usage struct {
 // requests draw on prepaid usage credits, up to a monthly spend limit.
 // Amounts are in minor units of Currency.
 type ExtraUsage struct {
-	Enabled        bool   `json:"enabled"`
-	Currency       string `json:"currency,omitempty"`
-	BalanceMinor   int64  `json:"balance_minor"` // prepaid credits left; -1 = unknown
-	AutoReload     bool   `json:"auto_reload"`
+	Enabled      bool   `json:"enabled"`
+	Currency     string `json:"currency,omitempty"`
+	BalanceMinor int64  `json:"balance_minor"` // prepaid credits left; -1 = unknown
+	AutoReload   bool   `json:"auto_reload"`
+	// BalanceAt is when BalanceMinor and AutoReload were read (0 = never);
+	// they are read together, from a different endpoint than the rest.
+	BalanceAt      int64  `json:"balance_at"`
 	UsedMinor      int64  `json:"used_minor"`  // spent this month
 	LimitMinor     int64  `json:"limit_minor"` // monthly spend limit; 0 = none
 	LimitReached   bool   `json:"limit_reached,omitempty"`
@@ -202,10 +205,16 @@ type ExtraUsage struct {
 	ObservedAt     int64  `json:"observed_at"`
 }
 
+// ExtraUsageMaxAge is how old an extra-usage reading may be before aiq
+// stops spending on it: a balance it cannot re-read may be gone.
+const ExtraUsageMaxAge = 15 * time.Minute
+
 // Spendable reports whether aiq may route work onto the account's extra
 // usage, or why not. Only prepaid credits count: with auto-reload on, or
-// with no prepaid balance, the overflow is billed to a card.
-func (e *ExtraUsage) Spendable() (bool, string) {
+// with no prepaid balance, the overflow is billed to a card. Anything
+// unknown or stale counts against spending.
+func (e *ExtraUsage) Spendable(now time.Time) (bool, string) {
+	stale := func(at int64) bool { return at <= 0 || now.Sub(time.Unix(at, 0)) > ExtraUsageMaxAge }
 	switch {
 	case e == nil:
 		return false, "extra usage unknown"
@@ -215,10 +224,12 @@ func (e *ExtraUsage) Spendable() (bool, string) {
 		return false, "extra usage disabled: " + e.DisabledReason
 	case e.LimitReached || (e.LimitMinor > 0 && e.UsedMinor >= e.LimitMinor):
 		return false, "monthly spend limit reached"
+	case stale(e.ObservedAt):
+		return false, "extra usage reading is stale"
+	case e.BalanceMinor < 0 || stale(e.BalanceAt):
+		return false, "prepaid balance unknown"
 	case e.AutoReload:
 		return false, "auto-reload is on (would charge a card)"
-	case e.BalanceMinor < 0:
-		return false, "prepaid balance unknown"
 	case e.BalanceMinor == 0:
 		return false, "out of prepaid credits"
 	}

@@ -495,11 +495,17 @@ func Select(p Policy, cands []Candidate) (Result, error) {
 			if eligible[p.AffinityID].BelowFloor {
 				healthy = false // a long session would be moved off it at once
 			}
+			cheaper := false
 			for _, r := range res.Ranked {
 				if r.Eligible && r.Rung < eligible[p.AffinityID].Rung {
-					healthy = false // cheaper capacity exists (plan before extra usage)
+					cheaper = true // plan before extra usage
 					break
 				}
+			}
+			if cheaper {
+				healthy = false
+			} else if eligible[p.AffinityID].Rung > RungPlan {
+				healthy = true // past the plan everywhere: keep spending one balance, not each in turn
 			}
 			// A nearly spent credit holder takes precedence over a healthy
 			// sticky account. If the sticky account is itself in that state,

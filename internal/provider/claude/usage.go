@@ -306,7 +306,7 @@ func Poll(path string, now time.Time) (*Usage, error) {
 		if org := ParseOrganization(profile); org != "" && u.Extra != nil && u.Extra.Enabled {
 			cstatus, credits, err := getJSON(fmt.Sprintf(oauthPrepaidURL, url.PathEscape(org)), headers)
 			if err == nil && cstatus == 200 {
-				ParsePrepaid(credits, u.Extra)
+				ParsePrepaid(credits, u.Extra, now)
 			}
 		}
 	}
@@ -350,8 +350,11 @@ func ParseExtraUsage(body []byte, now time.Time) *state.ExtraUsage {
 }
 
 // ParsePrepaid fills in the prepaid credit balance and the auto-reload
-// setting from the organization's prepaid/credits payload.
-func ParsePrepaid(body []byte, e *state.ExtraUsage) {
+// setting from the organization's prepaid/credits payload. Both are set,
+// with BalanceAt, only when the payload has a balance; any
+// auto_reload_settings object other than one saying enabled false counts
+// as auto-reload on, since only null has been seen for "off".
+func ParsePrepaid(body []byte, e *state.ExtraUsage, now time.Time) {
 	var doc struct {
 		Amount   *int64 `json:"amount"`
 		Currency string `json:"currency"`
@@ -361,9 +364,7 @@ func ParsePrepaid(body []byte, e *state.ExtraUsage) {
 				Currency    string `json:"currency"`
 			} `json:"money"`
 		} `json:"balance"`
-		AutoReload *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"auto_reload_settings"`
+		AutoReload map[string]any `json:"auto_reload_settings"`
 	}
 	if json.Unmarshal(body, &doc) != nil {
 		return
@@ -376,13 +377,21 @@ func ParsePrepaid(body []byte, e *state.ExtraUsage) {
 	case doc.Amount != nil:
 		balance = doc.Amount
 	}
-	if balance != nil {
-		e.BalanceMinor = max(*balance, 0)
-		if e.Currency == "" {
-			e.Currency = currency
+	if balance == nil {
+		return
+	}
+	e.BalanceMinor = max(*balance, 0)
+	if e.Currency == "" {
+		e.Currency = currency
+	}
+	e.AutoReload = doc.AutoReload != nil
+	for _, key := range []string{"enabled", "is_enabled"} {
+		if v, ok := doc.AutoReload[key].(bool); ok {
+			e.AutoReload = v
+			break
 		}
 	}
-	e.AutoReload = doc.AutoReload != nil && doc.AutoReload.Enabled
+	e.BalanceAt = now.Unix()
 }
 
 // NormalizeResetCredits reads the cedar_ember block of the usage payload:

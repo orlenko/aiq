@@ -149,10 +149,12 @@ type Selection struct {
 	// an account holding one is blocked (weekly cap, or a credit that would
 	// otherwise expire first). Off, credits are only spent by `aiq reset`.
 	AutoResetCredits bool `toml:"auto_reset_credits"`
-	// ExtraUsage lets launches spend Claude extra usage once an account's
-	// plan is spent, after every account that still has plan quota. Only
-	// prepaid credits are spent: an account with auto-reload on, or with no
-	// prepaid balance, is never used past its plan.
+	// ExtraUsage lets aiq route launches and long-session moves onto an
+	// account's Claude extra usage once its plan is spent, after every
+	// account that still has plan quota, and only while it runs on prepaid
+	// credits (auto-reload off, balance above zero). It cannot stop a
+	// session already running from spilling into extra usage: Claude Code
+	// does that by itself when the account has extra usage turned on.
 	ExtraUsage bool `toml:"extra_usage"`
 	// LastResort lists providers used only after every other pool, extra
 	// usage included, has nothing left; earlier entries first. A provider

@@ -148,7 +148,7 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 			if acc.Provider == "codex" && strings.Contains(strings.ToLower(u.PollError), codex.ErrAuthRequired.Error()) {
 				c.UnavailableReason = "authentication required"
 			}
-			if ok, _ := u.Extra.Spendable(); ok && p.Cfg.Selection.ExtraUsage {
+			if ok, _ := u.Extra.Spendable(time.Now()); ok && p.Cfg.Selection.ExtraUsage {
 				c.ExtraUsage = fmt.Sprintf("%s prepaid left", u.Extra.Money(u.Extra.BalanceMinor))
 			}
 		}
@@ -403,7 +403,7 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 				av.CreditExpiry = u.ResetCreditExpiry
 				if u.Extra != nil && u.Extra.Enabled {
 					av.ExtraUsage = u.Extra
-					ok, why := u.Extra.Spendable()
+					ok, why := u.Extra.Spendable(now)
 					switch {
 					case !ok:
 						av.ExtraUsageNote = why
@@ -562,7 +562,7 @@ func (p *Pool) ExhaustUntil(a state.Account, reason string, fallback time.Durati
 	// windows; whatever stopped it is not tied to their reset.
 	extra := false
 	if u, ok, _ := p.St.GetUsage(a.ID); ok && p.Cfg.Selection.ExtraUsage {
-		extra, _ = u.Extra.Spendable()
+		extra, _ = u.Extra.Spendable(now)
 	}
 	if best > 0 && !extra {
 		until = time.Unix(best, 0)

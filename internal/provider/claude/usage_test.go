@@ -110,37 +110,59 @@ func TestParseExtraUsageAndPrepaid(t *testing.T) {
 	if e == nil || !e.Enabled || e.LimitMinor != 70000 || e.UsedMinor != 1234 || e.Currency != "CAD" || e.BalanceMinor != -1 {
 		t.Fatalf("extra usage: %+v", e)
 	}
-	if ok, why := e.Spendable(); ok || why != "prepaid balance unknown" {
+	if ok, why := e.Spendable(now); ok || why != "prepaid balance unknown" {
 		t.Fatalf("before the balance is read: %v %q", ok, why)
 	}
 	ParsePrepaid([]byte(`{"amount":39947,"currency":"CAD","balance":{"money":{"amount_minor":39947,"currency":"CAD","exponent":2},"credits":null},
-		"auto_reload_settings":null}`), e)
-	if e.BalanceMinor != 39947 || e.AutoReload {
+		"auto_reload_settings":null}`), e, now)
+	if e.BalanceMinor != 39947 || e.AutoReload || e.BalanceAt != now.Unix() {
 		t.Fatalf("prepaid: %+v", e)
 	}
-	if ok, why := e.Spendable(); !ok {
+	if ok, why := e.Spendable(now); !ok {
 		t.Fatalf("should be spendable: %s", why)
 	}
 	if got := e.Money(e.BalanceMinor); got != "CAD 399.47" {
 		t.Fatalf("money: %s", got)
 	}
-
-	ParsePrepaid([]byte(`{"amount":39947,"auto_reload_settings":{"enabled":true}}`), e)
-	if ok, _ := e.Spendable(); ok {
-		t.Fatal("auto-reload on must not be spendable")
+	if ok, why := e.Spendable(now.Add(state.ExtraUsageMaxAge + time.Minute)); ok || why != "extra usage reading is stale" {
+		t.Fatalf("stale reading: %v %q", ok, why)
 	}
-	ParsePrepaid([]byte(`{"amount":0,"auto_reload_settings":null}`), e)
-	if ok, why := e.Spendable(); ok || why != "out of prepaid credits" {
+
+	// Only an explicit false reads as auto-reload off; any other object,
+	// whatever its keys, reads as on.
+	for body, on := range map[string]bool{
+		`{"amount":39947,"auto_reload_settings":{"enabled":true}}`:                       true,
+		`{"amount":39947,"auto_reload_settings":{"is_enabled":true}}`:                    true,
+		`{"amount":39947,"auto_reload_settings":{"threshold_cents":1000,"amount":5000}}`: true,
+		`{"amount":39947,"auto_reload_settings":{"enabled":false}}`:                      false,
+		`{"amount":39947,"auto_reload_settings":null}`:                                   false,
+	} {
+		ParsePrepaid([]byte(body), e, now)
+		if e.AutoReload != on {
+			t.Fatalf("%s: auto-reload %v, want %v", body, e.AutoReload, on)
+		}
+		if ok, _ := e.Spendable(now); ok == on {
+			t.Fatalf("%s: spendable %v with auto-reload %v", body, ok, on)
+		}
+	}
+	// A payload without a balance changes nothing.
+	before := *e
+	ParsePrepaid([]byte(`{"error":"nope","auto_reload_settings":{"enabled":true}}`), e, now.Add(time.Minute))
+	if *e != before {
+		t.Fatalf("balance-less payload changed the reading: %+v", e)
+	}
+	ParsePrepaid([]byte(`{"amount":0,"auto_reload_settings":null}`), e, now)
+	if ok, why := e.Spendable(now); ok || why != "out of prepaid credits" {
 		t.Fatalf("empty balance: %v %q", ok, why)
 	}
 
 	off := ParseExtraUsage([]byte(`{"extra_usage":{"is_enabled":false,"monthly_limit":null,"used_credits":null}}`), now)
-	if ok, _ := off.Spendable(); ok {
+	if ok, _ := off.Spendable(now); ok {
 		t.Fatal("disabled extra usage must not be spendable")
 	}
 	capped := ParseExtraUsage([]byte(`{"extra_usage":{"is_enabled":true,"monthly_limit":70000,"used_credits":70000}}`), now)
-	capped.BalanceMinor = 100
-	if ok, why := capped.Spendable(); ok || why != "monthly spend limit reached" {
+	capped.BalanceMinor, capped.BalanceAt = 100, now.Unix()
+	if ok, why := capped.Spendable(now); ok || why != "monthly spend limit reached" {
 		t.Fatalf("capped: %v %q", ok, why)
 	}
 	if ParseExtraUsage([]byte(`{"extra_usage":null}`), now) != nil {

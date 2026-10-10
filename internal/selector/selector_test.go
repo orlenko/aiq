@@ -436,3 +436,19 @@ func TestStickyLeavesExtraUsageForPlan(t *testing.T) {
 		t.Fatalf("got %q, %v; want claude/plan", res.ID, err)
 	}
 }
+
+// With no plan quota anywhere, a sticky session keeps its own extra-usage
+// account instead of hopping to the next balance on every launch.
+func TestStickyKeepsExtraUsageWhenNothingCheaper(t *testing.T) {
+	mk := func(id string) Candidate {
+		c := cand(id, win(state.KindWeekly, 100, 50*time.Hour))
+		c.ExtraUsage = "CAD 10.00 prepaid left"
+		return c
+	}
+	p := policy(state.ModeInteractive)
+	p.Sticky, p.AffinityID = true, "claude/b"
+	res, err := Select(p, []Candidate{mk("claude/a"), mk("claude/b")})
+	if err != nil || res.ID != "claude/b" {
+		t.Fatalf("got %q, %v; want claude/b", res.ID, err)
+	}
+}

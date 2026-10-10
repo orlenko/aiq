@@ -637,11 +637,20 @@ Ranking goes by cost class before score:
    (`auto.providers`, `--providers`, `long.fallback`), and a long session
    on a tier-0 or tier-1 model still never moves to Antigravity.
 
+aiq reads the balance and the auto-reload setting together; a reading
+older than 15 minutes, or an auto-reload setting it cannot read as off,
+stops the spending. The switch only governs where aiq routes: a session
+already running on an account with extra usage turned on spills into it
+by itself when the plan runs out, whatever `extra_usage` says.
+
 A sticky interactive session on extra usage moves back to plan quota at
-its next launch, and a long session on extra usage is drained and moved as
-soon as an account with plan headroom is free. `aiq status` shows the
-balance and marks accounts running on extra usage `extra` and last-resort
-ones `last`.
+its next launch, and keeps its account (one balance, not each in turn)
+while no plan quota exists. A long session on extra usage moves once an
+account has plan quota above `drain_pct`; a nearly spent one would only
+bounce it back. A long session on a last-resort provider moves back to
+such an account after `idle_rotate_minutes` of quiet. `aiq status` shows
+the balance and marks accounts running on extra usage `extra` and
+last-resort ones `last`.
 
 ## Install
 

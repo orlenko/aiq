@@ -697,7 +697,7 @@ func (a *app) usageSummary(provider, accountID string) string {
 		spent = spent || w.UsedPct >= 100 || w.Severity == "critical"
 	}
 	if u, ok, _ := a.st.GetUsage(accountID); ok && spent && a.cfg.Selection.ExtraUsage {
-		if ok, _ := u.Extra.Spendable(); ok {
+		if ok, _ := u.Extra.Spendable(time.Now()); ok {
 			parts = append(parts, "on extra usage, "+u.Extra.Money(u.Extra.BalanceMinor)+" prepaid left")
 		}
 	}
