@@ -69,12 +69,20 @@ func PaneAlive(pane string) (exists bool, running bool) {
 // PaneState is PaneAlive with the query error kept. A failed query returns
 // (false, false, err), which is not the same as a pane that really died: a
 // caller that respawns on !running would be killing a healthy session.
+//
+// tmux 3.7 answers display-message for a pane that no longer exists with
+// exit 0 and every format empty, so existence is read from #{pane_id}
+// rather than from the exit status.
 func PaneState(pane string) (exists bool, running bool, err error) {
-	out, err := run("display-message", "-p", "-t", pane, "#{pane_dead}")
+	out, err := run("display-message", "-p", "-t", pane, "#{pane_id} #{pane_dead}")
 	if err != nil {
 		return false, false, err
 	}
-	return true, out == "0", nil
+	id, dead, _ := strings.Cut(out, " ")
+	if id == "" || (strings.HasPrefix(pane, "%") && id != pane) {
+		return false, false, nil
+	}
+	return true, dead == "0", nil
 }
 
 // PaneDiag describes a pane for a log line: whether it is dead, the exit
