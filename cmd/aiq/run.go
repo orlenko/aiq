@@ -681,6 +681,7 @@ func (a *app) usageSummary(provider, accountID string) string {
 	}
 	scope := strings.ToLower(a.pool.ModelScope(provider))
 	var parts []string
+	spent := false
 	for _, w := range ws {
 		if w.UsedPct < 0 || (w.Kind != state.KindShort && w.Kind != state.KindWeekly) {
 			continue
@@ -693,6 +694,12 @@ func (a *app) usageSummary(provider, accountID string) string {
 			label = "5h"
 		}
 		parts = append(parts, fmt.Sprintf("%s %.0f%%", label, w.UsedPct))
+		spent = spent || w.UsedPct >= 100 || w.Severity == "critical"
+	}
+	if u, ok, _ := a.st.GetUsage(accountID); ok && spent && a.cfg.Selection.ExtraUsage {
+		if ok, _ := u.Extra.Spendable(time.Now()); ok {
+			parts = append(parts, "on extra usage, "+u.Extra.Money(u.Extra.BalanceMinor)+" prepaid left")
+		}
 	}
 	return strings.Join(parts, ", ")
 }

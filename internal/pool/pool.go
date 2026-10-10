@@ -148,7 +148,11 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 			if acc.Provider == "codex" && strings.Contains(strings.ToLower(u.PollError), codex.ErrAuthRequired.Error()) {
 				c.UnavailableReason = "authentication required"
 			}
+			if ok, _ := u.Extra.Spendable(time.Now()); ok && p.Cfg.Selection.ExtraUsage {
+				c.ExtraUsage = fmt.Sprintf("%s prepaid left", u.Extra.Money(u.Extra.BalanceMinor))
+			}
 		}
+		c.LastResort = p.Cfg.LastResortRank(acc.Provider)
 		ws, err := p.St.ListWindows(acc.ID)
 		if err != nil {
 			return nil, err
@@ -292,11 +296,19 @@ type AccountView struct {
 	// WorkerSlots is how many more workers this account accepts right now
 	// (0 when it is not eligible for workers).
 	WorkerSlots int `json:"worker_slots"`
+	// Rung is the worker ranking's cost class (selector.RungPlan, RungExtra,
+	// or RungLastResort + n).
+	Rung int `json:"rung"`
+	// ExtraUsage is the account's paid extra usage, when it has any on;
+	// ExtraUsageNote says whether aiq may spend it and, if not, why.
+	ExtraUsage     *state.ExtraUsage `json:"extra_usage,omitempty"`
+	ExtraUsageNote string            `json:"extra_usage_note,omitempty"`
 }
 
 type RankView struct {
 	ID       string   `json:"id"`
 	Score    float64  `json:"score"`
+	Rung     int      `json:"rung"`
 	Eligible bool     `json:"eligible"`
 	Reason   string   `json:"reason,omitempty"`
 	Terms    []string `json:"terms"`
@@ -366,7 +378,7 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 			rs := selector.Rank(pol, cands)
 			ranked[mode] = map[string]RankView{}
 			for i, r := range rs {
-				rv := RankView{ID: r.ID, Score: r.Score, Eligible: r.Eligible, Reason: r.Reason, Terms: r.Terms}
+				rv := RankView{ID: r.ID, Score: r.Score, Rung: r.Rung, Eligible: r.Eligible, Reason: r.Reason, Terms: r.Terms}
 				ranked[mode][r.ID] = rv
 				_ = i
 				v.Rankings[provider+"/"+mode] = append(v.Rankings[provider+"/"+mode], rv)
@@ -389,6 +401,18 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 			if u, ok, _ := p.St.GetUsage(a.ID); ok {
 				av.Plan, av.ResetCredits, av.PollError, av.ObservedAt = u.Plan, u.ResetCredits, u.PollError, u.ObservedAt
 				av.CreditExpiry = u.ResetCreditExpiry
+				if u.Extra != nil && u.Extra.Enabled {
+					av.ExtraUsage = u.Extra
+					ok, why := u.Extra.Spendable(now)
+					switch {
+					case !ok:
+						av.ExtraUsageNote = why
+					case !p.Cfg.Selection.ExtraUsage:
+						av.ExtraUsageNote = "not spent: selection.extra_usage is off"
+					default:
+						av.ExtraUsageNote = "spent once plan quota runs out everywhere"
+					}
+				}
 				if u.Exhausted && u.CooldownUntil > now.Unix() {
 					av.Exhausted, av.Reason, av.CooldownUntil = true, u.ExhaustedReason, u.CooldownUntil
 				}
@@ -418,7 +442,7 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 				}
 			}
 			if r, ok := ranked[state.ModeWorker][a.ID]; ok {
-				av.Score, av.Eligible, av.Ineligible, av.Terms = r.Score, r.Eligible, r.Reason, r.Terms
+				av.Score, av.Eligible, av.Ineligible, av.Terms, av.Rung = r.Score, r.Eligible, r.Reason, r.Terms, r.Rung
 				if !av.Exhausted && !r.Eligible && strings.Contains(r.Reason, "exhausted") {
 					av.Exhausted, av.Reason = true, r.Reason
 				}
@@ -534,7 +558,13 @@ func (p *Pool) ExhaustUntil(a state.Account, reason string, fallback time.Durati
 			best = w.ResetsAt
 		}
 	}
-	if best > 0 {
+	// An account that can run on extra usage was not stopped by its plan
+	// windows; whatever stopped it is not tied to their reset.
+	extra := false
+	if u, ok, _ := p.St.GetUsage(a.ID); ok && p.Cfg.Selection.ExtraUsage {
+		extra, _ = u.Extra.Spendable(now)
+	}
+	if best > 0 && !extra {
 		until = time.Unix(best, 0)
 	}
 	p.St.MarkExhausted(a.ID, reason, until, now)

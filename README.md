@@ -353,7 +353,8 @@ aiq run auto --providers claude,codex   # only these pools
 
 `auto` ranks eligible accounts of every provider together (Claude, Codex,
 Antigravity, Copilot) using the quota score, worker reserve and concurrency
-limits. It skips providers whose CLI is missing and providers with no model at
+limits, after the cost order (plan quota, then Claude extra usage, then the
+last-resort providers; see [Cost order](#cost-order-plan-extra-usage-last-resort)). It skips providers whose CLI is missing and providers with no model at
 the requested tier. `--providers claude,codex` limits one launch to those
 pools; `auto.providers` in `config.toml` sets the default (empty means every
 provider), and the flag overrides it. A worker's retry and a long session's
@@ -614,6 +615,43 @@ block, and for a shorter window only when the credit would expire first or
 within a day. Set `auto_reset_credits = false` to leave spending to
 `aiq reset codex/<name>`.
 
+### Cost order: plan, extra usage, last resort
+
+Ranking goes by cost class before score:
+
+1. **Plan quota.** Every account with subscription quota left, on any
+   provider.
+2. **Extra usage.** A Claude account whose plan is spent but which can run
+   on prepaid usage credits. Claude Code switches to them on its own once
+   the plan's windows run out ("Extra usage is now covering your
+   requests"). aiq polls the balance and the monthly spend limit, and
+   uses such an account only when `selection.extra_usage = true`, extra
+   usage is on, the prepaid balance is above zero, auto-reload is off (so
+   no card is charged), and the monthly limit is not reached. Workers may
+   spend it past the weekly reserve. A worker rejected with "You're out of
+   extra usage" or "You've hit your monthly spend limit" benches the
+   account for an hour.
+3. **Last-resort providers**, `selection.last_resort` in order (default
+   Antigravity, then Copilot), for `auto` and long-session takeovers once
+   neither of the above is left. A provider still has to be allowed
+   (`auto.providers`, `--providers`, `long.fallback`), and a long session
+   on a tier-0 or tier-1 model still never moves to Antigravity.
+
+aiq reads the balance and the auto-reload setting together; a reading
+older than 15 minutes, or an auto-reload setting it cannot read as off,
+stops the spending. The switch only governs where aiq routes: a session
+already running on an account with extra usage turned on spills into it
+by itself when the plan runs out, whatever `extra_usage` says.
+
+A sticky interactive session on extra usage moves back to plan quota at
+its next launch, and keeps its account (one balance, not each in turn)
+while no plan quota exists. A long session on extra usage moves once an
+account has plan quota above `drain_pct`; a nearly spent one would only
+bounce it back. A long session on a last-resort provider moves back to
+such an account after `idle_rotate_minutes` of quiet. `aiq status` shows
+the balance and marks accounts running on extra usage `extra` and
+last-resort ones `last`.
+
 ## Install
 
 For a first install on macOS or Ubuntu, install Git and Go (the version in
@@ -847,6 +885,8 @@ max_depth = 3
 min_hours = 0.25
 weekly_weight = 5.0
 auto_reset_credits = true       # redeem a Codex or Claude reset credit when a holder is blocked
+extra_usage = false             # spend Claude prepaid extra usage once plan quota is gone everywhere
+last_resort = ["agy", "copilot"]  # providers used only after plan quota and extra usage
 
 [worker]
 retry = true

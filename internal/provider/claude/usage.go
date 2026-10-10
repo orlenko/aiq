@@ -33,7 +33,8 @@ import (
 const (
 	oauthClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	oauthTokenURL    = "https://api.anthropic.com/v1/oauth/token"
-	oauthUsageURL    = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1"
+	oauthUsageURL    = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1"
+	oauthPrepaidURL  = "https://api.anthropic.com/api/oauth/organizations/%s/prepaid/credits"
 	oauthResetURL    = "https://api.anthropic.com/api/organizations/%s/reset_rate_limits"
 	oauthProfileURL  = "https://api.anthropic.com/api/oauth/profile"
 	oauthAuthorize   = "https://claude.ai/oauth/authorize"
@@ -237,6 +238,9 @@ type Usage struct {
 	ResetCredits      int
 	ResetCreditExpiry int64
 	ResetCreditID     string
+	// Extra is the account's paid extra usage; nil when the poll could not
+	// read it.
+	Extra *state.ExtraUsage
 }
 
 // freshGrant loads the grant at path, refreshing and writing it back when
@@ -294,10 +298,100 @@ func Poll(path string, now time.Time) (*Usage, error) {
 	u := &Usage{}
 	u.Windows = NormalizeUsage(body, now)
 	u.ResetCredits, u.ResetCreditExpiry, u.ResetCreditID = NormalizeResetCredits(body, now)
+	u.Extra = ParseExtraUsage(body, now)
 	if pstatus, profile, err := getJSON(oauthProfileURL, headers); err == nil && pstatus == 200 {
 		u.Identity, u.Plan = ParseProfile(profile)
+		// The prepaid balance lives under the organization. Read it only
+		// when extra usage is on: it is what that usage draws on.
+		if org := ParseOrganization(profile); org != "" && u.Extra != nil && u.Extra.Enabled {
+			cstatus, credits, err := getJSON(fmt.Sprintf(oauthPrepaidURL, url.PathEscape(org)), headers)
+			if err == nil && cstatus == 200 {
+				ParsePrepaid(credits, u.Extra, now)
+			}
+		}
 	}
 	return u, nil
+}
+
+// ParseExtraUsage reads the extra_usage block of the usage payload: whether
+// paid overflow is on, and this month's spend against its limit. The
+// prepaid balance is not in it (see ParsePrepaid), so it starts unknown.
+func ParseExtraUsage(body []byte, now time.Time) *state.ExtraUsage {
+	var doc struct {
+		Extra *struct {
+			Enabled        bool     `json:"is_enabled"`
+			MonthlyLimit   *float64 `json:"monthly_limit"`
+			UsedCredits    *float64 `json:"used_credits"`
+			Currency       string   `json:"currency"`
+			DisabledReason any      `json:"disabled_reason"`
+			LimitReached   bool     `json:"spend_limit_reached"`
+		} `json:"extra_usage"`
+	}
+	if json.Unmarshal(body, &doc) != nil || doc.Extra == nil {
+		return nil
+	}
+	e := &state.ExtraUsage{
+		Enabled:      doc.Extra.Enabled,
+		Currency:     doc.Extra.Currency,
+		BalanceMinor: -1,
+		LimitReached: doc.Extra.LimitReached,
+		ObservedAt:   now.Unix(),
+	}
+	if doc.Extra.MonthlyLimit != nil {
+		e.LimitMinor = int64(*doc.Extra.MonthlyLimit + 0.5)
+	}
+	if doc.Extra.UsedCredits != nil {
+		e.UsedMinor = int64(*doc.Extra.UsedCredits + 0.5)
+	}
+	if doc.Extra.DisabledReason != nil {
+		e.DisabledReason = fmt.Sprint(doc.Extra.DisabledReason)
+	}
+	return e
+}
+
+// ParsePrepaid fills in the prepaid credit balance and the auto-reload
+// setting from the organization's prepaid/credits payload. Both are set,
+// with BalanceAt, only when the payload has a balance; any
+// auto_reload_settings object other than one saying enabled false counts
+// as auto-reload on, since only null has been seen for "off".
+func ParsePrepaid(body []byte, e *state.ExtraUsage, now time.Time) {
+	var doc struct {
+		Amount   *int64 `json:"amount"`
+		Currency string `json:"currency"`
+		Balance  *struct {
+			Money *struct {
+				AmountMinor *int64 `json:"amount_minor"`
+				Currency    string `json:"currency"`
+			} `json:"money"`
+		} `json:"balance"`
+		AutoReload map[string]any `json:"auto_reload_settings"`
+	}
+	if json.Unmarshal(body, &doc) != nil {
+		return
+	}
+	var balance *int64
+	currency := doc.Currency
+	switch {
+	case doc.Balance != nil && doc.Balance.Money != nil && doc.Balance.Money.AmountMinor != nil:
+		balance, currency = doc.Balance.Money.AmountMinor, doc.Balance.Money.Currency
+	case doc.Amount != nil:
+		balance = doc.Amount
+	}
+	if balance == nil {
+		return
+	}
+	e.BalanceMinor = max(*balance, 0)
+	if e.Currency == "" {
+		e.Currency = currency
+	}
+	e.AutoReload = doc.AutoReload != nil
+	for _, key := range []string{"enabled", "is_enabled"} {
+		if v, ok := doc.AutoReload[key].(bool); ok {
+			e.AutoReload = v
+			break
+		}
+	}
+	e.BalanceAt = now.Unix()
 }
 
 // NormalizeResetCredits reads the cedar_ember block of the usage payload:

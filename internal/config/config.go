@@ -149,6 +149,17 @@ type Selection struct {
 	// an account holding one is blocked (weekly cap, or a credit that would
 	// otherwise expire first). Off, credits are only spent by `aiq reset`.
 	AutoResetCredits bool `toml:"auto_reset_credits"`
+	// ExtraUsage lets aiq route launches and long-session moves onto an
+	// account's Claude extra usage once its plan is spent, after every
+	// account that still has plan quota, and only while it runs on prepaid
+	// credits (auto-reload off, balance above zero). It cannot stop a
+	// session already running from spilling into extra usage: Claude Code
+	// does that by itself when the account has extra usage turned on.
+	ExtraUsage bool `toml:"extra_usage"`
+	// LastResort lists providers used only after every other pool, extra
+	// usage included, has nothing left; earlier entries first. A provider
+	// still has to be allowed (auto.providers, --providers, long.fallback).
+	LastResort []string `toml:"last_resort"`
 }
 
 type Worker struct {
@@ -283,6 +294,9 @@ var DefaultLimitPatterns = []string{
 	`(?i)"type":\s*"rate_limit_error"`,
 	`(?i)quota (has been |is )?(exhausted|exceeded)`,
 	`RESOURCE_EXHAUSTED`,
+	// Claude Code once extra usage has run dry.
+	`(?i)you're out of extra usage`,
+	`(?i)hit your (channel's )?monthly spend limit`,
 }
 
 // Provider returns the settings of a provider by name.
@@ -316,6 +330,7 @@ func Default() *Config {
 		MinHours:             0.25,
 		WeeklyWeight:         5,
 		AutoResetCredits:     true,
+		LastResort:           []string{"agy", "copilot"},
 	}
 	c.Worker = Worker{Retry: true, RetryMaxSeconds: 60}
 	c.Poll = Poll{IntervalSeconds: 300, TimeoutSeconds: 60}
@@ -378,6 +393,11 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("%s: auto.providers: unknown provider %q; choose from %s", paths.ConfigFile(), name, ProviderList(", "))
 		}
 	}
+	for _, name := range c.Selection.LastResort {
+		if !KnownProvider(name) {
+			return nil, fmt.Errorf("%s: selection.last_resort: unknown provider %q; choose from %s", paths.ConfigFile(), name, ProviderList(", "))
+		}
+	}
 	if c.Selection.MinHours <= 0 {
 		c.Selection.MinHours = 0.25
 	}
@@ -415,6 +435,17 @@ func Load() (*Config, error) {
 		c.Updates.IntervalHours = 24
 	}
 	return c, nil
+}
+
+// LastResortRank is provider's position among the last-resort providers,
+// counting from 1, or 0 when it is not one.
+func (c *Config) LastResortRank(provider string) int {
+	for i, p := range c.Selection.LastResort {
+		if p == provider {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // LimitPatterns returns the configured patterns, or the defaults.

@@ -100,6 +100,14 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		prev, _, _ := p.St.GetUsage(a.ID)
 		p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), u.ResetCredits, "", now)
 		p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)
+		// A failed balance read keeps the last balance and auto-reload
+		// reading together, with their own timestamp, so they age out of
+		// Spendable instead of passing for fresh. A missing extra_usage
+		// block clears the record.
+		if e := u.Extra; e != nil && e.Enabled && e.BalanceAt == 0 && prev.Extra != nil {
+			e.BalanceMinor, e.AutoReload, e.BalanceAt = prev.Extra.BalanceMinor, prev.Extra.AutoReload, prev.Extra.BalanceAt
+		}
+		p.St.SetExtraUsage(a.ID, u.Extra)
 		p.updateIdentity(a, u.Identity)
 		return nil
 	case "codex":

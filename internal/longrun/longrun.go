@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -292,6 +293,7 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 			return
 		}
 		s.rotateIfIdle(l, remaining, now)
+		s.returnToPlan(l, now)
 	case state.DrainRequested, state.DrainDraining:
 		if blocked {
 			s.takeover(l, now)
@@ -328,6 +330,42 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 		}
 		s.takeover(l, now)
 	}
+}
+
+// rung is the account's cost class in its provider's ranking
+// (selector.RungPlan, ...), or -1 when it is not eligible.
+func (s *Supervisor) rung(accountID, provider string, now time.Time) int {
+	cands, err := s.Pool.Candidates(provider)
+	if err != nil {
+		return -1
+	}
+	for _, r := range selector.Rank(s.Pool.Policy(provider, state.ModeInteractive, now), cands) {
+		if r.ID == accountID && r.Eligible {
+			return r.Rung
+		}
+	}
+	return -1
+}
+
+// returnToPlan moves a quiet session off a last-resort provider once an
+// account with plan quota above the drain floor is free. Its own windows
+// never get low enough to drain it (Copilot reports none), so without
+// this it would stay on the last resort for good. A session on extra
+// usage needs no such step: its plan is spent, so it is already draining.
+func (s *Supervisor) returnToPlan(l state.Lease, now time.Time) {
+	cfg := s.Pool.Cfg.Long
+	idleFor := time.Duration(cfg.IdleRotateMinutes) * time.Minute
+	if l.Pane == "" || cfg.IdleRotateMinutes <= 0 || s.rung(l.AccountID, l.Provider, now) <= selector.RungLastResort ||
+		!IdleRotateDue(l, 0, 100, idleFor, LastWrite(l.Transcript), now) {
+		return
+	}
+	acc, err := s.successorAbove(l, now, cfg.DrainPct)
+	if err != nil {
+		return
+	}
+	s.Pool.St.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
+		"lease %d: idle on a last-resort provider, moving it back to plan quota on %s", l.ID, acc.ID), now)
+	s.moveTo(l, acc, now)
 }
 
 // rotateIfIdle moves a quiet session off a nearly spent account when an
@@ -381,15 +419,38 @@ func (s *Supervisor) successor(l state.Lease, now time.Time) (state.Account, err
 	if acc, err := s.successorAbove(l, now, s.Pool.Cfg.Long.DrainPct); err == nil {
 		return acc, nil
 	}
+	// Once the account is blocked, plan quota of any size goes first, then
+	// paid extra usage, then the last-resort providers in their order.
 	if _, _, blocked := s.headroom(l.AccountID, l.Provider, now); blocked {
-		return s.successorAbove(l, now, 0)
+		if acc, err := s.successorAbove(l, now, 0); err == nil {
+			return acc, nil
+		}
+		if acc, err := s.successorWhere(l, now, func(r selector.Ranked, _ float64) bool { return r.Rung == selector.RungExtra }); err == nil {
+			return acc, nil
+		}
+		return s.successorWhere(l, now, func(r selector.Ranked, rem float64) bool { return r.Rung > selector.RungLastResort && rem > 0 })
 	}
-	return state.Account{}, fmt.Errorf("no account with headroom")
+	// A session on extra usage or a last resort stays there until plan
+	// quota above the floor frees up; a move to a nearly spent plan account
+	// would only bounce it back.
+	if s.rung(l.AccountID, l.Provider, now) > selector.RungPlan {
+		return state.Account{}, fmt.Errorf("no plan quota above %.0f%% to move to; staying on paid capacity", s.Pool.Cfg.Long.DrainPct)
+	}
+	return state.Account{}, fmt.Errorf("no account with headroom; waiting for a window to reset")
 }
 
 // successorAbove picks the first eligible account in fallback order with
-// more than minRemaining left.
+// plan quota and more than minRemaining left.
 func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining float64) (state.Account, error) {
+	return s.successorWhere(l, now, func(r selector.Ranked, rem float64) bool {
+		return r.Rung == selector.RungPlan && rem > minRemaining
+	})
+}
+
+// successorWhere picks the first eligible account that ok accepts, given
+// its ranking and remaining headroom. Providers go in fallback order, the
+// last-resort ones after all others in their configured order.
+func (s *Supervisor) successorWhere(l state.Lease, now time.Time, ok func(r selector.Ranked, remaining float64) bool) (state.Account, error) {
 	order := strings.Split(l.Fallback, ",")
 	if l.Fallback == "" {
 		order = append([]string{l.Provider}, s.Pool.Cfg.Long.Fallback...)
@@ -397,6 +458,10 @@ func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining f
 	// A session on a tier's model moves only to providers that have a model
 	// of the same tier; anything else would be a silent downgrade.
 	want := ArgsTier(l.Provider, splitArgs(l.Args))
+	sort.SliceStable(order, func(i, j int) bool {
+		ri, rj := s.Pool.Cfg.LastResortRank(strings.TrimSpace(order[i])), s.Pool.Cfg.LastResortRank(strings.TrimSpace(order[j]))
+		return ri < rj
+	})
 	seen := map[string]bool{}
 	for _, provider := range order {
 		provider = strings.TrimSpace(provider)
@@ -421,15 +486,14 @@ func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining f
 			if err != nil {
 				continue
 			}
-			// The successor must have real headroom, not just be eligible.
 			rem, _, _ := s.headroom(acc.ID, provider, now)
-			if rem <= minRemaining {
+			if !ok(r, rem) {
 				continue
 			}
 			return acc, nil
 		}
 	}
-	return state.Account{}, fmt.Errorf("no account with headroom")
+	return state.Account{}, fmt.Errorf("no account with headroom; waiting for a window to reset")
 }
 
 // takeover respawns the pane on the successor account.
@@ -444,7 +508,7 @@ func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 	if err != nil {
 		if l.Drain != state.DrainWaiting {
 			st.SetLeaseDrain(l.ID, state.DrainWaiting, now)
-			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: %v; waiting for a window to reset", l.ID, err), now)
+			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: %v", l.ID, err), now)
 		}
 		return
 	}
