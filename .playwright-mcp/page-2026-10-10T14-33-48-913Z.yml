@@ -1,8 +1,0 @@
-- generic [active] [ref=e1]:
-  - banner [ref=e2]:
-    - heading "aiq" [level=1] [ref=e3]
-    - generic [ref=e4]: loading…
-    - link "help" [ref=e5] [cursor=pointer]:
-      - /url: /help
-    - button "poll now" [ref=e6] [cursor=pointer]
-  - main [ref=e7]
