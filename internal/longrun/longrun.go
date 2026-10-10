@@ -681,6 +681,26 @@ func replayArgs(provider string, args []string) []string {
 		}
 		out = append(out, a)
 	}
+	return upgradeModel(provider, out)
+}
+
+// upgradeModel replaces a model a tier table once named with the tier's
+// current model (gpt-5.6-sol → gpt-6.1-sol), so a session restarted on the
+// same provider does not stay on the old one for good.
+func upgradeModel(provider string, args []string) []string {
+	out := append([]string{}, args...)
+	for i := 0; i < len(out); i++ {
+		a := out[i]
+		switch {
+		case a == "--":
+			return out
+		case (a == "--model" || (provider == "codex" && a == "-m")) && i+1 < len(out):
+			out[i+1] = tier.Current(provider, out[i+1])
+			i++
+		case strings.HasPrefix(a, "--model="):
+			out[i] = "--model=" + tier.Current(provider, strings.TrimPrefix(a, "--model="))
+		}
+	}
 	return out
 }
 
@@ -721,7 +741,6 @@ func modelTier(provider, model string) int {
 				return i
 			}
 		}
-		return -1
 	}
 	return tier.Of(provider, model)
 }
@@ -730,9 +749,10 @@ func modelTier(provider, model string) int {
 // mean the same thing on every CLI: the permission bypass (Claude's and
 // Antigravity's --dangerously-skip-permissions or Claude's --permission-mode
 // bypassPermissions, Codex's --dangerously-bypass-approvals-and-sandbox or
-// --yolo), a model named by an aiq tier (opus ↔ gpt-5.6-sol; dropped when
+// --yolo), a model named by an aiq tier (opus ↔ gpt-6.1-sol; dropped when
 // the target has no model of that tier), and an effort level (Claude,
-// Antigravity and Copilot --effort, Codex -c model_reasoning_effort). Any
+// Antigravity and Copilot --effort, Codex -c model_reasoning_effort;
+// tier.DefaultEffort when a tier model is named without one). Any
 // other model, a resume target, extra directories and a prompt are
 // provider-specific and dropped.
 // Same provider returns args unchanged.
@@ -753,6 +773,9 @@ func TranslateArgs(from, to string, args []string) []string {
 	name, level := "", ""
 	if tier.Has(to, model) {
 		name = tier.Models[to][model]
+		if effort == 0 {
+			effort = tier.DefaultEffort
+		}
 	}
 	if effort > 0 {
 		level = tier.Efforts[to][effort-1]
@@ -770,6 +793,14 @@ func ArgsTier(provider string, args []string) int {
 // level out of a provider's arguments.
 func portableArgs(from string, args []string) (bypass bool, model, effort int) {
 	model = -1
+	name := ""
+	defer func() {
+		// Antigravity spells the level as the model name's suffix
+		// (gemini-3.8-flash-low); an explicit --effort wins.
+		if from == "agy" && effort == 0 && name != "" && agy.BaseModel(name) != name {
+			effort = tier.EffortOf(from, strings.TrimPrefix(name, agy.BaseModel(name)+"-"))
+		}
+	}()
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() string {
@@ -788,9 +819,11 @@ func portableArgs(from string, args []string) (bypass bool, model, effort int) {
 		case a == "--permission-mode":
 			bypass = bypass || next() == "bypassPermissions"
 		case a == "--model" || (from == "codex" && a == "-m"):
-			model = modelTier(from, next())
+			name = next()
+			model = modelTier(from, name)
 		case strings.HasPrefix(a, "--model="):
-			model = modelTier(from, strings.TrimPrefix(a, "--model="))
+			name = strings.TrimPrefix(a, "--model=")
+			model = modelTier(from, name)
 		case from != "codex" && a == "--effort":
 			effort = tier.EffortOf(from, next())
 		case from != "codex" && strings.HasPrefix(a, "--effort="):

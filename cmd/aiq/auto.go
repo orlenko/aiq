@@ -132,6 +132,9 @@ func parseAutoFlags(args []string) (runFlags, autoRequest, error) {
 		tier := 1
 		f.modelTier = &tier
 	}
+	if f.effort == 0 {
+		f.effort = tier.DefaultEffort
+	}
 	return f, r, nil
 }
 

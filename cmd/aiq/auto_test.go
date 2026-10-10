@@ -53,12 +53,8 @@ func TestAutoArguments(t *testing.T) {
 					if effort > 3 {
 						level = "high"
 					}
-					// The level is the model name's suffix; a model without
-					// variants takes none.
-					model := tier.Models[provider][tr]
-					if strings.HasPrefix(model, "gemini-") {
-						model = model[:strings.LastIndex(model, "-")] + "-" + level
-					}
+					// The level is the model name's suffix.
+					model := strings.TrimSuffix(tier.Models[provider][tr], "-high") + "-" + level
 					want = []string{"--model", model, "--dangerously-skip-permissions", "-p", r.prompt}
 				default:
 					want = []string{"exec", "--model", tier.Models[provider][tr], "-c", "model_reasoning_effort=" + level, "--yolo", "--", r.prompt}
@@ -70,7 +66,7 @@ func TestAutoArguments(t *testing.T) {
 		}
 	}
 	f, r, err := parseAutoFlags(nil)
-	if err != nil || *f.modelTier != 1 || f.effort != 0 || r.print {
+	if err != nil || *f.modelTier != 1 || f.effort != tier.DefaultEffort || r.print {
 		t.Fatalf("defaults: %+v %+v %v", f, r, err)
 	}
 	f, _, err = parseAutoFlags([]string{"--providers", "codex,claude", "-p", "x"})
