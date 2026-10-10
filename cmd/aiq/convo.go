@@ -739,7 +739,7 @@ type turnSeen struct {
 	// twice, and a piece skipped as promoted or replaced still takes up
 	// its occurrence.
 	done    map[string]bool
-	msgMode map[string]string // how a said message's first part printed: reply, line or hidden; its later parts follow suit
+	msgMode map[string]string // how a said message's first part printed: reply or line; its later parts follow suit
 	noReply bool
 }
 
@@ -761,11 +761,10 @@ func (p *convoPrinter) skip(turns []transcript.Turn) {
 // The reply to something the person typed is the agent's first message
 // after it, in full; one message after several steers answers them all.
 // Each agent text prints once, by text, so the parser moving one between
-// Earlier, Reply and what was said does not print it twice. A turn a peer
-// or a notifier started is left out until the person types into it. A
-// prompt aiq sent, or a peer's or notifier's the person typed into, is a
-// dim line, its answers dim one-liners under it, until the person types
-// into that turn: from there on, as in a turn of their own.
+// Earlier, Reply and what was said does not print it twice. A prompt aiq,
+// a peer or a notifier sent is a dim line; what the agent did with it
+// shows as in a turn of the person's own, since its answers report work
+// the person wants to know about.
 func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	p.pending = false
@@ -780,9 +779,6 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			continue
 		}
 		pieces := turnPieces(t)
-		if !seen.head && chatter(t) && !typedInto(pieces) {
-			continue // agents talking among themselves; shown once the person types into it
-		}
 		human := t.Source == transcript.Human
 		if !seen.head {
 			if human && t.Open && t.Tools == 0 && len(pieces) == 0 && slashCommand(t.Prompt) {
@@ -804,7 +800,6 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			head += fmt.Sprintf(" · %d tool%s", t.Tools, plural(t.Tools))
 		}
 		last := i == len(s.Turns)-1
-		full := human     // the person has typed into the turn
 		awaiting := human // the agent has not answered what they typed yet
 		steers, occ := 0, map[string]int{}
 		// once names this occurrence of a text of the kind, and reports
@@ -821,10 +816,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 					p.note(k, "steer", pc.text)
 					seen.steers = steers
 				}
-				full, awaiting = true, true
+				awaiting = true
 				continue
 			}
-			said := pc.kind == transcript.ItemSaid && !pc.final
 			// A said item that holds the final answer (no answer was
 			// recorded after it) keeps its identity as said: --follow may
 			// have printed it before the turn ended.
@@ -850,10 +844,6 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			}
 			reply := awaiting
 			awaiting = false
-			if said && !full {
-				seen.msgMode[pc.msg] = "hidden"
-				continue // a notifier's turn shows its answers only
-			}
 			// Said and answered texts are told apart: an answer that
 			// repeats a line already said prints in full all the same.
 			if printed {
@@ -865,8 +855,6 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			}
 			seen.done[id] = true
 			switch {
-			case !full:
-				b.WriteString(p.paint(pal.dim, "  → "+firstLine(pc.text)) + "\n")
 			case pc.final:
 				p.answer(&b, pal.agent, head, "", pc.text)
 			case pc.kind == transcript.ItemAnswer:
@@ -1153,22 +1141,6 @@ func turnKey(i int, t transcript.Turn) string {
 		return fmt.Sprintf("#%d", i)
 	}
 	return fmt.Sprintf("%d|%d|%s", i, t.Started.UnixNano(), truncate(t.Prompt, 40))
-}
-
-// chatter is a turn another agent or a notifier started: agents talking
-// among themselves, not to the person reading.
-func chatter(t transcript.Turn) bool {
-	return t.Source == transcript.Peer || t.Source == transcript.Notice
-}
-
-// typedInto says the person typed into the turn while it ran.
-func typedInto(pieces []piece) bool {
-	for _, pc := range pieces {
-		if pc.kind == transcript.ItemSteer {
-			return true
-		}
-	}
-	return false
 }
 
 // idleNotice is an agent-team teammate reporting it went idle: a peer
