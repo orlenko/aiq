@@ -627,8 +627,12 @@ Ranking goes by cost class before score:
 
 1. **Plan quota.** Every account with subscription quota left, on any
    provider, Antigravity included (it serves Claude Opus 5.5).
-2. **Extra usage.** A Claude account whose plan is spent but which can run
-   on prepaid usage credits. Claude Code switches to them on its own once
+2. **Extra usage.** A Claude account whose plan is spent, or nearly spent,
+   but which can run on prepaid usage credits. Where one exists, plan quota
+   that is nearly spent (at or below `drain_pct` for a long session, past
+   `switch_pct` for an interactive pick) ranks after it: a few points of
+   plan buy a short stretch and another move, the credits run on. A long
+   session on such an account is not drained when its plan runs low. Claude Code switches to them on its own once
    the plan's windows run out ("Extra usage is now covering your
    requests"). aiq polls the balance and the monthly spend limit, and
    uses such an account only when `selection.extra_usage = true`, extra

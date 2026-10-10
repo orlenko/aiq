@@ -287,6 +287,13 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 			return
 		}
 		if remaining <= drainPct {
+			// With extra usage behind the plan the session does not run
+			// out here; it moves only to plan quota above the floor.
+			if s.rung(l.AccountID, l.Provider, now) == selector.RungExtra {
+				if _, err := s.successorAbove(l, now, drainPct); err != nil {
+					return
+				}
+			}
 			ArchiveNote(l.Workspace, now)
 			st.SetLeaseDrain(l.ID, state.DrainRequested, now)
 			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: %.0f%% left%s, drain requested", l.ID, remaining, until), now)
@@ -339,12 +346,20 @@ func (s *Supervisor) rung(accountID, provider string, now time.Time) int {
 	if err != nil {
 		return -1
 	}
-	for _, r := range selector.Rank(s.Pool.Policy(provider, state.ModeInteractive, now), cands) {
+	for _, r := range selector.Rank(s.policy(provider, now), cands) {
 		if r.ID == accountID && r.Eligible {
 			return r.Rung
 		}
 	}
 	return -1
+}
+
+// policy is the ranking a long session is judged by: interactive, with
+// the drain floor as "nearly spent".
+func (s *Supervisor) policy(provider string, now time.Time) selector.Policy {
+	pol := s.Pool.Policy(provider, state.ModeInteractive, now)
+	pol.FloorPct = s.Pool.Cfg.Long.DrainPct
+	return pol
 }
 
 // returnToPlan moves a quiet session off a last-resort provider once an
@@ -419,13 +434,20 @@ func (s *Supervisor) successor(l state.Lease, now time.Time) (state.Account, err
 	if acc, err := s.successorAbove(l, now, s.Pool.Cfg.Long.DrainPct); err == nil {
 		return acc, nil
 	}
-	// Once the account is blocked, plan quota of any size goes first, then
-	// paid extra usage, then the last-resort providers in their order.
-	if _, _, blocked := s.headroom(l.AccountID, l.Provider, now); blocked {
-		if acc, err := s.successorAbove(l, now, 0); err == nil {
+	// Next, an account that runs on extra usage once its plan is spent: it
+	// outlasts a few points of plan elsewhere, so a session that has to
+	// move takes it before a nearly spent plan account. A session already
+	// on one stays.
+	own := s.rung(l.AccountID, l.Provider, now)
+	if own != selector.RungExtra {
+		if acc, err := s.successorWhere(l, now, func(r selector.Ranked, _ float64) bool { return r.Rung == selector.RungExtra }); err == nil {
 			return acc, nil
 		}
-		if acc, err := s.successorWhere(l, now, func(r selector.Ranked, _ float64) bool { return r.Rung == selector.RungExtra }); err == nil {
+	}
+	// Once the account is blocked, plan quota of any size, then the
+	// last-resort providers in their order.
+	if _, _, blocked := s.headroom(l.AccountID, l.Provider, now); blocked {
+		if acc, err := s.successorAbove(l, now, 0); err == nil {
 			return acc, nil
 		}
 		return s.successorWhere(l, now, func(r selector.Ranked, rem float64) bool { return r.Rung > selector.RungLastResort && rem > 0 })
@@ -433,7 +455,7 @@ func (s *Supervisor) successor(l state.Lease, now time.Time) (state.Account, err
 	// A session on extra usage or a last resort stays there until plan
 	// quota above the floor frees up; a move to a nearly spent plan account
 	// would only bounce it back.
-	if s.rung(l.AccountID, l.Provider, now) > selector.RungPlan {
+	if own > selector.RungPlan {
 		return state.Account{}, fmt.Errorf("no plan quota above %.0f%% to move to; staying on paid capacity", s.Pool.Cfg.Long.DrainPct)
 	}
 	return state.Account{}, fmt.Errorf("no account with headroom; waiting for a window to reset")
@@ -476,7 +498,7 @@ func (s *Supervisor) successorWhere(l state.Lease, now time.Time, ok func(r sele
 		if err != nil {
 			continue
 		}
-		pol := s.Pool.Policy(provider, state.ModeInteractive, now)
+		pol := s.policy(provider, now)
 		pol.SkipID = l.AccountID
 		for _, r := range selector.Rank(pol, cands) {
 			if !r.Eligible {

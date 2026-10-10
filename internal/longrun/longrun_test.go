@@ -528,7 +528,12 @@ func TestSuccessorDescendsPlanExtraLastResort(t *testing.T) {
 		accounts []acct
 		want     string
 	}{
-		{"plan first", []acct{{"codex/low", 99, false}, {"claude/extra", 100, true}, {"agy/main", 0, false}}, "codex/low"},
+		{"plan first", []acct{{"codex/half", 50, false}, {"claude/extra", 100, true}, {"agy/main", 0, false}}, "codex/half"},
+		// A few points of plan buy a short stretch and another move; the
+		// account with extra usage behind it runs on.
+		{"extra before nearly spent plan", []acct{{"codex/low", 99, false}, {"claude/extra", 100, true}, {"agy/main", 0, false}}, "claude/extra"},
+		{"extra behind a few points of plan", []acct{{"codex/low", 99, false}, {"claude/extra", 97, true}}, "claude/extra"},
+		{"nearly spent plan before last resort", []acct{{"codex/low", 99, false}, {"agy/main", 0, false}}, "codex/low"},
 		{"then extra usage", []acct{{"claude/extra", 100, true}, {"agy/main", 0, false}}, "claude/extra"},
 		{"then last resort", []acct{{"claude/dry", 100, false}, {"agy/main", 0, false}}, "agy/main"},
 	} {

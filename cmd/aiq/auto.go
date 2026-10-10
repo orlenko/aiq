@@ -176,13 +176,14 @@ func rankAuto(policies map[string]selector.Policy, candidates []selector.Candida
 		}
 		ranked = append(ranked, selector.Rank(policy, cands)...)
 	}
+	cost := selector.CostOrder(ranked)
 	sort.Slice(ranked, func(i, j int) bool {
 		a, b := ranked[i], ranked[j]
 		if a.Eligible != b.Eligible {
 			return a.Eligible
 		}
-		if a.Rung != b.Rung {
-			return a.Rung < b.Rung
+		if ca, cb := cost(a), cost(b); ca != cb {
+			return ca < cb
 		}
 		if a.BelowFloor != b.BelowFloor {
 			return b.BelowFloor
