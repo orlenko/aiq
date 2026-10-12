@@ -125,9 +125,12 @@ func TakeoverPrompt(workspace string, resumed bool, from string) string {
 	} else {
 		fmt.Fprintf(&b, "%s%s session that ran out of quota. ", transcript.AiqHandoffNudge, from)
 	}
-	if hasNote {
+	switch {
+	case hasNote && rebuilt(note):
+		fmt.Fprintf(&b, "No handoff note was written (the previous session stopped abruptly), so aiq rebuilt one from its transcript: read %s first. It shows what was asked and said, not what the session concluded. ", note)
+	case hasNote:
 		fmt.Fprintf(&b, "Read the handoff note at %s first. ", note)
-	} else {
+	default:
 		b.WriteString("No handoff note was written (the previous session stopped abruptly). ")
 	}
 	b.WriteString("Inspect `git status` and the diff in this working tree; the previous session's work is already there. Continue the task from that point without undoing completed work, and do not ask for confirmation to continue.")
@@ -572,6 +575,7 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 		if resume {
 			args = append(args, "--resume-session", l.SessionID)
 		}
+		s.prepareNote(l, resume, now)
 		args = append(args, "--nudge", TakeoverPrompt(l.Workspace, resume, l.Provider), "--")
 		if l.Args != "" {
 			if same {
