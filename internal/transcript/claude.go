@@ -3,6 +3,7 @@ package transcript
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"os"
@@ -89,8 +90,22 @@ type claudeOrigin struct {
 }
 
 type contentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature"`
+}
+
+// narration reports whether a thinking block is text Claude Code shows the
+// person. Newer models write some of what they say to the person as a
+// thinking block; its signature, a protobuf, names its kind: "narration"
+// rather than "thinking". The kind sits in the first bytes.
+func narration(p contentPart) bool {
+	if p.Type != "thinking" || p.Thinking == "" || len(p.Signature) < 64 {
+		return false
+	}
+	head, err := base64.StdEncoding.DecodeString(p.Signature[:64])
+	return err == nil && bytes.Contains(head, []byte("\x42\x09narration"))
 }
 
 // claudeTypes are the record types the parser reads; the rest (file
@@ -310,6 +325,9 @@ func ParseClaude(path string) (*Session, error) {
 					for _, raw := range parts {
 						var p contentPart
 						json.Unmarshal(raw, &p)
+						if narration(p) {
+							p.Type, p.Text = "text", p.Thinking
+						}
 						switch p.Type {
 						case "tool_use", "server_tool_use":
 							cur.Tools++

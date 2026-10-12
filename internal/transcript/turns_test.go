@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -679,5 +680,31 @@ func TestSteerIsNeverProvisional(t *testing.T) {
 		if it.Provisional && it.Kind != ItemAnswer {
 			t.Fatalf("non-answer item marked provisional: %+v", it)
 		}
+	}
+}
+
+// Claude Code writes some of what the model says to the person as a
+// thinking block whose signature names it narration; it reads as text.
+// Real thinking stays out, even when its text is kept.
+func TestClaudeNarrationThinking(t *testing.T) {
+	const (
+		narr  = "CAQS/g0KEQgSGAI4AUIJbmFycmF0aW9uEgzaNHXCDasBHgQc9VMaDB6Eo8FpsIKLRVbf/SIwsOHRRv2RV+JYzJgjy5ll"
+		think = "CAQSoAkKEAgSGAI4AUIIdGhpbmtpbmcSDBDVx0C0wIcHgFOPsRoMiyVhG46LpOcbpfvOIjBEXefepmYgq2Sr3qC/1rMn"
+	)
+	block := func(text, sig string) string {
+		return `{"type":"thinking","thinking":` + strconv.Quote(text) + `,"signature":"` + sig + `"}`
+	}
+	var c claudeLines
+	c.typed("ship it")
+	c.tool("m1")
+	c.queued(`"prompt":"plain python?","commandMode":"prompt","origin":{"kind":"human"}`)
+	c.assistant("m2", "tool_use", block("", think))
+	c.assistant("m2", "tool_use", block("Plain Python.\n\nSkip the repo.", narr))
+	c.tool("m2")
+	c.assistant("m3", "end_turn", block("weighing options", think))
+	c.say("m3", "end_turn", "Done.")
+	tr := c.parse(t).Turns[0]
+	if got := itemKinds(tr); got != "SsA" || tr.Items[1].Text != "Plain Python.\n\nSkip the repo." || tr.Reply != "Done." {
+		t.Errorf("items %q: %+v", got, tr)
 	}
 }
