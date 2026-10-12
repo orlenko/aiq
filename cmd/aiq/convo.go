@@ -801,6 +801,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		}
 		last := i == len(s.Turns)-1
 		awaiting := human // the agent has not answered what they typed yet
+		// A steer not yet answered at length: Claude may report on its
+		// work first and answer the person in a later message.
+		unanswered := false
 		steers, occ := 0, map[string]int{}
 		// once names this occurrence of a text of the kind, and reports
 		// whether it was printed before.
@@ -816,7 +819,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 					p.note(k, "steer", pc.text)
 					seen.steers = steers
 				}
-				awaiting = true
+				awaiting, unanswered = true, true
 				continue
 			}
 			// A said item that holds the final answer (no answer was
@@ -844,6 +847,11 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			}
 			reply := awaiting
 			awaiting = false
+			if pc.kind == transcript.ItemAnswer {
+				unanswered = false
+			} else if unanswered && multiline(pc.text) {
+				reply, unanswered = true, false
+			}
 			// Said and answered texts are told apart: an answer that
 			// repeats a line already said prints in full all the same.
 			if printed {
@@ -967,6 +975,11 @@ func (p *convoPrinter) said(b *strings.Builder, text string) {
 		}
 	}
 	b.WriteString(p.paint(pal.dim, line) + "\n")
+}
+
+// multiline reports whether s holds more than one line.
+func multiline(s string) bool {
+	return strings.ContainsRune(strings.TrimSpace(sanitize(s)), '\n')
 }
 
 // firstLineWhole is the first non-blank line of s, not cut.

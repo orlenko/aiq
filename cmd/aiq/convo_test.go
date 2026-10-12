@@ -1106,6 +1106,22 @@ func claudeReplyFixtures() map[string][]string {
 	c.answer("m4", "Plans persist now. Results still expire after **24 hours**.")
 	out["steer answered mid-turn"] = c.lines
 
+	// A steer answered after a status line: the status line, then the
+	// answer, both in full.
+	c = fixtureLines{}
+	c.typed("ship staging")
+	c.assistant("m1", "tool_use", text("Checking the run."))
+	call(&c, "m1")
+	c.steer("should I set up sentry?")
+	c.assistant("m2", "tool_use", text("Staging deploy was skipped; starting it by hand."))
+	call(&c, "m2")
+	c.assistant("m3", "tool_use", text("Yes, start on Sentry.\n\n1. Create two projects."))
+	call(&c, "m3")
+	c.assistant("m4", "tool_use", text("Watching the deploy.\n\nIt is past the build step."))
+	call(&c, "m4")
+	c.answer("m5", "Staging is up.")
+	out["steer answered after a status line"] = c.lines
+
 	c = fixtureLines{}
 	c.typed("find the leak")
 	c.assistant("m1", "tool_use", text("Checking the pool."))
@@ -1309,6 +1325,17 @@ func TestReplyEdgeCases(t *testing.T) {
 			t.Fatalf("lacks %q (in order):\n%s", w, got)
 		}
 		rest = rest[i+len(w):]
+	}
+	// A steer answered after a status line: both in full, and narration
+	// after the answer on one line.
+	got = renderFixture(t, claudeReplyFixtures()["steer answered after a status line"], transcript.ParseClaude)
+	for _, w := range []string{"\nStaging deploy was skipped; starting it by hand.\n", "\nYes, start on Sentry.\n\n1. Create two projects.\n", "  · Watching the deploy.\n"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("lacks %q:\n%s", w, got)
+		}
+	}
+	if strings.Contains(got, "past the build step") {
+		t.Errorf("narration after the answer shows in full:\n%s", got)
 	}
 }
 
