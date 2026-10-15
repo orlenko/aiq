@@ -642,18 +642,8 @@ func (m *menu) run(sessions <-chan *menuSessions) ([]string, error) {
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(winch)
-	keys := make(chan []byte)
-	go func() {
-		buf := make([]byte, 256)
-		for {
-			n, err := in.Read(buf)
-			if err != nil {
-				close(keys)
-				return
-			}
-			keys <- append([]byte(nil), buf[:n]...)
-		}
-	}()
+	keys, stopKeys := readKeys(int(in.Fd()))
+	defer stopKeys()
 	resize := func() {
 		m.w, m.h, err = term.GetSize(int(out.Fd()))
 		if err != nil || m.w <= 0 || m.h <= 0 {

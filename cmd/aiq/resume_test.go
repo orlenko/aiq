@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -221,5 +222,39 @@ func TestBrowserRenderFitsScreen(t *testing.T) {
 	screen := strings.Join(text, "\n")
 	if !strings.Contains(screen, "▸ #21") || !strings.Contains(screen, "running in aiq long") {
 		t.Fatalf("turns screen:\n%s", screen)
+	}
+}
+
+// Once stopped, readKeys must leave the terminal alone: the tmux client
+// started next has to get every byte, the terminal's query answers included.
+func TestReadKeysStopsReading(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	keys, stop := readKeys(int(r.Fd()))
+	w.Write([]byte("j"))
+	select {
+	case got := <-keys:
+		if string(got) != "j" {
+			t.Fatalf("got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no key delivered")
+	}
+	stop()
+	stop() // idempotent
+	if _, ok := <-keys; ok {
+		t.Fatal("keys still open after stop")
+	}
+	const reply = "\x1b[?64;1;2c"
+	w.Write([]byte(reply))
+	time.Sleep(150 * time.Millisecond) // past the reader's select timeout
+	buf := make([]byte, 64)
+	n, err := r.Read(buf)
+	if err != nil || string(buf[:n]) != reply {
+		t.Fatalf("after stop read %q, %v; want %q left for the next reader", buf[:n], err, reply)
 	}
 }

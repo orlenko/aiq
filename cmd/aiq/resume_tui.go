@@ -5,11 +5,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"github.com/orlenko/aiq/internal/transcript"
@@ -706,6 +708,59 @@ func (b *browser) draw(out *os.File) {
 	out.WriteString(sb.String())
 }
 
+// readKeys delivers what arrives on terminal fd until stop is called. stop
+// returns once the reader has quit, so nothing in this process is left
+// reading the terminal. A reader still blocked in read(2) after the browser
+// closed took input meant for the tmux client started next: the terminal's
+// answers to tmux's startup queries woke it instead of tmux, tmux's own read
+// found nothing, and tmux dropped the client ("server exited unexpectedly").
+// It waits in select(2), as devTTY does: poll(2) does not work on terminals
+// on macOS.
+func readKeys(fd int) (keys <-chan []byte, stop func()) {
+	out := make(chan []byte)
+	quit := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(out)
+		buf := make([]byte, 256)
+		for {
+			select {
+			case <-quit:
+				return
+			default:
+			}
+			var set unix.FdSet
+			set.Set(fd)
+			tv := unix.NsecToTimeval((50 * time.Millisecond).Nanoseconds())
+			n, err := unix.Select(fd+1, &set, nil, nil, &tv)
+			if err == unix.EINTR || (err == nil && n == 0) {
+				continue
+			}
+			if err != nil {
+				return
+			}
+			n, err = unix.Read(fd, buf)
+			if err == unix.EINTR || err == unix.EAGAIN {
+				continue
+			}
+			if err != nil || n <= 0 {
+				return
+			}
+			select {
+			case out <- append([]byte(nil), buf[:n]...):
+			case <-quit:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return out, func() {
+		once.Do(func() { close(quit) })
+		<-done
+	}
+}
+
 // run shows the browser until the user quits or picks a session.
 func (b *browser) run() (*transcript.Session, error) {
 	in, out := os.Stdin, os.Stdout
@@ -724,18 +779,8 @@ func (b *browser) run() (*transcript.Session, error) {
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(winch)
 
-	keys := make(chan []byte)
-	go func() {
-		buf := make([]byte, 256)
-		for {
-			n, err := in.Read(buf)
-			if err != nil {
-				close(keys)
-				return
-			}
-			keys <- append([]byte(nil), buf[:n]...)
-		}
-	}()
+	keys, stopKeys := readKeys(int(in.Fd()))
+	defer stopKeys()
 
 	resize := func() {
 		b.w, b.h, err = term.GetSize(int(out.Fd()))

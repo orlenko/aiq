@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/longrun"
+	"github.com/orlenko/aiq/internal/pool"
+	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
@@ -180,7 +183,7 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 		}
 	}
 	ws := workspaceID()
-	name, attached, err := a.longExisting(ws)
+	target, attached, err := a.longExisting(ws)
 	if attached || err != nil {
 		return err
 	}
@@ -212,7 +215,7 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 	if launcher != "" {
 		what = launcher + " (" + provider + ")"
 	}
-	return a.longLaunch(name, ws, ws, what, launcher, cmdArgs)
+	return a.longLaunch(target, ws, ws, what, launcher, cmdArgs)
 }
 
 // longAccountName resolves a forced --account for provider. The value is a
@@ -261,51 +264,149 @@ func (a *app) checkLongAccount(provider, name string) error {
 	return configErr("account-not-found", "account %s not found; %s accounts: %s", state.AccountID(provider, name), provider, strings.Join(names, ", "))
 }
 
-// longExisting returns the tmux session name for workspace ws, attaching
-// to a long session already running there. A stale tmux session with no
-// lease is removed.
-func (a *app) longExisting(ws string) (name string, attached bool, err error) {
-	if !tmux.Available() {
-		return "", false, fmt.Errorf("tmux is required for long sessions (not found on PATH)")
-	}
-	name = longrun.SessionName(a.cfg.Long.TmuxPrefix, ws)
-	if tmux.HasSession(name) {
-		leases, _ := a.longLeases()
-		for _, l := range leases {
-			if l.Workspace == ws {
-				fmt.Fprintf(os.Stderr, "aiq: long session already running for %s on %s (lease %d); attaching\n", ws, l.AccountID, l.ID)
-				return name, true, tmux.Attach(name)
-			}
-		}
-		// A session with no lease is normally aiq's own leftover, safe to
-		// clear. Not when the user has split the window and put something
-		// else in it: killing the session takes their pane down too, and a
-		// takeover that failed leaves exactly this state (dead aiq pane, no
-		// lease) beside a script that is still running.
-		if n, err := tmux.PaneCount(name); err == nil && n > 1 {
-			return "", false, fmt.Errorf(
-				"tmux session %s has %d panes and no aiq lease; attach and close it yourself rather than have aiq kill panes it did not start (tmux attach -t %s)",
-				name, n, name)
-		}
-		tmux.Kill(name)
-	}
-	return name, false, nil
+// longTarget is where a workspace's long session starts: a new tmux
+// session, or, with pane set, that pane of an existing one, in place.
+type longTarget struct {
+	name   string // tmux session
+	pane   string
+	inside bool // this command runs in a pane of the session
 }
 
-// longLaunch starts cmdArgs in tmux session name, in dir, and attaches.
-func (a *app) longLaunch(name, ws, dir, what, launcher string, cmdArgs []string) error {
-	pane, err := tmux.NewSession(name, dir, tmux.Quote(cmdArgs))
+// longExisting returns where workspace ws's long session starts, attaching
+// to one already running there instead. A stale tmux session with no lease
+// is removed, or reused when the user has panes of their own in it.
+func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
+	if !tmux.Available() {
+		return t, false, fmt.Errorf("tmux is required for long sessions (not found on PATH)")
+	}
+	t.name = longrun.SessionName(a.cfg.Long.TmuxPrefix, ws)
+	if !tmux.HasSession(t.name) {
+		return t, false, nil
+	}
+	panes, err := tmux.SessionPanes(t.name)
+	if err != nil {
+		return t, false, err
+	}
+	self := os.Getenv("TMUX_PANE")
+	t.inside = self != "" && slices.ContainsFunc(panes, func(p tmux.Pane) bool { return p.ID == self })
+	leases, _ := a.longLeases()
+	for _, l := range leases {
+		if l.Workspace != ws {
+			continue
+		}
+		// The CLI exited and the daemon has not pruned the lease yet: the
+		// session is over, and attaching to it would only show a dead pane.
+		if l.Hostname == pool.Hostname() && !proc.Alive(l.PID) {
+			a.st.ReleaseLease(l.ID)
+			continue
+		}
+		if t.inside && l.Pane != "" {
+			fmt.Fprintf(os.Stderr, "aiq: long session already running for %s on %s (lease %d) in pane %s of this tmux session\n", ws, l.AccountID, l.ID, l.Pane)
+			return t, true, tmux.SelectPane(l.Pane)
+		}
+		fmt.Fprintf(os.Stderr, "aiq: long session already running for %s on %s (lease %d); attaching\n", ws, l.AccountID, l.ID)
+		return t, true, tmux.Attach(t.name)
+	}
+	if t.pane, err = placeLongSession(t.name, panes, self); err != nil || t.pane != "" {
+		return t, false, err
+	}
+	tmux.Kill(t.name)
+	return t, false, nil
+}
+
+// placeLongSession decides where a long session starts in tmux session
+// name, which no live lease holds: in one of its panes, in place, or, when
+// it returns "", in a new session that replaces this one, aiq's own
+// leftover. It never kills a pane the user put there: killing the session
+// would take that pane down too, and a takeover that failed leaves exactly
+// this state (dead aiq pane, no lease) beside a script that is still
+// running. Run from a pane of the session (self), it starts there or in a
+// dead aiq pane beside it, so a long session can be started again from the
+// pane split off beside one whose CLI exited.
+func placeLongSession(name string, panes []tmux.Pane, self string) (string, error) {
+	var foreign, deadAiq, liveAiq []string
+	inside := false
+	for _, p := range panes {
+		switch {
+		case self != "" && p.ID == self:
+			inside = true
+			if aiqLongPane(p) {
+				liveAiq = append(liveAiq, p.ID)
+			}
+		case p.Dead:
+			if aiqLongPane(p) {
+				deadAiq = append(deadAiq, p.ID)
+			}
+		case aiqLongPane(p):
+			liveAiq = append(liveAiq, p.ID)
+		default:
+			foreign = append(foreign, p.ID)
+		}
+	}
+	switch {
+	case len(liveAiq) > 0 && (inside || len(foreign) > 0):
+		return "", fmt.Errorf(
+			"pane %s of tmux session %s runs an aiq long session that no lease holds yet; the daemon takes it back within a minute. Use that pane rather than start a second session",
+			liveAiq[0], name)
+	case len(deadAiq) > 0 && (inside || len(foreign) > 0):
+		return deadAiq[0], nil
+	case inside:
+		return self, nil
+	case len(foreign) > 0:
+		return "", fmt.Errorf(
+			"tmux session %s has no aiq lease but holds panes aiq did not start (%s); attach and close it yourself rather than have aiq kill them (tmux attach -t %s)",
+			name, strings.Join(foreign, ", "), name)
+	}
+	return "", nil
+}
+
+// aiqLongPane reports whether aiq started the pane: a long session's pane,
+// and every respawn of it, runs `aiq run <provider> --long ...`. A pane the
+// user split off runs their shell and has no start command.
+func aiqLongPane(p tmux.Pane) bool {
+	return strings.Contains(p.StartCommand, " run ") && strings.Contains(p.StartCommand, " --long")
+}
+
+// longLaunch starts cmdArgs in dir, in t's pane or a new tmux session, and
+// attaches.
+func (a *app) longLaunch(t longTarget, ws, dir, what, launcher string, cmdArgs []string) error {
+	if t.pane != "" {
+		return a.longLaunchInPlace(t, ws, dir, what, launcher, cmdArgs)
+	}
+	pane, err := tmux.NewSession(t.name, dir, tmux.Quote(cmdArgs))
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "aiq: long %s session started in tmux %s (pane %s) for %s\n", what, name, pane, ws)
+	fmt.Fprintf(os.Stderr, "aiq: long %s session started in tmux %s (pane %s) for %s\n", what, t.name, pane, ws)
 	if launcher != "" {
 		fmt.Fprintf(os.Stderr, "aiq: takeover order: %s\n", strings.Join(a.launcherFallbackProviders(launcher), " → "))
 	}
 	if term.IsTerminal(int(os.Stdout.Fd())) {
-		return tmux.Attach(name)
+		return tmux.Attach(t.name)
 	}
-	fmt.Printf("attach with: tmux attach -t %s   (or: aiq long attach)\n", name)
+	fmt.Printf("attach with: tmux attach -t %s   (or: aiq long attach)\n", t.name)
+	return nil
+}
+
+// longLaunchInPlace starts cmdArgs in t's pane of an existing session. In
+// the pane this command runs in, that replaces the shell, and this process
+// with it, so everything is said first.
+func (a *app) longLaunchInPlace(t longTarget, ws, dir, what, launcher string, cmdArgs []string) error {
+	where := "pane " + t.pane
+	if t.pane == os.Getenv("TMUX_PANE") {
+		where = "this pane (" + t.pane + ")"
+	}
+	fmt.Fprintf(os.Stderr, "aiq: long %s session starting in tmux %s, %s, for %s\n", what, t.name, where, ws)
+	if launcher != "" {
+		fmt.Fprintf(os.Stderr, "aiq: takeover order: %s\n", strings.Join(a.launcherFallbackProviders(launcher), " → "))
+	}
+	if err := tmux.RespawnLong(t.pane, dir, tmux.Quote(cmdArgs)); err != nil || t.inside {
+		return err
+	}
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		return tmux.Attach(t.name)
+	}
+	fmt.Printf("attach with: tmux attach -t %s   (or: aiq long attach)\n", t.name)
 	return nil
 }
 
@@ -387,7 +488,7 @@ func (a *app) longAutoResume(args []string) error {
 	}
 
 	ws := workspaceID()
-	name, attached, err := a.longExisting(ws)
+	target, attached, err := a.longExisting(ws)
 	if attached || err != nil {
 		return err
 	}
@@ -483,7 +584,7 @@ func (a *app) longAutoResume(args []string) error {
 	}
 	// The CLI finds a transcript by the directory it ran in, which may be
 	// below the workspace root.
-	return a.longLaunch(name, ws, dir, what, launcher, cmdArgs)
+	return a.longLaunch(target, ws, dir, what, launcher, cmdArgs)
 }
 
 // Like run, long consumes its own leading options and stops at -- or the
