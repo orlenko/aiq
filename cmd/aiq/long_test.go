@@ -258,3 +258,44 @@ esac
 		t.Errorf("--account claude/gone: err = %v", err)
 	}
 }
+
+func TestPlaceLongSession(t *testing.T) {
+	aiq := tmux.Pane{ID: "%18", Session: "aiq-aiq-caa3", StartCommand: "/x/aiq run claude --long --fallback claude,codex -- --resume abc"}
+	deadAiq := aiq
+	deadAiq.Dead = true
+	shell := tmux.Pane{ID: "%19", Session: "aiq-aiq-caa3"}
+	deadShell := shell
+	deadShell.Dead = true
+	for _, tt := range []struct {
+		name    string
+		panes   []tmux.Pane
+		self    string
+		want    string // pane to start in; "" for a new session
+		wantErr string // substring of the error
+	}{
+		{name: "dead aiq pane, from outside", panes: []tmux.Pane{deadAiq}},
+		{name: "live aiq pane, from outside", panes: []tmux.Pane{aiq}, self: "%3"},
+		{name: "dead shell", panes: []tmux.Pane{deadAiq, deadShell}},
+		// The recordings: claude exited, its pane was killed, the lease
+		// was pruned, and resume ran from the pane split off beside it.
+		{name: "from the user's pane inside", panes: []tmux.Pane{shell}, self: "%19", want: "%19"},
+		{name: "inside, beside a dead aiq pane", panes: []tmux.Pane{deadAiq, shell}, self: "%19", want: "%18"},
+		{name: "outside, beside the user's pane", panes: []tmux.Pane{deadAiq, shell}, self: "%3", want: "%18"},
+		{name: "user's pane only, from outside", panes: []tmux.Pane{shell}, wantErr: "panes aiq did not start (%19)"},
+		{name: "inside, beside a live aiq pane", panes: []tmux.Pane{aiq, shell}, self: "%19", wantErr: "pane %18 of tmux session"},
+		{name: "from the aiq pane itself", panes: []tmux.Pane{aiq}, self: "%18", wantErr: "pane %18 of tmux session"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := placeLongSession("aiq-aiq-caa3", tt.panes, tt.self)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("got %q, %v; want an error containing %q", got, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("got %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+}

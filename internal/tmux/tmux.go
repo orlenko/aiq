@@ -216,6 +216,24 @@ func Respawn(pane, dir, command string) error {
 	return err
 }
 
+// RespawnLong starts a long session's command in pane, in place of what
+// runs there, and brings the pane to the front. The window keeps the pane
+// after the command exits, as NewSession sets it, so the supervisor can
+// respawn it. Respawn comes last: in the caller's own pane it ends the
+// caller.
+func RespawnLong(pane, dir, command string) error {
+	_, err := run("set-option", "-w", "-t", pane, "remain-on-exit", "on",
+		";", "select-window", "-t", pane, ";", "select-pane", "-t", pane,
+		";", "respawn-pane", "-k", "-c", dir, "-t", pane, command)
+	return err
+}
+
+// SelectPane brings pane and its window to the front.
+func SelectPane(pane string) error {
+	_, err := run("select-window", "-t", pane, ";", "select-pane", "-t", pane)
+	return err
+}
+
 // SendLine types a line into the pane, as a user would.
 func SendLine(pane, text string) error {
 	if _, err := run("send-keys", "-t", pane, "-l", text); err != nil {
@@ -275,19 +293,11 @@ func Quote(args []string) string {
 	return strings.Join(parts, " ")
 }
 
-// PaneCount returns how many panes the session holds. A long session aiq
-// started has one; more means the user split the window and put something of
-// their own beside it.
-func PaneCount(name string) (int, error) {
-	out, err := run("list-panes", "-t", "="+name, "-F", "#{pane_id}")
+// SessionPanes lists the panes of every window in session name.
+func SessionPanes(name string) ([]Pane, error) {
+	out, err := run("list-panes", "-s", "-t", "="+name, "-F", paneFormat)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
-	for _, l := range strings.Split(out, "\n") {
-		if strings.TrimSpace(l) != "" {
-			n++
-		}
-	}
-	return n, nil
+	return parsePanes(out), nil
 }
