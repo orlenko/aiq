@@ -185,7 +185,21 @@ type Usage struct {
 	// Extra is the account's paid extra usage (Claude), nil when never
 	// polled.
 	Extra *ExtraUsage
+	// CLILogin is what the CLI itself last said about its login in the
+	// account home (LoginIn, LoginOut, or LoginUnknown when never asked),
+	// CLIIdentity the email it reported. For Claude this is separate from
+	// the poll grant, so telemetry can be fresh while the CLI is logged out.
+	CLILogin     string
+	CLIIdentity  string
+	CLICheckedAt int64
 }
+
+// CLI login states recorded in Usage.CLILogin.
+const (
+	LoginUnknown = ""
+	LoginIn      = "in"
+	LoginOut     = "out"
+)
 
 // ExtraUsage is Claude's paid overflow: once the plan's windows are spent,
 // requests draw on prepaid usage credits, up to a monthly spend limit.
@@ -320,6 +334,9 @@ func Open(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE usage ADD COLUMN reset_credit_expires_at INTEGER`)
 	db.Exec(`ALTER TABLE usage ADD COLUMN reset_credit_id TEXT`)
 	db.Exec(`ALTER TABLE usage ADD COLUMN extra_usage TEXT`)
+	db.Exec(`ALTER TABLE usage ADD COLUMN cli_login TEXT`)
+	db.Exec(`ALTER TABLE usage ADD COLUMN cli_identity TEXT`)
+	db.Exec(`ALTER TABLE usage ADD COLUMN cli_checked_at INTEGER`)
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
 		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
 		"launcher TEXT", "transcript TEXT", "drain_manual INTEGER"} {
@@ -582,19 +599,35 @@ func (s *Store) SetExtraUsage(id string, e *ExtraUsage) error {
 	return err
 }
 
+// SetCLILogin records what the CLI reported about its own login.
+func (s *Store) SetCLILogin(id string, loggedIn bool, email string, now time.Time) error {
+	login := LoginOut
+	if loggedIn {
+		login = LoginIn
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO usage (account_id, cli_login, cli_identity, cli_checked_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(account_id) DO UPDATE SET
+		   cli_login = excluded.cli_login, cli_identity = excluded.cli_identity,
+		   cli_checked_at = excluded.cli_checked_at`,
+		id, login, email, now.Unix())
+	return err
+}
+
 func (s *Store) GetUsage(id string) (Usage, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT account_id, exhausted, COALESCE(exhausted_reason,''), COALESCE(cooldown_until,0),
 		        reset_credits, COALESCE(reset_credit_expires_at,0), COALESCE(reset_credit_id,''),
 		        COALESCE(plan,''), COALESCE(poll_error,''), COALESCE(observed_at,0), COALESCE(exhausted_at,0),
-		        COALESCE(extra_usage,'')
+		        COALESCE(extra_usage,''), COALESCE(cli_login,''), COALESCE(cli_identity,''), COALESCE(cli_checked_at,0)
 		 FROM usage WHERE account_id = ?`, id)
 	var u Usage
 	var exhausted int
 	var extra string
 	err := row.Scan(&u.AccountID, &exhausted, &u.ExhaustedReason, &u.CooldownUntil,
 		&u.ResetCredits, &u.ResetCreditExpiry, &u.ResetCreditID, &u.Plan, &u.PollError, &u.ObservedAt, &u.ExhaustedAt,
-		&extra)
+		&extra, &u.CLILogin, &u.CLIIdentity, &u.CLICheckedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return u, false, nil
 	}

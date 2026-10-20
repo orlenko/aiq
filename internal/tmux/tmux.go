@@ -228,6 +228,13 @@ func RespawnLong(pane, dir, command string) error {
 	return err
 }
 
+// NameWindow names the window holding pane. Naming it turns tmux's
+// automatic renaming off for that window, so the name stays put.
+func NameWindow(pane, name string) error {
+	_, err := run("rename-window", "-t", pane, name)
+	return err
+}
+
 // SelectPane brings pane and its window to the front.
 func SelectPane(pane string) error {
 	_, err := run("select-window", "-t", pane, ";", "select-pane", "-t", pane)

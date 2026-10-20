@@ -96,22 +96,25 @@ func (p *Provider) Login(home string, native bool) error {
 // AuthStatus reports the email logged in for a home ("" when logged out).
 func (p *Provider) AuthStatus(home string, native bool) (email string, loggedIn bool, err error) {
 	cmd := p.Command([]string{"auth", "status"}, p.Env(home, native, false))
-	out, err := cmd.Output()
-	if err != nil {
-		return "", false, fmt.Errorf("claude auth status: %w", err)
-	}
+	// A logged-out home exits 1 and still prints the JSON, so the answer is
+	// read from the output whatever the exit status.
+	out, runErr := cmd.Output()
+	return parseAuthStatus(out, runErr)
+}
+
+func parseAuthStatus(out []byte, runErr error) (email string, loggedIn bool, err error) {
 	var doc struct {
-		LoggedIn bool   `json:"loggedIn"`
+		LoggedIn *bool  `json:"loggedIn"`
 		Email    string `json:"email"`
 	}
 	start := strings.Index(string(out), "{")
-	if start < 0 {
-		return "", false, fmt.Errorf("claude auth status: no JSON in output")
+	if start < 0 || json.Unmarshal(out[start:], &doc) != nil || doc.LoggedIn == nil {
+		if runErr != nil {
+			return "", false, fmt.Errorf("claude auth status: %w", runErr)
+		}
+		return "", false, fmt.Errorf("claude auth status: no login state in output")
 	}
-	if err := json.Unmarshal(out[start:], &doc); err != nil {
-		return "", false, fmt.Errorf("claude auth status: %w", err)
-	}
-	return doc.Email, doc.LoggedIn, nil
+	return doc.Email, *doc.LoggedIn, nil
 }
 
 // HasCredential reports whether the home is logged in. Cheap heuristic:

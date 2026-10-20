@@ -129,8 +129,10 @@ func renderStatus(v *pool.View, explain bool) string {
 		switch {
 		case !acc.Enabled:
 			st = "disabled"
-		case !acc.HasCredential:
+		case !acc.HasCredential || acc.CLILogin == state.LoginOut:
 			st = "NO LOGIN"
+		case acc.CLIMismatch:
+			st = "MISMATCH"
 		case acc.Exhausted:
 			st = "EXHAUSTED"
 		case !acc.Eligible:
@@ -206,7 +208,11 @@ func renderStatus(v *pool.View, explain bool) string {
 			fmt.Fprintf(&b, "%-20s %-9s %-28s %5s  %s\n", acc.ID, st, "no telemetry", score, strings.Join(notes, " · "))
 		}
 		if acc.Identity != "" || acc.ObservedAt > 0 {
-			fmt.Fprintf(&b, "%-20s %-9s %s · seen %s\n", "", "", acc.Identity, fmtAgo(acc.ObservedAt, now))
+			who := acc.Identity
+			if acc.CLIMismatch {
+				who += " (CLI: " + acc.CLIIdentity + ")"
+			}
+			fmt.Fprintf(&b, "%-20s %-9s %s · seen %s\n", "", "", who, fmtAgo(acc.ObservedAt, now))
 		}
 	}
 	if explain {

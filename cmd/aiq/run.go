@@ -22,6 +22,7 @@ import (
 	"github.com/orlenko/aiq/internal/runner"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/tmux"
 )
 
 // runFlags are aiq's own flags, taken from before the "--" separator (or
@@ -420,6 +421,11 @@ func cmdRun(provider string, args []string) error {
 			env = append(env, "AIQ_LONG=1", "AIQ_LEASE="+strconv.FormatInt(leaseID, 10))
 			self, _ := os.Executable()
 			prepareLong(provider, workspace)
+			// The account is otherwise invisible from inside the session, and
+			// a takeover changes it; the window name shows it in tmux's bar.
+			if pane := os.Getenv("TMUX_PANE"); pane != "" {
+				tmux.NameWindow(pane, acc.ID)
+			}
 			a.close()
 			return a.execProvider(provider, longArgs(provider, self, f), env, f.launcher)
 		}

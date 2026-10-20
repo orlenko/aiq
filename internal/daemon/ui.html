@@ -87,7 +87,8 @@ function accountCard(a) {
   let badge, hint = '';
   const loginCmd = `aiq account login ${a.id}`;
   if (!a.enabled) badge = `<span class="badge off" title="aiq account enable ${esc(a.id)}">disabled</span>`;
-  else if (!a.has_credential) { badge = `<span class="badge bad" title="${esc(loginCmd)}">no login</span>`; hint = `<div class="hint">${esc(loginCmd)}</div>`; }
+  else if (!a.has_credential || a.cli_login === 'out') { badge = `<span class="badge bad" title="${esc(loginCmd)}">no login</span>`; hint = `<div class="hint">${esc(loginCmd)}</div>`; }
+  else if (a.cli_mismatch) { badge = `<span class="badge bad" title="${esc(a.ineligible || '')}">CLI is ${esc(a.cli_identity)}</span>`; hint = `<div class="hint">${esc(loginCmd)}</div>`; }
   else if (a.exhausted) { const m = /until (.+)$/.exec(a.reason || ''); badge = `<span class="badge bad" title="${esc(a.reason || '')}">exhausted${m ? ' · ' + esc(m[1]) : ''}</span>`; }
   else if (!a.eligible) badge = `<span class="badge">${esc(a.ineligible)}</span>`;
   else badge = `<span class="badge ${a.rank === 1 ? 'rank1' : ''}">#${a.rank} · ${a.score.toFixed(1)}/h${a.rung === 1 ? ' · extra usage' : a.rung > 1 ? ' · last resort' : ''}</span>`;

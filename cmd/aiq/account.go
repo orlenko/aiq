@@ -145,8 +145,12 @@ func (a *app) accountList() error {
 			st = "disabled"
 		}
 		login := "yes"
-		if !pool.HasCredential(acc) {
+		u, _, _ := a.st.GetUsage(acc.ID)
+		switch {
+		case !pool.HasCredential(acc) || u.CLILogin == state.LoginOut:
 			login = "NO"
+		case pool.CLIMismatch(acc.Identity, u):
+			login = "WRONG"
 		}
 		poll := "yes"
 		if acc.Provider == "claude" && !claude.HasGrant(acc.Home) {
@@ -259,6 +263,7 @@ func (a *app) accountLogin(id string) error {
 		if err != nil {
 			return err
 		}
+		a.st.SetCLILogin(acc.ID, ok, email, time.Now())
 		if !ok {
 			return fmt.Errorf("login did not complete for %s", id)
 		}

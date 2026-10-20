@@ -148,6 +148,13 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 			if acc.Provider == "codex" && strings.Contains(strings.ToLower(u.PollError), codex.ErrAuthRequired.Error()) {
 				c.UnavailableReason = "authentication required"
 			}
+			// Claude polls through aiq's own grant, so the CLI is asked
+			// separately (probeClaudeLogin); a logged-out or wrongly
+			// logged-in home would fail the launch or spend someone else's
+			// quota.
+			if why := CLILoginProblem(acc, u); why != "" {
+				c.UnavailableReason = why
+			}
 			if ok, _ := u.Extra.Spendable(time.Now()); ok && p.Cfg.Selection.ExtraUsage {
 				c.ExtraUsage = fmt.Sprintf("%s prepaid left", u.Extra.Money(u.Extra.BalanceMinor))
 			}
@@ -303,6 +310,14 @@ type AccountView struct {
 	// ExtraUsageNote says whether aiq may spend it and, if not, why.
 	ExtraUsage     *state.ExtraUsage `json:"extra_usage,omitempty"`
 	ExtraUsageNote string            `json:"extra_usage_note,omitempty"`
+	// CLILogin is what the CLI last said about its own login in the home:
+	// "in", "out", or empty when never asked (only Claude is asked, since
+	// its quota poll does not use the CLI's credential). CLIIdentity is the
+	// email it reported; CLIMismatch is set when that is not Identity.
+	CLILogin     string `json:"cli_login,omitempty"`
+	CLIIdentity  string `json:"cli_identity,omitempty"`
+	CLIMismatch  bool   `json:"cli_mismatch,omitempty"`
+	CLICheckedAt int64  `json:"cli_checked_at,omitempty"`
 }
 
 type RankView struct {
@@ -401,6 +416,8 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 			if u, ok, _ := p.St.GetUsage(a.ID); ok {
 				av.Plan, av.ResetCredits, av.PollError, av.ObservedAt = u.Plan, u.ResetCredits, u.PollError, u.ObservedAt
 				av.CreditExpiry = u.ResetCreditExpiry
+				av.CLILogin, av.CLIIdentity, av.CLICheckedAt = u.CLILogin, u.CLIIdentity, u.CLICheckedAt
+				av.CLIMismatch = CLIMismatch(a.Identity, u)
 				if u.Extra != nil && u.Extra.Enabled {
 					av.ExtraUsage = u.Extra
 					ok, why := u.Extra.Spendable(now)
