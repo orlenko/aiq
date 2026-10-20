@@ -2,6 +2,7 @@ package pool
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,6 +86,9 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		p.updateIdentity(a, u.Identity)
 		return nil
 	case "claude":
+		// The poll grant is aiq's own token, so a fresh poll says nothing
+		// about the CLI's login in the same home; read that as well.
+		p.ProbeClaudeLogin(a, now)
 		path := claude.GrantPath(a.Home)
 		if !claude.HasGrant(a.Home) {
 			return p.recordError(a, "no poll grant — run: aiq account authorize "+a.ID)
@@ -134,6 +138,48 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		return nil
 	}
 	return nil
+}
+
+// ProbeClaudeLogin records whether Claude Code is logged in in the account
+// home, and as whom. A probe that cannot read the credential leaves the
+// last answer; one that cannot verify the email keeps the last email.
+func (p *Pool) ProbeClaudeLogin(a state.Account, now time.Time) error {
+	login, err := claude.ProbeLogin(a.Home, a.Native, now)
+	if err != nil {
+		return err
+	}
+	prev, _, _ := p.St.GetUsage(a.ID)
+	before := CLILoginProblem(a, prev)
+	email := login.Email
+	if login.LoggedIn && email == "" {
+		email = prev.CLIIdentity
+	}
+	p.St.SetCLILogin(a.ID, login.LoggedIn, email, now)
+	if u, ok, _ := p.St.GetUsage(a.ID); ok {
+		if why := CLILoginProblem(a, u); why != "" && why != before {
+			p.St.LogEvent(a.Provider, a.ID, "login", why, now)
+		}
+	}
+	return nil
+}
+
+// CLILoginProblem says why an account's CLI login cannot be routed to, or
+// "" when it can or was never checked: the CLI is logged out, or logged in
+// as someone other than the account whose quota aiq tracks.
+func CLILoginProblem(a state.Account, u state.Usage) string {
+	switch {
+	case u.CLILogin == state.LoginOut:
+		return "CLI not logged in — run: aiq account login " + a.ID
+	case CLIMismatch(a.Identity, u):
+		return fmt.Sprintf("CLI logged in as %s, not %s — run: aiq account login %s", u.CLIIdentity, a.Identity, a.ID)
+	}
+	return ""
+}
+
+// CLIMismatch reports whether the CLI is logged in as someone other than
+// identity.
+func CLIMismatch(identity string, u state.Usage) bool {
+	return u.CLILogin == state.LoginIn && u.CLIIdentity != "" && identity != "" && !strings.EqualFold(u.CLIIdentity, identity)
 }
 
 // recordError keeps the last good windows and stores the failure reason.

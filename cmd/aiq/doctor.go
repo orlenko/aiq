@@ -80,6 +80,23 @@ func cmdDoctor(args []string) error {
 	now := time.Now()
 	for _, acc := range accounts {
 		check(pool.HasCredential(acc), "%s: CLI login present (%s)%s", acc.ID, shortHome(acc.Home), hint(!pool.HasCredential(acc), "aiq account login "+acc.ID))
+		// A credential file can outlive its login, and Claude's quota poll
+		// uses aiq's own grant, so the CLI's credential is read on its own.
+		if acc.Provider == "claude" && pool.HasCredential(acc) {
+			if err := a.pool.ProbeClaudeLogin(acc, now); err != nil {
+				check(false, "%s: CLI login: %v", acc.ID, err)
+			} else {
+				u, _, _ := a.st.GetUsage(acc.ID)
+				switch why := pool.CLILoginProblem(acc, u); {
+				case why != "":
+					check(false, "%s: %s", acc.ID, why)
+				case u.CLIIdentity == "":
+					check(true, "%s: CLI logged in (not yet verified as whom: its access token has expired; the next session refreshes it)", acc.ID)
+				default:
+					check(true, "%s: CLI logged in as %s", acc.ID, u.CLIIdentity)
+				}
+			}
+		}
 		if acc.Provider == "claude" {
 			has := claude.HasGrant(acc.Home)
 			check(has, "%s: poll grant present%s", acc.ID, hint(!has, "aiq account authorize "+acc.ID))

@@ -145,8 +145,12 @@ func (a *app) accountList() error {
 			st = "disabled"
 		}
 		login := "yes"
-		if !pool.HasCredential(acc) {
+		u, _, _ := a.st.GetUsage(acc.ID)
+		switch {
+		case !pool.HasCredential(acc) || u.CLILogin == state.LoginOut:
 			login = "NO"
+		case pool.CLIMismatch(acc.Identity, u):
+			login = "WRONG"
 		}
 		poll := "yes"
 		if acc.Provider == "claude" && !claude.HasGrant(acc.Home) {
@@ -255,15 +259,34 @@ func (a *app) accountLogin(id string) error {
 		if err := p.Login(acc.Home, acc.Native); err != nil {
 			return err
 		}
-		email, ok, err := p.AuthStatus(acc.Home, acc.Native)
+		// Read the stored credential rather than asking the CLI, which run
+		// from inside another Claude Code session can answer for that one.
+		login, err := claude.ProbeLogin(acc.Home, acc.Native, time.Now())
 		if err != nil {
 			return err
 		}
+		email, ok := login.Email, login.LoggedIn
+		if ok && email == "" {
+			// The profile read failed; the token is fresh, so the CLI can
+			// answer without starting a refresh.
+			if email, ok, err = p.AuthStatus(acc.Home, acc.Native); err != nil {
+				return err
+			}
+		}
+		a.st.SetCLILogin(acc.ID, ok, email, time.Now())
 		if !ok {
 			return fmt.Errorf("login did not complete for %s", id)
 		}
 		if !acc.Native {
 			claude.MarkLoggedIn(acc.Home, email)
+		}
+		// With a poll grant, the identity is the account whose quota aiq
+		// reads. A login as someone else must not overwrite it, or the
+		// mismatch that holds the account from routing would vanish.
+		if acc.Identity != "" && claude.HasGrant(acc.Home) && !strings.EqualFold(email, acc.Identity) {
+			fmt.Fprintf(os.Stderr, "aiq: warning: %s is now logged in as %s, but its quota poll reads %s; aiq will not route to it until they match.\n"+
+				"aiq: log in again as %s, or if the account really changed hands, run: aiq account authorize %s\n", id, email, acc.Identity, acc.Identity, id)
+			break
 		}
 		acc.Identity = email
 	case "codex":
