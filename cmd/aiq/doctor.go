@@ -261,6 +261,9 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time) {
 	switch {
 	case !acc.Enabled:
 		check(true, nil, "%s: disabled, so not polled (aiq account enable %s)", acc.ID, acc.ID)
+	case acc.Provider == "copilot":
+		// The pool has no Copilot poller yet, so no telemetry is expected.
+		check(true, nil, "%s: quota not polled (no Copilot poller yet)", acc.ID)
 	case ok && u.PollError != "":
 		msg := strings.ToLower(u.PollError)
 		flag := &need.poll
@@ -315,8 +318,8 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 	case need.sync:
 		// Only a login or a launch syncs an overlay from the command line.
 		what = append(what, "re-sync the overlay home")
-		cmds = append(cmds, fmt.Sprintf("aiq run %s --account %s (any launch re-syncs it)", acc.Provider, acc.Name))
-		f.steps = append(f.steps, "aiq re-links the shared settings into "+shortHome(acc.Home)+".")
+		cmds = append(cmds, fmt.Sprintf("aiq run %s --account %s", acc.Provider, acc.Name))
+		f.steps = append(f.steps, "aiq re-links the shared settings into "+shortHome(acc.Home)+" (by hand, any launch on the account does it).")
 	}
 	if need.grant {
 		what = append(what, "renew the quota poll grant")
