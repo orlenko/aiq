@@ -348,7 +348,10 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 	case need.sync:
 		// Only a login or a launch syncs an overlay from the command line.
 		what = append(what, "re-sync the overlay home")
-		cmds = append(cmds, fmt.Sprintf("aiq run %s --account %s", acc.Provider, shellQuote(acc.Name)))
+		// A disabled account cannot be launched, so it has no command.
+		if acc.Enabled {
+			cmds = append(cmds, fmt.Sprintf("aiq run %s --account %s", acc.Provider, shellQuote(acc.Name)))
+		}
 		f.steps = append(f.steps, "aiq re-links the shared settings into "+shortHome(acc.Home)+" (by hand, any launch on the account does it).")
 	}
 	if need.grant {
@@ -466,6 +469,11 @@ func (r *doctorReport) printPlan() {
 		fmt.Printf("  %d. %s\n", i+1, f.title)
 		if f.command != "" {
 			fmt.Printf("       %s\n", f.command)
+			continue
+		}
+		// With nothing to run, the steps are the instructions.
+		for _, step := range f.steps {
+			fmt.Printf("       %s\n", step)
 		}
 	}
 }
