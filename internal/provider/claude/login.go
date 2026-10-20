@@ -26,6 +26,10 @@ import (
 // locked keychain.
 const keychainTimeout = 10 * time.Second
 
+// securityItemNotFound is security(1)'s exit status for a missing item
+// (errSecItemNotFound).
+const securityItemNotFound = 44
+
 // CLILogin is what the probe found in one home.
 type CLILogin struct {
 	LoggedIn bool
@@ -84,8 +88,16 @@ func readCLICredential(dir string) ([]byte, error) {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("keychain read timed out after %s", keychainTimeout)
 		}
-		if err == nil && strings.TrimSpace(string(out)) != "" {
+		// Only a missing item means the CLI would fall back to the file; a
+		// locked keychain or a denied read says nothing about the login.
+		var exit *exec.ExitError
+		switch {
+		case err == nil && strings.TrimSpace(string(out)) != "":
 			return out, nil
+		case errors.As(err, &exit) && exit.ExitCode() != securityItemNotFound:
+			return nil, fmt.Errorf("keychain read failed (security exit %d)", exit.ExitCode())
+		case err != nil && !errors.As(err, &exit):
+			return nil, fmt.Errorf("keychain read: %w", err)
 		}
 	}
 	data, err := os.ReadFile(credentialFile(dir))
