@@ -483,10 +483,11 @@ type resumeRequest struct {
 func (a *app) parseResume(verb string, auto bool, args []string) (resumeRequest, error) {
 	r := resumeRequest{auto: auto}
 	usage := resumeUsageFor(verb, auto)
-	// Bypass runs on the real home and ignores routing and --account, so
-	// an auto resume refuses it as every other auto command does.
-	if auto && os.Getenv("AIQ_BYPASS") == "1" {
-		return r, configErr("bad-flags", "auto requires routing; unset AIQ_BYPASS or resume with: aiq resume")
+	// Bypass runs on the real home and ignores routing and --account, and a
+	// long session never gets its lease, so an auto or long resume refuses
+	// it; plain aiq resume is the one that honours it.
+	if (auto || verb == "long") && os.Getenv("AIQ_BYPASS") == "1" {
+		return r, configErr("bad-flags", "aiq %s requires routing; unset AIQ_BYPASS or resume with: aiq resume", verb)
 	}
 	var rest []string
 	var err error

@@ -312,7 +312,8 @@ esac
 	}
 	// Bypass would skip routing and --account, so auto resume refuses it.
 	t.Setenv("AIQ_BYPASS", "1")
-	for _, run := range []func([]string) error{a.runAutoResume, a.longAutoResume} {
+	longResume := func(args []string) error { return a.longResume(args, false) }
+	for _, run := range []func([]string) error{a.runAutoResume, a.longAutoResume, longResume} {
 		if err := run([]string{"s1"}); err == nil || !strings.Contains(err.Error(), "AIQ_BYPASS") {
 			t.Errorf("auto resume under AIQ_BYPASS: err = %v", err)
 		}
