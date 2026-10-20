@@ -264,7 +264,15 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 	}
 	if acc.Provider == "claude" {
 		has := claude.HasGrant(acc.Home)
-		check(has, &need.grant, "%s: poll grant present%s", acc.ID, hint(!has, "aiq account authorize "+acc.ID))
+		var bad error
+		if has {
+			_, bad = claude.LoadGrant(claude.GrantPath(acc.Home))
+		}
+		if bad != nil {
+			check(false, &need.grant, "%s: poll grant unreadable: %v — run: aiq account authorize %s", acc.ID, bad, acc.ID)
+		} else {
+			check(has, &need.grant, "%s: poll grant present%s", acc.ID, hint(!has, "aiq account authorize "+acc.ID))
+		}
 	}
 	u, ok, _ := a.st.GetUsage(acc.ID)
 	ws, _ := a.st.ListWindows(acc.ID)
@@ -388,10 +396,14 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 			// The pool skips a disabled account, so a saved grant that has
 			// not polled yet is proven here.
 			if grantUnproven {
-				if _, err := claude.Poll(claude.GrantPath(acc.Home), time.Now()); err != nil {
+				u, err := claude.Poll(claude.GrantPath(acc.Home), time.Now())
+				if err != nil {
 					return fmt.Errorf("the saved grant does not poll: %w", err)
 				}
 				grantUnproven = false
+				if cur, err := a.st.GetAccount(acc.ID); err == nil {
+					a.adoptGrantIdentity(cur, u)
+				}
 			}
 			return nil
 		}
