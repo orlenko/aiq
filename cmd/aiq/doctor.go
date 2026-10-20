@@ -238,7 +238,7 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 	}
 
 	hasCred := pool.HasCredential(acc)
-	check(hasCred, &need.login, "%s: CLI login present (%s)%s", acc.ID, shortHome(acc.Home), hint(!hasCred, "aiq account login "+acc.ID))
+	check(hasCred, &need.login, "%s: CLI login present (%s)%s", acc.ID, shortHome(acc.Home), hint(!hasCred, "aiq account login "+shellQuote(acc.ID)))
 	// A credential file can outlive its login, and Claude's quota poll
 	// uses aiq's own grant, so the CLI's credential is read on its own.
 	if acc.Provider == "claude" && hasCred {
@@ -269,16 +269,16 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 			_, bad = claude.LoadGrant(claude.GrantPath(acc.Home))
 		}
 		if bad != nil {
-			check(false, &need.grant, "%s: poll grant unreadable: %v — run: aiq account authorize %s", acc.ID, bad, acc.ID)
+			check(false, &need.grant, "%s: poll grant unreadable: %v — run: aiq account authorize %s", acc.ID, bad, shellQuote(acc.ID))
 		} else {
-			check(has, &need.grant, "%s: poll grant present%s", acc.ID, hint(!has, "aiq account authorize "+acc.ID))
+			check(has, &need.grant, "%s: poll grant present%s", acc.ID, hint(!has, "aiq account authorize "+shellQuote(acc.ID)))
 		}
 	}
 	u, ok, _ := a.st.GetUsage(acc.ID)
 	ws, _ := a.st.ListWindows(acc.ID)
 	switch {
 	case !acc.Enabled:
-		check(true, nil, "%s: disabled, so not polled (aiq account enable %s)", acc.ID, acc.ID)
+		check(true, nil, "%s: disabled, so not polled (aiq account enable %s)", acc.ID, shellQuote(acc.ID))
 	case acc.Provider == "copilot":
 		// The pool has no Copilot poller yet, so no telemetry is expected.
 		check(true, nil, "%s: quota not polled (no Copilot poller yet)", acc.ID)
@@ -318,7 +318,7 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 		}
 		check(err == nil, &need.sync, "%s: overlay synced", acc.ID)
 		if acc.Provider == "claude" && claude.CredentialDrifted(acc.Home) {
-			check(false, &need.login, "%s: the credential file a launcher refreshed is newer than the keychain copy; run: aiq account login %s", acc.ID, acc.ID)
+			check(false, &need.login, "%s: the credential file a launcher refreshed is newer than the keychain copy; run: aiq account login %s", acc.ID, shellQuote(acc.ID))
 		}
 	}
 	a.planAccountFix(fix, acc, need)
