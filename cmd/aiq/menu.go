@@ -147,14 +147,15 @@ func menuArgs(c menuChoice, e *menuEnv) []string {
 		model = append(model, "--effort", strconv.Itoa(c.Effort))
 	}
 	if c.Session == "resume" {
+		verb := "run"
 		if c.Length == "long" {
-			args := []string{"long", "auto", "resume"}
-			if c.Account != "" {
-				args = append(args, "--account", c.Account)
-			}
-			return append(args, model...)
+			verb = "long"
 		}
-		return []string{"resume"}
+		args := []string{verb, "auto", "resume"}
+		if c.Account != "" {
+			args = append(args, "--account", c.Account)
+		}
+		return append(args, model...)
 	}
 	if c.Length == "long" && e.longHere != "" {
 		return []string{"long", "attach"}
@@ -264,17 +265,8 @@ func (m *menu) rows() []menuRow {
 		{key: "bypass", label: "Permissions", opts: []menuOpt{{"false", "ask"}, {"true", "bypass"}}, cur: strconv.FormatBool(c.Bypass)},
 	}
 	switch {
-	case resume && c.Length == "short":
-		more[0].off, more[1].off = "set when the session resumes long", "set when the session resumes long"
-	}
-	switch {
 	case resume:
-		if c.Length == "long" {
-			more[3].off = "bypass, always, for a long resume"
-		} else {
-			more[2].off = "routed, on the session's provider"
-			more[3].off = "as the session ran"
-		}
+		more[3].off = "bypass, always, on a resume"
 	case c.Agent == "auto":
 		more[2].off = "routed, with Any"
 		more[3].off = "bypass, always, with Any"
@@ -292,8 +284,8 @@ func (m *menu) moreSummary() string {
 		on = append(on, "effort "+tier.Efforts["codex"][m.c.Effort-1])
 	}
 	// The account counts where the command carries it: a named agent on a
-	// new start, either provider on a long resume.
-	forced := m.c.Session == "new" && m.c.Agent != "auto" || m.c.Session == "resume" && m.c.Length == "long"
+	// new start, either provider on a resume.
+	forced := m.c.Session == "new" && m.c.Agent != "auto" || m.c.Session == "resume"
 	if m.c.Account != "" && forced {
 		on = append(on, "account "+m.c.Account)
 	}

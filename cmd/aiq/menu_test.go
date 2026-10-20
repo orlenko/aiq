@@ -40,11 +40,11 @@ func TestMenuArgs(t *testing.T) {
 		{"claude long", c(func(x *menuChoice) { x.Agent, x.Length, x.Account, x.Bypass = "claude", "long", "fourth", true }),
 			"long claude --account fourth -- --dangerously-skip-permissions"},
 		{"launcher long", c(func(x *menuChoice) { x.Agent, x.Length, x.Effort = "boxed", "long", 4 }), "long boxed --effort 4"},
-		{"resume short ignores model", c(func(x *menuChoice) { x.Session, x.Tier, x.Agent = "resume", 0, "codex" }), "resume"},
+		{"resume short", c(func(x *menuChoice) { x.Session, x.Tier, x.Agent = "resume", 0, "codex" }), "run auto resume --model-tier 0"},
 		{"resume long", c(func(x *menuChoice) { x.Session, x.Length, x.Tier = "resume", "long", 0 }), "long auto resume --model-tier 0"},
 		{"resume long account", c(func(x *menuChoice) { x.Session, x.Length, x.Account = "resume", "long", "claude/fourth" }),
 			"long auto resume --account claude/fourth"},
-		{"resume short ignores account", c(func(x *menuChoice) { x.Session, x.Account = "resume", "claude/fourth" }), "resume"},
+		{"resume short account", c(func(x *menuChoice) { x.Session, x.Account = "resume", "claude/fourth" }), "run auto resume --account claude/fourth"},
 		{"auto ignores account and bypass", c(func(x *menuChoice) { x.Account, x.Bypass = "fourth", false }), "run auto"},
 	} {
 		if got := strings.Join(menuArgs(tt.choice, e), " "); got != tt.want {
@@ -73,8 +73,8 @@ func TestMenuArgsParse(t *testing.T) {
 				}
 				args := menuArgs(x, e)
 				switch {
-				case args[0] == "long" && args[1] == "auto" && len(args) > 2 && args[2] == "resume":
-					account, tierArgs, rest, err := parseLongAutoResumeArgs(args[3:])
+				case args[1] == "auto" && len(args) > 2 && args[2] == "resume":
+					account, tierArgs, rest, err := splitResumeArgs(args[3:])
 					if err != nil || account != x.Account || len(tierArgs) != 4 || len(rest) != 0 {
 						t.Errorf("aiq %v: account %q tier %v rest %v err %v", args, account, tierArgs, rest, err)
 					}
@@ -96,7 +96,6 @@ func TestMenuArgsParse(t *testing.T) {
 					if f.flagsErr != nil || f.account != x.Account || f.modelTier == nil || *f.modelTier != 1 || f.effort != 6 || len(f.rest) != 1 {
 						t.Errorf("aiq %v: %+v", args, f)
 					}
-				case args[0] == "resume":
 				default:
 					t.Errorf("unexpected aiq %v", args)
 				}
@@ -145,8 +144,8 @@ func TestMenuNavigation(t *testing.T) {
 	}
 }
 
-// The Account row is offered on a long resume, where it decides where the
-// session starts, and stays routed on a short one, which cannot force it.
+// The Account row is offered on a resume, short or long, where it decides
+// where the session starts.
 func TestMenuResumeAccountRow(t *testing.T) {
 	for _, tt := range []struct {
 		length string
@@ -154,7 +153,7 @@ func TestMenuResumeAccountRow(t *testing.T) {
 		want   []menuOpt
 	}{
 		{"long", false, []menuOpt{{"", "routed"}, {"claude/fourth", "fourth"}, {"claude/orlenko", "orlenko"}, {"codex/bjola", "bjola"}}},
-		{"short", true, nil},
+		{"short", false, []menuOpt{{"", "routed"}, {"claude/fourth", "fourth"}, {"claude/orlenko", "orlenko"}, {"codex/bjola", "bjola"}}},
 	} {
 		m := &menu{env: testMenuEnv(), c: menuChoice{Session: "resume", Agent: "claude", Length: tt.length, Tier: -1}, expanded: true, w: 100, h: 30}
 		for _, r := range m.rows() {
