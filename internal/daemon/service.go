@@ -78,6 +78,10 @@ func loginShellPATH() string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, sh, "-lic", `printf '\n__AIQ_PATH__%s__AIQ_PATH__\n' "$PATH"`)
 	cmd.Stdin = nil
+	// A process the rc files start in the background can inherit stdout
+	// and hold the pipe open after the shell is killed; stop waiting for
+	// it shortly after, keeping whatever the shell printed.
+	cmd.WaitDelay = 2 * time.Second
 	out, _ := cmd.Output()
 	_, rest, ok := strings.Cut(string(out), "__AIQ_PATH__")
 	if !ok {
