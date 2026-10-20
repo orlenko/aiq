@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -359,7 +360,7 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 	f.command = strings.Join(cmds, " && ")
 	// A retry picks up at the action that failed: redoing a sign-in that
 	// worked is one more chance to sign in as the wrong account.
-	var synced, loggedIn, granted bool
+	var synced, loggedIn, granted, grantUnproven bool
 	f.run = func() error {
 		if need.sync && !need.login && !synced {
 			if err := a.prepareHome(acc); err != nil {
@@ -377,12 +378,21 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 			err := a.accountAuthorize(acc.ID)
 			// A grant saved before its first poll failed is kept, so a
 			// retry goes straight to the poll.
-			granted = err == nil || errors.Is(err, errGrantPollFailed)
+			grantUnproven = errors.Is(err, errGrantPollFailed)
+			granted = err == nil || grantUnproven
 			if err != nil {
 				return err
 			}
 		}
 		if !acc.Enabled {
+			// The pool skips a disabled account, so a saved grant that has
+			// not polled yet is proven here.
+			if grantUnproven {
+				if _, err := claude.Poll(claude.GrantPath(acc.Home), time.Now()); err != nil {
+					return fmt.Errorf("the saved grant does not poll: %w", err)
+				}
+				grantUnproven = false
+			}
 			return nil
 		}
 		return a.pollAndReport(acc.ID)
@@ -553,6 +563,10 @@ func shellRC() string {
 	case "zsh":
 		return "~/.zshrc"
 	case "bash":
+		// macOS terminals start login shells, which read the profile.
+		if runtime.GOOS == "darwin" {
+			return "~/.bash_profile"
+		}
 		return "~/.bashrc"
 	}
 	return "your shell's startup file"
