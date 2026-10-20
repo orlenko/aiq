@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -186,10 +187,6 @@ func (a *app) doctorChecks() *doctorReport {
 			run:     func() error { return a.cmdAgyStatuslineAdmin("install") },
 		}, "agy statusline multiplexer installed in %s (quota is polled through it)%s", agy.SettingsPath(paths.RealAgyHome()), hint(!installed, "aiq statusline install agy"))
 	}
-	now := time.Now()
-	for _, acc := range accounts {
-		a.checkAccount(r, acc, now)
-	}
 
 	daemonFix := &doctorFix{
 		key:     "daemon",
@@ -199,12 +196,24 @@ func (a *app) doctorChecks() *doctorReport {
 		run:     a.doctorDaemonInstall,
 	}
 	_, svc := daemon.Installed()
-	r.check(svc, daemonFix, "daemon service installed")
 	if svc {
 		daemonFix.title = "Restart the daemon service"
 		daemonFix.steps = []string{"aiq reinstalls the background service, which restarts it."}
 	}
-	r.check(daemon.Alive(a.cfg.Daemon.Listen), daemonFix, "daemon answering on http://%s/", a.cfg.Daemon.Listen)
+	daemonUp := daemon.Alive(a.cfg.Daemon.Listen)
+	now := time.Now()
+	for _, acc := range accounts {
+		// A daemon that is down leaves every account's telemetry stale;
+		// starting it polls them all, so that is the fix, not a poll each.
+		var staleFix *doctorFix
+		if !daemonUp {
+			staleFix = daemonFix
+		}
+		a.checkAccount(r, acc, now, staleFix)
+	}
+
+	r.check(svc, daemonFix, "daemon service installed")
+	r.check(daemonUp, daemonFix, "daemon answering on http://%s/", a.cfg.Daemon.Listen)
 
 	// The machine first: a daemon that is down makes every account's
 	// telemetry look stale, and logins are the slow part.
@@ -217,7 +226,7 @@ type accountNeeds struct {
 	sync, login, grant, poll bool
 }
 
-func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time) {
+func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, staleFix *doctorFix) {
 	var need accountNeeds
 	fix := &doctorFix{key: "account:" + acc.ID, account: true}
 	check := func(ok bool, flag *bool, format string, v ...any) {
@@ -274,11 +283,17 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time) {
 			flag = &need.login
 		}
 		check(false, flag, "%s: last poll failed: %s", acc.ID, u.PollError)
+	case len(ws) == 0 && staleFix != nil:
+		r.check(false, staleFix, "%s: no telemetry yet (the daemon is not running)", acc.ID)
 	case len(ws) == 0:
 		check(false, &need.poll, "%s: no telemetry yet (aiq account poll)", acc.ID)
 	default:
 		age := now.Sub(time.Unix(ws[0].ObservedAt, 0))
 		stale := age > 2*time.Duration(a.cfg.Poll.IntervalSeconds)*time.Second+time.Minute
+		if stale && staleFix != nil {
+			r.check(false, staleFix, "%s: telemetry %s old (the daemon is not running)", acc.ID, age.Round(time.Second))
+			break
+		}
 		check(!stale, &need.poll, "%s: telemetry %s old", acc.ID, age.Round(time.Second))
 	}
 	if !acc.Native {
@@ -308,7 +323,7 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 	switch {
 	case need.login:
 		what = append(what, "log the CLI back in")
-		cmds = append(cmds, "aiq account login "+acc.ID)
+		cmds = append(cmds, "aiq account login "+shellQuote(acc.ID))
 		if acc.Provider == "claude" {
 			f.steps = append(f.steps, fmt.Sprintf("`claude auth login` opens a browser: sign in as %s.", who))
 		} else {
@@ -318,12 +333,12 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 	case need.sync:
 		// Only a login or a launch syncs an overlay from the command line.
 		what = append(what, "re-sync the overlay home")
-		cmds = append(cmds, fmt.Sprintf("aiq run %s --account %s", acc.Provider, acc.Name))
+		cmds = append(cmds, fmt.Sprintf("aiq run %s --account %s", acc.Provider, shellQuote(acc.Name)))
 		f.steps = append(f.steps, "aiq re-links the shared settings into "+shortHome(acc.Home)+" (by hand, any launch on the account does it).")
 	}
 	if need.grant {
 		what = append(what, "renew the quota poll grant")
-		cmds = append(cmds, "aiq account authorize "+acc.ID)
+		cmds = append(cmds, "aiq account authorize "+shellQuote(acc.ID))
 		again := ""
 		if need.login {
 			again = " again"
@@ -337,7 +352,7 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 	// The pool never polls a disabled account, so there is nothing to
 	// confirm with.
 	if acc.Enabled {
-		cmds = append(cmds, "aiq account poll "+acc.ID)
+		cmds = append(cmds, "aiq account poll "+shellQuote(acc.ID))
 		f.steps = append(f.steps, "aiq polls the account to confirm it works.")
 	}
 	f.title = acc.ID + ": " + strings.Join(what, ", then ")
@@ -359,10 +374,13 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 			loggedIn = true
 		}
 		if need.grant && !granted {
-			if err := a.accountAuthorize(acc.ID); err != nil {
+			err := a.accountAuthorize(acc.ID)
+			// A grant saved before its first poll failed is kept, so a
+			// retry goes straight to the poll.
+			granted = err == nil || errors.Is(err, errGrantPollFailed)
+			if err != nil {
 				return err
 			}
-			granted = true
 		}
 		if !acc.Enabled {
 			return nil
@@ -451,7 +469,9 @@ func (a *app) doctorWizard(fixes []*doctorFix) {
 			if doctorAsk("   Press Enter when done, s to skip, q to stop: ") == "q" {
 				return
 			}
-			a.reloadConfig()
+			if !a.wizardReload() {
+				return
+			}
 			continue
 		}
 		prompt := "   Press Enter to start, s to skip, q to stop: "
@@ -463,7 +483,9 @@ func (a *app) doctorWizard(fixes []*doctorFix) {
 			default:
 				fmt.Println()
 				err := f.run()
-				a.reloadConfig()
+				if !a.wizardReload() {
+					return
+				}
 				if err != nil {
 					fmt.Printf("   ✗ %v\n", err)
 					prompt = "   Press Enter to try again, s to skip, q to stop: "
@@ -478,9 +500,28 @@ func (a *app) doctorWizard(fixes []*doctorFix) {
 
 // reloadConfig picks up what a fix saved, so a later fix does not write
 // back a stale copy.
-func (a *app) reloadConfig() {
-	if cfg, err := config.Load(); err == nil {
-		a.cfg, a.pool.Cfg = cfg, cfg
+func (a *app) reloadConfig() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	a.cfg, a.pool.Cfg = cfg, cfg
+	return nil
+}
+
+// wizardReload reloads the config after a step and holds the wizard until
+// it loads: going on with the old copy could save it over the person's
+// edit. It reports false when the person stops.
+func (a *app) wizardReload() bool {
+	for {
+		err := a.reloadConfig()
+		if err == nil {
+			return true
+		}
+		fmt.Printf("   ✗ %s does not load: %v\n", paths.ConfigFile(), err)
+		if doctorAsk("   Fix it, then press Enter to try again, or q to stop: ") == "q" {
+			return false
+		}
 	}
 }
 
@@ -495,6 +536,15 @@ func doctorAsk(prompt string) string {
 		return "q"
 	}
 	return strings.ToLower(strings.TrimSpace(line))
+}
+
+// shellQuote quotes a word for a POSIX shell when it needs it, so a
+// printed command pastes as one argument.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_-") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // shellRC names the startup file of the login shell, for PATH advice.

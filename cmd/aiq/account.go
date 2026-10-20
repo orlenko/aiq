@@ -342,6 +342,10 @@ func (a *app) accountLogin(id string) error {
 	return nil
 }
 
+// errGrantPollFailed reports a poll grant that was saved but could not be
+// used: the authorization itself need not be redone.
+var errGrantPollFailed = errors.New("grant saved but the first poll failed")
+
 // accountAuthorize mints aiq's own poll grant for a Claude account.
 func (a *app) accountAuthorize(id string) error {
 	acc, err := a.st.GetAccount(id)
@@ -361,7 +365,7 @@ func (a *app) accountAuthorize(id string) error {
 	}
 	u, err := claude.Poll(claude.GrantPath(acc.Home), time.Now())
 	if err != nil {
-		return fmt.Errorf("grant saved but the first poll failed: %w", err)
+		return fmt.Errorf("%w: %w", errGrantPollFailed, err)
 	}
 	if u.Identity != "" {
 		if acc.Identity != "" && !strings.EqualFold(acc.Identity, u.Identity) {
