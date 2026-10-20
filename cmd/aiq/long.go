@@ -483,6 +483,11 @@ type resumeRequest struct {
 func (a *app) parseResume(verb string, auto bool, args []string) (resumeRequest, error) {
 	r := resumeRequest{auto: auto}
 	usage := resumeUsageFor(verb, auto)
+	// Bypass runs on the real home and ignores routing and --account, so
+	// an auto resume refuses it as every other auto command does.
+	if auto && os.Getenv("AIQ_BYPASS") == "1" {
+		return r, configErr("bad-flags", "auto requires routing; unset AIQ_BYPASS or resume with: aiq resume")
+	}
 	var rest []string
 	var err error
 	if r.account, r.tierArgs, rest, err = splitResumeArgs(args); err != nil {

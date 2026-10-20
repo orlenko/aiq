@@ -310,6 +310,14 @@ esac
 			t.Errorf("run auto resume accepted %q", bad)
 		}
 	}
+	// Bypass would skip routing and --account, so auto resume refuses it.
+	t.Setenv("AIQ_BYPASS", "1")
+	for _, run := range []func([]string) error{a.runAutoResume, a.longAutoResume} {
+		if err := run([]string{"s1"}); err == nil || !strings.Contains(err.Error(), "AIQ_BYPASS") {
+			t.Errorf("auto resume under AIQ_BYPASS: err = %v", err)
+		}
+	}
+	t.Setenv("AIQ_BYPASS", "")
 	// aiq run auto resume reaches the picker rather than auto's own flags.
 	if err := cmdRun("auto", []string{"resume", "--print"}); err == nil || !strings.Contains(err.Error(), "--print lists without resuming") {
 		t.Errorf("run auto resume --print: err = %v", err)
