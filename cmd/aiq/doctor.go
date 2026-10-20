@@ -291,6 +291,12 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 		case strings.Contains(msg, "account login"), strings.Contains(msg, codex.ErrAuthRequired.Error()):
 			flag = &need.login
 		}
+		if flag == &need.poll && staleFix != nil {
+			// The restarted daemon polls it again; a lapsed login or
+			// grant still needs its own fix.
+			r.check(false, staleFix, "%s: last poll failed: %s (the daemon is not running)", acc.ID, u.PollError)
+			break
+		}
 		check(false, flag, "%s: last poll failed: %s", acc.ID, u.PollError)
 	case len(ws) == 0 && staleFix != nil:
 		r.check(false, staleFix, "%s: no telemetry yet (the daemon is not running)", acc.ID)
@@ -392,19 +398,20 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 				return err
 			}
 		}
-		if !acc.Enabled {
-			// The pool skips a disabled account, so a saved grant that has
-			// not polled yet is proven here.
-			if grantUnproven {
-				u, err := claude.Poll(claude.GrantPath(acc.Home), time.Now())
-				if err != nil {
-					return fmt.Errorf("the saved grant does not poll: %w", err)
-				}
-				grantUnproven = false
-				if cur, err := a.st.GetAccount(acc.ID); err == nil {
-					a.adoptGrantIdentity(cur, u)
-				}
+		// A grant saved before its first poll failed is proven as
+		// accountAuthorize would have: the pool skips a disabled account,
+		// and its poll would take the grant's identity without a warning.
+		if grantUnproven {
+			u, err := claude.Poll(claude.GrantPath(acc.Home), time.Now())
+			if err != nil {
+				return fmt.Errorf("the saved grant does not poll: %w", err)
 			}
+			grantUnproven = false
+			if cur, err := a.st.GetAccount(acc.ID); err == nil {
+				a.adoptGrantIdentity(cur, u)
+			}
+		}
+		if !acc.Enabled {
 			return nil
 		}
 		return a.pollAndReport(acc.ID)
