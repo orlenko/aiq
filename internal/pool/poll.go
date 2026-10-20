@@ -87,8 +87,8 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		return nil
 	case "claude":
 		// The poll grant is aiq's own token, so a fresh poll says nothing
-		// about the CLI's login in the same home; ask the CLI as well.
-		p.probeClaudeLogin(a, now)
+		// about the CLI's login in the same home; read that as well.
+		p.ProbeClaudeLogin(a, now)
 		path := claude.GrantPath(a.Home)
 		if !claude.HasGrant(a.Home) {
 			return p.recordError(a, "no poll grant — run: aiq account authorize "+a.ID)
@@ -140,26 +140,27 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 	return nil
 }
 
-// probeClaudeLogin records whether Claude Code is logged in in the account
-// home, and as whom. A probe that fails to run leaves the last answer.
-func (p *Pool) probeClaudeLogin(a state.Account, now time.Time) {
-	cmd := p.command("claude")
-	if cmd == nil {
-		return
-	}
-	prov := &claude.Provider{Command: cmd}
-	email, loggedIn, err := prov.AuthStatus(a.Home, a.Native)
+// ProbeClaudeLogin records whether Claude Code is logged in in the account
+// home, and as whom. A probe that cannot read the credential leaves the
+// last answer; one that cannot verify the email keeps the last email.
+func (p *Pool) ProbeClaudeLogin(a state.Account, now time.Time) error {
+	login, err := claude.ProbeLogin(a.Home, a.Native, now)
 	if err != nil {
-		return
+		return err
 	}
 	prev, _, _ := p.St.GetUsage(a.ID)
 	before := CLILoginProblem(a, prev)
-	p.St.SetCLILogin(a.ID, loggedIn, email, now)
+	email := login.Email
+	if login.LoggedIn && email == "" {
+		email = prev.CLIIdentity
+	}
+	p.St.SetCLILogin(a.ID, login.LoggedIn, email, now)
 	if u, ok, _ := p.St.GetUsage(a.ID); ok {
 		if why := CLILoginProblem(a, u); why != "" && why != before {
 			p.St.LogEvent(a.Provider, a.ID, "login", why, now)
 		}
 	}
+	return nil
 }
 
 // CLILoginProblem says why an account's CLI login cannot be routed to, or

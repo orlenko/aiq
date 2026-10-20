@@ -78,22 +78,22 @@ func cmdDoctor(args []string) error {
 		check(installed, "agy statusline multiplexer installed in %s (quota is polled through it)%s", agy.SettingsPath(paths.RealAgyHome()), hint(!installed, "aiq statusline install agy"))
 	}
 	now := time.Now()
-	prov, _ := a.claudeProvider()
 	for _, acc := range accounts {
 		check(pool.HasCredential(acc), "%s: CLI login present (%s)%s", acc.ID, shortHome(acc.Home), hint(!pool.HasCredential(acc), "aiq account login "+acc.ID))
 		// A credential file can outlive its login, and Claude's quota poll
-		// uses aiq's own grant, so only the CLI can say who it is logged in as.
-		if acc.Provider == "claude" && prov != nil && pool.HasCredential(acc) {
-			email, loggedIn, err := prov.AuthStatus(acc.Home, acc.Native)
-			if err != nil {
-				check(false, "%s: CLI login status: %v", acc.ID, err)
+		// uses aiq's own grant, so the CLI's credential is read on its own.
+		if acc.Provider == "claude" && pool.HasCredential(acc) {
+			if err := a.pool.ProbeClaudeLogin(acc, now); err != nil {
+				check(false, "%s: CLI login: %v", acc.ID, err)
 			} else {
-				a.st.SetCLILogin(acc.ID, loggedIn, email, now)
 				u, _, _ := a.st.GetUsage(acc.ID)
-				if why := pool.CLILoginProblem(acc, u); why != "" {
+				switch why := pool.CLILoginProblem(acc, u); {
+				case why != "":
 					check(false, "%s: %s", acc.ID, why)
-				} else {
-					check(true, "%s: CLI logged in as %s", acc.ID, email)
+				case u.CLIIdentity == "":
+					check(true, "%s: CLI logged in (not yet verified as whom: its access token has expired; the next session refreshes it)", acc.ID)
+				default:
+					check(true, "%s: CLI logged in as %s", acc.ID, u.CLIIdentity)
 				}
 			}
 		}

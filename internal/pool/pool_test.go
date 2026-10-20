@@ -1,9 +1,10 @@
 package pool
 
 import (
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -112,23 +113,31 @@ func TestCandidatesExcludeClaudeCLILoginProblems(t *testing.T) {
 }
 
 func TestProbeClaudeLoginRecordsAndLogsOnce(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("the keychain answers first on macOS")
+	}
 	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	acc := state.Account{ID: "claude/fourth", Provider: "claude", Name: "fourth", Enabled: true, Home: t.TempDir(), Identity: "c4@example.com", Priority: 100}
+	home := t.TempDir()
+	acc := state.Account{ID: "claude/fourth", Provider: "claude", Name: "fourth", Enabled: true, Home: home, Identity: "c4@example.com", Priority: 100}
 	if err := st.AddAccount(acc); err != nil {
 		t.Fatal(err)
 	}
-	// What `claude auth status` prints for a logged-out home, with exit 1.
-	reply := `{"loggedIn": false, "authMethod": "none"}`
-	p := &Pool{Cfg: config.Default(), St: st, Command: func(provider string, args, env []string) *exec.Cmd {
-		return exec.Command("sh", "-c", "printf '%s' \"$0\"; exit 1", reply)
-	}}
+	write := func(s string) {
+		if err := os.WriteFile(filepath.Join(home, ".credentials.json"), []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := &Pool{Cfg: config.Default(), St: st}
 	now := time.Now()
-	p.probeClaudeLogin(acc, now)
-	p.probeClaudeLogin(acc, now)
+
+	// What the CLI leaves after a refused refresh.
+	write(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`)
+	p.ProbeClaudeLogin(acc, now)
+	p.ProbeClaudeLogin(acc, now)
 	u, _, _ := st.GetUsage(acc.ID)
 	if u.CLILogin != state.LoginOut || u.CLICheckedAt != now.Unix() {
 		t.Fatalf("logged-out probe recorded as %+v", u)
@@ -144,9 +153,14 @@ func TestProbeClaudeLoginRecordsAndLogsOnce(t *testing.T) {
 		t.Fatalf("want one login event for a problem seen twice, got %d: %+v", logged, events)
 	}
 
-	reply = `{"loggedIn": true, "email": "c4@example.com"}`
-	p.probeClaudeLogin(acc, now)
-	if u, _, _ := st.GetUsage(acc.ID); u.CLILogin != state.LoginIn || CLILoginProblem(acc, u) != "" {
-		t.Fatalf("a fresh login did not clear the problem: %+v", u)
+	// Logged in again, with an access token too old to read the email with:
+	// the last verified email stays.
+	st.SetCLILogin(acc.ID, true, "c4@example.com", now)
+	write(fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt","expiresAt":%d}}`, now.Add(-time.Hour).UnixMilli()))
+	if err := p.ProbeClaudeLogin(acc, now); err != nil {
+		t.Fatal(err)
+	}
+	if u, _, _ := st.GetUsage(acc.ID); u.CLILogin != state.LoginIn || u.CLIIdentity != "c4@example.com" || CLILoginProblem(acc, u) != "" {
+		t.Fatalf("lapsed but valid login recorded as %+v", u)
 	}
 }
