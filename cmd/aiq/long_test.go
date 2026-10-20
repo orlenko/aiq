@@ -257,6 +257,72 @@ esac
 	if err := a.longAutoResume([]string{"--account", "claude/gone"}); err == nil || !strings.Contains(err.Error(), "claude accounts: pinned") {
 		t.Errorf("--account claude/gone: err = %v", err)
 	}
+
+	// long resume reopens the session as it ran: no forced bypass or tier.
+	for _, tt := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"bare", []string{"--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy,copilot",
+			"--resume-session", "s1", "--"}},
+		{"tier and account", []string{"--account", "pinned", "--model-tier", "2", "--bare", "s1"}, []string{"run", "claude", "--long", "--fallback", "claude,claude,codex,agy,copilot",
+			"--account", "pinned", "--model-tier", "2", "--resume-session", "s1", "--"}},
+	} {
+		t.Run("long resume "+tt.name, func(t *testing.T) {
+			if err := a.longResume(tt.args, false); err != nil {
+				t.Fatal(err)
+			}
+			if _, got := captured(); got != tmux.Quote(append([]string{self}, tt.want...)) {
+				t.Fatalf("got %s\nwant %s", got, tmux.Quote(append([]string{self}, tt.want...)))
+			}
+		})
+	}
+
+	// run auto resume is long auto resume in this terminal: the same pick,
+	// bypass and tier, handed to aiq run as an interactive resume.
+	for _, tt := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"bare", []string{"--bare", "s1"}, []string{"--mode", "interactive", "--model-tier", "1", "--", "--dangerously-skip-permissions", "--resume", "s1"}},
+		{"launcher", []string{"--launcher", "box", "--effort", "2", "s1"}, []string{"--mode", "interactive", "--launcher", "box", "--effort", "2", "--model-tier", "1", "--", "--resume", "s1"}},
+		{"account", []string{"--account=claude/pinned", "--bare", "s1", "--", "--add-dir", "/x"}, []string{"--mode", "interactive", "--account", "pinned", "--model-tier", "1",
+			"--", "--dangerously-skip-permissions", "--add-dir", "/x", "--resume", "s1"}},
+	} {
+		t.Run("run auto resume "+tt.name, func(t *testing.T) {
+			provider, got, err := a.runAutoResumeArgs(tt.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if provider != "claude" || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("aiq run %s %q, want claude %q", provider, got, tt.want)
+			}
+			f := parseRunFlags(got)
+			if f.flagsErr != nil || f.mode != state.ModeInteractive || f.modelTier == nil || *f.modelTier != 1 {
+				t.Fatalf("run flags: %+v", f)
+			}
+		})
+	}
+	for _, bad := range [][]string{{"--print", "s1"}, {"--model-tier", "9", "s1"}, {"nope"}, {"--account", "codex/other", "s1"}} {
+		if _, _, err := a.runAutoResumeArgs(bad); err == nil {
+			t.Errorf("run auto resume accepted %q", bad)
+		}
+	}
+	// Bypass would skip routing and --account, so auto resume refuses it.
+	t.Setenv("AIQ_BYPASS", "1")
+	longResume := func(args []string) error { return a.longResume(args, false) }
+	for _, run := range []func([]string) error{a.runAutoResume, a.longAutoResume, longResume} {
+		if err := run([]string{"s1"}); err == nil || !strings.Contains(err.Error(), "AIQ_BYPASS") {
+			t.Errorf("auto resume under AIQ_BYPASS: err = %v", err)
+		}
+	}
+	t.Setenv("AIQ_BYPASS", "")
+	// aiq run auto resume reaches the picker rather than auto's own flags.
+	if err := cmdRun("auto", []string{"resume", "--print"}); err == nil || !strings.Contains(err.Error(), "--print lists without resuming") {
+		t.Errorf("run auto resume --print: err = %v", err)
+	}
 }
 
 func TestPlaceLongSession(t *testing.T) {

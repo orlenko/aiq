@@ -57,6 +57,10 @@ Launch (what the PATH shims call):
     auto always enables YOLO: --dangerously-skip-permissions (Claude, agy) / Codex --yolo.
     exit 75: no eligible account (pool dry, at cap, wait expired); 78: nothing to route to;
     any other code is the child's own
+  aiq run auto resume [--account <name>] [--model-tier N] [--effort N] [--all]
+                      [--launcher <name> | --bare] [<id>]
+    long auto resume, in this terminal: browse this directory's sessions; r resumes
+    the pick on a routed account of its provider, with YOLO and tier 1 by default
   aiq claude [args...]            same as: aiq run claude -- args
   aiq codex  [args...]
   aiq agy    [args...]
@@ -101,6 +105,8 @@ Long-running sessions (supervised, moved between accounts before they run dry):
                                     browse this directory's sessions; r resumes the
                                     pick as a long session (tier defaults to 1);
                                     --account starts it on that account
+  aiq long resume [same flags]      the same, as the session ran (the long
+                                    twin of aiq resume): no forced YOLO or tier
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
 Sessions in this directory (Claude, Codex and Antigravity transcripts):

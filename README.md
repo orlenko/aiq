@@ -143,6 +143,8 @@ aiq long auto [--model-tier 0] [--providers claude,codex]
                                     start on whichever pool auto picks, or attach
 aiq long auto resume [--account <name>] [<id>]
                                     pick a session here and resume it as a long one
+aiq long resume [--account <name>] [<id>]
+                                    the same, as it ran: no forced bypass or tier
 aiq long list                       leases, pane, drain state, idle/busy
 aiq long drain .                    move this workspace's session now
 aiq long attach                     re-attach
@@ -173,6 +175,19 @@ launcher resumes through it (`b` or `--bare` skips it), and then gets the
 bypass only if its earlier launch passed it. A session already running in
 `aiq long` is attached. The pane starts in the current directory, so the CLI
 finds the transcript.
+
+`aiq run auto resume` is the same command for this terminal: the same
+browser, flags and defaults (bypass on, tier 1, `--account` on the session's
+provider), but the session reopens here instead of in tmux. `aiq long resume`
+is the other way round, the long twin of `aiq resume`: the session reopens in
+tmux as it ran, with the bypass only if it had one and the CLI's own model
+unless `--model-tier` or `--effort` say otherwise. Each start has both forms:
+
+| | this terminal | tmux, supervised |
+| --- | --- | --- |
+| new, on any pool | `aiq run auto` | `aiq long auto` |
+| resume, as auto starts | `aiq run auto resume` | `aiq long auto resume` |
+| resume, as it ran | `aiq resume` | `aiq long resume` |
 
 Handoff notes live in `~/.local/share/aiq/handoff/`.
 
@@ -371,7 +386,7 @@ enables permission bypass**: `--dangerously-skip-permissions` for Claude or
 `--yolo` for Codex, including workers and cross-provider retries. An explicit
 `--yolo` is still accepted but is redundant. Native provider options require
 `aiq run claude` or `aiq run codex`; `auto` does not translate arbitrary flags,
-resume sessions (use `aiq resume`, or `aiq long auto resume`), named launchers,
+resume sessions (use `aiq run auto resume`, `aiq resume`, or `aiq long auto resume`), named launchers,
 or forced accounts. `--wait` and `--mode` remain available, with worker mode
 requiring `-p`. For a supervised session that moves between accounts, use
 `aiq long auto` (see Long-running sessions).

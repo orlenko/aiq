@@ -23,13 +23,14 @@ import (
 // aiq long <provider> [--account <name>] [--model-tier N] [--effort N] [--] [args...] starts or attaches.
 // aiq long auto [--model-tier N] [--effort N]   the same across every pool
 // aiq long auto resume [--account <name>] [<id>]  resume a session here, long
+// aiq long resume [--account <name>] [<id>]       the same, as the session ran
 // aiq long list                   long sessions and their drain state
 // aiq long drain <lease-id|.>     ask a session to wrap up and move now
 // aiq long attach [.]             attach to this workspace's session
 // aiq long stop <lease-id|.>      end the session and its tmux session
 func cmdLong(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq long %s|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | auto resume [--account <name>] [<id>] | list | drain <id|.> | attach [.] | stop <id|.>", config.ProviderList("|"))
+		return fmt.Errorf("usage: aiq long %s|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | [auto] resume [--account <name>] [<id>] | list | drain <id|.> | attach [.] | stop <id|.>", config.ProviderList("|"))
 	}
 	a, err := openApp()
 	if err != nil {
@@ -44,6 +45,8 @@ func cmdLong(args []string) error {
 			return a.longAutoResume(args[2:])
 		}
 		return a.longStart("auto", "", args[1:])
+	case "resume":
+		return a.longResume(args[1:], false)
 	case "list":
 		return a.longList()
 	case "drain":
@@ -410,17 +413,31 @@ func (a *app) longLaunchInPlace(t longTarget, ws, dir, what, launcher string, cm
 	return nil
 }
 
-const longAutoResumeUsage = `usage: aiq long auto resume [--account <name>] [--model-tier 0..3] [--effort 1..6] [--all] [--launcher <name> | --bare] [<session-id>] [-- extra CLI args]
+// resumeUsageFor is the usage of a resume under run or long. Auto resumes
+// with the permission bypass and tier 1, as auto starts; a plain long
+// resume reopens the session as it ran, as aiq resume does.
+func resumeUsageFor(verb string, auto bool) string {
+	cmd, how := "aiq "+verb+" resume", "with the permission bypass only if it ran with one"
+	if auto {
+		cmd = "aiq " + verb + " auto resume"
+		how = "with the permission bypass and the model tier (default 1) auto uses"
+	}
+	where, moves := "in this terminal", ""
+	if verb == "long" {
+		where, moves = "as a long session", "; the supervisor still moves the session on before it runs dry"
+	}
+	return "usage: " + cmd + ` [--account <name>] [--model-tier 0..3] [--effort 1..6] [--all] [--launcher <name> | --bare] [<session-id>] [-- extra CLI args]
   no id: browse this directory's sessions and pick one with r
-  resumes the pick as a long session on a routed account of its provider,
-  with the permission bypass and the model tier (default 1) auto uses
+  resumes the pick ` + where + ` on a routed account of its provider,
+  ` + how + `
   --account starts on that account of the session's provider instead of the
-  routed pick; the supervisor still moves the session on before it runs dry`
+  routed pick` + moves
+}
 
-// parseLongAutoResumeArgs splits a long auto resume command line: aiq's own
+// splitResumeArgs splits a run or long resume command line: aiq's own
 // --account, the model flags `aiq run` translates, and the rest, which is
 // the session selection `aiq resume` parses.
-func parseLongAutoResumeArgs(args []string) (account string, tierArgs, rest []string, err error) {
+func splitResumeArgs(args []string) (account string, tierArgs, rest []string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; {
 		case arg == "--":
@@ -451,109 +468,202 @@ func parseLongAutoResumeArgs(args []string) (account string, tierArgs, rest []st
 	return account, tierArgs, rest, nil
 }
 
-// longAutoResume picks a session in this directory and reopens it as a
-// supervised long session. The transcript fixes the provider; the tier and
-// bypass follow auto, and so does the account unless --account names one.
-func (a *app) longAutoResume(args []string) error {
-	account, tierArgs, rest, err := parseLongAutoResumeArgs(args)
-	if err != nil {
-		return configErr("bad-flags", "%v\n%s", err, longAutoResumeUsage)
+// resumeRequest is a parsed run or long resume command line.
+type resumeRequest struct {
+	auto     bool // auto's bypass and default tier
+	account  string
+	tierArgs []string
+	f        runFlags
+	o        resumeOpts
+}
+
+// parseResume checks a resume command line before anything starts, so a
+// bad flag fails here and not in a tmux pane that closes before it can be
+// read.
+func (a *app) parseResume(verb string, auto bool, args []string) (resumeRequest, error) {
+	r := resumeRequest{auto: auto}
+	usage := resumeUsageFor(verb, auto)
+	// Bypass runs on the real home and ignores routing and --account, and a
+	// long session never gets its lease, so an auto or long resume refuses
+	// it; plain aiq resume is the one that honours it.
+	if (auto || verb == "long") && os.Getenv("AIQ_BYPASS") == "1" {
+		return r, configErr("bad-flags", "aiq %s requires routing; unset AIQ_BYPASS or resume with: aiq resume", verb)
+	}
+	var rest []string
+	var err error
+	if r.account, r.tierArgs, rest, err = splitResumeArgs(args); err != nil {
+		return r, configErr("bad-flags", "%v\n%s", err, usage)
 	}
 	// An id names its provider, so a typo fails before the browser opens.
-	if p, _, ok := strings.Cut(account, "/"); ok {
-		if _, err := a.longAccountName(p, account); err != nil {
-			return err
+	if p, _, ok := strings.Cut(r.account, "/"); ok {
+		if _, err := a.longAccountName(p, r.account); err != nil {
+			return r, err
 		}
 	}
-	o, err := parseResumeArgs(rest)
-	if err != nil {
-		return configErr("bad-flags", "%v", strings.Replace(err.Error(), resumeUsage, longAutoResumeUsage, 1))
+	if r.o, err = parseResumeArgs(rest); err != nil {
+		return r, configErr("bad-flags", "%v", strings.Replace(err.Error(), resumeUsage, usage, 1))
 	}
-	if o.print {
-		return configErr("bad-flags", "--print lists without resuming; use: aiq resume --print")
+	if r.o.print {
+		return r, configErr("bad-flags", "--print lists without resuming; use: aiq resume --print")
 	}
-	f := parseRunFlags(tierArgs)
-	if f.flagsErr != nil {
-		return configErr("bad-flags", "%v", f.flagsErr)
+	if r.f = parseRunFlags(r.tierArgs); r.f.flagsErr != nil {
+		return r, configErr("bad-flags", "%v", r.f.flagsErr)
 	}
-	if f.modelTier == nil {
+	if auto && r.f.modelTier == nil {
 		tier := 1
-		f.modelTier = &tier
-		tierArgs = append(tierArgs, "--model-tier", "1")
+		r.f.modelTier = &tier
+		r.tierArgs = append(r.tierArgs, "--model-tier", "1")
 	}
-	if o.launcher != "" {
-		if _, ok := a.cfg.Launcher(o.launcher); !ok {
-			return configErr("no-launcher", "no launcher %q; see: aiq launcher list", o.launcher)
+	if r.o.launcher != "" {
+		if _, ok := a.cfg.Launcher(r.o.launcher); !ok {
+			return r, configErr("no-launcher", "no launcher %q; see: aiq launcher list", r.o.launcher)
 		}
 	}
+	return r, nil
+}
 
-	ws := workspaceID()
-	target, attached, err := a.longExisting(ws)
-	if attached || err != nil {
-		return err
+// resumePick is the session a resume reopens, and how.
+type resumePick struct {
+	s        transcript.Session
+	dir      string
+	launcher string
+	why      string
+	forced   string   // account name; "" routes
+	cliArgs  []string // the bypass and the extra CLI args, without the resume verb
+}
+
+// pickResume finds the session to resume in this directory, by id or in
+// the browser. done reports that nothing is left to start: the browser was
+// closed, or the session already runs in aiq long and was attached to.
+func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
+	if p.dir, err = os.Getwd(); err != nil {
+		return p, false, err
 	}
-	dir, err := os.Getwd()
+	sessions, err := transcript.List(defaultRoots(), p.dir)
 	if err != nil {
-		return err
-	}
-	sessions, err := transcript.List(defaultRoots(), dir)
-	if err != nil {
-		return err
+		return p, false, err
 	}
 	live := a.liveSessions()
-	origins := a.loadOrigins(dir, sessions)
-	var s transcript.Session
+	origins := a.loadOrigins(p.dir, sessions)
+	o := r.o
 	switch {
 	case o.id != "":
-		if s, err = findSession(sessions, o.id); err != nil {
-			return err
+		if p.s, err = findSession(sessions, o.id); err != nil {
+			return p, false, err
 		}
 	case !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())):
-		return configErr("bad-flags", "no terminal to browse sessions on; give a session id (aiq resume --print lists them)")
+		return p, false, configErr("bad-flags", "no terminal to browse sessions on; give a session id (aiq resume --print lists them)")
 	default:
-		b := newBrowser(dir, sessions, live, o.all)
+		b := newBrowser(p.dir, sessions, live, o.all)
 		b.origins = origins
 		pick, err := b.run()
 		if err != nil || pick == nil {
-			return err
+			return p, true, err
 		}
 		if b.bare {
 			o.bare, o.launcher = true, ""
 		}
-		s = *pick
+		p.s = *pick
 	}
+	s := p.s
 
 	note := live[s.ID]
 	if note.tmux != "" && tmux.HasSession(note.tmux) {
 		fmt.Fprintf(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, note.note)
-		return tmux.Attach(note.tmux)
+		return p, true, tmux.Attach(note.tmux)
 	}
 	if note.pid > 0 {
 		fmt.Fprintf(os.Stderr, "aiq: note: session %s is also %s\n", s.ID, note.note)
 	}
 	org := originOf(origins, s)
-	launcher, why, err := resumeLauncher(a.cfg, s, org, o)
+	if p.launcher, p.why, err = resumeLauncher(a.cfg, s, org, o); err != nil {
+		return p, false, err
+	}
+	// The pick fixes the provider, so a forced account can be checked now.
+	if r.account != "" {
+		if p.forced, err = a.longAccountName(s.Provider, r.account); err != nil {
+			return p, false, err
+		}
+	}
+	switch {
+	// Auto always bypasses permissions. Through a launcher, which may add
+	// the flag itself, the bypass is added only if it was passed before.
+	case r.auto && (p.launcher == "" || resumeBypass(s, org, p.launcher)):
+		p.cliArgs = append(p.cliArgs, autoRequest{}.args(s.Provider)...)
+	case !r.auto && resumeBypass(s, org, p.launcher):
+		p.cliArgs = append(p.cliArgs, longrun.BypassFlag[s.Provider])
+	}
+	p.cliArgs = append(p.cliArgs, o.extra...)
+	f := r.f
+	f.rest = p.cliArgs
+	if _, err := modelFlags(s.Provider, f); err != nil {
+		return p, false, configErr("bad-flags", "%v", err)
+	}
+	return p, false, nil
+}
+
+// runAutoResume picks a session in this directory and reopens it in this
+// terminal, as longAutoResume reopens it in tmux.
+func (a *app) runAutoResume(args []string) error {
+	provider, run, err := a.runAutoResumeArgs(args)
+	if err != nil || provider == "" {
+		return err
+	}
+	a.close()
+	return cmdRun(provider, run)
+}
+
+// runAutoResumeArgs is the `aiq run` command line runAutoResume hands on,
+// with no provider when nothing is left to start.
+func (a *app) runAutoResumeArgs(args []string) (string, []string, error) {
+	r, err := a.parseResume("run", true, args)
+	if err != nil {
+		return "", nil, err
+	}
+	p, done, err := a.pickResume(r)
+	if done || err != nil {
+		return "", nil, err
+	}
+	run := []string{"--mode", state.ModeInteractive}
+	if p.launcher != "" {
+		run = append(run, "--launcher", p.launcher)
+	}
+	if p.forced != "" {
+		run = append(run, "--account", p.forced)
+	}
+	run = append(run, r.tierArgs...)
+	run = append(append(run, "--"), p.cliArgs...)
+	run = append(run, resumeVerb(p.s.Provider, p.s.ID)...)
+	fmt.Fprintf(os.Stderr, "aiq: resuming %s session %s\n", p.s.Provider, p.s.ID)
+	if p.why != "" {
+		fmt.Fprintf(os.Stderr, "aiq: %s\n", p.why)
+	}
+	return p.s.Provider, run, nil
+}
+
+// longAutoResume picks a session in this directory and reopens it as a
+// supervised long session. The transcript fixes the provider; the tier and
+// bypass follow auto, and so does the account unless --account names one.
+func (a *app) longAutoResume(args []string) error { return a.longResume(args, true) }
+
+// longResume reopens a session as a supervised long session: with auto's
+// tier and bypass when auto is set, otherwise as it ran, as aiq resume
+// reopens it in this terminal.
+func (a *app) longResume(args []string, auto bool) error {
+	r, err := a.parseResume("long", auto, args)
 	if err != nil {
 		return err
 	}
-	// The pick fixes the provider, so a forced account can be checked now.
-	forced := ""
-	if account != "" {
-		if forced, err = a.longAccountName(s.Provider, account); err != nil {
-			return err
-		}
+	ws := workspaceID()
+	target, attached, err := a.longExisting(ws)
+	if attached || err != nil {
+		return err
 	}
-	// Auto always bypasses permissions. Through a launcher, which may add
-	// the flag itself, the bypass is added only if it was passed before.
-	var cliArgs []string
-	if launcher == "" || resumeBypass(s, org, launcher) {
-		cliArgs = append(cliArgs, autoRequest{}.args(s.Provider)...)
+	p, done, err := a.pickResume(r)
+	if done || err != nil {
+		return err
 	}
-	cliArgs = append(cliArgs, o.extra...)
-	f.rest = cliArgs
-	if _, err := modelFlags(s.Provider, f); err != nil {
-		return configErr("bad-flags", "%v", err)
-	}
+	s, launcher := p.s, p.launcher
 
 	self, err := os.Executable()
 	if err != nil {
@@ -567,16 +677,16 @@ func (a *app) longAutoResume(args []string) error {
 	if launcher != "" {
 		cmdArgs = append(cmdArgs, "--launcher", launcher)
 	}
-	if forced != "" {
-		cmdArgs = append(cmdArgs, "--account", forced)
+	if p.forced != "" {
+		cmdArgs = append(cmdArgs, "--account", p.forced)
 	}
-	cmdArgs = append(cmdArgs, tierArgs...)
+	cmdArgs = append(cmdArgs, r.tierArgs...)
 	cmdArgs = append(cmdArgs, "--resume-session", s.ID, "--")
-	cmdArgs = append(cmdArgs, cliArgs...)
+	cmdArgs = append(cmdArgs, p.cliArgs...)
 
 	fmt.Fprintf(os.Stderr, "aiq: resuming %s session %s as a long session\n", s.Provider, s.ID)
-	if why != "" {
-		fmt.Fprintf(os.Stderr, "aiq: %s\n", why)
+	if p.why != "" {
+		fmt.Fprintf(os.Stderr, "aiq: %s\n", p.why)
 	}
 	what := s.Provider
 	if launcher != "" {
@@ -584,7 +694,7 @@ func (a *app) longAutoResume(args []string) error {
 	}
 	// The CLI finds a transcript by the directory it ran in, which may be
 	// below the workspace root.
-	return a.longLaunch(target, ws, dir, what, launcher, cmdArgs)
+	return a.longLaunch(target, ws, p.dir, what, launcher, cmdArgs)
 }
 
 // Like run, long consumes its own leading options and stops at -- or the

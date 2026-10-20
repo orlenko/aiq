@@ -191,6 +191,15 @@ func envInt(name string) int {
 }
 
 func cmdRun(provider string, args []string) error {
+	// aiq run auto resume is aiq long auto resume, in this terminal.
+	if provider == "auto" && len(args) > 0 && args[0] == "resume" {
+		a, err := openApp()
+		if err != nil {
+			return err
+		}
+		defer a.close()
+		return a.runAutoResume(args[1:])
+	}
 	f := parseRunFlags(args)
 	auto := provider == "auto"
 	var request autoRequest
