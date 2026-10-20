@@ -233,7 +233,13 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time) {
 	// uses aiq's own grant, so the CLI's credential is read on its own.
 	if acc.Provider == "claude" && hasCred {
 		if err := a.pool.ProbeClaudeLogin(acc, now); err != nil {
-			check(false, &need.login, "%s: CLI login: %v", acc.ID, err)
+			// No answer is not a logout: a locked keychain hides a good
+			// login, and a fresh OAuth login would not unlock it.
+			r.check(false, &doctorFix{
+				key:   "credential-store",
+				title: "Let aiq read the Claude logins",
+				steps: []string{"aiq could not read a stored Claude login (see the FAIL lines above). On macOS, unlock the login keychain (security unlock-keychain) and allow access if it asks."},
+			}, "%s: CLI login: %v", acc.ID, err)
 		} else {
 			u, _, _ := a.st.GetUsage(acc.ID)
 			switch why := pool.CLILoginProblem(acc, u); {
@@ -253,6 +259,8 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time) {
 	u, ok, _ := a.st.GetUsage(acc.ID)
 	ws, _ := a.st.ListWindows(acc.ID)
 	switch {
+	case !acc.Enabled:
+		check(true, nil, "%s: disabled, so not polled (aiq account enable %s)", acc.ID, acc.ID)
 	case ok && u.PollError != "":
 		msg := strings.ToLower(u.PollError)
 		flag := &need.poll
@@ -305,7 +313,9 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 		}
 		f.browser = true
 	case need.sync:
+		// Only a login or a launch syncs an overlay from the command line.
 		what = append(what, "re-sync the overlay home")
+		cmds = append(cmds, fmt.Sprintf("aiq run %s --account %s (any launch re-syncs it)", acc.Provider, acc.Name))
 		f.steps = append(f.steps, "aiq re-links the shared settings into "+shortHome(acc.Home)+".")
 	}
 	if need.grant {
@@ -321,25 +331,38 @@ func (a *app) planAccountFix(f *doctorFix, acc state.Account, need accountNeeds)
 	if len(what) == 0 {
 		what = append(what, "poll quota again")
 	}
-	cmds = append(cmds, "aiq account poll "+acc.ID)
-	f.steps = append(f.steps, "aiq polls the account to confirm it works.")
+	// The pool never polls a disabled account, so there is nothing to
+	// confirm with.
+	if acc.Enabled {
+		cmds = append(cmds, "aiq account poll "+acc.ID)
+		f.steps = append(f.steps, "aiq polls the account to confirm it works.")
+	}
 	f.title = acc.ID + ": " + strings.Join(what, ", then ")
 	f.command = strings.Join(cmds, " && ")
+	// A retry picks up at the action that failed: redoing a sign-in that
+	// worked is one more chance to sign in as the wrong account.
+	var synced, loggedIn, granted bool
 	f.run = func() error {
-		if need.sync && !need.login {
+		if need.sync && !need.login && !synced {
 			if err := a.prepareHome(acc); err != nil {
 				return err
 			}
+			synced = true
 		}
-		if need.login {
+		if need.login && !loggedIn {
 			if err := a.accountLogin(acc.ID); err != nil {
 				return err
 			}
+			loggedIn = true
 		}
-		if need.grant {
+		if need.grant && !granted {
 			if err := a.accountAuthorize(acc.ID); err != nil {
 				return err
 			}
+			granted = true
+		}
+		if !acc.Enabled {
+			return nil
 		}
 		return a.pollAndReport(acc.ID)
 	}
@@ -425,6 +448,7 @@ func (a *app) doctorWizard(fixes []*doctorFix) {
 			if doctorAsk("   Press Enter when done, s to skip, q to stop: ") == "q" {
 				return
 			}
+			a.reloadConfig()
 			continue
 		}
 		prompt := "   Press Enter to start, s to skip, q to stop: "
