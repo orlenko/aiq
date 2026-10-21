@@ -337,8 +337,11 @@ A pane is matched through the agent's own records: Claude Code's
 while its process is alive and runs in that pane, since tmux reuses pane ids
 after a restart. A `claude -p` worker the agent starts is never taken for the
 agent. Outside the agent's pane, `aiq convo` looks for the session running in
-this directory or one holding it: an open Claude session or an `aiq long`
-session. A Codex session started without `aiq long` is found by id only.
+this directory or one holding it: an open Claude session or a session aiq
+launched. A short Codex or Antigravity session reports no transcript, so its
+lease takes the newest interactive session of that CLI in its directory
+written since it started. A Codex session started without aiq is found by id
+only.
 `--follow` does not support Antigravity sessions yet.
 
 Two tmux bindings make it a keystroke from any agent pane. aiq never installs

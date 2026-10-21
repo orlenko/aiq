@@ -232,7 +232,7 @@ func List(r Roots, dir string) ([]Session, error) {
 	dir = canonical(dir)
 	var paths []found
 	paths = append(paths, claudeFiles(r.ClaudeProjects, dir)...)
-	paths = append(paths, codexFiles(r.CodexSessions, dir)...)
+	paths = append(paths, codexFiles(r.CodexSessions, dir, time.Time{})...)
 	paths = append(paths, agyFiles(r.AgyAppData, dir)...)
 
 	out := make([]*Session, len(paths))

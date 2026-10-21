@@ -12,9 +12,10 @@ import (
 	"time"
 )
 
-// codexFiles lists the rollouts whose session_meta names dir. Only the
-// first line of each file is read here.
-func codexFiles(roots []string, dir string) []found {
+// codexFiles lists the rollouts whose session_meta names dir and that were
+// written at or after since (any time when since is zero). Only the first
+// line of each file is read here.
+func codexFiles(roots []string, dir string, since time.Time) []found {
 	var all []string
 	for _, root := range roots {
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -22,6 +23,11 @@ func codexFiles(roots []string, dir string) []found {
 				return nil
 			}
 			if !d.IsDir() && strings.HasPrefix(d.Name(), "rollout-") && strings.HasSuffix(d.Name(), ".jsonl") {
+				if !since.IsZero() {
+					if info, err := d.Info(); err != nil || info.ModTime().Before(since) {
+						return nil
+					}
+				}
 				all = append(all, p)
 			}
 			return nil

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,9 +29,9 @@ import (
 const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--theme auto|light|dark] [<session-id>]
   what was typed into an agent session and what the agent answered, without the tool calls
   no id, in tmux    the agent in this pane, else the one live session here
-  no id, elsewhere  the one live session here: a Claude session or an aiq long
-                    session whose directory is this one or holds it (a plain
-                    Codex session is found by id only)
+  no id, elsewhere  the one live session here: a Claude session or a session
+                    aiq launched, whose directory is this one or holds it (a
+                    Codex session started without aiq is found by id only)
   <session-id>      that session of this directory (a unique prefix is enough)
   --pane <id>       the agent in tmux pane <id> (key bindings pass #{pane_id})
   --follow          keep printing as the conversation goes on (for a side split)
@@ -375,10 +376,14 @@ func (r *convoResolver) resolvePane(pane string) (convoTarget, error) {
 		return t, nil
 	}
 	if leased {
-		if lease.Transcript == "" {
+		path := lease.Transcript
+		if path == "" {
+			path = r.unreported([]state.Lease{lease})[lease.ID]
+		}
+		if path == "" {
 			return convoTarget{}, fmt.Errorf("pane %s runs %s, but no hook has reported its transcript yet", info.ID, lease.AccountID)
 		}
-		return convoTarget{provider: leaseProvider(lease), path: lease.Transcript, account: lease.AccountID, pane: info.ID}, nil
+		return convoTarget{provider: leaseProvider(lease), path: path, account: lease.AccountID, pane: info.ID}, nil
 	}
 	return convoTarget{}, fmt.Errorf("pane %s runs %s, not an agent session aiq can find; aiq convo <session-id> reads one by id", info.ID, info.StartCommand)
 }
@@ -433,9 +438,21 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 	}
 	if r.st != nil {
 		leases, _ := r.st.ListLeases()
+		var bare []state.Lease
 		for _, l := range leases {
-			if l.Transcript != "" && l.Hostname == hostname() && proc.Alive(l.PID) {
-				add(l.Cwd, convoTarget{provider: leaseProvider(l), path: l.Transcript, account: l.AccountID, pane: l.Pane})
+			if l.Hostname != hostname() || !proc.Alive(l.PID) {
+				continue
+			}
+			if l.Transcript == "" {
+				bare = append(bare, l)
+				continue
+			}
+			add(l.Cwd, convoTarget{provider: leaseProvider(l), path: l.Transcript, account: l.AccountID, pane: l.Pane})
+		}
+		guessed := r.unreported(bare)
+		for _, l := range bare {
+			if p := guessed[l.ID]; p != "" {
+				add(l.Cwd, convoTarget{provider: leaseProvider(l), path: p, account: l.AccountID, pane: l.Pane})
 			}
 		}
 	}
@@ -460,6 +477,42 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 		fmt.Fprintf(&b, "   %s", t.label())
 	}
 	return convoTarget{}, ambiguousErr(b.String())
+}
+
+// unreported finds the transcripts of live leases no hook reported one for,
+// keyed by lease id. aiq runs a short Codex or Antigravity session without
+// hooks, and a long one has none until its first hook fires. A lease takes
+// the newest interactive session in its directory written since it started
+// that no other live lease holds; the latest lease chooses first, so an
+// older one is not handed a session started after it.
+func (r *convoResolver) unreported(bare []state.Lease) map[int64]string {
+	out := map[int64]string{}
+	if len(bare) == 0 || r.st == nil {
+		return out
+	}
+	held := map[string]bool{}
+	if leases, err := r.st.ListLeases(); err == nil {
+		for _, l := range leases {
+			if l.Transcript != "" && l.Hostname == hostname() && proc.Alive(l.PID) {
+				held[canonicalPath(l.Transcript)] = true
+			}
+		}
+	}
+	bare = slices.Clone(bare)
+	sort.SliceStable(bare, func(i, j int) bool { return bare[i].StartedAt > bare[j].StartedAt })
+	for _, l := range bare {
+		if l.Mode == state.ModeWorker || l.Cwd == "" {
+			continue
+		}
+		for _, p := range transcript.Written(r.roots, leaseProvider(l), l.Cwd, time.Unix(l.StartedAt, 0)) {
+			if !held[canonicalPath(p)] {
+				held[canonicalPath(p)] = true
+				out[l.ID] = p
+				break
+			}
+		}
+	}
+	return out
 }
 
 // ambiguousErr is resolveDir finding more than one live session.

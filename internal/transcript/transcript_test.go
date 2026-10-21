@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeLines(t *testing.T, path string, lines ...string) {
@@ -252,5 +253,38 @@ func TestClaudeUnfinished(t *testing.T) {
 		if err != nil || s.Unfinished != c.want {
 			t.Errorf("%s: Unfinished = %v, %v; want %v", c.name, s.Unfinished, err, c.want)
 		}
+	}
+}
+
+func TestWritten(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	os.MkdirAll(work, 0o700)
+	work = canonical(work)
+	codexHome := filepath.Join(root, "codex")
+	day := filepath.Join(codexHome, "sessions", "2026", "10", "21")
+	since := time.Now().Add(-time.Hour)
+	write := func(name string, mod time.Time, lines ...string) string {
+		p := filepath.Join(day, name)
+		writeLines(t, p, lines...)
+		os.Chtimes(p, mod, mod)
+		return p
+	}
+	meta := func(id, extra string) string {
+		return `{"timestamp":"2026-10-21T22:10:22Z","type":"session_meta","payload":{"id":"` + id + `","cwd":"` + work + `"` + extra + `}}`
+	}
+	older := write("rollout-a.jsonl", since.Add(10*time.Minute), meta("a", `,"originator":"codex-tui","source":"cli"`))
+	newer := write("rollout-b.jsonl", since.Add(20*time.Minute), meta("b", `,"originator":"codex-tui","source":"vscode"`))
+	write("rollout-before.jsonl", since.Add(-time.Minute), meta("before", `,"source":"cli"`))
+	write("rollout-exec.jsonl", since.Add(30*time.Minute), meta("exec", `,"originator":"codex_exec","source":"exec"`))
+	write("rollout-sub.jsonl", since.Add(30*time.Minute), meta("sub", `,"source":{"subagent":{"thread_spawn":{"parent_thread_id":"b"}}}`))
+	write("rollout-elsewhere.jsonl", since.Add(30*time.Minute), strings.ReplaceAll(meta("x", `,"source":"cli"`), work, "/elsewhere"))
+
+	got := Written(DefaultRoots(filepath.Join(root, "claude"), codexHome, "", ""), "codex", work, since)
+	if len(got) != 2 || got[0] != newer || got[1] != older {
+		t.Fatalf("got %v, want [%s %s]", got, newer, older)
+	}
+	if got := Written(DefaultRoots(filepath.Join(root, "claude"), codexHome, "", ""), "claude", work, since); len(got) != 0 {
+		t.Fatalf("claude: got %v", got)
 	}
 }
