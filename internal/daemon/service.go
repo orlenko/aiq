@@ -211,8 +211,13 @@ WantedBy=default.target
 	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 		return unit, fmt.Errorf("systemctl daemon-reload: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := exec.Command("systemctl", "--user", "enable", "--now", "aiq.service").CombinedOutput(); err != nil {
+	if out, err := exec.Command("systemctl", "--user", "enable", "aiq.service").CombinedOutput(); err != nil {
 		return unit, fmt.Errorf("systemctl enable: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	// restart, not enable --now: a reinstall has to replace a running
+	// daemon, as launchctl unload/load does on macOS.
+	if out, err := exec.Command("systemctl", "--user", "restart", "aiq.service").CombinedOutput(); err != nil {
+		return unit, fmt.Errorf("systemctl restart: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return unit, nil
 }

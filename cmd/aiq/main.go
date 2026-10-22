@@ -125,7 +125,7 @@ Machine:
   aiq statusline install|uninstall|status [claude|agy]
                                    status-line multiplexer (live quota feed; how agy is polled)
   aiq daemon run|install|uninstall|status
-  aiq doctor
+  aiq doctor [-v]                  failed checks, then a step-by-step fix on a terminal
 `
 
 // Exit codes for aiq-level outcomes, so a launcher can tell a pool refusal
