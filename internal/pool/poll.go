@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -74,6 +75,11 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		}
 		prov := &agy.Provider{Command: cmd}
 		u, err := prov.Poll(a.Home, a.Native, agy.ProbeDir(paths.DataDir()), now, timeout-time.Second)
+		var quota *agy.QuotaError
+		if errors.As(err, &quota) {
+			p.benchRefused(a, quota, now)
+			return nil
+		}
 		if err != nil {
 			return p.recordError(a, err.Error())
 		}
@@ -180,6 +186,32 @@ func CLILoginProblem(a state.Account, u state.Usage) string {
 // identity.
 func CLIMismatch(identity string, u state.Usage) bool {
 	return u.CLILogin == state.LoginIn && u.CLIIdentity != "" && identity != "" && !strings.EqualFold(u.CLIIdentity, identity)
+}
+
+// benchRefused records a poll the CLI refused for lack of quota: the account
+// is exhausted until the reset the refusal names, or for an hour when it
+// names none. The last windows stay, and the poll is not an error.
+func (p *Pool) benchRefused(a state.Account, q *agy.QuotaError, now time.Time) {
+	prev, _, _ := p.St.GetUsage(a.ID)
+	p.St.SetUsageMeta(a.ID, prev.Plan, prev.ResetCredits, "", now)
+	until := q.ResetsAt
+	if until.IsZero() {
+		until = now.Add(time.Hour)
+	}
+	reason := "poll refused: " + q.Message
+	// Every poll while blocked repeats the refusal; log only the change.
+	if prev.Exhausted && prev.ExhaustedReason == reason && abs(prev.CooldownUntil-until.Unix()) < 600 {
+		return
+	}
+	p.St.MarkExhausted(a.ID, reason, until, now)
+	p.St.LogEvent(a.Provider, a.ID, "exhausted", fmt.Sprintf("%s (until %s)", reason, until.Local().Format("Mon 15:04")), now)
+}
+
+func abs(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // recordError keeps the last good windows and stores the failure reason.

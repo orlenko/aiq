@@ -301,3 +301,32 @@ func TestInstallStatusline(t *testing.T) {
 		t.Fatal("missing settings must read as not installed")
 	}
 }
+
+func TestSuffixedBucketsAreWindows(t *testing.T) {
+	st := Status{Quota: map[string]Bucket{"gemini-argon-wtu-weekly": {RemainingFraction: 0, ResetInSeconds: 600}}}
+	ws := st.Windows(time.Unix(1_000_000, 0))
+	if len(ws) != 1 || ws[0].Kind != state.KindWeekly || ws[0].Scope != "" || ws[0].Severity != "critical" {
+		t.Fatalf("%+v", ws)
+	}
+	if line := DefaultStatusLine("main", st, true); !strings.Contains(line, ws[0].Label+" 100%") {
+		t.Errorf("status line: %q", line)
+	}
+}
+
+func TestParseQuotaRefusal(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	out := `…-7fb8ac1c2e9a","status":"ERROR","response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 113h17m1s.","duration_seconds":0}`
+	q, ok := ParseQuotaRefusal(out, now)
+	if !ok || q.Message != "Individual quota reached" {
+		t.Fatalf("ok=%v %+v", ok, q)
+	}
+	if want := now.Add(113*time.Hour + 17*time.Minute + time.Second); !q.ResetsAt.Equal(want) {
+		t.Errorf("reset %s, want %s", q.ResetsAt, want)
+	}
+	if q, ok := ParseQuotaRefusal(`"error":"Individual quota reached."`, now); !ok || !q.ResetsAt.IsZero() {
+		t.Errorf("no reset: ok=%v %+v", ok, q)
+	}
+	if _, ok := ParseQuotaRefusal(`"error":"network unreachable"`, now); ok {
+		t.Error("not a quota refusal")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,6 +28,46 @@ var ErrNotLoggedIn = errors.New("agy is not logged in — run: aiq account login
 
 // loginPrompt is what the CLI prints in that case.
 const loginPrompt = "Authentication required"
+
+// QuotaError is the poll's failure when the CLI refuses the run because the
+// account is out of quota. Its status line then never reports the buckets,
+// so the refusal is the only telemetry: it says the account is blocked and,
+// usually, for how long.
+type QuotaError struct {
+	Message  string
+	ResetsAt time.Time // zero when the CLI gave no reset
+}
+
+func (e *QuotaError) Error() string {
+	if e.ResetsAt.IsZero() {
+		return "agy: " + e.Message
+	}
+	return fmt.Sprintf("agy: %s (resets %s)", e.Message, e.ResetsAt.Local().Format("Mon 15:04"))
+}
+
+// quotaRefusal matches the CLI's refusal, as in its JSON result:
+// "error":"Individual quota reached. Please upgrade your subscription to
+// increase your limits. Resets in 113h17m1s."
+var (
+	quotaRefusal = regexp.MustCompile(`(?i)\b(\w+ )?quota reached`)
+	quotaReset   = regexp.MustCompile(`(?i)resets in ((?:\d+(?:\.\d+)?[hms])+)`)
+)
+
+// ParseQuotaRefusal reads a quota refusal from the CLI's output. ok is false
+// when the output is not one.
+func ParseQuotaRefusal(out string, now time.Time) (*QuotaError, bool) {
+	m := quotaRefusal.FindString(out)
+	if m == "" {
+		return nil, false
+	}
+	e := &QuotaError{Message: m}
+	if r := quotaReset.FindStringSubmatch(out); r != nil {
+		if d, err := time.ParseDuration(r[1]); err == nil {
+			e.ResetsAt = now.Add(d)
+		}
+	}
+	return e, true
+}
 
 // ProbeEnv names the file the status-line multiplexer writes the payload to
 // when it runs inside a poll. The variable is set on the probe's environment
@@ -92,6 +133,9 @@ func (p *Provider) Poll(home string, native bool, dir string, now time.Time, tim
 		select {
 		case err := <-done:
 			out := strings.TrimSpace(output.String())
+			if q, ok := ParseQuotaRefusal(out, now); ok {
+				return nil, q
+			}
 			if len(out) > 300 {
 				out = "…" + out[len(out)-300:]
 			}

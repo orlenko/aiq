@@ -68,11 +68,13 @@ func (s Status) Windows(now time.Time) []state.Window {
 	for _, k := range keys {
 		b := s.Quota[k]
 		family, period, _ := strings.Cut(k, "-")
+		// Buckets beyond the plain 5h and weekly pair (argon-wtu-weekly)
+		// carry their length as the key's suffix.
 		kind, secs := state.KindOther, int64(0)
-		switch period {
-		case "5h":
+		switch {
+		case period == "5h" || strings.HasSuffix(period, "-5h"):
 			kind, secs = state.KindShort, 5*3600
-		case "weekly":
+		case period == "weekly" || strings.HasSuffix(period, "-weekly"):
 			kind, secs = state.KindWeekly, 7*86400
 		}
 		scope := ""
@@ -123,7 +125,10 @@ func DefaultStatusLine(account string, s Status, ok bool) string {
 			continue
 		}
 		label := "wk"
-		if w.Kind == state.KindShort {
+		switch {
+		case w.Key != "gemini:5h" && w.Key != "gemini:weekly":
+			label = w.Label
+		case w.Kind == state.KindShort:
 			label = "5h"
 		}
 		part := fmt.Sprintf("%s %.0f%%", label, w.UsedPct)

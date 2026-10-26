@@ -283,8 +283,8 @@ type Config struct {
 	Launchers map[string]Launcher `toml:"launchers,omitempty"`
 }
 
-// DefaultLimitPatterns match the usage-limit rejections Claude Code and Codex
-// print before doing any work.
+// DefaultLimitPatterns match the usage-limit rejections Claude Code, Codex and
+// Antigravity print before doing any work.
 var DefaultLimitPatterns = []string{
 	`(?i)hit your (usage|session|weekly|5-hour|5 hour) limit`,
 	`(?i)usage limit (reached|exceeded)`,
@@ -294,6 +294,8 @@ var DefaultLimitPatterns = []string{
 	`(?i)"type":\s*"rate_limit_error"`,
 	`(?i)quota (has been |is )?(exhausted|exceeded)`,
 	`RESOURCE_EXHAUSTED`,
+	// Antigravity: "Individual quota reached. ... Resets in 113h17m1s."
+	`(?i)individual quota reached`,
 	// Claude Code once extra usage has run dry.
 	`(?i)you're out of extra usage`,
 	`(?i)hit your (channel's )?monthly spend limit`,
