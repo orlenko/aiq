@@ -342,6 +342,10 @@ func (a *app) accountLogin(id string) error {
 	return nil
 }
 
+// errGrantPollFailed reports a poll grant that was saved but could not be
+// used: the authorization itself need not be redone.
+var errGrantPollFailed = errors.New("grant saved but the first poll failed")
+
 // accountAuthorize mints aiq's own poll grant for a Claude account.
 func (a *app) accountAuthorize(id string) error {
 	acc, err := a.st.GetAccount(id)
@@ -361,8 +365,18 @@ func (a *app) accountAuthorize(id string) error {
 	}
 	u, err := claude.Poll(claude.GrantPath(acc.Home), time.Now())
 	if err != nil {
-		return fmt.Errorf("grant saved but the first poll failed: %w", err)
+		return fmt.Errorf("%w: %w", errGrantPollFailed, err)
 	}
+	a.adoptGrantIdentity(acc, u)
+	fmt.Printf("%s poll grant saved%s\n", id, identitySuffix(u.Identity))
+	return nil
+}
+
+// adoptGrantIdentity checks a new grant's first poll against the account:
+// it warns when the grant and the CLI are different people, and gives an
+// account with no identity yet the grant's.
+func (a *app) adoptGrantIdentity(acc state.Account, u *claude.Usage) {
+	id := acc.ID
 	if u.Identity != "" {
 		if acc.Identity != "" && !strings.EqualFold(acc.Identity, u.Identity) {
 			fmt.Fprintf(os.Stderr, "WARNING: Claude Code in %s is logged in as %s but the poll grant belongs to %s. Redo one of them so they match: aiq account login %s / aiq account authorize %s\n",
@@ -374,8 +388,6 @@ func (a *app) accountAuthorize(id string) error {
 		}
 	}
 	a.st.LogEvent("claude", acc.ID, "authorize", u.Identity, time.Now())
-	fmt.Printf("%s poll grant saved%s\n", id, identitySuffix(u.Identity))
-	return nil
 }
 
 func (a *app) pollAndReport(ids ...string) error {

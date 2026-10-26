@@ -99,22 +99,7 @@ func cmdStatusline(args []string) error {
 	configDir := paths.RealClaudeHome()
 	switch args[0] {
 	case "install":
-		a.cfg.Telemetry.ClaudeStatusline = true
-		a.cfg.Telemetry.ClaudeStatuslineInstalled = false
-		a.maybeInstallStatusline()
-		_, installed, err := claude.InstalledStatusline(configDir)
-		if err != nil {
-			return err
-		}
-		if !installed {
-			return fmt.Errorf("statusLine in %s does not point at aiq after install", claude.SettingsPath(configDir))
-		}
-		fmt.Printf("statusLine in %s now runs `aiq claude-statusline`", claude.SettingsPath(configDir))
-		if prev := a.cfg.Telemetry.ClaudeStatuslinePrevious; prev != "" {
-			fmt.Printf(" and chains to %q", prev)
-		}
-		fmt.Println(". Sessions started from now on through the shim feed live quota numbers.")
-		return nil
+		return a.claudeStatuslineInstall()
 	case "uninstall":
 		if err := claude.UninstallStatusline(configDir, a.cfg.Telemetry.ClaudeStatuslinePrevious); err != nil {
 			return err
@@ -135,6 +120,28 @@ func cmdStatusline(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown statusline subcommand %q", args[0])
+}
+
+// claudeStatuslineInstall installs the Claude multiplexer by hand, even
+// after an uninstall turned the automatic install off.
+func (a *app) claudeStatuslineInstall() error {
+	configDir := paths.RealClaudeHome()
+	a.cfg.Telemetry.ClaudeStatusline = true
+	a.cfg.Telemetry.ClaudeStatuslineInstalled = false
+	a.maybeInstallStatusline()
+	_, installed, err := claude.InstalledStatusline(configDir)
+	if err != nil {
+		return err
+	}
+	if !installed {
+		return fmt.Errorf("statusLine in %s does not point at aiq after install", claude.SettingsPath(configDir))
+	}
+	fmt.Printf("statusLine in %s now runs `aiq claude-statusline`", claude.SettingsPath(configDir))
+	if prev := a.cfg.Telemetry.ClaudeStatuslinePrevious; prev != "" {
+		fmt.Printf(" and chains to %q", prev)
+	}
+	fmt.Println(". Sessions started from now on through the shim feed live quota numbers.")
+	return nil
 }
 
 // maybeInstallStatusline points Claude Code's statusLine at the multiplexer,

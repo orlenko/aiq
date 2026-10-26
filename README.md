@@ -779,8 +779,15 @@ aiq convo [--pane <id>] [--follow] [--last N] [--theme auto|light|dark] [<id>]
 aiq shim install|uninstall|path
 aiq statusline install|uninstall|status   Claude status-line multiplexer
 aiq daemon run|install|uninstall|status
-aiq doctor
+aiq doctor [-v]                      failed checks and how to fix them
 ```
+
+`aiq doctor` prints only the checks that failed (`-v` prints every one), then
+groups them into an ordered list of fixes, one per account, so a Claude
+account that needs a new login and a new poll grant is one step with both
+sign-ins. On a terminal it offers to go through the list: for each step it
+says which account to sign in as and what to paste, runs the fix when you
+press Enter (`s` skips, `q` stops), then checks everything again.
 
 `aiq account rename claude/claude4 fourth` carries the account's usage,
 leases, workspace pins, launch history, label and display order to the new
