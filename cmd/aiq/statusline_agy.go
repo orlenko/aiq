@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/orlenko/aiq/internal/config"
@@ -42,14 +40,8 @@ func cmdAgyStatusline() {
 	if err == nil {
 		prev = cfg.Telemetry.AgyStatuslinePrevious
 	}
-	if prev != "" {
-		cmd := exec.Command("sh", "-c", prev)
-		cmd.Stdin = strings.NewReader(string(input))
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = io.Discard
-		if cmd.Run() == nil {
-			return
-		}
+	if runChainedStatusline(prev, input, os.Stdout) {
+		return
 	}
 	fmt.Println(agy.DefaultStatusLine(account, st, ok))
 }

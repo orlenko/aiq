@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/orlenko/aiq/internal/config"
@@ -34,16 +34,29 @@ func cmdClaudeStatusline() {
 	if err == nil {
 		prev = cfg.Telemetry.ClaudeStatuslinePrevious
 	}
-	if prev != "" {
-		cmd := exec.Command("sh", "-c", prev)
-		cmd.Stdin = strings.NewReader(string(input))
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = io.Discard
-		if cmd.Run() == nil {
-			return
-		}
+	if runChainedStatusline(prev, input, os.Stdout) {
+		return
 	}
 	fmt.Println(claude.DefaultStatusLine(account, rl, ok))
+}
+
+// statuslineChainEnv marks a statusline the multiplexer chained to. A chained
+// script that calls aiq back for its quota segment gets the default line
+// instead of re-running itself without end.
+const statuslineChainEnv = "AIQ_STATUSLINE_CHAINED"
+
+// runChainedStatusline runs the user's original statusline, reporting whether
+// it rendered. It declines when prev is empty or aiq is already inside a chain.
+func runChainedStatusline(prev string, input []byte, out io.Writer) bool {
+	if prev == "" || os.Getenv(statuslineChainEnv) != "" {
+		return false
+	}
+	cmd := exec.Command("sh", "-c", prev)
+	cmd.Env = append(os.Environ(), statuslineChainEnv+"=1")
+	cmd.Stdin = bytes.NewReader(input)
+	cmd.Stdout = out
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
 }
 
 func recordClaudeUsage(account string, rl claude.RateLimits) {
