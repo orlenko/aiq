@@ -935,7 +935,7 @@ func TestHumanBlocksAreAFullWidthBand(t *testing.T) {
 			t.Errorf("width %d: prompt marks: %q", width, out)
 		}
 		// The answer is no band.
-		if !strings.Contains(out, "\n"+sgrBold+"done"+sgrReset+"\n") {
+		if !strings.Contains(out, "\n"+sgrBold+"**done**"+sgrReset+"\n") {
 			t.Errorf("width %d: answer: %q", width, out)
 		}
 	}

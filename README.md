@@ -309,12 +309,16 @@ aiq convo <id>              any session of this directory (a unique prefix is en
 aiq convo --last 3          only the last three prompts and what followed
 aiq convo --follow          keep printing as the conversation goes on
 aiq convo --theme light     colours for a light background (auto|light|dark)
+aiq convo --hide-markup     style the Markdown without its **, backticks and marks
 ```
 
 On a terminal the conversation opens at its end in `$PAGER` (else
-`less -R +G`), with the agent's Markdown drawn the way Claude Code draws
-it: bold and code styled, pipe tables as boxes that fit the terminal's
-width. What you typed sits on a grey band across the terminal, so it stands
+`less -R +G`), with the agent's Markdown styled: bold as bold, code in its
+own colour. The Markdown stays in the text (`**`, backticks, `#`, list and
+quote marks, code fences, pipe tables), so a copy from the terminal pastes
+into Slack or a document as Markdown. `--hide-markup` draws it the way
+Claude Code does instead: the marks hidden, pipe tables as boxes that fit
+the terminal's width. What you typed sits on a grey band across the terminal, so it stands
 out from the answers. Anywhere else it prints plain text, Markdown as written. `--follow` never redraws:
 new prompts and replies are appended, a status line at the bottom says how
 long the agent has been working, and each prompt carries a mark that tmux
@@ -776,7 +780,7 @@ aiq reset <provider>/<name>          consume a Codex or Claude reset credit
 
 aiq resume [--all] [--print] [--launcher <name> | --bare] [<id>] [-- args]
                                      this directory's sessions: browse turns, resume one
-aiq convo [--pane <id>] [--follow] [--last N] [--theme auto|light|dark] [<id>]
+aiq convo [--pane <id>] [--follow] [--last N] [--theme auto|light|dark] [--hide-markup] [<id>]
                                      only the prompts and replies of a running session
 
 aiq shim install|uninstall|path

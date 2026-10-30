@@ -13,7 +13,7 @@ import (
 var sgrPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func plainMD(text string, width int) string {
-	return sgrPattern.ReplaceAllString(renderMarkdown(text, width, ""), "")
+	return sgrPattern.ReplaceAllString(renderMarkdown(text, width, "", false), "")
 }
 
 func TestMarkdownTable(t *testing.T) {
@@ -32,7 +32,7 @@ func TestMarkdownTable(t *testing.T) {
 	if got := plainMD(src, 100); got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
-	out := renderMarkdown(src, 100, "")
+	out := renderMarkdown(src, 100, "", false)
 	for _, w := range []string{sgrBold + "Testing:" + sgrReset, sgrCode + "go vet" + sgrReset, sgrBold + "clean" + sgrReset, sgrDim + "┌──"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("lacks %q:\n%q", w, out)
@@ -99,8 +99,8 @@ func TestMarkdownInline(t *testing.T) {
 		"plain line, nothing to do here.": "plain line, nothing to do here.",
 	}
 	for src, want := range cases {
-		if got := renderMarkdown(src, 80, ""); got != want {
-			t.Errorf("%q:\ngot  %q\nwant %q", src, renderMarkdown(src, 80, ""), want)
+		if got := renderMarkdown(src, 80, "", false); got != want {
+			t.Errorf("%q:\ngot  %q\nwant %q", src, renderMarkdown(src, 80, "", false), want)
 		}
 	}
 }
@@ -112,7 +112,7 @@ func TestMarkdownBlocks(t *testing.T) {
 	if got := plainMD(src, 30); got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
-	if out := renderMarkdown("```\n**x**\n```", 30, ""); out != sgrCode+"**x**"+sgrReset {
+	if out := renderMarkdown("```\n**x**\n```", 30, "", false); out != sgrCode+"**x**"+sgrReset {
 		t.Errorf("fence: %q", out)
 	}
 }
@@ -120,7 +120,7 @@ func TestMarkdownBlocks(t *testing.T) {
 // An earlier answer is dim throughout: every reset the renderer writes puts
 // dim back, and each line opens with it.
 func TestMarkdownKeepsTheBaseStyle(t *testing.T) {
-	got := renderMarkdown("**b** x `c`\nplain", 40, sgrDim)
+	got := renderMarkdown("**b** x `c`\nplain", 40, sgrDim, false)
 	want := sgrDim + sgrBold + "b" + sgrReset + sgrDim + " x " + sgrCode + "c" + sgrReset + sgrDim + sgrReset + "\n" +
 		sgrDim + "plain" + sgrReset
 	if got != want {
@@ -151,7 +151,7 @@ func TestMarkdownCannotSmuggleEscapes(t *testing.T) {
 	if strings.Contains(out, "\x1b]") || strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x07") {
 		t.Fatalf("escape survived:\n%q", out)
 	}
-	if !strings.Contains(out, "x]52;c;Zm9vy") || !strings.Contains(out, sgrCode+"q[2Jr"+sgrReset) {
+	if !strings.Contains(out, "x]52;c;Zm9vy") || !strings.Contains(out, sgrCode+"`q[2Jr`"+sgrReset) {
 		t.Fatalf("text lost:\n%q", out)
 	}
 }
@@ -174,7 +174,7 @@ func TestMarkdownTableWideCharactersInNarrowColumns(t *testing.T) {
 	}
 	for src, width := range cases {
 		for w := 1; w <= width; w++ {
-			out := renderMarkdown(src, w, "")
+			out := renderMarkdown(src, w, "", false)
 			if got := widest(out); got > max(w, 2) {
 				t.Errorf("width %d: a line is %d cells:\n%s", w, got, sgrPattern.ReplaceAllString(out, ""))
 			}
@@ -209,14 +209,14 @@ func TestMarkdownPathsGlobsAndURLs(t *testing.T) {
 		"see https://x.io/a_b_c_d/*x*/e and http://h/__init__",
 		"x**.y** and 2*3*4",
 	} {
-		if got := renderMarkdown(src, 80, ""); got != src {
+		if got := renderMarkdown(src, 80, "", false); got != src {
 			t.Errorf("%q became %q", src, got)
 		}
 	}
-	if got := renderMarkdown("at https://x.io/a_b and *it*", 80, ""); got != "at https://x.io/a_b and "+sgrItalic+"it"+sgrReset {
+	if got := renderMarkdown("at https://x.io/a_b and *it*", 80, "", false); got != "at https://x.io/a_b and "+sgrItalic+"it"+sgrReset {
 		t.Errorf("got %q", got)
 	}
-	if got := renderMarkdown("[docs](https://e.com/a_(b)_c) and (more)", 80, ""); got != "docs ("+sgrDim+"https://e.com/a_(b)_c"+sgrReset+") and (more)" {
+	if got := renderMarkdown("[docs](https://e.com/a_(b)_c) and (more)", 80, "", false); got != "docs ("+sgrDim+"https://e.com/a_(b)_c"+sgrReset+") and (more)" {
 		t.Errorf("got %q", got)
 	}
 }
@@ -226,7 +226,7 @@ func TestMarkdownPathologicalLinesAreFast(t *testing.T) {
 	for _, unit := range []string{"_a ", "*a ", "**a ", "`a ", "[a](", "[[", "a](", "__a_ ", "http://x "} {
 		src := strings.Repeat(unit, 200_000/len(unit))
 		start := time.Now()
-		renderMarkdown(src, 100, "")
+		renderMarkdown(src, 100, "", false)
 		// The quadratic matcher this guards against took seconds per line;
 		// the bound leaves room for slow shared CI runners.
 		if d := time.Since(start); d > time.Second {
@@ -265,12 +265,12 @@ func TestMarkdownTablesFitAnyWidth(t *testing.T) {
 		}
 		src := strings.Join(lines, "\n")
 		width := 5 + rng.Intn(116)
-		if got := widest(renderMarkdown(src, width, sgrDim)); got > width {
+		if got := widest(renderMarkdown(src, width, sgrDim, false)); got > width {
 			t.Fatalf("width %d: a line is %d cells; source:\n%s\nrendered:\n%s", width, got, src, plainMD(src, width))
 		}
 	}
 	for width := 10; width <= 120; width++ {
-		if got := widest(renderMarkdown("x\n\n---\n\n| A | B |\n|---|---|\n| 1 | 2 |", width, "")); got > width {
+		if got := widest(renderMarkdown("x\n\n---\n\n| A | B |\n|---|---|\n| 1 | 2 |", width, "", false)); got > width {
 			t.Errorf("width %d: a line is %d cells", width, got)
 		}
 	}
@@ -280,10 +280,70 @@ func TestMarkdownTablesFitAnyWidth(t *testing.T) {
 func TestConvoSurvivesARendererPanic(t *testing.T) {
 	saved := markdownRenderer
 	defer func() { markdownRenderer = saved }()
-	markdownRenderer = func(string, int, string) string { panic("bug") }
+	markdownRenderer = func(string, int, string, bool) string { panic("bug") }
 	at := time.Date(2026, 9, 1, 14, 0, 0, 0, time.Local)
 	s := &transcript.Session{Provider: "claude", Turns: []transcript.Turn{{Prompt: "p", Reply: "**raw** answer", Started: at, Ended: at}}}
 	if out := renderConvo(s, convoTarget{}, 0, true, at); !strings.Contains(out, "**raw** answer") {
 		t.Fatalf("got %q", out)
+	}
+}
+
+// With markup the Markdown stays in the text under its styles, so a copy
+// from the terminal pastes as Markdown.
+func TestMarkdownMarkupKeepsTheSource(t *testing.T) {
+	src := "**Alex's `clock_sync` owns the Jetson clock**. `kestrel-gnss-time` \"was just temporary\" and goes away."
+	want := sgrBold + "**Alex's " + sgrReset + sgrBold + sgrCode + "`clock_sync`" + sgrReset + sgrBold + " owns the Jetson clock**" + sgrReset +
+		". " + sgrCode + "`kestrel-gnss-time`" + sgrReset + " \"was just temporary\" and goes away."
+	if got := renderMarkdown(src, 80, "", true); got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	for _, src := range []string{
+		"## Plan ##\n\n- one *two* __three__\n  * nested `x`\n1. first\n\n> quoted **b**\n\n---\n",
+		"```go\nfunc f() { return **x** }\n```\nafter",
+		"~~~\nunclosed fence\n**x**",
+		"see [the docs](https://e.com/a_(b)_c) and https://x.io/a_b",
+		`escaped \*not italic\* and \` + "`not code\\`",
+		"src/**/*.go and x**.y** and 2*3*4",
+		"_a **b _c_ d** e_ and ``a ` b``",
+	} {
+		if got := sgrPattern.ReplaceAllString(renderMarkdown(src, 30, sgrDim, true), ""); got != src {
+			t.Errorf("source not kept:\ngot  %q\nwant %q", got, src)
+		}
+	}
+	if got := renderMarkdown("# Title", 80, "", true); got != sgrBold+"# Title"+sgrReset {
+		t.Errorf("heading: %q", got)
+	}
+}
+
+// A table stays a pipe table: aligned when it fits, as written when not.
+func TestMarkdownMarkupTable(t *testing.T) {
+	src := "| Check | Result |\n|:---|---:|\n| `go vet` | **clean** |\n| a\\|b | 1 |"
+	want := "| Check    |    Result |\n" +
+		"| :------- | --------: |\n" +
+		"| `go vet` | **clean** |\n" +
+		"| a\\|b     |         1 |"
+	if got := sgrPattern.ReplaceAllString(renderMarkdown(src, 80, "", true), ""); got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+	narrow := "| Check | Result |\n| :-- | --: |\n| `go vet` | **clean** |\n| a\\|b | 1 |"
+	if got := sgrPattern.ReplaceAllString(renderMarkdown(src, 20, "", true), ""); got != narrow {
+		t.Fatalf("narrow: got\n%s\nwant\n%s", got, narrow)
+	}
+}
+
+// Random Markdown-ish text: with markup, stripping the styles gives the
+// source back, whatever the delimiters do.
+func TestMarkdownMarkupRoundTrips(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	alphabet := []string{"*", "**", "_", "__", "`", "``", "[", "]", "(", ")", "\\", "#", "- ", "> ", "a", "b ", " ", "\n", "https://x.io/a_b ", "```\n", "日"}
+	for i := 0; i < 3000; i++ {
+		var b strings.Builder
+		for n := rng.Intn(40); n > 0; n-- {
+			b.WriteString(alphabet[rng.Intn(len(alphabet))])
+		}
+		src := b.String()
+		if got := sgrPattern.ReplaceAllString(renderMarkdown(src, 1+rng.Intn(60), "", true), ""); got != src {
+			t.Fatalf("source not kept:\ngot  %q\nwant %q", got, src)
+		}
 	}
 }

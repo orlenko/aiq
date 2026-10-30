@@ -197,7 +197,7 @@ func TestLightPalette(t *testing.T) {
 		"\x1b[48;5;254m                    \x1b[0m\n" +
 		"\n" +
 		"\x1b[1;38;5;22m▌ claude · 1m\x1b[0m\n" +
-		"Run \x1b[38;5;130mgo test\x1b[0m now.\n"
+		"Run \x1b[38;5;130m`go test`\x1b[0m now.\n"
 	if got := p.emit(s); got != want {
 		t.Fatalf("got  %q\nwant %q", got, want)
 	}

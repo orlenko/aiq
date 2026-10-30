@@ -26,7 +26,7 @@ import (
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
-const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--theme auto|light|dark] [<session-id>]
+const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--theme auto|light|dark] [--hide-markup] [<session-id>]
   what was typed into an agent session and what the agent answered, without the tool calls
   no id, in tmux    the agent in this pane, else the one live session here
   no id, elsewhere  the one live session here: a Claude session or a session
@@ -42,6 +42,9 @@ const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--them
                     terminals showing the pane (#{client_theme}), else reads
                     $COLORFGBG, else takes dark. tmux answers OSC 11 in a pane,
                     not in a popup
+  --hide-markup     style the agent's Markdown without its marks; by default
+                    **, backticks, # and list marks stay in the text, so a
+                    copy from the terminal pastes as Markdown
 On a terminal the conversation opens at its end in $PAGER, else less -R +G.
 --follow ignores what is typed into it; Ctrl-C quits.
 
@@ -75,6 +78,8 @@ type convoOpts struct {
 	last   int
 	id     string
 	theme  string // auto, light, dark, or "" for AIQ_THEME
+	// hideMarkup styles the agent's Markdown without its marks.
+	hideMarkup bool
 }
 
 func parseConvoArgs(args []string) (convoOpts, error) {
@@ -126,6 +131,8 @@ func parseConvoArgs(args []string) (convoOpts, error) {
 			}
 		case a == "--follow" || a == "-f":
 			o.follow = true
+		case a == "--hide-markup":
+			o.hideMarkup = true
 		case a == "-h" || a == "--help":
 			return o, fmt.Errorf("%s", convoHelp())
 		case strings.HasPrefix(a, "-"):
@@ -212,6 +219,7 @@ func cmdConvo(args []string) error {
 		// the terminal's answer comes on the same input.
 		pal = choosePalette(themeChoice(o.theme, os.Getenv("AIQ_THEME"), os.Stderr), tgt.pane, stop)
 	}
+	convoMarkup = !o.hideMarkup
 	select {
 	case <-stop:
 		return nil
@@ -780,6 +788,8 @@ type convoPrinter struct {
 	// piece, if set, hears every text printed: the turn's key, the kind
 	// (prompt, steer, answer, none) and the text.
 	piece func(key, kind, text string)
+	// markup keeps the Markdown marks in a coloured answer.
+	markup bool
 }
 
 type turnSeen struct {
@@ -797,8 +807,12 @@ type turnSeen struct {
 }
 
 func newConvoPrinter(provider string, color, marks bool) *convoPrinter {
-	return &convoPrinter{provider: provider, color: color, marks: marks, seen: map[string]*turnSeen{}}
+	return &convoPrinter{provider: provider, color: color, marks: marks, markup: convoMarkup, seen: map[string]*turnSeen{}}
 }
+
+// convoMarkup is what new printers do with the Markdown marks: keep them,
+// unless --hide-markup.
+var convoMarkup = true
 
 // skip marks turns as already shown (those --last leaves out).
 func (p *convoPrinter) skip(turns []transcript.Turn) {
@@ -1119,7 +1133,7 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 	if width <= 0 {
 		width = 100
 	}
-	rendered, ok := safeRender(sanitize(strings.TrimRight(body, "\n")), width, base)
+	rendered, ok := safeRender(sanitize(strings.TrimRight(body, "\n")), width, base, p.markup)
 	if !ok {
 		p.block(b, false, headSGR, head, base, body)
 		return
@@ -1135,13 +1149,13 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 // safeRender renders Markdown that was cleaned before (the escapes the
 // renderer writes are its own), and reports false if the renderer panics,
 // so a bug in it costs one answer its styling, not the whole view.
-func safeRender(text string, width int, base string) (out string, ok bool) {
+func safeRender(text string, width int, base string, markup bool) (out string, ok bool) {
 	defer func() {
 		if recover() != nil {
 			out, ok = "", false
 		}
 	}()
-	return markdownRenderer(text, width, base), true
+	return markdownRenderer(text, width, base, markup), true
 }
 
 // markdownRenderer is renderMarkdown; tests swap it.
