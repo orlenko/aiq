@@ -467,7 +467,7 @@ With no arguments on a terminal, aiq opens a start menu instead of the
 command list:
 
 ```text
- aiq 0.7.4 · ~/personal/aiq
+ aiq 0.7.5 · ~/personal/aiq
 
  › Session       New  Resume
    Agent         Any  Claude  Codex  boxed
