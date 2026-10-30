@@ -76,7 +76,10 @@ credential is never read. Codex usage comes from the official
 `codex app-server` rate-limits RPC, run against the account's home, so Codex
 keeps refreshing its own `auth.json`. Claude's status line adds live updates
 for the account in use through a multiplexer that chains to whatever status
-line you had. Shims never depend on the daemon: state lives in SQLite, so
+line you had. That status line may itself run `aiq claude-statusline` to
+append aiq's quota segment: the multiplexer marks the chained command with
+`AIQ_STATUSLINE_CHAINED=1`, and the inner call prints aiq's line instead of
+chaining again. Shims never depend on the daemon: state lives in SQLite, so
 with the daemon down they route on the last poll.
 
 ## Long-running sessions
