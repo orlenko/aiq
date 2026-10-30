@@ -3,6 +3,7 @@ package main
 import (
 	"math/rand"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -223,10 +224,11 @@ func TestMarkdownPathsGlobsAndURLs(t *testing.T) {
 
 // A line of delimiters that never close renders in linear time.
 func TestMarkdownPathologicalLinesAreFast(t *testing.T) {
-	for _, unit := range []string{"_a ", "*a ", "**a ", "`a ", "[a](", "[[", "a](", "__a_ ", "http://x "} {
+	for _, unit := range []string{"_a ", "*a ", "**a ", "`a ", "[a](", "[[", "a](", "__a_ ", "http://x ", "**a**__b__"} {
 		src := strings.Repeat(unit, 200_000/len(unit))
 		start := time.Now()
 		renderMarkdown(src, 100, "", false)
+		renderMarkdown(src, 100, "", true)
 		// The quadratic matcher this guards against took seconds per line;
 		// the bound leaves room for slow shared CI runners.
 		if d := time.Since(start); d > time.Second {
@@ -345,5 +347,18 @@ func TestMarkdownMarkupRoundTrips(t *testing.T) {
 		if got := sgrPattern.ReplaceAllString(renderMarkdown(src, 1+rng.Intn(60), "", true), ""); got != src {
 			t.Fatalf("source not kept:\ngot  %q\nwant %q", got, src)
 		}
+	}
+}
+
+// Neighbouring spans in one style are written in one pass: merging them by
+// concatenation copied the line once per span, gigabytes for a long line.
+func TestMarkdownMarkupMergesSpansInLinearMemory(t *testing.T) {
+	src := strings.Repeat("**a**__b__", 20_000)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	renderMarkdown(src, 100, "", true)
+	runtime.ReadMemStats(&after)
+	if got := after.TotalAlloc - before.TotalAlloc; got > 100<<20 {
+		t.Errorf("rendering %d bytes allocated %d MB", len(src), got>>20)
 	}
 }

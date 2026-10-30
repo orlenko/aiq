@@ -756,26 +756,25 @@ func wrapSpans(spans []span, w int) [][]span {
 	return out
 }
 
-// spanLine writes one line: base first, each styled span closed with a
+// spanLine writes one line: base first, each styled run closed with a
 // reset that puts base back, and a final reset that ends base. Neighbours
 // in one style, such as ** and the bold text between, share one run.
 func spanLine(spans []span, base string) string {
-	var merged []span
-	for _, sp := range spans {
-		if n := len(merged); n > 0 && merged[n-1].sgr == sp.sgr {
-			merged[n-1].text += sp.text
-			continue
-		}
-		merged = append(merged, sp)
-	}
 	var b strings.Builder
 	b.WriteString(base)
-	for _, sp := range merged {
-		if sp.sgr == "" {
-			b.WriteString(sp.text)
-			continue
+	cur := ""
+	for _, sp := range spans {
+		if sp.sgr != cur {
+			if cur != "" {
+				b.WriteString(sgrReset + base)
+			}
+			b.WriteString(sp.sgr)
+			cur = sp.sgr
 		}
-		b.WriteString(sp.sgr + sp.text + sgrReset + base)
+		b.WriteString(sp.text)
+	}
+	if cur != "" {
+		b.WriteString(sgrReset + base)
 	}
 	if base != "" {
 		b.WriteString(sgrReset)
