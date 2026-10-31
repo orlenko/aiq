@@ -55,6 +55,7 @@ type runFlags struct {
 	takeover      int64
 	fallback      string
 	resumeSession string
+	sessionName   string
 	nudge         string
 }
 
@@ -142,6 +143,9 @@ func parseRunFlags(args []string) runFlags {
 			i++
 		case a == "--resume-session" && i+1 < len(args):
 			f.resumeSession = args[i+1]
+			i++
+		case a == "--session-name" && i+1 < len(args):
+			f.sessionName = args[i+1]
 			i++
 		case a == "--nudge" && i+1 < len(args):
 			f.nudge = args[i+1]
@@ -362,6 +366,24 @@ func cmdRun(provider string, args []string) error {
 		if err := a.prepareHome(acc); err != nil {
 			return err
 		}
+		if mode == state.ModeLong {
+			// Keep native naming flags in the recorded args as well as the
+			// executed command. Copilot has no saved-title reader, so a later
+			// handoff recovers its inherited name from this launch record.
+			f.rest = namedSessionArgs(provider, f.sessionName, f.rest)
+		}
+		if mode == state.ModeLong && provider == "codex" && f.sessionName != "" && f.resumeSession == "" {
+			p, err := a.codexProvider()
+			if err != nil {
+				return err
+			}
+			id, err := p.NewNamedThread(acc.Home, acc.Native, workspace, f.sessionName)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "aiq: could not preserve session name:", err)
+			} else {
+				f.resumeSession = id
+			}
+		}
 		env := a.launchEnv(provider, acc, f.inheritAuthEnv, depth)
 		if provider == "claude" && f.effort > 0 {
 			// An explicit numeric flag takes precedence over inherited effort.
@@ -507,6 +529,13 @@ func longArgs(provider, aiqBin string, f runFlags) []string {
 		out = append(out, firstPromptArgs(provider, f.nudge)...)
 	}
 	return out
+}
+
+func namedSessionArgs(provider, name string, args []string) []string {
+	if name != "" && (provider == "claude" || provider == "copilot") {
+		return append([]string{"--name", name}, args...)
+	}
+	return args
 }
 
 func trimArgs(args []string) []string {

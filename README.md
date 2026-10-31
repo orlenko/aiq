@@ -132,6 +132,11 @@ session named after the workspace and supervises it:
   effort level (`--effort high` ↔ `-c model_reasoning_effort=high`). Every
   other flag is provider-specific and dropped. Fallback order is
   `long.fallback`, less any provider with no model of the session's tier.
+- **Keep the session name.** Claude and Codex handoffs carry the latest saved
+  display name, including a name changed with `/rename`. Fresh Claude
+  successors receive `--name`; fresh Codex successors start from a named,
+  empty thread, so the handoff prompt does not become the thread's title.
+  Ordinary same-provider resumes keep their existing name.
 - **Takeover in place.** The daemon `respawn-pane`s the same tmux pane with
   the successor, copies the project's trust entry between Claude accounts so
   no dialog blocks the restart, and nudges the successor with a first prompt.
@@ -473,7 +478,7 @@ With no arguments on a terminal, aiq opens a start menu instead of the
 command list:
 
 ```text
- aiq 0.7.7 · ~/personal/aiq
+ aiq 0.7.8 · ~/personal/aiq
 
  › Session       New  Resume
    Agent         Any  Claude  Codex  boxed

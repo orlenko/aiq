@@ -1,8 +1,17 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/orlenko/aiq/internal/config"
+	"github.com/orlenko/aiq/internal/proc"
+	"github.com/orlenko/aiq/internal/state"
 )
 
 func TestLongArgsPerProvider(t *testing.T) {
@@ -20,6 +29,82 @@ func TestLongArgsPerProvider(t *testing.T) {
 	codex := longArgs("codex", "/bin/aiq", f)
 	if n := len(codex); n < 6 || codex[n-3] != "resume" || codex[n-2] != "s1" || codex[n-1] != "carry on" {
 		t.Errorf("codex: %q", codex)
+	}
+}
+
+func TestTakeoverNameIsAnArgumentNotPromptText(t *testing.T) {
+	const title = "Harp 雪 'quoted'"
+	f := parseRunFlags([]string{"--long", "--session-name", title, "--nudge", "carry on", "--", "--model", "x"})
+	if f.sessionName != title || f.nudge != "carry on" {
+		t.Fatalf("flags: %+v", f)
+	}
+	for _, provider := range []string{"claude", "copilot"} {
+		named := f
+		named.rest = namedSessionArgs(provider, f.sessionName, f.rest)
+		args := longArgs(provider, "/bin/aiq", named)
+		found := false
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--name" && args[i+1] == title {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s omitted inherited name: %q", provider, args)
+		}
+	}
+	// Codex uses a pre-named thread and resumes it with the original nudge.
+	f.resumeSession = "named-thread"
+	args := longArgs("codex", "/bin/aiq", f)
+	if got := args[len(args)-3:]; !reflect.DeepEqual(got, []string{"resume", "named-thread", "carry on"}) {
+		t.Fatalf("Codex resume: %q", args)
+	}
+}
+
+func TestInheritedCopilotNameSurvivesTheNextHandoff(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "aiq")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v: %s", err, out)
+	}
+	t.Setenv("AIQ_CONFIG", filepath.Join(root, "config.toml"))
+	t.Setenv("AIQ_DATA_DIR", root)
+	fake := filepath.Join(root, "fake-copilot")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Providers.Copilot.Binary = fake
+	cfg.Daemon.Listen = "127.0.0.1:1"
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.AddAccount(state.Account{ID: "copilot/test", Provider: "copilot", Name: "test", Enabled: true, Native: true, Home: root}); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "run", "copilot", "--long", "--account", "test", "--session-name", "Harp", "--nudge", "carry on", "--", "--yolo")
+	cmd.Env = proc.SanitizeEnv(os.Environ(), "AIQ_ACCOUNT", "AIQ_MODE", "AIQ_DEPTH", "AIQ_WAIT", "TMUX_PANE", chainVar)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("launch: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "--name\nHarp\n") {
+		t.Fatalf("executed args lost name: %s", out)
+	}
+	leases, err := st.ListLeases()
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("leases: %+v %v", leases, err)
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(leases[0].Args), &args); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(args, []string{"--name", "Harp", "--yolo"}) {
+		t.Fatalf("recorded args lost inherited name: %q", args)
 	}
 }
 
