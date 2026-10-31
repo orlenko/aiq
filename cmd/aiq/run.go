@@ -366,6 +366,12 @@ func cmdRun(provider string, args []string) error {
 		if err := a.prepareHome(acc); err != nil {
 			return err
 		}
+		if mode == state.ModeLong {
+			// Keep native naming flags in the recorded args as well as the
+			// executed command. Copilot has no saved-title reader, so a later
+			// handoff recovers its inherited name from this launch record.
+			f.rest = namedSessionArgs(provider, f.sessionName, f.rest)
+		}
 		if mode == state.ModeLong && provider == "codex" && f.sessionName != "" && f.resumeSession == "" {
 			p, err := a.codexProvider()
 			if err != nil {
@@ -515,9 +521,6 @@ func longArgs(provider, aiqBin string, f runFlags) []string {
 		out = append(out, codex.HookArgs(aiqBin)...)
 		out = append(out, codex.UnattendedArgs...)
 	}
-	if f.sessionName != "" && (provider == "claude" || provider == "copilot") {
-		out = append(out, "--name", f.sessionName)
-	}
 	out = append(out, f.rest...)
 	if f.resumeSession != "" {
 		out = append(out, resumeVerb(provider, f.resumeSession)...)
@@ -526,6 +529,13 @@ func longArgs(provider, aiqBin string, f runFlags) []string {
 		out = append(out, firstPromptArgs(provider, f.nudge)...)
 	}
 	return out
+}
+
+func namedSessionArgs(provider, name string, args []string) []string {
+	if name != "" && (provider == "claude" || provider == "copilot") {
+		return append([]string{"--name", name}, args...)
+	}
+	return args
 }
 
 func trimArgs(args []string) []string {

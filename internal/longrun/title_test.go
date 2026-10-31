@@ -35,8 +35,10 @@ func TestSessionTitleFallbackAndUnnamed(t *testing.T) {
 		{`["--","--name","prompt text"]`, ""},
 		{`["--model","opus"]`, ""},
 	} {
-		if got := sessionTitle(state.Lease{Provider: "claude", Args: tt.args}, t.TempDir()); got != tt.want {
-			t.Errorf("%s: got %q, want %q", tt.args, got, tt.want)
+		for _, provider := range []string{"claude", "copilot"} {
+			if got := sessionTitle(state.Lease{Provider: provider, Args: tt.args}, t.TempDir()); got != tt.want {
+				t.Errorf("%s %s: got %q, want %q", provider, tt.args, got, tt.want)
+			}
 		}
 	}
 	if got := sessionTitle(state.Lease{Provider: "codex", SessionID: "missing"}, t.TempDir()); got != "" {
