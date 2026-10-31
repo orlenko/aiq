@@ -306,8 +306,8 @@ func (a *app) accountLogin(id string) error {
 			return err
 		}
 		// The CLI keeps its token in the OS keyring, so the only way to
-		// tell a login is to ask it: the quota probe reports the email, or
-		// that a sign-in is needed.
+		// tell a login is to ask it: /usage succeeds or reports that a
+		// sign-in is needed. Identity arrives through session telemetry.
 		a.maybeInstallAgyStatusline()
 		probe := func() (*agy.Usage, error) {
 			return p.Poll(acc.Home, acc.Native, agy.ProbeDir(paths.DataDir()), time.Now(), time.Duration(a.cfg.Poll.TimeoutSeconds)*time.Second)
@@ -325,7 +325,9 @@ func (a *app) accountLogin(id string) error {
 		if !acc.Native {
 			agy.MarkLoggedIn(acc.Home, u.Identity)
 		}
-		acc.Identity = u.Identity
+		if u.Identity != "" {
+			acc.Identity = u.Identity
+		}
 	case "copilot":
 		p, err := a.copilotProvider()
 		if err != nil {

@@ -15,8 +15,8 @@ import (
 
 // Status is the telemetry in the CLI's status-line JSON: the quota buckets
 // the account draws on, and who the account is. The CLI pipes it to the
-// statusLine command on every state change, including the initializing
-// state of a headless run, before the model is called.
+// statusLine command on interactive state changes. Headless quota polls use
+// the separate /usage command.
 type Status struct {
 	ConversationID string
 	Email          string
