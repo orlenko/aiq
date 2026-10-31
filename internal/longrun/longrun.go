@@ -557,6 +557,7 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 		return
 	}
 	old, _ := st.GetAccount(l.AccountID)
+	title := sessionTitle(l, old.Home)
 	if same && acc.Provider == "claude" {
 		if err := claude.CopyProjectTrust(old.Home, old.Native, acc.Home, acc.Native, l.Workspace); err != nil {
 			s.Logf("trust copy %s → %s: %v", old.ID, acc.ID, err)
@@ -574,6 +575,9 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 		}
 		if resume {
 			args = append(args, "--resume-session", l.SessionID)
+		}
+		if title != "" {
+			args = append(args, "--session-name", title)
 		}
 		s.prepareNote(l, resume, now)
 		args = append(args, "--nudge", TakeoverPrompt(l.Workspace, resume, l.Provider), "--")
@@ -672,6 +676,23 @@ func replayArgs(provider string, args []string) []string {
 	var out []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		// A startup name may be stale after /rename. Resumes keep the saved
+		// name; fresh successors receive the current name separately.
+		if provider == "claude" || provider == "copilot" {
+			if a == "--name" || a == "-n" {
+				if i+1 < len(args) {
+					i++
+				}
+				continue
+			}
+			if strings.HasPrefix(a, "--name=") {
+				continue
+			}
+		}
 		switch provider {
 		case "codex":
 			if a == "resume" || a == "fork" {

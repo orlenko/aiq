@@ -23,6 +23,32 @@ func TestLongArgsPerProvider(t *testing.T) {
 	}
 }
 
+func TestTakeoverNameIsAnArgumentNotPromptText(t *testing.T) {
+	const title = "Harp 雪 'quoted'"
+	f := parseRunFlags([]string{"--long", "--session-name", title, "--nudge", "carry on", "--", "--model", "x"})
+	if f.sessionName != title || f.nudge != "carry on" {
+		t.Fatalf("flags: %+v", f)
+	}
+	for _, provider := range []string{"claude", "copilot"} {
+		args := longArgs(provider, "/bin/aiq", f)
+		found := false
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--name" && args[i+1] == title {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s omitted inherited name: %q", provider, args)
+		}
+	}
+	// Codex uses a pre-named thread and resumes it with the original nudge.
+	f.resumeSession = "named-thread"
+	args := longArgs("codex", "/bin/aiq", f)
+	if got := args[len(args)-3:]; !reflect.DeepEqual(got, []string{"resume", "named-thread", "carry on"}) {
+		t.Fatalf("Codex resume: %q", args)
+	}
+}
+
 func TestAutoWorkerArgsPerProvider(t *testing.T) {
 	r := autoRequest{print: true, hasPrompt: true, prompt: "do it"}
 	cases := map[string][]string{
