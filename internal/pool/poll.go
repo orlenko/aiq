@@ -25,7 +25,7 @@ type PollResult struct {
 
 // Poll refreshes telemetry for every enabled account (or only ids) using
 // aiq's own pollers: the aiq OAuth grant for Claude, the app-server RPC for
-// Codex, a headless run cut short at its status line for Antigravity.
+// Codex, and the read-only /usage command for Antigravity.
 // Accounts run concurrently; each is bounded by timeout.
 func (p *Pool) Poll(timeout time.Duration, ids ...string) []PollResult {
 	accounts, err := p.St.ListAccounts("")

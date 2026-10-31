@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/orlenko/aiq/internal/config"
-	"github.com/orlenko/aiq/internal/fsutil"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/state"
@@ -15,21 +14,13 @@ import (
 
 // cmdAgyStatusline is the Antigravity status-line multiplexer. In a session
 // it records the quota buckets for the active pool account, then renders
-// either the user's original statusline or aiq's own line. Inside a poll
-// (AIQ_AGY_PROBE names a file) it hands the payload to the poller instead.
+// either the user's original statusline or aiq's own line.
 // It must never fail — the CLI invokes it on every state change.
 func cmdAgyStatusline() {
 	defer func() { recover() }()
 	input, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 
 	st, ok := agy.ParseStatus(input)
-	if probe := os.Getenv(agy.ProbeEnv); probe != "" {
-		if ok {
-			fsutil.WriteFileAtomic(probe, input)
-		}
-		fmt.Println("aiq probe")
-		return
-	}
 	account := os.Getenv("AIQ_ACCOUNT")
 	if ok && account != "" && os.Getenv("AIQ_PROVIDER") == "agy" {
 		recordAgyUsage(account, st)
@@ -53,6 +44,17 @@ func recordAgyUsage(account string, st agy.Status) {
 	}
 	defer store.Close()
 	id := state.AccountID("agy", account)
+	// /usage supplies quota but no identity or plan. Refresh those from the
+	// interactive statusline without changing the last poll's time or error.
+	if st.Email != "" {
+		if acc, err := store.GetAccount(id); err == nil && acc.Identity != st.Email {
+			acc.Identity = st.Email
+			store.UpdateAccount(acc)
+		}
+	}
+	if prev, _, err := store.GetUsage(id); err == nil && st.Plan != "" && prev.Plan != st.Plan {
+		store.SetUsageMeta(id, st.Plan, prev.ResetCredits, prev.PollError, time.Unix(prev.ObservedAt, 0))
+	}
 	now := time.Now()
 	for _, w := range st.Windows(now) {
 		w.AccountID, w.Source = id, "statusline"
@@ -65,8 +67,8 @@ func recordAgyUsage(account string, st agy.Status) {
 
 // maybeInstallAgyStatusline points the Antigravity CLI's statusLine at the
 // multiplexer once an agy account exists, preserving the user's existing
-// statusline as the chained renderer. Without it the account cannot be
-// polled at all.
+// statusline as the chained renderer. Quota polls work independently through
+// the CLI's read-only /usage command.
 func (a *app) maybeInstallAgyStatusline() {
 	if !a.cfg.Telemetry.AgyStatusline || a.cfg.Telemetry.AgyStatuslineInstalled {
 		return
@@ -104,7 +106,7 @@ func (a *app) maybeInstallAgyStatusline() {
 	if previous != "" {
 		fmt.Fprintf(os.Stderr, "Installed statusline multiplexer in %s (your statusline %q still renders).\n", agy.SettingsPath(geminiDir), previous)
 	} else {
-		fmt.Fprintf(os.Stderr, "Installed statusline multiplexer in %s — it records pool usage on every agy status refresh and is how aiq polls agy quota.\n", agy.SettingsPath(geminiDir))
+		fmt.Fprintf(os.Stderr, "Installed statusline multiplexer in %s — it records pool usage on every agy status refresh.\n", agy.SettingsPath(geminiDir))
 	}
 }
 
@@ -141,7 +143,7 @@ func (a *app) cmdAgyStatuslineAdmin(sub string) error {
 		if err := config.Save(a.cfg); err != nil {
 			return err
 		}
-		fmt.Printf("statusLine in %s restored (agy accounts can no longer be polled)\n", agy.SettingsPath(geminiDir))
+		fmt.Printf("statusLine in %s restored (quota polling through /usage remains available)\n", agy.SettingsPath(geminiDir))
 		return nil
 	case "status":
 		cmd, installed, err := agy.InstalledStatusline(geminiDir)

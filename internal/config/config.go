@@ -252,9 +252,8 @@ type Telemetry struct {
 	// ClaudeStatuslinePrevious preserves the user's own statusline command so
 	// the multiplexer can keep invoking it.
 	ClaudeStatuslinePrevious string `toml:"claude_statusline_previous,omitempty"`
-	// The same three for the Antigravity CLI, whose status line is also
-	// what aiq polls quota through. It is installed once an agy account
-	// exists.
+	// The same three for the Antigravity CLI's interactive telemetry. Quota
+	// polls use /usage independently of this statusline.
 	AgyStatusline          bool   `toml:"agy_statusline"`
 	AgyStatuslineInstalled bool   `toml:"agy_statusline_installed,omitempty"`
 	AgyStatuslinePrevious  string `toml:"agy_statusline_previous,omitempty"`

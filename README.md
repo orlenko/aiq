@@ -219,16 +219,18 @@ aiq run auto -p "fix the test" # may now land on agy/main when it has the most t
 aiq long agy                   # supervised like the others; moves to Claude or Codex when dry
 ```
 
-**Quota comes through the status line.** The CLI has no usage command, but
-its status line carries the quota buckets (`gemini-5h`, `gemini-weekly`, and
-`3p-*` for its Claude models), and it runs the statusLine command during a
-headless run's initialization, before the model is called. `aiq account add
-agy` therefore points `~/.gemini/antigravity-cli/settings.json` at
-`aiq agy-statusline` (a command of your own keeps rendering behind it; with
-none, aiq's line is stacked under the built-in one). A poll starts `agy -p`,
-takes the payload the multiplexer hands back, and stops the run: three
-seconds, no tokens. Interactive sessions feed the same channel live.
-`aiq statusline uninstall agy` removes it, and with it the ability to poll.
+**Quota polls use the read-only usage command.** With agy 1.1.11 or newer,
+`agy -p "/usage" --output-format json` returns the quota buckets
+(`gemini-5h`, `gemini-weekly`, `3p-*` for third-party models, and the separate
+Argon weekly bucket) without starting a model turn or spending tokens.
+Polling needs no custom statusline; agy 1.4.7 stopped running those in print
+mode. Failed polls retain the last good reading.
+
+`aiq account add agy` also points `~/.gemini/antigravity-cli/settings.json`
+at `aiq agy-statusline` for live interactive quota, identity, and plan
+telemetry. A command of your own keeps rendering behind it; with none,
+aiq's line is stacked under the built-in one. `aiq statusline uninstall agy`
+removes this interactive integration; quota polls continue to work.
 
 **Long sessions use global hooks.** The CLI takes no per-launch hook flag, so
 `aiq long agy` installs an `aiq-long` entry in `~/.gemini/config/hooks.json`
@@ -471,7 +473,7 @@ With no arguments on a terminal, aiq opens a start menu instead of the
 command list:
 
 ```text
- aiq 0.7.6 · ~/personal/aiq
+ aiq 0.7.7 · ~/personal/aiq
 
  › Session       New  Resume
    Agent         Any  Claude  Codex  boxed

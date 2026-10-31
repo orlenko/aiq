@@ -2,6 +2,7 @@ package agy
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -25,9 +26,6 @@ type Usage struct {
 // ErrNotLoggedIn is the poll's failure when the CLI has no login and would
 // wait for a browser sign-in.
 var ErrNotLoggedIn = errors.New("agy is not logged in — run: aiq account login")
-
-// loginPrompt is what the CLI prints in that case.
-const loginPrompt = "Authentication required"
 
 // QuotaError is the poll's failure when the CLI refuses the run because the
 // account is out of quota. Its status line then never reports the buckets,
@@ -69,40 +67,17 @@ func ParseQuotaRefusal(out string, now time.Time) (*QuotaError, bool) {
 	return e, true
 }
 
-// ProbeEnv names the file the status-line multiplexer writes the payload to
-// when it runs inside a poll. The variable is set on the probe's environment
-// only, so ordinary sessions never see it.
-const ProbeEnv = "AIQ_AGY_PROBE"
-
-// Poll reads the account's quota without spending any of it. The CLI has no
-// usage command, but its status line carries the quota buckets, and it runs
-// the statusLine command during a headless run's initialization, before the
-// model is called. The poll starts `agy -p` with the multiplexer told to
-// drop the payload into a file, waits for the file, and stops the run.
+// Poll reads quota through the CLI's read-only /usage command (agy 1.1.11+).
+// It runs no model turn and needs no statusline. Since agy 1.4.7, print mode
+// no longer invokes statusline commands at all.
 func (p *Provider) Poll(home string, native bool, dir string, now time.Time, timeout time.Duration) (*Usage, error) {
-	geminiDir := GeminiDir(home, native)
-	if _, installed, err := InstalledStatusline(geminiDir); err != nil {
-		return nil, err
-	} else if !installed {
-		return nil, errors.New("agy statusline multiplexer not installed — run: aiq statusline install agy")
-	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	probe, err := os.CreateTemp(dir, "probe-*.json")
-	if err != nil {
-		return nil, err
-	}
-	path := probe.Name()
-	probe.Close()
-	os.Remove(path)
-	defer os.Remove(path)
-
-	env := append(p.Env(home, native, false), ProbeEnv+"="+path)
-	cmd := p.Command([]string{"-p", "aiq quota probe", "--output-format", "json", "--print-timeout", "30s"}, env)
+	cmd := p.Command([]string{"-p", "/usage", "--output-format", "json", "--print-timeout", timeout.String()}, p.Env(home, native, false))
 	cmd.Dir = dir
-	var output lockedBuffer
-	cmd.Stdout, cmd.Stderr = &output, &output
+	var output, diagnostics lockedBuffer
+	cmd.Stdout, cmd.Stderr = &output, &diagnostics
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start agy: %w", err)
@@ -123,42 +98,94 @@ func (p *Provider) Poll(home string, native bool, dir string, now time.Time, tim
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-			st, ok := ParseStatus(data)
-			if ok {
-				stop()
-				return &Usage{Windows: st.Windows(now), Identity: st.Email, Plan: st.Plan}, nil
-			}
-		}
 		select {
 		case err := <-done:
-			out := strings.TrimSpace(output.String())
+			out := strings.TrimSpace(output.String() + "\n" + diagnostics.String())
 			if q, ok := ParseQuotaRefusal(out, now); ok {
 				return nil, q
 			}
-			if len(out) > 300 {
-				out = "…" + out[len(out)-300:]
-			}
-			if strings.Contains(out, loginPrompt) || strings.Contains(out, "authentication failed") {
+			if needsLogin(out) {
 				return nil, ErrNotLoggedIn
 			}
 			if err != nil {
-				return nil, fmt.Errorf("agy exited before reporting quota: %v: %s", err, out)
+				return nil, fmt.Errorf("agy /usage: %v: %s", err, shortDiagnostic(out))
 			}
-			return nil, fmt.Errorf("agy finished without reporting quota (is %s the aiq multiplexer?): %s", SettingsPath(geminiDir), out)
+			return parseUsage([]byte(output.String()), now)
 		case <-tick.C:
 			// Logged out, the CLI prints a sign-in URL and waits a minute for
 			// the browser; there is nothing to wait for.
-			if strings.Contains(output.String(), loginPrompt) {
+			if needsLogin(output.String() + diagnostics.String()) {
 				stop()
 				return nil, ErrNotLoggedIn
 			}
 			if time.Now().After(deadline) {
 				stop()
-				return nil, fmt.Errorf("agy reported no quota within %s", timeout)
+				return nil, fmt.Errorf("agy /usage timed out after %s", timeout)
 			}
 		}
 	}
+}
+
+func needsLogin(out string) bool {
+	out = strings.ToLower(out)
+	return strings.Contains(out, "authentication required") || strings.Contains(out, "authentication failed") || strings.Contains(out, "authentication expired")
+}
+
+func shortDiagnostic(out string) string {
+	// Keep a failed poll readable on the quota screen, even if the CLI emits
+	// a long JSON envelope. Successful output is never used as an error.
+	out = strings.Join(strings.Fields(out), " ")
+	runes := []rune(out)
+	if len(runes) > 300 {
+		out = "…" + string(runes[len(runes)-300:])
+	}
+	return out
+}
+
+// parseUsage reads command.data rather than the human-readable response.
+// Reuse the statusline bucket mapping so scopes and window keys stay stable.
+func parseUsage(input []byte, now time.Time) (*Usage, error) {
+	var doc struct {
+		Status   string `json:"status"`
+		Error    string `json:"error"`
+		NumTurns int    `json:"num_turns"`
+		Command  struct {
+			Name string `json:"name"`
+			Data struct {
+				Groups []struct {
+					Buckets []struct {
+						ID        string   `json:"id"`
+						Remaining *float64 `json:"remaining_fraction"`
+						ResetTime string   `json:"reset_time"`
+					} `json:"buckets"`
+				} `json:"groups"`
+			} `json:"data"`
+		} `json:"command"`
+	}
+	if err := json.Unmarshal(input, &doc); err != nil {
+		return nil, fmt.Errorf("decode agy /usage: %w", err)
+	}
+	if doc.Status != "SUCCESS" {
+		return nil, fmt.Errorf("agy /usage failed: %s", shortDiagnostic(doc.Error))
+	}
+	if doc.Command.Name != "usage" || doc.NumTurns != 0 {
+		return nil, errors.New("agy did not return read-only /usage data — update agy to 1.1.11 or newer")
+	}
+	s := Status{Quota: make(map[string]Bucket)}
+	for _, group := range doc.Command.Data.Groups {
+		for _, b := range group.Buckets {
+			if b.ID == "" || b.Remaining == nil || *b.Remaining < 0 || *b.Remaining > 1 {
+				return nil, errors.New("agy /usage returned an invalid quota bucket")
+			}
+			s.Quota[b.ID] = Bucket{RemainingFraction: *b.Remaining, ResetTime: b.ResetTime}
+		}
+	}
+	if len(s.Quota) == 0 {
+		return nil, errors.New("agy /usage returned no quota buckets")
+	}
+	// /usage carries no identity or plan. Callers retain their last values;
+	// interactive statusline telemetry can still supply them.
+	return &Usage{Windows: s.Windows(now)}, nil
 }
 
 // lockedBuffer is a bytes.Buffer the poll may read while the CLI writes.

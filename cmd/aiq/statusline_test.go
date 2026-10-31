@@ -10,7 +10,32 @@ import (
 	"time"
 
 	"github.com/orlenko/aiq/internal/config"
+	"github.com/orlenko/aiq/internal/paths"
+	"github.com/orlenko/aiq/internal/provider/agy"
+	"github.com/orlenko/aiq/internal/state"
 )
+
+func TestRecordAgyUsageRefreshesIdentityAndPlanWithoutChangingPoll(t *testing.T) {
+	t.Setenv("AIQ_DATA_DIR", t.TempDir())
+	st, err := state.Open(paths.StateDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.AddAccount(state.Account{ID: "agy/main", Provider: "agy", Name: "main", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	observed := time.Now().Add(-time.Hour)
+	st.SetUsageMeta("agy/main", "", 0, "backend unavailable", observed)
+	recordAgyUsage("main", agy.Status{Email: "dev@example.com", Plan: "Google AI Pro", Quota: map[string]agy.Bucket{
+		"gemini-weekly": {RemainingFraction: 0.75, ResetInSeconds: 600},
+	}})
+	acc, _ := st.GetAccount("agy/main")
+	u, _, _ := st.GetUsage("agy/main")
+	if acc.Identity != "dev@example.com" || u.Plan != "Google AI Pro" || u.PollError != "backend unavailable" || u.ObservedAt != observed.Unix() {
+		t.Fatalf("identity %+v, usage %+v", acc, u)
+	}
+}
 
 func TestRunChainedStatuslinePassesInputAndMarksChain(t *testing.T) {
 	t.Setenv(statuslineChainEnv, "")
