@@ -21,15 +21,17 @@ import (
 // from one the session wrote by it.
 const rebuiltHeading = "# Handoff note rebuilt by aiq"
 
-// prepareNote readies the handoff note for a successor. A note older than
+// prepareNote readies the handoff note for a successor. A note from before
 // the lease is an earlier takeover's: it is archived, never offered as
-// current. Without a note, a successor that starts fresh gets one rebuilt
-// from the previous session's transcript; a resumed one has the transcript
-// itself.
+// current. StartedAt holds whole seconds and aiq writes a rebuilt note moments
+// before it starts the successor, so a note from the lease's first second
+// counts as an earlier one. Without a note, a successor that starts fresh gets
+// one rebuilt from the previous session's transcript; a resumed one has the
+// transcript itself.
 func (s *Supervisor) prepareNote(l state.Lease, resume bool, now time.Time) {
 	p := HandoffPath(l.Workspace)
 	if fi, err := os.Stat(p); err == nil {
-		if l.StartedAt == 0 || !fi.ModTime().Before(time.Unix(l.StartedAt, 0)) {
+		if l.StartedAt == 0 || fi.ModTime().Unix() > l.StartedAt {
 			return
 		}
 		ArchiveNote(l.Workspace, now)
@@ -84,7 +86,8 @@ func RebuildNote(l state.Lease, now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(sess.Turns) == 0 {
+	// ParseCodex returns no session for a file without a session record.
+	if sess == nil || len(sess.Turns) == 0 {
 		return "", fmt.Errorf("the transcript %s has no turns", l.Transcript)
 	}
 	var b strings.Builder
