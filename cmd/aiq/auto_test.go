@@ -145,6 +145,76 @@ func TestModelFlagsAgyTiers(t *testing.T) {
 	}
 }
 
+// An explicit tier replaces the scope of the provider's default model: with
+// Antigravity set up for a Claude default and its "3p" quota spent, Argon and
+// Flash still launch, while Sonnet and the default itself are refused.
+func TestExplicitAgyTierOverridesDefaultScope(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "aiq")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v: %s", err, out)
+	}
+	for _, tt := range []struct {
+		name  string
+		flags []string
+		want  string // the model the fake agy must receive; "" when refused
+	}{
+		{"tier 1", []string{"--model-tier", "1", "--effort", "3"}, "gemini-4-argon-high"},
+		{"tier 3", []string{"--model-tier", "3", "--effort", "3"}, "gemini-3.8-flash-high"},
+		{"tier 2", []string{"--model-tier", "2", "--effort", "3"}, ""},
+		{"no tier", nil, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("AIQ_CONFIG", filepath.Join(root, "config.toml"))
+			t.Setenv("AIQ_DATA_DIR", root)
+			fake := filepath.Join(root, "fake-agy")
+			if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Default()
+			cfg.Daemon.Listen = "127.0.0.1:1"
+			cfg.Worker.Retry = false
+			cfg.Worker.WaitForSlotSeconds = 0
+			cfg.Providers.Agy.Binary = fake
+			cfg.Providers.Agy.ModelScope = "3p"
+			if err := config.Save(cfg); err != nil {
+				t.Fatal(err)
+			}
+			st, err := state.Open(filepath.Join(root, "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			if err := st.AddAccount(state.Account{ID: "agy/test", Provider: "agy", Name: "test", Enabled: true, Native: true, Home: root}); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			for _, w := range []state.Window{
+				{AccountID: "agy/test", Key: "gemini:weekly", Label: "Weekly", Kind: state.KindWeekly, UsedPct: 1, ResetsAt: now.Add(time.Hour).Unix(), ObservedAt: now.Unix()},
+				{AccountID: "agy/test", Key: "3p:weekly", Label: "3p weekly", Kind: state.KindWeekly, Scope: "3p", UsedPct: 100, ResetsAt: now.Add(time.Hour).Unix(), ObservedAt: now.Unix()},
+			} {
+				if err := st.UpsertWindow(w); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := append([]string{"run", "agy", "--mode", "worker"}, tt.flags...)
+			cmd := exec.Command(bin, append(args, "--", "-p", "do this thing")...)
+			cmd.Env = proc.SanitizeEnv(os.Environ(), "AIQ_BYPASS", "AIQ_MODE", "AIQ_WAIT", "AIQ_ACCOUNT", "AIQ_DEPTH", "AIQ_MODEL_SCOPE", chainVar)
+			out, err := cmd.CombinedOutput()
+			if tt.want == "" {
+				if err == nil {
+					t.Fatalf("launched with 3p spent: %s", out)
+				}
+				return
+			}
+			if err != nil || !strings.Contains(string(out), tt.want) {
+				t.Fatalf("err=%v, want model %s: %s", err, tt.want, out)
+			}
+		})
+	}
+}
+
 func TestAutoRanking(t *testing.T) {
 	now := time.Now()
 	policies := map[string]selector.Policy{}
