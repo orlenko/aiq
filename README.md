@@ -411,16 +411,19 @@ requiring `-p`. For a supervised session that moves between accounts, use
 | Tier | Claude | Codex | Antigravity | Copilot |
 | --- | --- | --- | --- | --- |
 | 0 | Fable 5.1 (`fable`) | Astra (`gpt-6-astra`) | — | Astra (`gpt-6-astra`) |
-| 1 (default for auto) | Opus 5.5 (`opus`) | Sol 6.1 (`gpt-6.1-sol`) | Claude Opus 5.5 (`claude-opus-5-5-high`) | Sol 5.6 (`gpt-5.6-sol`) |
+| 1 (default for auto) | Opus 5.5 (`opus`) | Sol 6.1 (`gpt-6.1-sol`) | Gemini 4 Argon (`gemini-4-argon-high`) | Sol 5.6 (`gpt-5.6-sol`) |
 | 2 | Sonnet 5.5 (`sonnet`) | Terra (`gpt-5.6-terra`) | Claude Sonnet 5.5 (`claude-sonnet-5-5-high`) | Terra (`gpt-5.6-terra`) |
 | 3 | Haiku 5.5 (`haiku`) | Luna 6 (`gpt-6-luna`) | Gemini 3.8 Flash (`gemini-3.8-flash-high`) | Luna (`gpt-5.6-luna`) |
 
 A tier is a class of model, the same on every provider, not a provider's own
 ranking of its models. Claude's aliases follow the newest model of each
-family; the other names are versions, current as of 2026-10-10, kept in
-`internal/tier/tier.go`. A model the table used to name (`gpt-5.6-sol`,
-`claude-opus-4-6-thinking`) keeps its tier, and a long session started on one
-is restarted on the tier's current model at its next same-provider takeover.
+family; the other names are versions, current as of 2026-10-10 (Antigravity's
+Argon as of 2026-11-01), kept in `internal/tier/tier.go`. A model the table used
+to name (`gpt-5.6-sol`, `claude-opus-5-5-high`) keeps its tier, and a long
+session started on one is restarted on the tier's current model at its next
+same-provider takeover. Antigravity's Claude Opus stays available with an
+explicit `--model`, but a long session started that way moves to Argon at that
+takeover.
 Antigravity has no frontier model, so it has no tier 0: `aiq run auto
 --model-tier 0` skips it, `aiq run agy --model-tier 0` is an error, and a long
 session on a tier-0 model never moves to it. Copilot serves the Codex models,
@@ -431,8 +434,8 @@ was rejected as not available).
 The requested tier stays fixed during retries; aiq never silently downgrades it.
 Model-scoped quota windows bind only the selected model, so an exhausted Fable
 cap does not disqualify an otherwise eligible Opus account. On Antigravity the
-Gemini models share the account's main 5-hour and weekly windows; Claude
-models there draw on separate "3p" windows, which bind only tiers 1 and 2.
+Gemini models share the account's main windows, including the Argon weekly
+one; Claude models there draw on separate "3p" windows, which bind only tier 2.
 
 | Effort | Claude | Codex | Antigravity | Copilot |
 | --- | --- | --- | --- | --- |
@@ -478,7 +481,7 @@ With no arguments on a terminal, aiq opens a start menu instead of the
 command list:
 
 ```text
- aiq 0.7.8 · ~/personal/aiq
+ aiq 0.7.9 · ~/personal/aiq
 
  › Session       New  Resume
    Agent         Any  Claude  Codex  boxed
