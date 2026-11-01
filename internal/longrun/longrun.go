@@ -742,13 +742,25 @@ func upgradeModel(provider string, args []string) []string {
 		case a == "--":
 			return out
 		case (a == "--model" || (provider == "codex" && a == "-m")) && i+1 < len(out):
-			out[i+1] = tier.Current(provider, out[i+1])
+			out[i+1] = currentModel(provider, out[i+1])
 			i++
 		case strings.HasPrefix(a, "--model="):
-			out[i] = "--model=" + tier.Current(provider, strings.TrimPrefix(a, "--model="))
+			out[i] = "--model=" + currentModel(provider, strings.TrimPrefix(a, "--model="))
 		}
 	}
 	return out
+}
+
+// currentModel is tier.Current, with an Antigravity effort suffix carried
+// over to the replacement (claude-opus-5-5-medium → gemini-4-argon-medium).
+func currentModel(provider, model string) string {
+	if provider == "agy" {
+		base := agy.BaseModel(model)
+		if n, ok := tier.Legacy[provider][base]; ok && base != model && tier.Has(provider, n) {
+			return agy.BaseModel(tier.Models[provider][n]) + strings.TrimPrefix(model, base)
+		}
+	}
+	return tier.Current(provider, model)
 }
 
 // BypassFlag is each CLI's permission bypass as a takeover spells it.
@@ -787,6 +799,9 @@ func modelTier(provider, model string) int {
 			if m != "" && agy.SameModel(m, model) {
 				return i
 			}
+		}
+		if n, ok := tier.Legacy[provider][agy.BaseModel(model)]; ok {
+			return n
 		}
 	}
 	return tier.Of(provider, model)

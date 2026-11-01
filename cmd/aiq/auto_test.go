@@ -119,6 +119,32 @@ func TestModelFlagsExplicitProviders(t *testing.T) {
 	}
 }
 
+// Antigravity's tier 1 is its own Argon, on the account's main windows, so
+// spent "3p" Claude quota binds only tier 2.
+func TestModelFlagsAgyTiers(t *testing.T) {
+	for _, c := range []struct {
+		tier, effort int
+		model, scope string
+	}{
+		{1, 3, "gemini-4-argon-high", ""},
+		{1, 2, "gemini-4-argon-medium", ""},
+		{2, 3, "claude-sonnet-5-5-high", "3p"},
+		{3, 3, "gemini-3.8-flash-high", ""},
+	} {
+		n := c.tier
+		f, err := modelFlags("agy", runFlags{modelTier: &n, effort: c.effort})
+		if err != nil {
+			t.Fatalf("tier %d: %v", c.tier, err)
+		}
+		if got := strings.Join(f.rest, " "); got != "--model "+c.model {
+			t.Errorf("tier %d effort %d: args %q, want --model %s", c.tier, c.effort, got, c.model)
+		}
+		if f.modelScope != c.scope {
+			t.Errorf("tier %d: scope %q, want %q", c.tier, f.modelScope, c.scope)
+		}
+	}
+}
+
 func TestAutoRanking(t *testing.T) {
 	now := time.Now()
 	policies := map[string]selector.Policy{}

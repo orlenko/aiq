@@ -105,7 +105,8 @@ func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
 		{"claude", "claude", []string{"--model", "opus"}, []string{"--model", "opus"}},
 		// Antigravity tops out at high, spelled as the model's suffix.
 		{"claude", "agy", []string{"--dangerously-skip-permissions", "--model", "opus", "--effort", "max"},
-			[]string{"--dangerously-skip-permissions", "--model", "claude-opus-5-5-high"}},
+			[]string{"--dangerously-skip-permissions", "--model", "gemini-4-argon-high"}},
+		{"claude", "agy", []string{"--model", "opus", "--effort", "low"}, []string{"--model", "gemini-4-argon-low"}},
 		{"claude", "agy", []string{"--model", "sonnet", "--effort", "low"}, []string{"--model", "claude-sonnet-5-5-low"}},
 		{"claude", "agy", []string{"--model", "haiku", "--effort", "low"}, []string{"--model", "gemini-3.8-flash-low"}},
 		// Antigravity has no tier-0 model: the model is dropped (a takeover
@@ -120,6 +121,7 @@ func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
 		{"agy", "claude", []string{"-c", "--model", "claude-opus-4-6-thinking"}, []string{"--model", "sonnet", "--effort", "high"}},
 		{"agy", "claude", []string{"--model", "gemini-3.8-flash-low"}, []string{"--model", "haiku", "--effort", "low"}},
 		{"agy", "codex", []string{"--model", "claude-opus-5-5-medium"}, []string{"--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"}},
+		{"agy", "codex", []string{"--model", "gemini-4-argon-medium"}, []string{"--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"}},
 		{"codex", "claude", []string{"--model", "gpt-5.6-sol"}, []string{"--model", "opus", "--effort", "high"}},
 		{"codex", "agy", []string{"--yolo", "-m", "gpt-5.6-terra", "-c", "model_reasoning_effort=xhigh"},
 			[]string{"--dangerously-skip-permissions", "--model", "claude-sonnet-5-5-high"}},
@@ -278,6 +280,11 @@ func TestReplayUpgradesLegacyModels(t *testing.T) {
 		{"codex", []string{"-m", "gpt-5.6-luna", "--", "--model", "gpt-5.6-sol"}, []string{"-m", "gpt-6-luna", "--", "--model", "gpt-5.6-sol"}},
 		{"codex", []string{"--model=gpt-5.6-terra"}, []string{"--model=gpt-5.6-terra"}},
 		{"agy", []string{"--model", "claude-opus-4-6-thinking"}, []string{"--model", "claude-sonnet-5-5-high"}},
+		// Claude Opus left Antigravity's tier 1; the session keeps its level.
+		{"agy", []string{"--model", "claude-opus-5-5-high"}, []string{"--model", "gemini-4-argon-high"}},
+		{"agy", []string{"--model=claude-opus-5-5-medium"}, []string{"--model=gemini-4-argon-medium"}},
+		{"agy", []string{"--model", "gemini-4-argon-low"}, []string{"--model", "gemini-4-argon-low"}},
+		{"agy", []string{"--model", "claude-sonnet-5-5-medium"}, []string{"--model", "claude-sonnet-5-5-medium"}},
 		{"claude", []string{"--model", "opus"}, []string{"--model", "opus"}},
 	} {
 		if got := replayArgs(c.provider, c.in); strings.Join(got, " ") != strings.Join(c.want, " ") {
