@@ -17,19 +17,21 @@ package tier
 var Models = map[string][4]string{
 	"claude": {"fable", "opus", "sonnet", "haiku"},
 	"codex":  {"gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-terra", "gpt-6-luna"},
-	// Antigravity serves Claude Opus and Sonnet (its "3p" models) and
-	// Gemini Flash; nothing of the frontier class.
-	"agy": {"", "claude-opus-5-5-high", "claude-sonnet-5-5-high", "gemini-3.8-flash-high"},
+	// Antigravity's own Gemini Argon is its strongest choice, ahead of the
+	// Claude models it resells; it has nothing of the frontier class. Sonnet
+	// is a "3p" model.
+	"agy": {"", "gemini-4-argon-high", "claude-sonnet-5-5-high", "gemini-3.8-flash-high"},
 	// Copilot offers no model newer than these.
 	"copilot": {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 }
 
 // Legacy maps models a table once named to their tier, so sessions started
 // on them keep their class and are moved to the current model when they
-// are restarted.
+// are restarted. An Antigravity entry names the model without its effort
+// suffix when it comes in several levels.
 var Legacy = map[string]map[string]int{
 	"codex": {"gpt-5.6-sol": 1, "gpt-6-sol": 1, "gpt-5.6-luna": 3},
-	"agy":   {"claude-opus-4-6-thinking": 2},
+	"agy":   {"claude-opus-4-6-thinking": 2, "claude-opus-5-5": 1},
 }
 
 // DefaultEffort is the effort level (high) aiq asks for when it picks a
@@ -38,11 +40,11 @@ const DefaultEffort = 3
 
 // Scopes are the quota-scope names of the tiers, where they differ from the
 // model name. Antigravity's Gemini models draw on the account's main
-// windows (no scope); its Claude models draw on the "3p" windows.
+// windows (no scope); its Claude model draws on the "3p" windows.
 var Scopes = map[string][4]string{
 	"claude":  Models["claude"],
 	"codex":   {"astra", "sol", "terra", "luna"},
-	"agy":     {"", "3p", "3p", ""},
+	"agy":     {"", "", "3p", ""},
 	"copilot": Models["copilot"],
 }
 
@@ -77,6 +79,7 @@ func Of(provider, model string) int {
 }
 
 // Current returns the model that replaces a legacy one, or model itself.
+// Antigravity's suffixed names go through longrun, which keeps their level.
 func Current(provider, model string) string {
 	if n, ok := Legacy[provider][model]; ok && Has(provider, n) {
 		return Models[provider][n]

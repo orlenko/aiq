@@ -112,6 +112,41 @@ func TestPrepareNote(t *testing.T) {
 	}
 }
 
+// aiq writes a rebuilt note just before it starts the successor, often within
+// the second the successor's lease records. At the next takeover that note
+// is still the earlier session's, and must not be offered as this one's.
+func TestPrepareNoteArchivesNoteFromTheLeasesFirstSecond(t *testing.T) {
+	t.Setenv("AIQ_DATA_DIR", t.TempDir())
+	s := &Supervisor{Logf: t.Logf}
+	now := time.Now()
+	started := now.Add(-40 * time.Hour).Truncate(time.Second)
+	l := state.Lease{ID: 7, Provider: "claude", AccountID: "claude/a", Transcript: claudeTranscript(t), Workspace: "/w", StartedAt: started.Unix()}
+	note := HandoffPath(l.Workspace)
+	os.MkdirAll(filepath.Dir(note), 0o700)
+	os.WriteFile(note, []byte("# earlier session"), 0o600)
+	written := started.Add(170 * time.Millisecond)
+	os.Chtimes(note, written, written)
+
+	s.prepareNote(l, false, now)
+	if b, _ := os.ReadFile(note); !rebuilt(note) || strings.Contains(string(b), "# earlier session") {
+		t.Fatalf("the earlier session's note stayed current: %q", b)
+	}
+	if archived, _ := filepath.Glob(strings.TrimSuffix(note, ".md") + ".*.md"); len(archived) != 1 {
+		t.Errorf("archived %v", archived)
+	}
+}
+
+// A transcript with no session in it is an error, on every provider.
+func TestRebuildNoteFromEmptyTranscript(t *testing.T) {
+	for _, provider := range []string{"claude", "codex", "agy"} {
+		p := filepath.Join(t.TempDir(), "empty.jsonl")
+		os.WriteFile(p, nil, 0o600)
+		if _, err := RebuildNote(state.Lease{Provider: provider, Transcript: p}, time.Now()); err == nil {
+			t.Errorf("%s: rebuilt a note from an empty transcript", provider)
+		}
+	}
+}
+
 func TestCodexToolRecord(t *testing.T) {
 	call, _, id, kind := codexToolRecord([]byte(`{"type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"c1","arguments":"{\"cmd\":\"ls\"}"}}`))
 	if kind != "call" || id != "c1" || call != `shell: {"cmd":"ls"}` {

@@ -607,11 +607,15 @@ func (a *app) selectAccount(provider, mode string, f runFlags, workspace string,
 	if mode == state.ModeLong {
 		pol.FloorPct = a.cfg.Long.DrainPct
 	}
-	if f.modelScope != "" {
+	switch {
+	case f.modelTier != nil:
+		// The tier names the model, so its scope replaces the one the
+		// provider's default model implies, even when it has none.
 		pol.ModelScope = f.modelScope
-		if strings.EqualFold(f.modelScope, "none") {
-			pol.ModelScope = ""
-		}
+	case strings.EqualFold(f.modelScope, "none"):
+		pol.ModelScope = ""
+	case f.modelScope != "":
+		pol.ModelScope = f.modelScope
 	}
 	pol.AffinityID = affinity
 	if f.account != "" && len(tried) == 0 {
