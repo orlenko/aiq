@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -496,7 +497,10 @@ func TestAsksDismissSelectsTheNextItem(t *testing.T) {
 func TestAsksCopyTakesTheShownQuote(t *testing.T) {
 	var got []string
 	saved := asksCopier
-	asksCopier = func(text string) (string, error) { got = append(got, text); return "clipboard", nil }
+	asksCopier = func(ctx context.Context, text string) (string, error) {
+		got = append(got, text)
+		return "clipboard", nil
+	}
 	t.Cleanup(func() { asksCopier = saved })
 	b := newAsksScreen()
 	b.w, b.h, b.loaded = 60, 40, true
@@ -611,7 +615,7 @@ func TestCopyGivesUpOnAHungTool(t *testing.T) {
 	copyTimeout = time.Second
 	defer func() { copyTimeout = saved }()
 	start := time.Now()
-	if _, err := copyText("example", nil); err == nil {
+	if _, err := copyText(context.Background(), "example", nil); err == nil {
 		t.Fatal("a hung tool counted as a copy")
 	}
 	d := time.Since(start)
@@ -880,6 +884,24 @@ func TestAsksCtrlCQuitsDuringAPaste(t *testing.T) {
 		}
 		if tk.pasting {
 			t.Fatalf("%q: still pasting after Ctrl-C", start)
+		}
+	}
+}
+
+// Ctrl-C or Ctrl-D in a key sequence that never finished still quits, and nothing of the
+// sequence becomes a key, then or after.
+func TestAsksCtrlCQuitsInAnUnfinishedSequence(t *testing.T) {
+	for _, reads := range [][]string{{"\x1b[", "\x03"}, {"\x1b[1;\x03"}, {"\x1bO", "\x04"}, {"\x1b[2", "0", "\x03j"}} {
+		var tk asksTokenizer
+		var events []asksInput
+		for _, r := range reads {
+			events = append(events, tk.feed([]byte(r))...)
+		}
+		if len(events) != 1 || events[0].key.code != keyQuit {
+			t.Fatalf("%q gave %+v", reads, events)
+		}
+		if e := tk.feed([]byte("x")); len(e) != 1 || e[0].key.r != 'x' {
+			t.Fatalf("%q: x after it gave %+v", reads, e)
 		}
 	}
 }

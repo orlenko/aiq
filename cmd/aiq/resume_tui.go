@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -109,6 +110,7 @@ const (
 	keyEnter
 	keyBack
 	keyQuit
+	keyBackTab // Shift-Tab
 )
 
 type keypress struct {
@@ -148,6 +150,8 @@ func parseKeys(buf []byte) []keypress {
 				out = append(out, keypress{code: keyHome})
 			case 'F':
 				out = append(out, keypress{code: keyEnd})
+			case 'Z':
+				out = append(out, keypress{code: keyBackTab})
 			case '~':
 				switch seq {
 				case "5":
@@ -780,7 +784,13 @@ func (b *browser) draw(out *os.File) {
 // found nothing, and tmux dropped the client ("server exited unexpectedly").
 // It waits in select(2), as devTTY does: poll(2) does not work on terminals
 // on macOS.
-func readKeys(fd int) (keys <-chan []byte, stop func()) {
+func readKeys(fd int) (keys <-chan []byte, stop func()) { return readKeysHanding(fd, 0, nil) }
+
+// readKeysHanding is readKeys, but a read in hand when stop comes is still handed on, for up
+// to hand, before the keys end: aiq convo's parser decides from it whether a paste may still
+// be coming. A read nobody takes in that time is dropped, and lost is set, since it may have
+// begun one.
+func readKeysHanding(fd int, hand time.Duration, lost *atomic.Bool) (keys <-chan []byte, stop func()) {
 	out := make(chan []byte)
 	quit := make(chan struct{})
 	done := make(chan struct{})
@@ -811,9 +821,19 @@ func readKeys(fd int) (keys <-chan []byte, stop func()) {
 			if err != nil || n <= 0 {
 				return
 			}
+			read := append([]byte(nil), buf[:n]...)
 			select {
-			case out <- append([]byte(nil), buf[:n]...):
+			case out <- read:
 			case <-quit:
+				if hand > 0 {
+					select {
+					case out <- read:
+					case <-time.After(hand):
+						if lost != nil {
+							lost.Store(true)
+						}
+					}
+				}
 				return
 			}
 		}

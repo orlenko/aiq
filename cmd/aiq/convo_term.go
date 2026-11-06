@@ -214,15 +214,27 @@ func (t *devTTY) setMode(m *unix.Termios) error {
 // flush throws away input the terminal holds that nobody has read yet.
 func (t *devTTY) flush() error { return flushInput(t.fd) }
 
+// ttySelect is select(2). Tests swap it.
+var ttySelect = unix.Select
+
 // wait returns what the terminal has to read within d (nothing if nothing
 // came). It waits in select(2): poll(2) does not work on terminals on
-// macOS.
+// macOS. A signal, such as a resize, ends select early; that is not
+// quiet, so it waits again for the rest of d.
 func (t *devTTY) wait(d time.Duration) []byte {
-	var set unix.FdSet
-	set.Set(t.fd)
-	tv := unix.NsecToTimeval(d.Nanoseconds())
-	if n, err := unix.Select(t.fd+1, &set, nil, nil, &tv); err != nil || n == 0 {
-		return nil
+	deadline := time.Now().Add(d)
+	for {
+		var set unix.FdSet
+		set.Set(t.fd)
+		tv := unix.NsecToTimeval(max(time.Until(deadline), 0).Nanoseconds())
+		n, err := ttySelect(t.fd+1, &set, nil, nil, &tv)
+		if err == unix.EINTR && time.Until(deadline) > 0 {
+			continue
+		}
+		if err != nil || n == 0 {
+			return nil
+		}
+		break
 	}
 	buf := make([]byte, 512)
 	n, _ := unix.Read(t.fd, buf) // EAGAIN (a half line in line mode) reads as nothing

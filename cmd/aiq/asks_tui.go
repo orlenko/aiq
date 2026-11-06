@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -761,8 +762,9 @@ func (b *asksScreen) move(delta int) {
 	}
 }
 
-// asksCopier is copyText; tests swap it.
-var asksCopier = func(text string) (string, error) { return copyText(text, os.Stdout) }
+// asksCopier is copyText; tests swap it. aiq convo passes its own lifetime as ctx, so a copy
+// gives up when the screen is told to stop.
+var asksCopier = func(ctx context.Context, text string) (string, error) { return copyText(ctx, text, os.Stdout) }
 
 // copyAsk copies the quote the item shows, as a quote block to answer under, and says how
 // that went.
@@ -771,7 +773,7 @@ func (b *asksScreen) copyAsk(a state.Ask) string {
 	if b.expanded[a.ID] {
 		quote = a.LastQuote
 	}
-	where, err := asksCopier(quoteForReply(sanitize(quote)))
+	where, err := asksCopier(context.Background(), quoteForReply(sanitize(quote)))
 	if err != nil {
 		return fmt.Sprintf("Could not copy #%d: %v", a.ID, err)
 	}
@@ -983,6 +985,10 @@ type asksTokenizer struct {
 	// typed holds the last bytes taken as typed keys. A paste mark that arrives in pieces,
 	// each read on its own long after its Escape, still spells itself out here.
 	typed []byte
+	// cutPaste says Ctrl-C or Ctrl-D quit in the middle of a paste whose end had not come, or
+	// of a key sequence not yet finished (which may be a paste mark), so the rest may still be
+	// on its way.
+	cutPaste bool
 }
 
 // escapeWait is how long a lone Escape waits for the rest of a sequence, as tmux's
@@ -1038,7 +1044,7 @@ func (p *asksTokenizer) tokens(buf []byte) []asksInput {
 			end := bytes.Index(b, pasteEnd)
 			// Ctrl-C still quits, so a paste whose end mark never comes cannot hold the screen.
 			if c := bytes.IndexByte(b, 0x03); c >= 0 && (end < 0 || c < end) {
-				p.pending, p.pasting = nil, false
+				p.pending, p.pasting, p.cutPaste = nil, false, end < 0
 				return append(out, asksInput{key: keypress{code: keyQuit}})
 			}
 			if end < 0 {
@@ -1092,6 +1098,13 @@ func (p *asksTokenizer) tokens(buf []byte) []asksInput {
 					}
 				} else {
 					for i < len(b) && (b[i] < 0x40 || b[i] > 0x7e) {
+						// Ctrl-C or Ctrl-D in a sequence that never finished still quits, as
+						// in a mouse report; nothing of the sequence becomes a key. It may
+						// have been a paste mark, whose rest may still come.
+						if b[i] == 3 || b[i] == 4 {
+							p.pending, p.cutPaste = nil, true
+							return append(out, asksInput{key: keypress{code: keyQuit}})
+						}
 						i++
 					}
 				}

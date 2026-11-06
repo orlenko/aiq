@@ -341,31 +341,36 @@ aiq convo                   the agent in this tmux pane, else the one live sessi
 aiq convo --pane %5         the agent in tmux pane %5
 aiq convo <id>              any session of this directory (a unique prefix is enough)
 aiq convo --last 3          only the last three prompts and what followed
-aiq convo --follow          keep printing as the conversation goes on
+aiq convo --follow          keep showing the conversation as it goes on
 aiq convo --theme light     colours for a light background (auto|light|dark)
 aiq convo --hide-markup     style the Markdown without its **, backticks and marks
 ```
 
-On a terminal the conversation opens at its end in `$PAGER` (else
-`less -R +G`), with the agent's Markdown styled: bold as bold, code in its
-own colour. The Markdown stays in the text (`**`, backticks, `#`, list and
-quote marks, code fences, pipe tables), so a copy from the terminal pastes
-into Slack or a document as Markdown. `--hide-markup` draws it the way
-Claude Code does instead: the marks hidden, pipe tables as boxes that fit
-the terminal's width. What you typed sits on a grey band across the terminal, so it stands
-out from the answers. Anywhere else it prints plain text, Markdown as written. `--follow` never redraws:
-new prompts and replies are appended, a status line at the bottom says how
-long the agent has been working, and each prompt carries a mark that tmux
-copy mode's `previous-prompt` / `next-prompt` jump to. When the pane moves to
-a new transcript (`/clear`, Codex `/new`, a takeover by another provider),
-`--follow` prints a divider and goes on with the new one. Scrolled back in a
-`--follow` pane under tmux 3.2 or later, dragging, double-clicking or
-triple-clicking copies and leaves you where you are; `q` goes back to the
-newest line. For that, `--follow` rebinds those three in tmux's copy mode if
-they are still tmux's defaults; yours stay if you changed them. The bindings
-stay until the tmux server exits and act only on `--follow` panes. It is read-only:
-what you type into it is swallowed, not echoed, and does not reach the
-session or the shell afterwards; Ctrl-C quits.
+On a terminal the conversation opens full screen with the newest message
+selected, and the agent's Markdown styled: bold as bold, code in its own
+colour. The Markdown stays in the text (`**`, backticks, `#`, list and quote
+marks, code fences, pipe tables). `--hide-markup` draws it the way Claude
+Code does instead: the marks hidden, pipe tables as boxes that fit the
+terminal's width. What you typed sits on a grey band across the terminal, so
+it stands out from the answers. Anywhere else it prints plain text, Markdown
+as written.
+
+Each prompt and each answer is a message. `j`/`k` or the arrow keys move
+from one to the next, and through a message taller than the screen; Tab and
+Shift-Tab jump between what you typed; `g` and `G` (Home, End) go to the
+first and last; Page Up/Down and the mouse wheel scroll; a click selects;
+`q`, Escape or Ctrl-C quits. `y` (or `c`) copies the selected message as
+Markdown, the way the transcript has it, to the same places as in `aiq
+asks`. To select text with the mouse, hold Shift (Option in iTerm2).
+
+`--follow` keeps the screen up to date as the conversation grows. While the
+newest message is selected, each new one is selected as it comes; moved up,
+the screen stays where you are, the bottom line counts the messages new
+below, and `G` goes back to following. The bottom line also says how long
+the agent has been working. When the pane moves to a new transcript
+(`/clear`, Codex `/new`, a takeover by another provider), a divider shows
+and the new one goes on below it. What you type into it never reaches the
+session.
 
 The colours suit a dark background unless the terminal says it is light.
 `--theme auto` (the default) asks the terminal for its background colour

@@ -34,7 +34,7 @@ const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--them
                     Codex session started without aiq is found by id only)
   <session-id>      that session of this directory (a unique prefix is enough)
   --pane <id>       the agent in tmux pane <id> (key bindings pass #{pane_id})
-  --follow          keep printing as the conversation goes on (for a side split)
+  --follow          keep showing the conversation as it goes on (for a side split)
   --last N          only the last N prompts you typed
   --theme T         colours for a light or dark background (also AIQ_THEME; the
                     flag wins); auto, the default, asks the terminal for its
@@ -45,12 +45,12 @@ const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--them
   --hide-markup     style the agent's Markdown without its marks; by default
                     **, backticks, # and list marks stay in the text, so a
                     copy from the terminal pastes as Markdown
-On a terminal the conversation opens at its end in $PAGER, else less -R +G.
---follow ignores what is typed into it; Ctrl-C quits. Scrolled back in it under tmux 3.2 or
-later, selecting with the mouse copies and stays where you are; q goes back to the newest
-line. For that it rebinds the end of a drag, double click and triple click in copy mode,
-if they are still tmux's defaults. Those bindings apply only to --follow panes and stay
-until the tmux server exits.
+On a terminal it opens full screen with the newest message selected. j/k or the arrows move
+a message, Tab and Shift-Tab jump between your prompts, g and G go to the first and last,
+PgUp/PgDn and the wheel scroll, a click selects, y copies the message as Markdown, and q,
+Esc or Ctrl-C quits. Shift-drag (Option-drag in iTerm2) selects text with the mouse.
+With --follow the newest message selected moves on to each new one; moved up, the screen
+stays put and G goes back to following.
 
 tmux key bindings to open it (add them to ~/.tmux.conf yourself; aiq never installs them):
   # prefix a: the conversation of the pane you are in, in a popup
@@ -229,19 +229,28 @@ func cmdConvo(args []string) error {
 		return nil
 	default:
 	}
-	if o.follow {
-		// Selecting text to copy must not throw away the place someone scrolled back to.
-		// A failure here costs only that, so it does not stop the conversation.
-		if own := os.Getenv("TMUX_PANE"); own != "" && tty {
-			tmux.KeepPlaceOnCopy(own)
-			defer tmux.ForgetPlaceOnCopy(own)
+	// On a terminal the conversation is a screen to move around in. The keyboard is the
+	// controlling terminal's, wherever stdin points; without one it prints as before.
+	var keyboard *devTTY
+	if tty {
+		if in, err := openTTY(); err == nil {
+			keyboard = in
+			defer in.close()
 		}
+	}
+	if o.follow {
 		f := &convoFollow{r: r, tgt: tgt, w: os.Stdout, tty: tty, last: o.last,
 			statEvery: time.Second, parseGap: 2 * time.Second, resolveEvery: 5 * time.Second, quiet: convoQuiet,
-			// The keyboard is the controlling terminal's, wherever stdin
-			// points; run falls back when /dev/tty cannot be opened.
+			// run falls back when /dev/tty cannot be opened.
 			mute: tty}
+		if keyboard != nil {
+			return f.screen(keyboard, stop)
+		}
 		return f.run(stop)
+	}
+	if keyboard != nil {
+		// Signals stay caught: the screen puts the terminal back before aiq exits.
+		return showConvo(keyboard, tgt, o.last, stop)
 	}
 	// The snapshot leaves signals to their defaults again, as before, but
 	// one that came in on the way here still ends it.
@@ -800,6 +809,25 @@ type convoPrinter struct {
 	piece func(key, kind, text string)
 	// markup keeps the Markdown marks in a coloured answer.
 	markup bool
+	// track has emit record where each thing it prints ends, in cuts, for the screen.
+	track bool
+	cuts  []convoCut
+}
+
+// convoCut is one thing emit printed: where it ends in emit's output, the turn it belongs to,
+// what it is, and its text as the transcript has it. The kinds are you (a prompt the person
+// typed), steer, notice (a prompt aiq, a peer or a notifier sent), answer, line (a message
+// said on the way, as one line), more (a later part of the answer before it), part (a later
+// part of the line before it, which prints nothing) and none (no reply).
+type convoCut struct {
+	end             int
+	key, kind, text string
+}
+
+func (p *convoPrinter) cut(b *strings.Builder, key, kind, text string) {
+	if p.track {
+		p.cuts = append(p.cuts, convoCut{end: b.Len(), key: key, kind: kind, text: text})
+	}
 }
 
 type turnSeen struct {
@@ -845,6 +873,7 @@ func (p *convoPrinter) skip(turns []transcript.Turn) {
 func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	p.pending = false
+	p.cuts = nil
 	for i, t := range s.Turns {
 		k := turnKey(i, t)
 		seen := p.seen[k]
@@ -861,12 +890,15 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			if human && t.Open && t.Tools == 0 && len(pieces) == 0 && slashCommand(t.Prompt) {
 				continue // a local command: the parser drops it if nothing comes of it
 			}
+			kind := "you"
 			if human {
 				p.human(&b, "▌ you · "+whenLabel(t.Started, time.Now()), t.Prompt)
 			} else {
 				b.WriteString("\n" + p.paint(pal.dim, "· "+promptLine(t)) + "\n")
+				kind = "notice"
 			}
 			p.note(k, "prompt", t.Prompt)
+			p.cut(&b, k, kind, t.Prompt)
 			seen.head = true
 		}
 		head := "▌ " + p.provider
@@ -894,6 +926,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				if steers++; steers > seen.steers {
 					p.human(&b, "▌ you, while it worked", pc.text)
 					p.note(k, "steer", pc.text)
+					p.cut(&b, k, "steer", pc.text)
 					seen.steers = steers
 				}
 				awaiting, unanswered = true, true
@@ -915,9 +948,13 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				// reply it belongs to, and adds nothing to a one-liner.
 				if !printed {
 					seen.done[id] = true
-					if seen.msgMode[pc.msg] == "reply" {
+					switch seen.msgMode[pc.msg] {
+					case "reply":
 						p.answer(&b, "", "", "", pc.text)
 						p.note(k, "said", pc.text)
+						p.cut(&b, k, "more", pc.text)
+					case "line":
+						p.cut(&b, k, "part", pc.text) // shown on no row, but copied with its line
 					}
 				}
 				continue
@@ -939,6 +976,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				continue
 			}
 			seen.done[id] = true
+			shown := "answer"
 			switch {
 			case pc.final:
 				p.answer(&b, pal.agent, head, "", pc.text)
@@ -950,12 +988,15 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			default:
 				p.said(&b, pc.text)
 				seen.msgMode[pc.msg] = "line"
+				shown = "line"
 			}
 			p.note(k, kind, pc.text)
+			p.cut(&b, k, shown, pc.text)
 		}
 		if human && !t.Open && len(seen.done) == 0 && !seen.noReply && !(p.live && last) {
 			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
 			p.note(k, "none", "")
+			p.cut(&b, k, "none", "")
 			seen.noReply = true
 		}
 	}
@@ -1371,8 +1412,34 @@ type convoFollow struct {
 
 	// mute swallows what is typed into the terminal while --follow runs.
 	mute bool
+	// send, when set, takes what the loop finds in place of the stream: the screen shows it.
+	send func(convoUpdate)
 
 	status string // on screen now
+}
+
+// convoUpdate is what --follow found, for the screen: a conversation, or with no session
+// only a new status line.
+type convoUpdate struct {
+	s     *transcript.Session
+	t     convoTarget
+	begin bool      // s starts a conversation: the first, or the one the pane moved to
+	from  int       // with begin, the first turn shown
+	moved time.Time // with begin, when the pane moved to s; zero for the first
+	hold  bool      // the last turn's reply is held back (see followEmit)
+	// status is the status line, when s is nil.
+	status string
+}
+
+// hand gives s to the screen, holding its last reply as emit does.
+func (f *convoFollow) hand(p *convoPrinter, s *transcript.Session, mod time.Time, u convoUpdate) {
+	hold := f.holding(s, mod)
+	if hold {
+		holdLastTurn(s)
+	}
+	p.pending = hold // parse again once the file has been quiet long enough
+	u.s, u.t, u.hold = s, f.tgt, hold
+	f.send(u)
 }
 
 func (f *convoFollow) run(stop <-chan struct{}) error {
@@ -1398,7 +1465,11 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 	p := f.printer(s)
 	from := convoStart(s.Turns, f.last)
 	p.skip(s.Turns[:from])
-	f.print(convoHeader(s, f.tgt, from, f.tty) + f.emit(p, s, mod))
+	if f.send != nil {
+		f.hand(p, s, mod, convoUpdate{begin: true, from: from})
+	} else {
+		f.print(convoHeader(s, f.tgt, from, f.tty) + f.emit(p, s, mod))
+	}
 
 	lastParse, lastResolve := time.Now(), time.Now()
 	dirty := p.pending
@@ -1442,7 +1513,11 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 				p = f.printer(s)
 				from := convoStart(s.Turns, f.last)
 				p.skip(s.Turns[:from])
-				f.print("\n" + f.movedLine(p, t, s, now, from) + "\n" + f.emit(p, s, m))
+				if f.send != nil {
+					f.hand(p, s, m, convoUpdate{begin: true, from: from, moved: now})
+				} else {
+					f.print("\n" + f.movedLine(p, t, s, now, from) + "\n" + f.emit(p, s, m))
+				}
 				size, mod = sz, m
 				lastParse, dirty = now, p.pending
 			default:
@@ -1457,7 +1532,11 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 			lastParse, dirty = now, false
 			if ns, err := loadConvo(f.tgt); err == nil {
 				s = ns
-				f.print(f.emit(p, s, mod))
+				if f.send != nil {
+					f.hand(p, s, mod, convoUpdate{})
+				} else {
+					f.print(f.emit(p, s, mod))
+				}
 			}
 			dirty = p.pending
 		}
@@ -1474,6 +1553,11 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 // movedLine says the pane moved to another session: a heavy bar in accent with colour,
 // the same shape as a section bar in aiq asks.
 func (f *convoFollow) movedLine(p *convoPrinter, t convoTarget, s *transcript.Session, now time.Time, hidden int) string {
+	return convoMovedLine(p, t, s, now, hidden, termWidth(80))
+}
+
+// convoMovedLine is movedLine for a terminal width cells wide.
+func convoMovedLine(p *convoPrinter, t convoTarget, s *transcript.Session, now time.Time, hidden, width int) string {
 	what := fmt.Sprintf("moved to %s · session %s · %s", t.label(), shortID(s.ID), now.Format("15:04"))
 	earlier := ""
 	if hidden > 0 {
@@ -1482,7 +1566,7 @@ func (f *convoFollow) movedLine(p *convoPrinter, t convoTarget, s *transcript.Se
 	if !p.color {
 		return "── " + sanitize(what) + " ──" + earlier
 	}
-	th, width := kitThemeFor(false), termWidth(80)
+	th := kitThemeFor(false)
 	bar := kitBar(" "+strings.ToUpper(what)+" ", sgrBold+th.accent, kitMarksFor(os.Getenv).bar, width)
 	return kitLine(bar, "", width) + p.paint(th.dim, earlier)
 }
@@ -1491,7 +1575,12 @@ func (f *convoFollow) movedLine(p *convoPrinter, t convoTarget, s *transcript.Se
 // last written at mod, may still be writing it.
 func (f *convoFollow) emit(p *convoPrinter, s *transcript.Session, mod time.Time) string {
 	p.width = termWidth(80) // a resized split shapes what comes next
-	return followEmit(p, s, !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet)
+	return followEmit(p, s, f.holding(s, mod))
+}
+
+// holding says the last reply of s, last written at mod, may still be on its way.
+func (f *convoFollow) holding(s *transcript.Session, mod time.Time) bool {
+	return !f.tgt.stale && s.Unfinished && time.Since(mod) < f.quiet
 }
 
 // followEmit is one print of --follow. hold says the last turn's reply may
@@ -1548,6 +1637,13 @@ func (f *convoFollow) print(text string) {
 // and is cut to fit, so \r always returns to its start.
 func (f *convoFollow) setStatus(s string) {
 	s = sanitize(s)
+	if f.send != nil {
+		if s != f.status {
+			f.status = s
+			f.send(convoUpdate{status: s})
+		}
+		return
+	}
 	if !f.tty || s == f.status {
 		return
 	}

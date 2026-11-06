@@ -18,13 +18,20 @@ var copyTimeout = 3 * time.Second
 // tmux buffer, which tmux also hands to the terminal's clipboard where the terminal
 // allows that. A local pbcopy or wl-copy or xclip takes it too. Outside tmux with no
 // clipboard tool, the terminal is asked directly (OSC 52). Over SSH only tmux and the
-// terminal can reach the person's clipboard.
-func copyText(text string, term io.Writer) (string, error) {
+// terminal can reach the person's clipboard. Once ctx ends, the tool running is stopped and
+// no other is tried.
+func copyText(ctx context.Context, text string, term io.Writer) (string, error) {
 	var places []string
 	var firstErr error
 	run := func(name string, args ...string) bool {
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return false
+		}
 		// A clipboard tool that hangs must not hold the screen.
-		ctx, cancel := context.WithTimeout(context.Background(), copyTimeout)
+		ctx, cancel := context.WithTimeout(ctx, copyTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, name, args...)
 		cmd.WaitDelay = copyTimeout
@@ -52,7 +59,7 @@ func copyText(text string, term io.Writer) (string, error) {
 			break
 		}
 	}
-	if len(places) == 0 && os.Getenv("TMUX") == "" && term != nil {
+	if len(places) == 0 && os.Getenv("TMUX") == "" && term != nil && ctx.Err() == nil {
 		fmt.Fprintf(term, "\x1b]52;c;%s\x07", base64.StdEncoding.EncodeToString([]byte(text)))
 		places = append(places, "terminal clipboard")
 	}
