@@ -241,8 +241,111 @@ func CopyProjectTrust(srcHome string, srcNative bool, dstHome string, dstNative 
 // HookSettings renders the --settings JSON that wires aiq's hooks into a
 // long session. Hooks are only attached to sessions launched this way.
 func HookSettings(aiqBin string) string {
-	hook := func(event string) string {
-		return fmt.Sprintf(`"%s":[{"hooks":[{"type":"command","command":%q,"timeout":30}]}]`, event, aiqBin+" claude-hook "+strings.ToLower(event))
+	return LaunchSettings(aiqBin, "")
+}
+
+// LaunchSettings renders one --settings JSON (Claude Code honours only the
+// last --settings flag) carrying aiq's hooks when aiqBin is set and the
+// auto-memory directory when memoryDir is set. Empty when neither is.
+func LaunchSettings(aiqBin, memoryDir string) string {
+	var parts []string
+	if memoryDir != "" {
+		enc, _ := json.Marshal(memoryDir)
+		parts = append(parts, `"autoMemoryDirectory":`+string(enc))
 	}
-	return `{"hooks":{` + hook("SessionStart") + `,` + hook("UserPromptSubmit") + `,` + hook("Stop") + `}}`
+	if aiqBin != "" {
+		hook := func(event string) string {
+			return fmt.Sprintf(`"%s":[{"hooks":[{"type":"command","command":%q,"timeout":30}]}]`, event, aiqBin+" claude-hook "+strings.ToLower(event))
+		}
+		parts = append(parts, `"hooks":{`+hook("SessionStart")+`,`+hook("UserPromptSubmit")+`,`+hook("Stop")+`}`)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// OverlayMemoryDir is the auto-memory directory an overlay launch in dir
+// should use: the project's folder under the real ~/.claude/projects.
+//
+// Left alone, Claude Code puts memory under $CLAUDE_CONFIG_DIR/projects,
+// which in an overlay is a symlink into ~/.claude. Every memory write then
+// resolves into a .claude directory, and Claude Code's sensitive-path check
+// asks for it before any allow rule is consulted, so no permission grant
+// stops the prompt. Naming the real directory keeps the write on one
+// spelling, which Claude Code's own memory carve-out allows.
+//
+// Empty (keep Claude Code's default) when the user's settings already pick
+// a memory directory or the folder name would need Claude Code's hash
+// suffix.
+func OverlayMemoryDir(dir string) string {
+	if userSetsMemoryDir() {
+		return ""
+	}
+	slug := projectSlug(projectRoot(dir))
+	if slug == "" {
+		return ""
+	}
+	return filepath.Join(paths.RealClaudeHome(), "projects", slug, "memory")
+}
+
+func userSetsMemoryDir() bool {
+	data, err := os.ReadFile(filepath.Join(paths.RealClaudeHome(), "settings.json"))
+	if err != nil {
+		return false
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	_, ok := doc["autoMemoryDirectory"]
+	return ok
+}
+
+// projectRoot is the directory Claude Code keys project memory on: the main
+// checkout of a git repository (linked worktrees share it), else dir itself
+// with symlinks resolved, as the CLI's own working directory is.
+func projectRoot(dir string) string {
+	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output(); err == nil {
+		if common := strings.TrimSpace(string(out)); filepath.Base(common) == ".git" {
+			return filepath.Dir(common)
+		}
+	}
+	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output(); err == nil {
+		if top := strings.TrimSpace(string(out)); top != "" {
+			return top
+		}
+	}
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		return r
+	}
+	return filepath.Clean(dir)
+}
+
+// maxSlug is the longest folder name Claude Code uses unhashed.
+const maxSlug = 200
+
+// projectSlug names a project's folder under projects/ the way Claude Code
+// does: every UTF-16 code unit that is not an ASCII letter or digit becomes
+// "-". Names past maxSlug get a hash suffix aiq does not reproduce, so
+// those return "".
+func projectSlug(root string) string {
+	if root == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range root {
+		switch {
+		case r < 0x80 && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'):
+			b.WriteRune(r)
+		case r > 0xFFFF:
+			b.WriteString("--") // a surrogate pair is two code units
+		default:
+			b.WriteByte('-')
+		}
+	}
+	if b.Len() > maxSlug {
+		return ""
+	}
+	return b.String()
 }

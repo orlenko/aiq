@@ -143,3 +143,24 @@ func TestProviderList(t *testing.T) {
 		t.Errorf("joinOr one: %q", got)
 	}
 }
+
+func TestWithSettingsRespectsUserFlag(t *testing.T) {
+	if got := withSettings([]string{"-p", "hi"}, `{"a":1}`); !reflect.DeepEqual(got, []string{"--settings", `{"a":1}`, "-p", "hi"}) {
+		t.Errorf("prepend: %q", got)
+	}
+	for _, user := range [][]string{{"--settings", "f.json"}, {"--settings=f.json"}} {
+		if got := withSettings(user, `{"a":1}`); !reflect.DeepEqual(got, user) {
+			t.Errorf("user flag overridden: %q", got)
+		}
+	}
+	if got := withSettings([]string{"x"}, ""); !reflect.DeepEqual(got, []string{"x"}) {
+		t.Errorf("empty: %q", got)
+	}
+}
+
+func TestLongArgsCarryMemoryDir(t *testing.T) {
+	args := longArgs("claude", "/bin/aiq", runFlags{memoryDir: "/r/projects/p/memory"})
+	if len(args) != 2 || !strings.Contains(args[1], `"autoMemoryDirectory":"/r/projects/p/memory"`) || !strings.Contains(args[1], `"hooks"`) {
+		t.Fatalf("got %q", args)
+	}
+}

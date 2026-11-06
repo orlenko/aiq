@@ -57,6 +57,10 @@ type runFlags struct {
 	resumeSession string
 	sessionName   string
 	nudge         string
+
+	// memoryDir points a Claude overlay launch's auto memory at the real
+	// ~/.claude/projects folder (see claude.OverlayMemoryDir).
+	memoryDir string
 }
 
 func parseRunFlags(args []string) runFlags {
@@ -459,6 +463,13 @@ func cmdRun(provider string, args []string) error {
 			}
 		}
 
+		if provider == "claude" && !acc.Native {
+			f.memoryDir = claude.OverlayMemoryDir(cwd())
+			if mode != state.ModeLong {
+				f.rest = withSettings(f.rest, claude.LaunchSettings("", f.memoryDir))
+			}
+		}
+
 		if mode == state.ModeLong {
 			env = append(env, "AIQ_LONG=1", "AIQ_LEASE="+strconv.FormatInt(leaseID, 10))
 			self, _ := os.Executable()
@@ -527,7 +538,7 @@ func longArgs(provider, aiqBin string, f runFlags) []string {
 	var out []string
 	switch provider {
 	case "claude":
-		out = append(out, "--settings", claude.HookSettings(aiqBin))
+		out = append(out, "--settings", claude.LaunchSettings(aiqBin, f.memoryDir))
 	case "codex":
 		out = append(out, codex.HookArgs(aiqBin)...)
 		out = append(out, codex.UnattendedArgs...)
@@ -564,6 +575,23 @@ func trimArgs(args []string) []string {
 		out = append(out, a)
 	}
 	return out
+}
+
+// withSettings prepends a --settings flag unless settings is empty or the
+// user passed their own (Claude Code keeps only one, and theirs wins).
+func withSettings(args []string, settings string) []string {
+	if settings == "" {
+		return args
+	}
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if a == "--settings" || strings.HasPrefix(a, "--settings=") {
+			return args
+		}
+	}
+	return append([]string{"--settings", settings}, args...)
 }
 
 // hostname is the lease's host identity; it must match what the daemon and
