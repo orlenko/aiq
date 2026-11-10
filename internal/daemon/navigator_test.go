@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -882,5 +883,59 @@ func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 	wantNavState(t, s, navFailed)
 	if strings.Contains(logged.String(), "navigator") {
 		t.Errorf("the log speaks of the navigator: %s", logged)
+	}
+}
+
+// The navigator's server bounds a request that is slow to arrive: a request that
+// declares a body and never sends it loses its connection at the read deadline.
+func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
+	srv := navServer(navigatorHandler())
+	if srv.ReadHeaderTimeout != 5*time.Second || srv.ReadTimeout != 30*time.Second || srv.WriteTimeout != 30*time.Second ||
+		srv.IdleTimeout != 2*time.Minute || srv.MaxHeaderBytes != 64<<10 || !srv.DisableGeneralOptionsHandler {
+		t.Errorf("the navigator's server is %+v", srv)
+	}
+	srv.ReadTimeout = 300 * time.Millisecond
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	start := time.Now()
+	fmt.Fprintf(conn, "POST /x HTTP/1.1\r\nHost: %s\r\nContent-Length: 1000\r\n\r\nab", ln.Addr())
+	if _, err := io.Copy(io.Discard, conn); err != nil {
+		t.Errorf("the connection was not closed: %v after %v", err, time.Since(start))
+	}
+}
+
+// OPTIONS * is the navigator handler's to answer, not the server's.
+func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
+	srv := navServer(navigatorHandler())
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "OPTIONS * HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", ln.Addr())
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || resp.Header.Get("X-Frame-Options") != "DENY" {
+		t.Errorf("OPTIONS *: %d %v", resp.StatusCode, resp.Header)
 	}
 }
