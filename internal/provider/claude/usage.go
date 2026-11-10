@@ -531,7 +531,8 @@ func usageFromReply(status int, body []byte, now time.Time) (*Usage, error) {
 // when body is not the usage document (none of five_hour, seven_day and
 // limits is there), or when one of those is there, not null, and not in the
 // form aiq reads: a changed format must not pass for "no window running".
-// A null field, or limits with no entry aiq reads, is no window.
+// A null field, a null utilization or percent, and limits of kinds aiq does
+// not read are no window.
 func NormalizeUsage(body []byte, now time.Time) ([]state.Window, error) {
 	var doc map[string]json.RawMessage
 	if json.Unmarshal(body, &doc) != nil {
@@ -556,40 +557,59 @@ func NormalizeUsage(body []byte, now time.Time) ([]state.Window, error) {
 			continue
 		}
 		var w struct {
-			Utilization *float64 `json:"utilization"`
-			ResetsAt    string   `json:"resets_at"`
+			Utilization json.RawMessage `json:"utilization"`
+			ResetsAt    string          `json:"resets_at"`
 		}
 		if json.Unmarshal(raw, &w) != nil || w.Utilization == nil {
 			return nil, fmt.Errorf("usage: %s is not in the form aiq reads", f.field)
 		}
+		used, ok, err := number(w.Utilization)
+		if err != nil {
+			return nil, fmt.Errorf("usage: %s is not in the form aiq reads", f.field)
+		}
+		if !ok {
+			continue // a null utilization: not running
+		}
 		out = append(out, state.Window{
-			Key: f.key, Label: f.label, Kind: f.kind, UsedPct: *w.Utilization,
+			Key: f.key, Label: f.label, Kind: f.kind, UsedPct: used,
 			ResetsAt: parseISO(w.ResetsAt), WindowSeconds: f.seconds, ObservedAt: obs,
 		})
 	}
 	if raw, ok := doc["limits"]; ok {
 		present = true
-		var limits []struct {
-			Kind     string   `json:"kind"`
-			Percent  *float64 `json:"percent"`
-			ResetsAt string   `json:"resets_at"`
-			Severity string   `json:"severity"`
-			Scope    struct {
-				Surface string `json:"surface"`
-				Model   struct {
-					DisplayName string `json:"display_name"`
-				} `json:"model"`
-			} `json:"scope"`
-		}
-		if !isNull(raw) && json.Unmarshal(raw, &limits) != nil {
+		var entries []json.RawMessage
+		if !isNull(raw) && json.Unmarshal(raw, &entries) != nil {
 			return nil, errors.New("usage: limits is not in the form aiq reads")
 		}
-		for _, l := range limits {
-			if l.Kind != "weekly_scoped" {
+		for _, e := range entries {
+			// Only weekly_scoped limits are read, so only they must match;
+			// a kind aiq does not read may take any form.
+			var kind struct {
+				Kind string `json:"kind"`
+			}
+			if json.Unmarshal(e, &kind) != nil || kind.Kind != "weekly_scoped" {
 				continue
 			}
-			if l.Percent == nil {
-				return nil, errors.New("usage: a weekly_scoped limit has no percent")
+			var l struct {
+				Percent  json.RawMessage `json:"percent"`
+				ResetsAt string          `json:"resets_at"`
+				Severity string          `json:"severity"`
+				Scope    struct {
+					Surface string `json:"surface"`
+					Model   struct {
+						DisplayName string `json:"display_name"`
+					} `json:"model"`
+				} `json:"scope"`
+			}
+			if json.Unmarshal(e, &l) != nil || l.Percent == nil {
+				return nil, errors.New("usage: a weekly_scoped limit is not in the form aiq reads")
+			}
+			pct, ok, err := number(l.Percent)
+			if err != nil {
+				return nil, errors.New("usage: a weekly_scoped limit is not in the form aiq reads")
+			}
+			if !ok {
+				continue
 			}
 			label := l.Scope.Model.DisplayName
 			if label == "" {
@@ -604,7 +624,7 @@ func NormalizeUsage(body []byte, now time.Time) ([]state.Window, error) {
 			}
 			out = append(out, state.Window{
 				Key: "weekly:" + strings.ToLower(label), Label: label, Kind: state.KindWeekly, Scope: label,
-				UsedPct: *l.Percent, ResetsAt: parseISO(l.ResetsAt), WindowSeconds: 7 * 86400,
+				UsedPct: pct, ResetsAt: parseISO(l.ResetsAt), WindowSeconds: 7 * 86400,
 				Severity: severity, ObservedAt: obs,
 			})
 		}
@@ -618,6 +638,18 @@ func NormalizeUsage(body []byte, now time.Time) ([]state.Window, error) {
 var errNotUsage = errors.New("usage: the reply is not usage data")
 
 func isNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
+
+// number reads a JSON number. ok is false for null; anything else is an
+// error.
+func number(raw json.RawMessage) (v float64, ok bool, err error) {
+	if isNull(raw) {
+		return 0, false, nil
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, false, err
+	}
+	return v, true, nil
+}
 
 // ParseProfile extracts the account email and a short plan name
 // ("default_claude_max_20x" → "max 20x").

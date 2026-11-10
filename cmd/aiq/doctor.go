@@ -311,8 +311,8 @@ func (a *app) doctorChecks() *doctorReport {
 }
 
 // polled reports whether the account has been polled: its usage row has a
-// poll time, which only a poll attempt sets (a failed one also records its
-// error, which doctor reports first; exhaustion marks set none). Doctor then judges freshness by that
+// poll time, which only a poll attempt sets. A failed attempt also records
+// its error, which doctor reports first; exhaustion marks set none. Doctor then judges freshness by that
 // time, which a status line does not move, so a running session cannot make
 // a stalled poll look fresh; nor can a window the provider stopped reporting,
 // which keeps its old time, make a fresh poll look stale. A good poll may
