@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,6 +66,9 @@ type menuEnv struct {
 type menuSessions struct {
 	count  int
 	latest transcript.Session
+	// unreadable are the transcripts the list left out; the status row
+	// counts them and their paths print once the screen is gone.
+	unreadable []string
 }
 
 // accountChoices are the accounts the Account row offers. Resuming, the
@@ -529,6 +533,10 @@ func (m *menu) render() [][]seg {
 	if m.env.longHere != "" {
 		out = append(out, []seg{{" ● a long session runs here on " + m.env.longHere + "; a attaches", sgrYellow}})
 	}
+	if s := m.env.sessions; s != nil && len(s.unreadable) > 0 {
+		n := len(s.unreadable)
+		out = append(out, []seg{{fmt.Sprintf(" %d transcript%s could not be read", n, plural(n)), sgrYellow}})
+	}
 	blank()
 	rows := m.rows()
 	var focused menuRow
@@ -748,18 +756,54 @@ func headroom(windows []pool.WindowView) int {
 }
 
 func loadMenuSessions(dir string) *menuSessions {
-	all, err := transcript.List(defaultRoots(), dir)
+	all, unreadable, err := transcript.List(defaultRoots(), dir)
 	if err != nil {
-		return &menuSessions{}
+		return &menuSessions{unreadable: unreadable}
 	}
 	list := interactiveOnly(all)
-	s := &menuSessions{count: len(list)}
+	s := &menuSessions{count: len(list), unreadable: unreadable}
 	for _, x := range list {
 		if x.Updated.After(s.latest.Updated) {
 			s.latest = x
 		}
 	}
 	return s
+}
+
+// reportUnreadable names the transcripts the session list could not read,
+// once run has put the terminal back. A list still being made is not waited
+// for, and says nothing.
+func (m *menu) reportUnreadable(w io.Writer, sessions <-chan *menuSessions) {
+	s := m.env.sessions
+	if s == nil {
+		select {
+		case s = <-sessions:
+		default:
+		}
+	}
+	if s != nil {
+		reportUnreadable(w, s.unreadable)
+	}
+}
+
+// finish takes what run returned, on every way out of the menu (a quit, an
+// interrupt, an error, help or a start), and returns the aiq arguments to
+// run now, if any. The transcripts the list could not read are named once
+// the screen is gone: after help's usage, so they are not lost above it, and
+// otherwise first, before the command it runs.
+func (m *menu) finish(stdout, stderr io.Writer, sessions <-chan *menuSessions, args []string, err error) ([]string, error) {
+	if err == nil && args != nil && args[0] == "help" {
+		fmt.Fprintf(stdout, usage, version)
+		m.reportUnreadable(stderr, sessions)
+		return nil, nil
+	}
+	m.reportUnreadable(stderr, sessions)
+	if err != nil || args == nil {
+		return nil, err
+	}
+	saveMenuChoice(m.c)
+	fmt.Fprintln(stdout, "$ "+tmux.Quote(append([]string{"aiq"}, args...)))
+	return args, nil
 }
 
 // cmdMenu opens the start menu and runs what it composes.
@@ -780,15 +824,10 @@ func cmdMenu() error {
 
 	m := &menu{env: env, c: env.normalize(loadMenuChoice()), focus: "session"}
 	args, err := m.run(sessions)
+	args, err = m.finish(os.Stdout, os.Stderr, sessions, args, err)
 	if err != nil || args == nil {
 		return err
 	}
-	if args[0] == "help" {
-		fmt.Printf(usage, version)
-		return nil
-	}
-	saveMenuChoice(m.c)
-	fmt.Println("$ " + tmux.Quote(append([]string{"aiq"}, args...)))
 	self, err := os.Executable()
 	if err != nil {
 		return err

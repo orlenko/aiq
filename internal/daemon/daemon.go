@@ -299,10 +299,28 @@ func (s *Server) Run() error {
 	if navLn != nil {
 		go s.serveNavigator(navLn)
 	}
-	srv := &http.Server{Handler: localOnly(mux), ReadHeaderTimeout: 5 * time.Second}
+	srv := statusServer(localOnly(mux))
 	err = serveStatus(srv, ln)
 	s.navigatorEnds(fmt.Errorf("the status page stopped: %w", err))
 	return err
+}
+
+// statusServer is the status page's server. Its deadlines bound how long a
+// connection stays open while a request is slow to arrive, its answer is slow to
+// be read, or it sits idle between requests. They are far above what the page's
+// 5 s poll and its kept-alive connection need; an answer that takes longer is
+// lost, and no handler streams or waits. OPTIONS * goes to the handler too, so
+// every request meets its checks.
+func statusServer(h http.Handler) *http.Server {
+	return &http.Server{
+		Handler:                      h,
+		ReadHeaderTimeout:            5 * time.Second,
+		ReadTimeout:                  30 * time.Second,
+		WriteTimeout:                 30 * time.Second,
+		IdleTimeout:                  2 * time.Minute,
+		MaxHeaderBytes:               64 << 10,
+		DisableGeneralOptionsHandler: true,
+	}
 }
 
 func (s *Server) routes(identity string) *http.ServeMux {

@@ -12,11 +12,11 @@
 package transcript
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +57,9 @@ type Session struct {
 	// then text) and closes a turn with system records, so the last turn's
 	// reply may still be on its way.
 	Unfinished bool
+	// Skipped counts the records over MaxLine read past before the first
+	// turn; a turn counts those that came while it ran.
+	Skipped int
 }
 
 // Source says who put a turn's prompt into the conversation.
@@ -88,6 +91,12 @@ type Turn struct {
 	// work-in-progress text from an answer (an older CLI) leaves the
 	// agent's part out, and Earlier and Reply stand alone.
 	Items []TurnItem
+	// Skipped counts the records over MaxLine read past while the turn ran.
+	Skipped int
+	// PromptSkipped says the record that opened the turn was its prompt,
+	// over MaxLine and skipped: Prompt is empty, and the record is one of
+	// Skipped.
+	PromptSkipped bool
 }
 
 // ItemKind says what a TurnItem is.
@@ -171,15 +180,53 @@ func (t *Turn) lastAgent() int {
 	return -1
 }
 
-// Label is the session's name, else its first human prompt.
+// skippedPrompt is the turn a prompt over MaxLine opens, at ts if its
+// opening says when.
+func skippedPrompt(ts time.Time) Turn {
+	return Turn{Source: Human, Skipped: 1, PromptSkipped: true, Started: ts, Ended: ts}
+}
+
+// settle gives a turn whose skipped prompt had no time the time of the first
+// record it gets, so no duration runs from the zero time.
+func (t *Turn) settle(ts time.Time) {
+	if t.PromptSkipped && t.Started.IsZero() && !ts.IsZero() {
+		t.Started = ts
+		if t.Ended.Before(ts) {
+			t.Ended = ts
+		}
+	}
+}
+
+// SkippedNote says a parser read past a record longer than it reads.
+func SkippedNote() string {
+	return fmt.Sprintf("a record over %d MB was skipped", MaxLine>>20)
+}
+
+// skipRecord counts a record over MaxLine against cur, or against s before
+// the first turn.
+func (s *Session) skipRecord(cur *Turn) {
+	if cur != nil {
+		cur.Skipped++
+	} else {
+		s.Skipped++
+	}
+}
+
+// Label is the session's name, else its first human prompt, else the note
+// that a record was skipped when one was.
 func (s Session) Label() string {
 	if s.Title != "" {
 		return s.Title
 	}
+	skipped := s.Skipped > 0
 	for _, t := range s.Turns {
 		if t.Prompt != "" && t.Source == Human {
 			return t.Prompt
 		}
+		skipped = skipped || t.PromptSkipped
+	}
+	if skipped {
+		return SkippedNote()
 	}
 	return "(no prompt)"
 }
@@ -237,72 +284,6 @@ func DefaultRoots(realClaude, realCodex, realAgy, realCopilot string, overlayPar
 func isRealDir(p string) bool {
 	info, err := os.Lstat(p)
 	return err == nil && info.IsDir()
-}
-
-// List returns every session whose working directory is dir, newest first.
-// A session found under more than one root is listed once.
-func List(r Roots, dir string) ([]Session, error) {
-	dir = canonical(dir)
-	var paths []found
-	paths = append(paths, claudeFiles(r.ClaudeProjects, dir)...)
-	paths = append(paths, codexFiles(r.CodexSessions, dir, time.Time{})...)
-	paths = append(paths, agyFiles(r.AgyAppData, dir)...)
-
-	out := make([]*Session, len(paths))
-	parallel(len(paths), func(i int) {
-		var s *Session
-		var err error
-		switch paths[i].provider {
-		case "claude":
-			s, err = ParseClaude(paths[i].path)
-		case "codex":
-			s, err = ParseCodex(paths[i].path)
-		case "agy":
-			s, err = ParseAgy(paths[i].path)
-		}
-		if err != nil || s == nil {
-			return
-		}
-		if s.Cwd != "" && canonical(s.Cwd) != dir {
-			return // an encoded project name shared by two directories
-		}
-		out[i] = s
-	})
-
-	names := codexNames(r.CodexIndex)
-	byID := map[string]*Session{}
-	for _, s := range out {
-		if s == nil {
-			continue
-		}
-		if s.Provider == "codex" && s.Title == "" {
-			s.Title = names[s.ID]
-		}
-		key := s.Provider + "/" + s.ID
-		if prev, ok := byID[key]; ok && !s.Updated.After(prev.Updated) {
-			continue
-		}
-		byID[key] = s
-	}
-	list := make([]Session, 0, len(byID))
-	for _, s := range byID {
-		if len(s.Turns) == 0 {
-			continue // opened and closed without a word
-		}
-		list = append(list, *s)
-	}
-	sort.Slice(list, func(i, j int) bool {
-		if !list[i].Updated.Equal(list[j].Updated) {
-			return list[i].Updated.After(list[j].Updated)
-		}
-		return list[i].ID < list[j].ID
-	})
-	return list, nil
-}
-
-type found struct {
-	provider string
-	path     string
 }
 
 // canonical resolves symlinks (/tmp → /private/tmp) so a session recorded

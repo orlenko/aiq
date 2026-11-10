@@ -279,7 +279,10 @@ func (b *browser) handle(k keypress) (pick *transcript.Session, done bool) {
 		case k.code == keyEnd:
 			b.tsel = turns - 1
 		case k.code == keyEnter || k.code == keyRight:
-			b.view, b.dtop = viewTurn, 0
+			// A session whose only records were too long to read has no turn to open.
+			if turns > 0 {
+				b.view, b.dtop = viewTurn, 0
+			}
 		case k.code == keyBack || k.code == keyLeft:
 			b.view = viewSessions
 		}
@@ -453,7 +456,11 @@ func (b *browser) sessionHeader(s *transcript.Session) []line {
 	if tag := originTag(b.origin(s)); tag != "" {
 		meta = append(meta, tag)
 	}
-	meta = append(meta, fmt.Sprintf("%s → %s", whenLabel(s.Started, b.now), whenLabel(s.Updated, b.now)))
+	from := "--" // a session whose only prompt was too long to read may have no time yet
+	if !s.Started.IsZero() {
+		from = whenLabel(s.Started, b.now)
+	}
+	meta = append(meta, fmt.Sprintf("%s → %s", from, whenLabel(s.Updated, b.now)))
 	meta = append(meta, fmt.Sprintf("%d turn%s, %d tool%s", len(s.Turns), plural(len(s.Turns)), s.Tools(), plural(s.Tools())))
 	out := []line{{" " + transcript.Clean(s.Label()), sgrBold}, {" " + strings.Join(meta, " · "), sgrDim}}
 	if n, ok := b.live[s.ID]; ok {
@@ -468,21 +475,26 @@ func (b *browser) renderTurns() (head, body, foot []line) {
 	rows := b.h - len(head) - 2
 	const per = 3
 	b.ttop = scrollTo(b.ttop, b.tsel, per, rows)
+	if len(s.Turns) == 0 {
+		body = append(body, line{"   (no turns)", sgrDim})
+	}
 	for i := b.ttop; i < len(s.Turns) && (i-b.ttop+1)*per <= rows; i++ {
 		t := s.Turns[i]
 		cursor, numStyle := "  ", sgrCyan
 		if i == b.tsel {
 			cursor, numStyle = "▸ ", sgrReverse
 		}
-		info := fmt.Sprintf(" %s#%d  %s · %s", cursor, i+1, t.Started.Local().Format("Jan 2 15:04"), durationLabel(t.Ended.Sub(t.Started)))
+		info := fmt.Sprintf(" %s#%d  %s · %s", cursor, i+1, turnTime(t.Started, "Jan 2 15:04"), durationLabel(t.Ended.Sub(t.Started)))
 		if t.Tools > 0 {
 			info += fmt.Sprintf(" · %d tool%s", t.Tools, plural(t.Tools))
 		}
 		reply := transcript.Clean(turnReply(t))
-		if reply == "" {
+		if reply == "" && outputSkips(t) > 0 {
+			reply = "(" + transcript.SkippedNote() + ")"
+		} else if reply == "" {
 			reply = "(no reply)"
 		}
-		prompt := transcript.Clean(t.Prompt)
+		prompt := transcript.Clean(turnPrompt(t))
 		if t.Source != transcript.Human {
 			prompt = "[" + sourceLabel(t.Source) + "] " + prompt
 		}
@@ -496,27 +508,50 @@ func (b *browser) renderTurns() (head, body, foot []line) {
 	return head, body, foot
 }
 
+// turnPrompt is what the browser shows for a turn's prompt: the skipped line,
+// as aiq resume --print writes it, when the prompt was a record too long to read.
+func turnPrompt(t transcript.Turn) string {
+	if t.PromptSkipped {
+		return "(" + transcript.SkippedNote() + ")"
+	}
+	return t.Prompt
+}
+
+// outputSkips counts the turn's records over the cap other than its prompt:
+// answers and tool results the browser could not show.
+func outputSkips(t transcript.Turn) int {
+	if t.PromptSkipped {
+		return t.Skipped - 1
+	}
+	return t.Skipped
+}
+
 func (b *browser) renderTurn() (head, body, foot []line) {
 	s := b.current()
 	t := s.Turns[b.tsel]
 	head = []line{
 		{fmt.Sprintf(" %s · turn %d of %d", transcript.Clean(s.Label()), b.tsel+1, len(s.Turns)), sgrBold},
-		{fmt.Sprintf(" %s · %s · %d tool%s", t.Started.Local().Format("Mon Jan 2 15:04"), durationLabel(t.Ended.Sub(t.Started)), t.Tools, plural(t.Tools)), sgrDim},
+		{fmt.Sprintf(" %s · %s · %d tool%s", turnTime(t.Started, "Mon Jan 2 15:04"), durationLabel(t.Ended.Sub(t.Started)), t.Tools, plural(t.Tools)), sgrDim},
 		{},
 	}
 	width := b.w - 4
 	var text []line
 	text = append(text, line{" " + strings.ToUpper(sourceLabel(t.Source)), sgrCyan + sgrBold})
-	for _, l := range wrap(t.Prompt, width) {
+	for _, l := range wrap(turnPrompt(t), width) {
 		text = append(text, line{"   " + l, ""})
 	}
 	text = append(text, line{}, line{" " + strings.ToUpper(s.Provider), sgrCyan + sgrBold})
 	reply := turnReply(t)
-	if reply == "" {
+	if reply == "" && outputSkips(t) == 0 {
 		reply = "(no reply)"
 	}
-	for _, l := range wrap(reply, width) {
-		text = append(text, line{"   " + l, ""})
+	if reply != "" {
+		for _, l := range wrap(reply, width) {
+			text = append(text, line{"   " + l, ""})
+		}
+	}
+	for range outputSkips(t) {
+		text = append(text, line{"   (" + transcript.SkippedNote() + ")", sgrDim})
 	}
 	rows := b.h - len(head) - 2
 	b.dtop = clamp(b.dtop, 0, max(len(text)-rows, 0))

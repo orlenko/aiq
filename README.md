@@ -156,6 +156,31 @@ session named after the workspace and supervises it:
   headroom the session waits, the event log says so once, and it is moved
   when a window resets or an account becomes usable again. Idle rotation
   (above) still moves a quiet session without a wrap-up.
+- **It says why.** While a session waits, `aiq long list` and the status page
+  show a line under it. When no account can take over, the line says what
+  holds the session's own account, then names each account the move would
+  have tried and why it could not: exhausted until when, how much is left
+  against the floor, disabled, or a login to fix with the command that fixes
+  it (`aiq doctor` goes through them). It advises a login only when one would
+  free an account. The tmux window's name says the same in
+  short, and goes back to the account id once the session runs normally:
+
+  | Window name | Means |
+  | --- | --- |
+  | `codex/acct-a` | running normally |
+  | `codex/acct-a · moves after next turn` | will be asked to wrap up at its next prompt or turn end, then moves |
+  | `codex/acct-a · writing handoff note` | the wrap-up turn is running |
+  | `codex/acct-a · moves when this turn ends` | wrapped up, and you started another turn |
+  | `codex/acct-a · moving` | about to move, at the next check |
+  | `codex/acct-a · no account to move to` | nothing can take over; see `aiq long list` |
+  | `… · no account to move to: log in (aiq doctor)` | a login would free an account |
+  | `codex/acct-a · exhausted, no account to move to` | its own account is out too (or `disabled`, `logged out`, `unavailable`) |
+  | `codex/acct-a · exhausted, moving` | its own account is out; it moves at the next check |
+  | `codex/acct-a · cannot move` | a move was decided and could not start |
+
+  Disabling an account does not stop a session on it that has nowhere to go:
+  it stays, and `aiq long stop <lease id>` ends it (the id is in
+  `aiq long list`).
 
 ```text
 aiq long claude [--account <name>] [--model-tier N] [--effort N] [-- claude args...]
@@ -166,7 +191,7 @@ aiq long auto resume [--account <name>] [<id>]
                                     pick a session here and resume it as a long one
 aiq long resume [--account <name>] [<id>]
                                     the same, as it ran: no forced bypass or tier
-aiq long list                       leases, pane, drain state, idle/busy
+aiq long list                       leases, pane, drain state, idle/busy, why it waits
 aiq long drain .                    move this workspace's session now
 aiq long attach                     re-attach
 aiq long stop .                     end it
@@ -177,6 +202,12 @@ Choose the initial account with `aiq long codex --account acme -- --yolo`
 Put `--account` before CLI arguments; `--` ends aiq's options. The daemon
 can still move the session to another account later. If a long session already
 exists for the workspace, the command attaches to it instead of changing its account.
+An account at or below `drain_pct` is chosen only when nothing has more, or
+when `--account` names it. Either way `aiq long` says so before the CLI
+starts: the session moves once another account is free, after a handoff note
+if it has started work. A session on extra usage moves once an account has
+plan quota above `drain_pct`. Once the move is asked for, the tmux window's
+name says so too.
 
 `aiq long auto` chooses the first account the way `aiq run auto` does:
 across both pools, at the requested tier (default 1), with YOLO. Its
@@ -1013,6 +1044,7 @@ accounts[]:
   workers, interactive                live leases by kind
   windows[]: key, label, kind, scope, binding, used_pct, resets_at, window_seconds, source, observed_at
   leases[]: pid, mode, cwd, depth, started_at, drain, pane, workspace
+            why: a long session's reason line, free text for people whose wording may change
 rankings{"<provider>/<mode>": [{id, score, eligible, reason, terms}]}
 events[]: ts, provider, account, type, detail     aiq status --json only
 ```

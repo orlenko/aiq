@@ -417,6 +417,11 @@ func cmdRun(provider string, args []string) error {
 		if auto || mode != state.ModeWorker || attempts > 1 {
 			fmt.Fprintf(os.Stderr, "aiq: using %s%s\n", acc.ID, summary)
 		}
+		if mode == state.ModeLong && f.takeover == 0 {
+			if w := a.floorWarning(provider, acc.ID, time.Now()); w != "" {
+				fmt.Fprintln(os.Stderr, w)
+			}
+		}
 
 		now := time.Now()
 		lease := state.Lease{
@@ -478,7 +483,7 @@ func cmdRun(provider string, args []string) error {
 			// The account is otherwise invisible from inside the session, and
 			// a takeover changes it; the window name shows it in tmux's bar.
 			if pane := os.Getenv("TMUX_PANE"); pane != "" {
-				tmux.NameWindow(pane, acc.ID)
+				tmux.NameWindow(pane, tmux.SafeName(acc.ID))
 			}
 			args, err := longArgs(provider, self, f)
 			if err != nil {
@@ -794,6 +799,40 @@ func (a *app) launchEnv(provider string, acc state.Account, inheritAuthEnv bool,
 		"AIQ_ACCOUNT="+acc.Name,
 		"AIQ_DEPTH="+strconv.Itoa(depth),
 	)
+}
+
+// floorWarning is what `aiq long` says when it starts on an account at or
+// below the drain floor, judged as the supervisor judges it: the session
+// will move once another account is free, and one on extra usage once an
+// account has plan quota above the floor.
+func (a *app) floorWarning(provider, accountID string, now time.Time) string {
+	cands, err := a.pool.Candidates(provider)
+	if err != nil {
+		return ""
+	}
+	pol := a.pool.Policy(provider, state.ModeInteractive, now)
+	pol.FloorPct = a.cfg.Long.DrainPct
+	extra := false
+	for _, r := range selector.Rank(pol, cands) {
+		if r.ID == accountID {
+			extra = r.Rung == selector.RungExtra
+		}
+	}
+	for _, c := range cands {
+		if c.ID != accountID {
+			continue
+		}
+		// Headroom is 100 when no window is known, which is never at the floor.
+		h, _ := selector.Headroom(c.Windows, pol.ModelScope, now)
+		switch {
+		case h > pol.FloorPct:
+		case extra:
+			return fmt.Sprintf("aiq: %s has %.0f%% plan quota left and runs on extra usage: aiq moves this session to an account with more than %.0f%% plan quota once one is free, after a handoff note if it has started work", accountID, h, pol.FloorPct)
+		default:
+			return fmt.Sprintf("aiq: %s has %.0f%% left, at or below the %.0f%% drain floor: aiq moves this session to an account with more once one is free, after a handoff note if it has started work", accountID, h, pol.FloorPct)
+		}
+	}
+	return ""
 }
 
 // usageSummary renders "5h 31%, weekly 48%, fable 52%" from stored windows:

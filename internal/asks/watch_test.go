@@ -1046,3 +1046,20 @@ func TestBacklogIsPreparedOnce(t *testing.T) {
 		t.Fatalf("prepared %d texts for %d", f.w.prepared, 2*n)
 	}
 }
+
+// A turn whose prompt was a record too long to read has no reply from the
+// person to score: its empty prompt is skipped.
+func TestSkippedPromptIsNotRead(t *testing.T) {
+	at := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	list := entriesOf(transcript.Turn{Source: transcript.Human, PromptSkipped: true, Skipped: 1, Started: at, Items: []transcript.TurnItem{
+		{Kind: transcript.ItemAnswer, Text: "Done.", At: at},
+	}})
+	if len(list) != 2 || !list[0].skip || list[1].skip || list[1].text != "Done." {
+		t.Fatalf("%+v", list)
+	}
+	for _, e := range list {
+		if e.kind == EntryReply && e.text == "" && !e.skip {
+			t.Errorf("an empty reply from the person is scored: %+v", e)
+		}
+	}
+}

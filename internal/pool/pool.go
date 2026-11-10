@@ -166,7 +166,7 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 			// it has a definitive auth rejection, keep routing off the account
 			// until a successful poll clears PollError.
 			if acc.Provider == "codex" && strings.Contains(strings.ToLower(u.PollError), codex.ErrAuthRequired.Error()) {
-				c.UnavailableReason = "authentication required"
+				c.UnavailableReason, c.Unavailable = "authentication required", selector.UnavailableAuthRequired
 			}
 			// Claude polls through aiq's own grant, so the CLI is asked
 			// separately (probeClaudeLogin); a logged-out or wrongly
@@ -176,7 +176,10 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 			// (an interactive one stops and says why, a worker moves on and
 			// says so), so the account is never skipped silently.
 			if why := CLILoginProblem(acc, u); why != "" && u.CLILogin != state.LoginUnreadable {
-				c.UnavailableReason = why
+				c.UnavailableReason, c.Unavailable = why, selector.UnavailableLoginMismatch
+				if u.CLILogin == state.LoginOut {
+					c.Unavailable = selector.UnavailableLoginOut
+				}
 			}
 			if ok, _ := u.Extra.Spendable(time.Now()); ok && p.Cfg.Selection.ExtraUsage {
 				c.ExtraUsage = fmt.Sprintf("%s prepaid left", u.Extra.Money(u.Extra.BalanceMinor))
@@ -292,6 +295,9 @@ type LeaseView struct {
 	Drain         string `json:"drain,omitempty"`
 	Pane          string `json:"pane,omitempty"`
 	Workspace     string `json:"workspace,omitempty"`
+	// Why says why a long session cannot move, or what it waits for: free
+	// text for people, whose wording may change.
+	Why string `json:"why,omitempty"`
 }
 
 type AccountView struct {
@@ -398,11 +404,12 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 		order[id] = i
 	}
 	leasesBy := map[string][]LeaseView{}
+	whys, _ := p.St.LeaseWhys()
 	for _, l := range leases {
 		leasesBy[l.AccountID] = append(leasesBy[l.AccountID], LeaseView{
 			ID: l.ID, AccountID: l.AccountID, PID: l.PID, Hostname: l.Hostname, Mode: l.Mode, Cwd: l.Cwd,
 			Depth: l.Depth, ParentAccount: l.ParentAccount, Args: l.Args, StartedAt: l.StartedAt,
-			Drain: l.Drain, Pane: l.Pane, Workspace: l.Workspace,
+			Drain: l.Drain, Pane: l.Pane, Workspace: l.Workspace, Why: whys[state.LeaseRef{ID: l.ID, StartedAt: l.StartedAt}],
 		})
 	}
 	for _, provider := range Providers {

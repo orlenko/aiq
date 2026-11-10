@@ -252,10 +252,36 @@ func RespawnLong(pane, dir, command string) error {
 }
 
 // NameWindow names the window holding pane. Naming it turns tmux's
-// automatic renaming off for that window, so the name stays put.
+// automatic renaming off for that window, so the name stays put. tmux
+// expands formats in the name, so pass it through SafeName.
 func NameWindow(pane, name string) error {
+	if pane == "" {
+		return errNoPane
+	}
 	_, err := run("rename-window", "-t", pane, name)
 	return err
+}
+
+// WindowName is the name of pane's window. The daemon may run without a
+// UTF-8 locale (launchd sets none), and tmux then prints anything outside
+// ASCII as '_'; -u reads it as it is.
+func WindowName(pane string) (string, error) {
+	if pane == "" {
+		return "", errNoPane
+	}
+	return run("-u", "display-message", "-p", "-t", pane, "#{window_name}")
+}
+
+// SafeName makes s literal as a window name: tmux reads '#' as the start of a
+// format or a style and a trailing ';' as a command separator, so those and
+// control characters become '_'.
+func SafeName(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '#' || r == ';' || r < 0x20 || (r >= 0x7f && r < 0xa0) {
+			return '_'
+		}
+		return r
+	}, s)
 }
 
 // SelectPane brings pane and its window to the front.

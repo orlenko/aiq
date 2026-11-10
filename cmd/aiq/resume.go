@@ -73,6 +73,22 @@ func parseResumeArgs(args []string) (resumeOpts, error) {
 	return o, nil
 }
 
+// unreadableShown is how many unreadable transcripts are named one by one.
+const unreadableShown = 10
+
+// reportUnreadable names, one line each, the transcripts a list left out
+// because they could not be read, so the person can find the file; past
+// the first few, it counts the rest. It goes out before any screen is up.
+func reportUnreadable(w io.Writer, paths []string) {
+	for i, p := range paths {
+		if i == unreadableShown {
+			fmt.Fprintf(w, "aiq: …and %d more could not be read\n", len(paths)-i)
+			return
+		}
+		fmt.Fprintf(w, "aiq: could not read transcript %q\n", p)
+	}
+}
+
 // liveNote says where a session is running now, so resuming it does not
 // start a second copy of the same conversation.
 type liveNote struct {
@@ -100,7 +116,8 @@ func cmdResume(args []string) error {
 	if err != nil {
 		return err
 	}
-	sessions, err := transcript.List(defaultRoots(), dir)
+	sessions, unreadable, err := transcript.List(defaultRoots(), dir)
+	reportUnreadable(os.Stderr, unreadable)
 	if err != nil {
 		return err
 	}
@@ -108,7 +125,7 @@ func cmdResume(args []string) error {
 	origins := a.loadOrigins(dir, sessions)
 
 	if o.id != "" {
-		s, err := findSession(sessions, o.id)
+		s, err := findSession(sessions, unreadable, o.id)
 		if err != nil {
 			return err
 		}
@@ -169,7 +186,11 @@ func interactiveOnly(list []transcript.Session) []transcript.Session {
 	return out
 }
 
-func findSession(list []transcript.Session, prefix string) (transcript.Session, error) {
+// findSession finds the one session of list whose id is prefix or starts
+// with it. unreadable is what the list could not read, already named on
+// stderr: the session asked for may be among them, and --all would not
+// list it.
+func findSession(list []transcript.Session, unreadable []string, prefix string) (transcript.Session, error) {
 	var hits []transcript.Session
 	for _, s := range list {
 		if s.ID == prefix {
@@ -181,6 +202,9 @@ func findSession(list []transcript.Session, prefix string) (transcript.Session, 
 	}
 	switch len(hits) {
 	case 0:
+		if len(unreadable) > 0 {
+			return transcript.Session{}, fmt.Errorf("no readable session %q in this directory; the transcripts named above could not be read", prefix)
+		}
 		return transcript.Session{}, fmt.Errorf("no session %q in this directory (aiq resume --print --all lists them)", prefix)
 	case 1:
 		return hits[0], nil
@@ -263,6 +287,24 @@ func whenLabel(t, now time.Time) string {
 	return t.Format("2006-01-02")
 }
 
+// turnTime is a turn's start in layout, or "--" when it has none: a turn whose
+// prompt was too long to read takes its time from the next record, which may
+// not have come yet.
+func turnTime(t time.Time, layout string) string {
+	if t.IsZero() {
+		return "--"
+	}
+	return t.Local().Format(layout)
+}
+
+// youHeader heads a prompt the person typed, with its time when it has one.
+func youHeader(t time.Time) string {
+	if t.IsZero() {
+		return "▌ you"
+	}
+	return "▌ you · " + whenLabel(t, time.Now())
+}
+
 var modelDate = regexp.MustCompile(`-\d{8}$`)
 
 func agentLabel(s transcript.Session) string {
@@ -337,19 +379,31 @@ func turnsPlain(s transcript.Session, origins map[string]origin) string {
 		agent += " · " + tag
 	}
 	fmt.Fprintf(&b, "%s session %s · %s · %s\n", oneLine(s.Provider), oneLine(s.ID), agent, truncate(transcript.Clean(s.Label()), 100))
+	for range s.Skipped {
+		fmt.Fprintf(&b, "(%s)\n", transcript.SkippedNote())
+	}
 	for i, t := range s.Turns {
 		from := ""
 		if t.Source != transcript.Human {
 			from = " (" + sourceLabel(t.Source) + ")"
 		}
-		fmt.Fprintf(&b, "\n## Turn %d%s · %s · %s · %d tools\n\n", i+1, from, t.Started.Local().Format("2006-01-02 15:04"), durationLabel(t.Ended.Sub(t.Started)), t.Tools)
+		fmt.Fprintf(&b, "\n## Turn %d%s · %s · %s · %d tools\n\n", i+1, from, turnTime(t.Started, "2006-01-02 15:04"), durationLabel(t.Ended.Sub(t.Started)), t.Tools)
 		// sanitize first: it turns line and paragraph separators into line breaks, which
 		// the quote then marks.
-		fmt.Fprintf(&b, "> %s\n\n", strings.ReplaceAll(sanitize(t.Prompt), "\n", "\n> "))
+		shown := 0 // skipped records already shown
+		if t.PromptSkipped {
+			fmt.Fprintf(&b, "(%s)\n\n", transcript.SkippedNote())
+			shown = 1
+		} else {
+			fmt.Fprintf(&b, "> %s\n\n", strings.ReplaceAll(sanitize(t.Prompt), "\n", "\n> "))
+		}
 		if r := turnReply(t); r != "" {
 			fmt.Fprintf(&b, "%s\n", r)
 		} else {
 			b.WriteString("(no reply)\n")
+		}
+		for range t.Skipped - shown {
+			fmt.Fprintf(&b, "(%s)\n", transcript.SkippedNote())
 		}
 	}
 	return b.String()

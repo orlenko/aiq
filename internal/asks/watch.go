@@ -345,7 +345,8 @@ type raw struct {
 // entriesOf lists a turn's texts by index. The prompt is index 0, and Items follow, because
 // Items only grow as a file does. Readers that keep no items use Steers and Earlier.
 func entriesOf(t transcript.Turn) []raw {
-	out := []raw{{kind: EntryReply, text: t.Prompt, at: t.Started, skip: t.Source != transcript.Human}}
+	// A prompt too long to read is no reply to score.
+	out := []raw{{kind: EntryReply, text: t.Prompt, at: t.Started, skip: t.Source != transcript.Human || t.PromptSkipped}}
 	if len(t.Items) > 0 {
 		for _, it := range t.Items {
 			switch it.Kind {

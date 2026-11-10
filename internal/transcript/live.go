@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ func ClaudeOpen(realClaude string) map[string]int {
 	out := map[string]int{}
 	files, _ := filepath.Glob(filepath.Join(realClaude, "sessions", "*.json"))
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		data, err := ReadRegular(f)
 		if err != nil {
 			continue
 		}
@@ -42,11 +43,11 @@ func ClaudeOpen(realClaude string) map[string]int {
 // this is how to find it from the session's lease.
 func Written(r Roots, provider, dir string, since time.Time) []string {
 	dir = canonical(dir)
-	var paths []found
+	var paths []Candidate
 	switch provider {
 	case "codex":
-		for _, f := range codexFiles(r.CodexSessions, dir, since) {
-			meta, _ := codexMeta(f.path)
+		for _, f := range codexFiles(context.Background(), r.CodexSessions, dir, since) {
+			meta, _ := codexMeta(f.Path)
 			var source string
 			json.Unmarshal(meta.Source, &source)
 			if source == "exec" || strings.HasSuffix(meta.Originator, "_exec") || isSubagent(meta.Source) {
@@ -55,7 +56,7 @@ func Written(r Roots, provider, dir string, since time.Time) []string {
 			paths = append(paths, f)
 		}
 	case "agy":
-		paths = agyFiles(r.AgyAppData, dir)
+		paths = agyFiles(context.Background(), r.AgyAppData, dir)
 	}
 	type written struct {
 		path string
@@ -64,12 +65,12 @@ func Written(r Roots, provider, dir string, since time.Time) []string {
 	var out []written
 	seen := map[string]bool{}
 	for _, f := range paths {
-		info, err := os.Stat(f.path)
-		if err != nil || info.ModTime().Before(since) || seen[canonical(f.path)] {
+		info, err := os.Stat(f.Path)
+		if err != nil || info.ModTime().Before(since) || seen[canonical(f.Path)] {
 			continue
 		}
-		seen[canonical(f.path)] = true
-		out = append(out, written{f.path, info.ModTime()})
+		seen[canonical(f.Path)] = true
+		out = append(out, written{f.Path, info.ModTime()})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].mod.After(out[j].mod) })
 	list := make([]string, len(out))

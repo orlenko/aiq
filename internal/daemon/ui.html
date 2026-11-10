@@ -49,6 +49,7 @@
   .leases div { display: flex; gap: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .leases .mode { color: var(--accent); width: 82px; flex: none; }
   .leases .mode.worker { color: var(--muted); }
+  .leases div.why { display: block; white-space: pre-line; overflow: visible; color: var(--muted); margin: 0 0 4px 90px; }
   .terms { margin-top: 6px; font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   section.wide { grid-column: 1 / -1; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -93,7 +94,7 @@ function accountCard(a) {
   else if (a.exhausted) { const m = /until (.+)$/.exec(a.reason || ''); badge = `<span class="badge bad" title="${esc(a.reason || '')}">exhausted${m ? ' · ' + esc(m[1]) : ''}</span>`; }
   else if (!a.eligible) badge = `<span class="badge">${esc(a.ineligible)}</span>`;
   else badge = `<span class="badge ${a.rank === 1 ? 'rank1' : ''}">#${a.rank} · ${a.score.toFixed(1)}/h${a.rung === 1 ? ' · extra usage' : a.rung > 1 ? ' · last resort' : ''}</span>`;
-  const leases = a.leases.map(l => `<div><span class="mode ${esc(l.mode)}">${esc(l.mode)}${l.drain ? ' · ' + esc(l.drain) : ''}${l.depth ? ' d' + l.depth : ''}</span><span>${esc(l.pane || l.pid)}</span><span>${esc(l.workspace || l.cwd)}</span></div>`).join('');
+  const leases = a.leases.map(l => `<div><span class="mode ${esc(l.mode)}">${esc(l.mode)}${l.drain ? ' · ' + esc(l.drain) : ''}${l.depth ? ' d' + l.depth : ''}</span><span>${esc(l.pane || l.pid)}</span><span>${esc(l.workspace || l.cwd)}</span></div>${l.why ? `<div class="why">${esc(l.why)}</div>` : ''}`).join('');
   // Reset credits (Codex earned resets, Claude reset grants): a green chip
   // when one can be redeemed (aiq reset), a muted note when an exhausted
   // account has none so the absence is a fact, not a blank.

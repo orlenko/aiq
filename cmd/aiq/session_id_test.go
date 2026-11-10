@@ -111,7 +111,7 @@ esac
 		`{"type":"user",`+c+`,"timestamp":"2026-11-09T10:01:00Z","origin":{"kind":"human"},"promptSource":"typed","message":{"role":"user","content":"fix the bug"}}
 {"type":"assistant",`+c+`,"timestamp":"2026-11-09T10:01:05Z","message":{"id":"m1","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":"Fixed."}]}}
 `)
-	sessions, err := transcript.List(defaultRoots(), work)
+	sessions, _, err := transcript.List(defaultRoots(), work)
 	if err != nil {
 		t.Fatal(err)
 	}

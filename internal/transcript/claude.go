@@ -3,12 +3,14 @@ package transcript
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -20,17 +22,25 @@ var nonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
 const claudeMaxDirName = 200
 
 // claudeFiles lists the top-level transcripts of dir's project directory
-// under each root. Subagent transcripts live one level deeper and are left
-// out.
-func claudeFiles(roots []string, dir string) []found {
-	encodings := map[string]bool{nonAlnum.ReplaceAllString(dir, "-"): true}
+// under each root, until ctx ends. Subagent transcripts live one level
+// deeper and are left out.
+func claudeFiles(ctx context.Context, roots []string, dir string) []Candidate {
+	// dir's own name, and the working directory's when it is dir by another
+	// path, in a fixed order so the candidates come in one.
+	encodings := []string{nonAlnum.ReplaceAllString(dir, "-")}
 	if wd, err := os.Getwd(); err == nil && canonical(wd) == dir {
-		encodings[nonAlnum.ReplaceAllString(filepath.Clean(wd), "-")] = true
+		if enc := nonAlnum.ReplaceAllString(filepath.Clean(wd), "-"); enc != encodings[0] {
+			encodings = append(encodings, enc)
+		}
 	}
-	var out []found
+	sort.Strings(encodings)
+	var out []Candidate
 	seen := map[string]bool{}
 	for _, root := range roots {
-		for enc := range encodings {
+		for _, enc := range encodings {
+			if ctx.Err() != nil {
+				return out
+			}
 			var projects []string
 			if len(enc) <= claudeMaxDirName {
 				projects = []string{filepath.Join(root, enc)}
@@ -47,7 +57,7 @@ func claudeFiles(roots []string, dir string) []found {
 				for _, f := range files {
 					if !seen[f] {
 						seen[f] = true
-						out = append(out, found{"claude", f})
+						out = append(out, Candidate{"claude", f})
 					}
 				}
 			}
@@ -170,7 +180,7 @@ func ParseClaude(path string) (*Session, error) {
 			cur.Earlier = cur.Earlier[:len(cur.Earlier)-1]
 		}
 		// A local command such as /model leaves no work behind.
-		if !(curCommand && cur.Reply == "" && cur.Tools == 0 && len(cur.Earlier) == 0) {
+		if !(curCommand && cur.Reply == "" && cur.Tools == 0 && len(cur.Earlier) == 0 && cur.Skipped == 0) {
 			s.Turns = append(s.Turns, *cur)
 		}
 		cur = nil
@@ -197,12 +207,39 @@ func ParseClaude(path string) (*Session, error) {
 	}
 
 	r := bufio.NewReaderSize(f, 1<<16)
+	var buf []byte
 	for {
-		line, err := r.ReadBytes('\n')
+		line, over, err := readLine(r, &buf)
 		if err == nil {
 			s.Unfinished = false // a complete line; an assistant record sets it again
 		}
-		if len(line) > 0 && wanted(line) {
+		switch {
+		case over:
+			// The record's own cwd, as for a whole one, so a session of only
+			// such records is still listed under its own directory alone.
+			if s.Cwd == "" && wanted(line) && !ownTrue(line, "isSidechain") {
+				s.Cwd = ownString(line, "cwd")
+			}
+			switch claudeOver(line) {
+			case overIgnored: // one the parser reads no part of is no loss
+			case overPrompt:
+				lastMsg = ""
+				ts := parseTime(ownString(line, "timestamp"))
+				s.touch(ts)
+				start(skippedPrompt(ts), false)
+			case overQueued:
+				lastMsg = ""
+				if !open() {
+					ts := parseTime(ownString(line, "timestamp"))
+					s.touch(ts)
+					start(skippedPrompt(ts), false)
+					break
+				}
+				cur.Skipped++ // a steer
+			default:
+				s.skipRecord(cur)
+			}
+		case len(line) > 0 && wanted(line):
 			var rec claudeRecord
 			if json.Unmarshal(line, &rec) == nil {
 				ts := parseTime(rec.Timestamp)
@@ -301,6 +338,7 @@ func ParseClaude(path string) (*Session, error) {
 					if rec.IsSidechain || rec.Message == nil || cur == nil {
 						break
 					}
+					cur.settle(ts)
 					lastMsg = rec.Message.ID
 					s.Unfinished = err == nil
 					if m := rec.Message.Model; m != "" && m != "<synthetic>" {
@@ -384,6 +422,58 @@ func ParseClaude(path string) (*Session, error) {
 		}
 	}
 	return s, nil
+}
+
+// What a record over MaxLine was, as far as its opening shows.
+const (
+	overIgnored = iota // a record the parser reads nothing of
+	overOther          // part of the turn it came in
+	overPrompt         // a prompt: it opens a turn
+	overQueued         // a prompt typed while the agent worked
+)
+
+// claudeOver reads a record over MaxLine by its opening, under the rules
+// the parser applies to a whole one: a user record is a prompt unless it
+// shows itself as a sidechain, a compact summary, meta, the CLI's own or a
+// tool result. Fields after the opening are not seen.
+func claudeOver(opening []byte) int {
+	if !wanted(opening) {
+		return overIgnored
+	}
+	// The record's own type and its attachment's, not a key a payload holds.
+	// An attachment may come before the type, past the opening's end.
+	typ := ownString(opening, "type")
+	if att := ownValue(opening, "attachment"); (typ == "attachment" || typ == "") && ownString(att, "type") == "queued_command" {
+		// Under the rules for a whole one: a command is the person's unless
+		// what the opening shows says otherwise.
+		kind, mode := ownString(ownValue(att, "origin"), "kind"), ownString(att, "commandMode")
+		if ownTrue(opening, "isSidechain") || ownTrue(opening, "isMeta") || ownTrue(att, "isMeta") ||
+			kind != "" && kind != "human" || mode != "" && mode != "prompt" {
+			return overOther
+		}
+		return overQueued
+	}
+	if typ != "user" {
+		return overOther
+	}
+	for _, f := range []string{`"isSidechain":true`, `"isCompactSummary":true`, `"isMeta":true`, `"promptSource":"system"`} {
+		if bytes.Contains(opening, []byte(f)) {
+			return overOther
+		}
+	}
+	if _, rest, ok := bytes.Cut(opening, []byte(`"origin":{"kind":"`)); ok {
+		if kind, _, _ := cutString(rest); kind != "human" {
+			return overOther
+		}
+	}
+	if _, msg, ok := bytes.Cut(opening, []byte(`"message":`)); ok {
+		if _, content, ok := bytes.Cut(msg, []byte(`"content":`)); ok && bytes.HasPrefix(content, []byte("[")) {
+			if bytes.Contains(content[:min(len(content), 256)], []byte(`"type":"tool_result"`)) {
+				return overOther
+			}
+		}
+	}
+	return overPrompt
 }
 
 func wanted(line []byte) bool {
