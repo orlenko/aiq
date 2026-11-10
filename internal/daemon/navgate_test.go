@@ -571,6 +571,8 @@ func panicking() http.Handler {
 		case "/api/nav/flushed":
 			w.Write([]byte(`{"partial":`))
 			w.(http.Flusher).Flush()
+		case "/api/nav/flush":
+			w.(http.Flusher).Flush()
 		case "/api/nav/abort":
 			panic(http.ErrAbortHandler)
 		default:
@@ -639,13 +641,13 @@ func TestAPanicAfterWritingAborts(t *testing.T) {
 	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	for _, target := range []string{"/api/nav/header", "/api/nav/written", "/api/nav/flushed", "/api/nav/abort"} {
+	for _, target := range []string{"/api/nav/header", "/api/nav/written", "/api/nav/flushed", "/api/nav/flush", "/api/nav/abort"} {
 		if resp, body, err := rawResponse(t, addr, target, rightCredential); err == nil {
 			t.Errorf("%s: read in full: %d %q", target, resp.StatusCode, body)
 		}
 	}
 	got := logged.String()
-	for _, target := range []string{"header", "written", "flushed"} {
+	for _, target := range []string{"header", "written", "flushed", "flush"} {
 		if !strings.Contains(got, `panicked on "/api/nav/`+target+`": string`) {
 			t.Errorf("no log line for %s: %s", target, got)
 		}
