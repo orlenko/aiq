@@ -889,11 +889,7 @@ func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 // The navigator's server bounds a request that is slow to arrive: a request that
 // declares a body and never sends it loses its connection at the read deadline.
 func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
-	srv := navServer(navigatorHandler())
-	if srv.ReadHeaderTimeout != 5*time.Second || srv.ReadTimeout != 30*time.Second || srv.WriteTimeout != 30*time.Second ||
-		srv.IdleTimeout != 2*time.Minute || srv.MaxHeaderBytes != 64<<10 || !srv.DisableGeneralOptionsHandler {
-		t.Errorf("the navigator's server is %+v", srv)
-	}
+	srv := statusServer(navigatorHandler())
 	srv.ReadTimeout = 300 * time.Millisecond
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -916,7 +912,7 @@ func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
 
 // OPTIONS * is the navigator handler's to answer, not the server's.
 func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
-	srv := navServer(navigatorHandler())
+	srv := statusServer(navigatorHandler())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -937,5 +933,21 @@ func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound || resp.Header.Get("X-Frame-Options") != "DENY" {
 		t.Errorf("OPTIONS *: %d %v", resp.StatusCode, resp.Header)
+	}
+}
+
+// The daemon serves the navigator with the status page's deadlines and limits.
+func TestTheNavigatorHasTheStatusPagesSettings(t *testing.T) {
+	d := startDaemon(t, true)
+	d.mu.Lock()
+	srv := d.navSrv
+	d.mu.Unlock()
+	if srv == nil {
+		t.Fatal("the navigator is not served")
+	}
+	want := statusServer(nil)
+	if srv.ReadHeaderTimeout != want.ReadHeaderTimeout || srv.ReadTimeout != want.ReadTimeout || srv.WriteTimeout != want.WriteTimeout ||
+		srv.IdleTimeout != want.IdleTimeout || srv.MaxHeaderBytes != want.MaxHeaderBytes || srv.DisableGeneralOptionsHandler != want.DisableGeneralOptionsHandler {
+		t.Errorf("the navigator's server is %+v", srv)
 	}
 }

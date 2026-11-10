@@ -274,25 +274,11 @@ func (s *Server) startNavigator() net.Listener {
 // navigatorHandler is what the navigator's port serves. There is nothing to show yet.
 func navigatorHandler() http.Handler { return localOnly(http.NotFoundHandler()) }
 
-// navServer is the navigator's server. Its deadlines bound how long any one connection
-// can hold the port, whether it is slow to send a request or slow to read the answer.
-func navServer(h http.Handler) *http.Server {
-	return &http.Server{
-		Handler:           h,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    64 << 10,
-		// OPTIONS * goes to the handler too, so every request meets its checks.
-		DisableGeneralOptionsHandler: true,
-	}
-}
-
 // serveNavigator serves the navigator until its listener fails. Then the navigator is
 // gone, in the file and in /api/state at once, and the daemon goes on without it.
+// Its server has the status page's deadlines and limits.
 func (s *Server) serveNavigator(ln net.Listener) {
-	err := serveNav(navServer(navigatorHandler()), ln)
+	err := serveNav(statusServer(navigatorHandler()), ln)
 	ln.Close()
 	s.mu.Lock()
 	defer s.mu.Unlock()
