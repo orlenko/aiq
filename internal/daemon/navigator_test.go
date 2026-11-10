@@ -901,16 +901,19 @@ func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
 	}
 	go srv.Serve(ln)
 	defer srv.Close()
+	start := time.Now() // the server's deadline cannot start before the dial
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	start := time.Now()
 	fmt.Fprintf(conn, "POST /x HTTP/1.1\r\nHost: %s\r\nContent-Length: 1000\r\n\r\nab", ln.Addr())
 	if _, err := io.Copy(io.Discard, conn); err != nil {
 		t.Errorf("the connection was not closed: %v after %v", err, time.Since(start))
+	}
+	if d := time.Since(start); d < 150*time.Millisecond {
+		t.Errorf("closed after %v, before the deadline", d)
 	}
 }
 
@@ -954,7 +957,8 @@ func TestBothListenersHaveTheStatusServersSettings(t *testing.T) {
 			t.Errorf("the %s is not served", name)
 		} else if srv.ReadHeaderTimeout != want.ReadHeaderTimeout || srv.ReadTimeout != want.ReadTimeout || srv.WriteTimeout != want.WriteTimeout ||
 			srv.IdleTimeout != want.IdleTimeout || srv.MaxHeaderBytes != want.MaxHeaderBytes || srv.DisableGeneralOptionsHandler != want.DisableGeneralOptionsHandler {
-			t.Errorf("the %s's server is %+v", name, srv)
+			t.Errorf("the %s's server has header %v, read %v, write %v, idle %v, %d header bytes, general OPTIONS off %v", name,
+				srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout, srv.MaxHeaderBytes, srv.DisableGeneralOptionsHandler)
 		}
 	}
 }

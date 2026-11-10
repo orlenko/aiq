@@ -305,12 +305,13 @@ func (s *Server) Run() error {
 	return err
 }
 
-// statusServer is the status page's server. Its deadlines bound how long a
-// connection stays open while a request is slow to arrive, its answer is slow to
-// be read, or it sits idle between requests. They are far above what the page's
-// 5 s poll and its kept-alive connection need; an answer that takes longer is
-// lost, and no handler streams or waits. OPTIONS * goes to the handler too, so
-// every request meets its checks.
+// statusServer is the server of the status page and of the navigator. Its deadlines
+// bound how long a connection stays open while a request is slow to arrive, its
+// answer is slow to be read, or it sits idle between requests. They are far above
+// what the page's 5 s poll and its kept-alive connection need; an answer that takes
+// longer is lost, and no handler of either streams or waits. A navigator that does
+// needs its own settings, and the test that the two match changes with it.
+// OPTIONS * goes to the handler too, so every request meets its checks.
 func statusServer(h http.Handler) *http.Server {
 	return &http.Server{
 		Handler:                      h,
