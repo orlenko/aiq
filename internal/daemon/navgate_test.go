@@ -3,6 +3,7 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -79,13 +80,14 @@ func bearer(v string) map[string]string { return map[string]string{"Authorizatio
 func checkNavHeaders(t *testing.T, name string, h http.Header) {
 	t.Helper()
 	for k, want := range map[string]string{
-		"Cache-Control":              "no-store",
-		"X-Content-Type-Options":     "nosniff",
-		"Referrer-Policy":            "no-referrer",
-		"Cross-Origin-Opener-Policy": "same-origin",
-		"Origin-Agent-Cluster":       "?1",
-		"Content-Security-Policy":    navCSP,
-		"X-Frame-Options":            "DENY",
+		"Cache-Control":                "no-store",
+		"X-Content-Type-Options":       "nosniff",
+		"Referrer-Policy":              "no-referrer",
+		"Cross-Origin-Opener-Policy":   "same-origin",
+		"Origin-Agent-Cluster":         "?1",
+		"Content-Security-Policy":      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'",
+		"X-Frame-Options":              "DENY",
+		"Cross-Origin-Resource-Policy": "same-origin",
 	} {
 		if got := h.Get(k); got != want {
 			t.Errorf("%s: %s is %q, want %q", name, k, got, want)
@@ -93,6 +95,16 @@ func checkNavHeaders(t *testing.T, name string, h http.Header) {
 	}
 	if h.Get("X-Aiq-Build") == "" {
 		t.Errorf("%s: no X-Aiq-Build", name)
+	}
+}
+
+// checkHello requires hello's answer to hold exactly the protocol and the build: it is
+// unauthenticated, so it says nothing about the machine or its data.
+func checkHello(t *testing.T, name string, body []byte, build string) {
+	t.Helper()
+	var hello map[string]any
+	if err := json.Unmarshal(body, &hello); err != nil || len(hello) != 2 || hello["nav_version"] != float64(navProtocol) || hello["build"] != build {
+		t.Errorf("%s: hello is %q", name, body)
 	}
 }
 
@@ -160,6 +172,43 @@ func TestTheGateLetsOnlyAnAcceptedCredentialThrough(t *testing.T) {
 	}
 }
 
+// acceptAll is a verifier that accepts anything, for checking the gate's own refusals.
+type acceptAll struct{}
+
+func (acceptAll) Credential(string) bool   { return true }
+func (acceptAll) Proof(*http.Request) bool { return true }
+
+// The gate refuses a missing, empty, doubled or wrongly named credential itself, whatever
+// the verifier would say.
+func TestTheGateRefusesMalformedCredentialsItself(t *testing.T) {
+	h, api, _ := gateUnderTest(acceptAll{})
+	for name, header := range map[string][]string{
+		"no header":        nil,
+		"an empty bearer":  {"Bearer "},
+		"the bare scheme":  {"Bearer"},
+		"two headers":      {"Bearer a", "Bearer b"},
+		"lowercase scheme": {"bearer " + rightCredential},
+		"another scheme":   {"Basic " + rightCredential},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/api/nav/ping", nil)
+		r.RemoteAddr, r.Host = "127.0.0.1:50000", "127.0.0.1:50001"
+		for _, v := range header {
+			r.Header.Add("Authorization", v)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s: %d", name, w.Code)
+		}
+	}
+	if api.Load() != 0 {
+		t.Error("a malformed credential reached the API")
+	}
+	if w := (navRequest{target: "/api/nav/ping", header: bearer("anything")}).serve(h); w.Code != http.StatusOK {
+		t.Errorf("a well-formed credential the verifier accepts: %d", w.Code)
+	}
+}
+
 // localOnly and the gate refuse a request from another site even with the credential.
 func TestTheGateRefusesOtherSitesWithTheCredential(t *testing.T) {
 	h, api, _ := gateUnderTest(testVerifier{})
@@ -202,13 +251,10 @@ func TestTheExemptRoutesAreServedByTheGate(t *testing.T) {
 		h, api, proven := gateUnderTest(v)
 		for _, target := range []string{"/api/nav/hello", "/api/nav/hello?"} {
 			w := navRequest{target: target}.serve(h)
-			var hello struct {
-				Version int    `json:"nav_version"`
-				Build   string `json:"build"`
-			}
-			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &hello) != nil || hello.Version != navProtocol || hello.Build != "test-build" {
+			if w.Code != http.StatusOK {
 				t.Errorf("%T: %s: %d %q", v, target, w.Code, w.Body)
 			}
+			checkHello(t, target, w.Body.Bytes(), "test-build")
 			checkNavHeaders(t, target, w.Header())
 		}
 		if w := (navRequest{method: http.MethodPost, target: "/api/nav/login"}).serve(h); w.Code != http.StatusForbidden || w.Body.Len() != 0 {
@@ -247,6 +293,7 @@ func TestNonCanonicalPathsAreRefused(t *testing.T) {
 		"/api/na%76/ping", "/%61pi/nav/ping", "/api%2Fnav/ping", "/api/nav/%2e%2e/nav/ping",
 		"/api/nav/hello/", "/api/nav/login/", "//api/nav/hello", "/api//nav/ping",
 		"/api/nav/./hello", "/api/nav/../nav/hello", "/api/nav/ping/.", "/./api/nav/ping", "/api/",
+		"/api/nav/hello%3F", "/api/nav/a%20b", "/api/nav/%25",
 	} {
 		for _, header := range []map[string]string{nil, {"Authorization": "Bearer " + rightCredential, "X-Test-Proof": "yes"}} {
 			for _, method := range []string{http.MethodGet, http.MethodPost} {
@@ -297,26 +344,11 @@ func TestPagesNeverReachTheAPI(t *testing.T) {
 // is what the test exercises.
 func rawGet(t *testing.T, addr, target, credential string) (int, string) {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	resp, body, err := rawResponse(t, addr, target, credential)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	req := "GET " + target + " HTTP/1.1\r\nHost: " + addr + "\r\nConnection: close\r\n"
-	if credential != "" {
-		req += "Authorization: Bearer " + credential + "\r\n"
-	}
-	if _, err := io.WriteString(conn, req+"\r\n"); err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(b)
+	return resp.StatusCode, body
 }
 
 // The membership rule, proved against a mounted handler that serves every path, over a
@@ -329,7 +361,7 @@ func TestTheMountedHandlerIsReachedOnlyThroughTheGate(t *testing.T) {
 		s.MountNavigator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(marker)) }))
 		srv := httptest.NewServer(s.navigatorHandler())
 		addr := strings.TrimPrefix(srv.URL, "http://")
-		for _, target := range []string{"/api/na%76/sessions", "/%61pi/nav/ping", "/api%2Fnav/ping", "/API/nav/ping", "/api/nav/./ping", "/api/nav//ping"} {
+		for _, target := range []string{"/api/na%76/sessions", "/%61pi/nav/ping", "/api%2Fnav/ping", "/API/nav/ping", "/api/nav/./ping", "/api/nav//ping", "/api/nav/hello%3F", "/api/nav/a%20b", "/api/nav/%25"} {
 			for _, credential := range []string{"", rightCredential} {
 				if code, body := rawGet(t, addr, target, credential); code == http.StatusOK || strings.Contains(body, marker) {
 					t.Errorf("%T: %s with credential %v: %d %q", v, target, credential != "", code, body)
@@ -353,24 +385,36 @@ func TestTheNavigatorAnswersHello(t *testing.T) {
 	port, token := navOnFields(t, d.s, navFile(t))
 	nav := "http://127.0.0.1:" + strconv.Itoa(port)
 	resp, body := getURL(t, nav+"/api/nav/hello")
-	var hello struct {
-		Version int    `json:"nav_version"`
-		Build   string `json:"build"`
-	}
-	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &hello) != nil || hello.Version != 1 || hello.Build != navBuild() {
+	if resp.StatusCode != 200 || navProtocol != 1 {
 		t.Fatalf("hello: %d %q", resp.StatusCode, body)
 	}
+	checkHello(t, "hello", []byte(body), navBuild())
 	checkNavHeaders(t, "hello", resp.Header)
-	if resp.Header.Get("X-Aiq-Build") != hello.Build {
-		t.Errorf("X-Aiq-Build %q, hello says %q", resp.Header.Get("X-Aiq-Build"), hello.Build)
+	if resp.Header.Get("X-Aiq-Build") != navBuild() {
+		t.Errorf("X-Aiq-Build %q, want %q", resp.Header.Get("X-Aiq-Build"), navBuild())
 	}
 	seen := []string{body}
-	for _, target := range []string{"/api/nav/ping", "/api/nav/info", "/", "/api/na%76/ping"} {
-		resp, body := getURL(t, nav+target)
+	for _, vs := range resp.Header {
+		seen = append(seen, vs...)
+	}
+	for _, target := range []string{"/api/nav/ping", "/api/nav/info", "/", "/api/na%76/ping", "/api/nav/ping?token=" + token} {
+		req, err := http.NewRequest(http.MethodGet, nav+target, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The token presented as a credential is refused like any other value: deny-all
+		// is what β ships.
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if resp.StatusCode == 200 {
 			t.Errorf("%s: 200", target)
 		}
-		seen = append(seen, body)
+		seen = append(seen, string(b))
 		for _, vs := range resp.Header {
 			seen = append(seen, vs...)
 		}
@@ -397,6 +441,11 @@ func TestTheStatusPageLinksOnlyToAPortNumber(t *testing.T) {
 	if n := strings.Count(page, "navigator_port"); n != 1 || !strings.Contains(page, "sessionsLink(daemon.navigator_port)") {
 		t.Errorf("ui.html uses navigator_port %d times, not only through sessionsLink", n)
 	}
+	// A refresh that fails takes the link down, so it never points at a port the daemon
+	// may no longer hold.
+	if !strings.Contains(page, "} catch (e) {\n    sessionsLink(null);") {
+		t.Error("refresh's catch does not take the link down")
+	}
 	fn := page[begin:end]
 	for _, banned := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "location"} {
 		if strings.Contains(fn, banned) {
@@ -405,22 +454,53 @@ func TestTheStatusPageLinksOnlyToAPortNumber(t *testing.T) {
 	}
 	node, err := exec.LookPath("node")
 	if err != nil {
+		// CI images ship Node, so a CI run that skips this has not checked the link.
+		if os.Getenv("CI") != "" {
+			t.Fatal("node is not installed, and CI is set")
+		}
 		t.Skip("node is not installed")
 	}
 	script := `
-const slot = { children: [], replaceChildren() { this.children = []; }, appendChild(c) { this.children.push(c); } };
+let created = 0;
+function element(tag) {
+  created++;
+  return {
+    tag, className: '', href: '', textContent: '', attrs: {}, children: [],
+    setAttribute(k, v) { this.attrs[k] = String(v); },
+    appendChild(c) { this.children.push(c); },
+    replaceChildren() { this.children = []; },
+  };
+}
+const slot = element('span');
 const document = {
   getElementById(id) { if (id !== 'navlink') throw new Error(id); return slot; },
-  createElement(tag) { return { tag, className: '', href: '', textContent: '' }; },
+  createElement: element,
 };
 ` + fn + `
+function shown() {
+  const a = slot.children[0];
+  if (!a) return '-';
+  const parts = a.children.map(c => c.tag + JSON.stringify(c.attrs) + c.textContent);
+  return a.tag + ' ' + a.className + ' ' + a.href + ' ' + a.textContent + ' ' + parts.join(',');
+}
 const results = [];
 for (const port of [50001, 1, 65535, '50001', 50001.5, 0, -1, 65536, null, undefined, NaN, Infinity, 'javascript:alert(1)', {}, [50001], true]) {
   shownPort = undefined;
   sessionsLink(port);
-  const a = slot.children[0];
-  results.push(a ? a.tag + ' ' + a.href + ' ' + a.textContent : '-');
+  results.push(shown());
 }
+// A refresh with the same port leaves the link alone; a port that goes and comes back
+// redraws it.
+shownPort = undefined;
+sessionsLink(null);
+created = 0;
+sessionsLink(50001);
+sessionsLink(50001);
+results.push('created ' + created);
+sessionsLink(null);
+results.push(shown());
+sessionsLink(50001);
+results.push('created ' + created + ' ' + shown());
 console.log(JSON.stringify(results));
 `
 	path := filepath.Join(t.TempDir(), "link.js")
@@ -435,34 +515,168 @@ console.log(JSON.stringify(results));
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	want := []string{"a http://127.0.0.1:50001/ Sessions →", "a http://127.0.0.1:1/ Sessions →", "a http://127.0.0.1:65535/ Sessions →"}
-	for len(want) < len(got) {
+	link := func(port string) string {
+		return "a nav http://127.0.0.1:" + port + `/ Sessions span{"aria-hidden":"true"}` + "\u00a0→"
+	}
+	want := []string{link("50001"), link("1"), link("65535")}
+	for len(want) < 16 {
 		want = append(want, "-")
 	}
+	want = append(want, "created 2", "-", "created 4 "+link("50001"))
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("links: %q", got)
 	}
 }
 
-// A handler that panics answers 500, so the page sees an answer from a live daemon and
-// not a dropped connection, and the port keeps serving.
-func TestAPanicBehindTheGateIsAnAnswer(t *testing.T) {
+// rawResponse sends a request line exactly as written and reads the answer. err is set
+// when the answer cannot be read in full.
+func rawResponse(t *testing.T, addr, target, credential string) (resp *http.Response, body string, err error) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	req := "GET " + target + " HTTP/1.1\r\nHost: " + addr + "\r\nConnection: close\r\n"
+	if credential != "" {
+		req += "Authorization: Bearer " + credential + "\r\n"
+	}
+	if _, err := io.WriteString(conn, req+"\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	return resp, string(b), err
+}
+
+// panicking serves routes that panic at each point of writing a response.
+func panicking() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/nav/before":
+			panic("a test panic carrying " + rightCredential)
+		case "/api/nav/length":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "100")
+			panic(errors.New("a test error"))
+		case "/api/nav/header":
+			w.WriteHeader(http.StatusOK)
+		case "/api/nav/written":
+			w.Write([]byte(`{"partial":`))
+		case "/api/nav/flushed":
+			w.Write([]byte(`{"partial":`))
+			w.(http.Flusher).Flush()
+		case "/api/nav/abort":
+			panic(http.ErrAbortHandler)
+		default:
+			if strings.HasPrefix(r.URL.Path, "/api/nav/long/") {
+				panic("long")
+			}
+			w.Write([]byte(marker))
+			return
+		}
+		panic("a test panic after writing")
+	})
+}
+
+// A handler that panics before writing answers a whole 500 with the navigator's headers,
+// so the page sees an answer from a live daemon and not a dropped connection, and the
+// port keeps serving. The log names the panic's type, never its value.
+func TestAPanicBeforeWritingIsAnAnswer(t *testing.T) {
 	logged := &lockedBuffer{}
 	s := New(config.Default(), nil, log.New(logged, "", 0))
 	s.navVerifier = testVerifier{}
-	s.MountNavigator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { panic("a test panic") }))
+	s.MountNavigator(panicking())
 	srv := httptest.NewServer(s.navigatorHandler())
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	for range 2 {
-		if code, body := rawGet(t, addr, "/api/nav/ping", rightCredential); code != http.StatusInternalServerError || body != "" {
-			t.Errorf("a panic got %d %q", code, body)
+	for _, target := range []string{"/api/nav/before", "/api/nav/before", "/api/nav/length"} {
+		resp, body, err := rawResponse(t, addr, target, rightCredential)
+		if err != nil {
+			t.Fatalf("%s: %v", target, err)
+		}
+		if resp.StatusCode != http.StatusInternalServerError || body != "" || resp.ContentLength > 0 || resp.Header.Get("Content-Type") != "" {
+			t.Errorf("%s: %d, length %d, type %q, %q", target, resp.StatusCode, resp.ContentLength, resp.Header.Get("Content-Type"), body)
+		}
+		checkNavHeaders(t, target, resp.Header)
+	}
+	if resp, body, err := rawResponse(t, addr, "/api/nav/ping", rightCredential); err != nil || resp.StatusCode != http.StatusOK || body != marker {
+		t.Errorf("after a panic: %v %v %q", err, resp, body)
+	}
+	got := logged.String()
+	for _, want := range []string{`navigator: a handler panicked on "/api/nav/before": string`, `navigator: a handler panicked on "/api/nav/length": *errors.errorString`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the log has no %q: %s", want, got)
 		}
 	}
-	if code, _ := rawGet(t, addr, "/api/nav/hello", ""); code != http.StatusOK {
-		t.Errorf("hello after a panic: %d", code)
+	if strings.Contains(got, "a test") || strings.Contains(got, rightCredential) {
+		t.Errorf("the log carries a panic's value: %s", got)
 	}
-	if !strings.Contains(logged.String(), "navigator: a handler panicked on /api/nav/ping: a test panic") {
-		t.Errorf("the panic was not logged: %s", logged)
+
+	long := "/api/nav/long/" + strings.Repeat("x", 4000)
+	rawResponse(t, addr, long, rightCredential)
+	_, line, _ := strings.Cut(logged.String(), "/api/nav/long/")
+	line, _, _ = strings.Cut(line, "\n")
+	if want := strconv.Quote(long[:navPanicPathMax])[len(`"/api/nav/long/`):] + ": string"; line != want {
+		t.Errorf("a long path is logged as %d bytes: %.300s", len(line), line)
+	}
+}
+
+// A handler that panics after its response has begun has its connection aborted, so the
+// client cannot take a cut-short answer for a whole one. ErrAbortHandler aborts without
+// a log line.
+func TestAPanicAfterWritingAborts(t *testing.T) {
+	logged := &lockedBuffer{}
+	s := New(config.Default(), nil, log.New(logged, "", 0))
+	s.navVerifier = testVerifier{}
+	s.MountNavigator(panicking())
+	srv := httptest.NewServer(s.navigatorHandler())
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	for _, target := range []string{"/api/nav/header", "/api/nav/written", "/api/nav/flushed", "/api/nav/abort"} {
+		if resp, body, err := rawResponse(t, addr, target, rightCredential); err == nil {
+			t.Errorf("%s: read in full: %d %q", target, resp.StatusCode, body)
+		}
+	}
+	got := logged.String()
+	for _, target := range []string{"header", "written", "flushed"} {
+		if !strings.Contains(got, `panicked on "/api/nav/`+target+`": string`) {
+			t.Errorf("no log line for %s: %s", target, got)
+		}
+	}
+	if strings.Contains(got, "abort") {
+		t.Errorf("ErrAbortHandler was logged: %s", got)
+	}
+}
+
+// panickingVerifier panics in both of its methods.
+type panickingVerifier struct{}
+
+func (panickingVerifier) Credential(string) bool   { panic("a test credential panic") }
+func (panickingVerifier) Proof(*http.Request) bool { panic("a test proof panic") }
+
+// A verifier that panics is inside the recover: the answer is a 500 with the navigator's
+// headers, and nothing behind the gate runs.
+func TestAPanickingVerifierIsAnAnswer(t *testing.T) {
+	h, api, proven := gateUnderTest(panickingVerifier{})
+	for _, c := range []navRequest{
+		{target: "/api/nav/ping", header: bearer(rightCredential)},
+		{method: http.MethodPost, target: "/api/nav/revoke", header: map[string]string{"X-Test-Proof": "yes"}},
+		{target: "/api/nav/info"},
+	} {
+		w := c.serve(h)
+		if w.Code != http.StatusInternalServerError || w.Body.Len() != 0 {
+			t.Errorf("%s: %d %q", c.target, w.Code, w.Body)
+		}
+		checkNavHeaders(t, c.target, w.Header())
+	}
+	if api.Load() != 0 || proven.Load() != 0 {
+		t.Error("a request passed a verifier that panicked")
 	}
 }

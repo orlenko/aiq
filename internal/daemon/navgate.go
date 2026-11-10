@@ -135,10 +135,48 @@ func (g *navGate) proven(h http.Handler, w http.ResponseWriter, r *http.Request)
 	h.ServeHTTP(w, r)
 }
 
-// navRecover answers 500 when a handler panics. Left to the server, a panic drops the
-// connection, which a page cannot tell from a daemon that has gone.
+// navPanicPathMax caps the path in the log line for a panic.
+const navPanicPathMax = 128
+
+// navEntityHeaders describe a body, so a 500 in place of that body must not carry them.
+var navEntityHeaders = []string{
+	"Content-Length", "Content-Type", "Content-Encoding", "Content-Disposition",
+	"Content-Range", "Transfer-Encoding", "ETag", "Last-Modified",
+}
+
+// startedWriter records whether a response has begun.
+type startedWriter struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (w *startedWriter) WriteHeader(code int) {
+	w.started = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *startedWriter) Write(b []byte) (int, error) {
+	w.started = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *startedWriter) Flush() {
+	w.started = true
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *startedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// navRecover answers 500 when a handler panics before it has written anything. Left to
+// the server, a panic drops the connection, which a page cannot tell from a daemon that
+// has gone. A panic after the response has begun aborts the connection, so the client
+// sees a failed read and not a whole-looking answer cut short. The log names the
+// panic's type and not its value, which could carry what a handler was serving.
 func navRecover(logf func(string, ...any), next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &startedWriter{ResponseWriter: w}
 		defer func() {
 			v := recover()
 			if v == nil {
@@ -147,10 +185,20 @@ func navRecover(logf func(string, ...any), next http.Handler) http.Handler {
 			if v == http.ErrAbortHandler {
 				panic(v)
 			}
-			logf("navigator: a handler panicked on %s: %v", r.URL.Path, v)
+			p := r.URL.Path
+			if len(p) > navPanicPathMax {
+				p = p[:navPanicPathMax]
+			}
+			logf("navigator: a handler panicked on %q: %T", p, v)
+			if sw.started {
+				panic(http.ErrAbortHandler)
+			}
+			for _, k := range navEntityHeaders {
+				w.Header().Del(k)
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(sw, r)
 	})
 }
 

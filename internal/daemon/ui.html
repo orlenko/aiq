@@ -18,7 +18,8 @@
   header h1 { margin: 0; font-size: 18px; font-weight: 650; }
   header .meta { color: var(--muted); font-size: 12px; }
   header a.help { margin-left: auto; color: var(--accent); text-decoration: none; font-size: 13px; }
-  header a.nav { color: var(--accent); text-decoration: none; font-size: 13px; }
+  header a.nav { color: var(--accent); text-decoration: none; font-size: 13px; white-space: nowrap; }
+  #navlink:empty { display: none; }
   header button { margin-left: 8px; font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); cursor: pointer; }
   main { padding: 16px 20px; display: grid; gap: 16px; grid-template-columns: 1fr; }
   .columns { display: grid; gap: 16px; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); }
@@ -145,7 +146,11 @@ function sessionsLink(port) {
   const a = document.createElement('a');
   a.className = 'nav';
   a.href = 'http://127.0.0.1:' + port + '/';
-  a.textContent = 'Sessions \u2192';
+  a.textContent = 'Sessions';
+  const arrow = document.createElement('span');
+  arrow.setAttribute('aria-hidden', 'true');
+  arrow.textContent = '\u00a0\u2192';
+  a.appendChild(arrow);
   slot.appendChild(a);
 }
 // sessionsLink:end
@@ -170,6 +175,7 @@ async function refresh() {
     html += rankingTable(view) + '<section class="card wide"><h2>events</h2><div class="empty">not shown here: run <code>aiq status --events 50</code></div></section>';
     document.getElementById('main').innerHTML = html;
   } catch (e) {
+    sessionsLink(null);
     document.getElementById('meta').textContent = 'daemon unreachable: ' + e;
   }
 }

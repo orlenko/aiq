@@ -237,9 +237,10 @@ Assets and what protects them:
   from those it has not drawn in its last 256 draws, with the same loopback checks as the
   status page, and the status page links to it. It writes a secret token, new at each
   start, to the owner-only `ui-token` file and never sends or logs it. The port is not a
-  secret. The navigator refuses any path with an escape or one that is not in its
-  simplest form, answers `/api/nav/hello` with its version and build to anyone who passes
-  the loopback checks, and refuses everything else under `/api/` without a credential,
+  secret. The navigator refuses any path with a percent sign or one that cleaning would
+  change (`.`, `..`, `//`, a trailing slash). It answers `/api/nav/hello` with its version
+  and build to any request that passes the loopback checks and does not come from a page
+  on another origin, and refuses everything else under `/api/` without a credential,
   which nothing issues yet.
 
 Untrusted input: whatever a session reads can carry instructions, a note can pass them to
