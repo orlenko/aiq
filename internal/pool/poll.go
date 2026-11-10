@@ -111,27 +111,7 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		if err != nil {
 			return p.recordError(a, err.Error())
 		}
-		if err := p.St.ReplaceWindows(a.ID, SourceAIQ, u.Windows); err != nil {
-			return err
-		}
-		p.St.PruneWindowSources(a.ID, SourceAIQ, "statusline")
-		// The poll reports every window Claude has open. A status-line
-		// window it did not confirm is older news: the usage API leaves the
-		// five-hour window out while none is running.
-		p.St.DeleteWindowsBefore(a.ID, "statusline", now.Unix())
-		prev, _, _ := p.St.GetUsage(a.ID)
-		p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), u.ResetCredits, "", now)
-		p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)
-		// A failed balance read keeps the last balance and auto-reload
-		// reading together, with their own timestamp, so they age out of
-		// Spendable instead of passing for fresh. A missing extra_usage
-		// block clears the record.
-		if e := u.Extra; e != nil && e.Enabled && e.BalanceAt == 0 && prev.Extra != nil {
-			e.BalanceMinor, e.AutoReload, e.BalanceAt = prev.Extra.BalanceMinor, prev.Extra.AutoReload, prev.Extra.BalanceAt
-		}
-		p.St.SetExtraUsage(a.ID, u.Extra)
-		p.updateIdentity(a, u.Identity)
-		return nil
+		return p.saveClaudeUsage(a, u, now)
 	case "codex":
 		codexCmd := p.command("codex")
 		if codexCmd == nil {
@@ -155,6 +135,31 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		// Copilot polling not implemented yet.
 		return nil
 	}
+	return nil
+}
+
+// saveClaudeUsage stores a successful Claude poll.
+func (p *Pool) saveClaudeUsage(a state.Account, u *claude.Usage, now time.Time) error {
+	if err := p.St.ReplaceWindows(a.ID, SourceAIQ, u.Windows); err != nil {
+		return err
+	}
+	p.St.PruneWindowSources(a.ID, SourceAIQ, "statusline")
+	// The poll reports every window Claude has open. A status-line
+	// window it did not confirm is older news: the usage API leaves the
+	// five-hour window out while none is running.
+	p.St.DeleteWindowsBefore(a.ID, "statusline", now.Unix())
+	prev, _, _ := p.St.GetUsage(a.ID)
+	p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), u.ResetCredits, "", now)
+	p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)
+	// A failed balance read keeps the last balance and auto-reload
+	// reading together, with their own timestamp, so they age out of
+	// Spendable instead of passing for fresh. A missing extra_usage
+	// block clears the record.
+	if e := u.Extra; e != nil && e.Enabled && e.BalanceAt == 0 && prev.Extra != nil {
+		e.BalanceMinor, e.AutoReload, e.BalanceAt = prev.Extra.BalanceMinor, prev.Extra.AutoReload, prev.Extra.BalanceAt
+	}
+	p.St.SetExtraUsage(a.ID, u.Extra)
+	p.updateIdentity(a, u.Identity)
 	return nil
 }
 
