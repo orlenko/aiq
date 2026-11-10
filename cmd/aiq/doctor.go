@@ -310,10 +310,15 @@ func (a *app) doctorChecks() *doctorReport {
 	return r
 }
 
-// newestObservation is when any of an account's windows was last seen. A
-// window the provider stopped reporting keeps its old time, so the first
-// window says nothing about how fresh the telemetry is.
-func newestObservation(ws []state.Window) int64 {
+// telemetryTime is when the account's telemetry was last refreshed: the last
+// successful poll, which a status line does not move, so a running session
+// cannot make a stalled poll look fresh. Without a poll record, the newest
+// window. Not the first window: one the provider stopped reporting keeps its
+// old time and sorts first.
+func telemetryTime(u state.Usage, ok bool, ws []state.Window) int64 {
+	if ok && u.ObservedAt > 0 {
+		return u.ObservedAt
+	}
 	var newest int64
 	for _, w := range ws {
 		newest = max(newest, w.ObservedAt)
@@ -402,7 +407,7 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 	case len(ws) == 0:
 		check(false, &need.poll, "%s: no telemetry yet (aiq account poll)", acc.ID)
 	default:
-		age := now.Sub(time.Unix(newestObservation(ws), 0))
+		age := now.Sub(time.Unix(telemetryTime(u, ok, ws), 0))
 		stale := age > 2*time.Duration(a.cfg.Poll.IntervalSeconds)*time.Second+time.Minute
 		if stale && staleFix != nil {
 			r.check(false, staleFix, "%s: telemetry %s old (aiq cannot reach a daemon)", acc.ID, age.Round(time.Second))

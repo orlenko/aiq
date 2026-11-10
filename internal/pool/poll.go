@@ -144,10 +144,10 @@ func (p *Pool) saveClaudeUsage(a state.Account, u *claude.Usage, now time.Time) 
 		return err
 	}
 	p.St.PruneWindowSources(a.ID, SourceAIQ, "statusline")
-	// The poll reports every window Claude has open. A status-line
-	// window it did not confirm is older news: the usage API leaves the
-	// five-hour window out while none is running.
-	p.St.DeleteWindowsBefore(a.ID, "statusline", now.Unix())
+	// The usage API leaves the five-hour window out while none is running,
+	// so the status line's last one would stay for as long as the account
+	// is idle. Once its reset time has passed it describes nothing.
+	p.St.DeleteRolledWindows(a.ID, "statusline", now.Unix())
 	prev, _, _ := p.St.GetUsage(a.ID)
 	p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), u.ResetCredits, "", now)
 	p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)

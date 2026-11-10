@@ -524,10 +524,11 @@ func (s *Store) PruneWindowSources(accountID string, keep ...string) error {
 	return err
 }
 
-// DeleteWindowsBefore deletes an account's windows from source observed
-// before the given time.
-func (s *Store) DeleteWindowsBefore(accountID, source string, before int64) error {
-	_, err := s.db.Exec(`DELETE FROM windows WHERE account_id = ? AND source = ? AND COALESCE(observed_at,0) < ?`, accountID, source, before)
+// DeleteRolledWindows deletes an account's windows from source whose reset
+// time has passed: they describe a window that is over. A window with no
+// reset time is kept.
+func (s *Store) DeleteRolledWindows(accountID, source string, now int64) error {
+	_, err := s.db.Exec(`DELETE FROM windows WHERE account_id = ? AND source = ? AND COALESCE(resets_at,0) > 0 AND resets_at <= ?`, accountID, source, now)
 	return err
 }
 

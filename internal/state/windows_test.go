@@ -5,24 +5,26 @@ import (
 	"testing"
 )
 
-func TestDeleteWindowsBeforeKeepsNewerAndOtherSources(t *testing.T) {
+func TestDeleteRolledWindowsKeepsLiveOnesAndOtherSources(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	const acc, other = "claude/acct-a", "claude/acct-b"
+	const acc, other, now = "claude/acct-a", "claude/acct-b", 200
 	for _, w := range []Window{
-		{AccountID: acc, Key: "session", Kind: KindShort, Source: "statusline", ObservedAt: 100},
-		{AccountID: acc, Key: "late", Kind: KindShort, Source: "statusline", ObservedAt: 300},
-		{AccountID: acc, Key: "weekly", Kind: KindWeekly, Source: "aiq", ObservedAt: 100},
-		{AccountID: other, Key: "session", Kind: KindShort, Source: "statusline", ObservedAt: 100},
+		{AccountID: acc, Key: "rolled", Kind: KindShort, Source: "statusline", ResetsAt: 100},
+		{AccountID: acc, Key: "at-now", Kind: KindShort, Source: "statusline", ResetsAt: now},
+		{AccountID: acc, Key: "live", Kind: KindShort, Source: "statusline", ResetsAt: now + 1},
+		{AccountID: acc, Key: "no-reset", Kind: KindShort, Source: "statusline"},
+		{AccountID: acc, Key: "polled", Kind: KindWeekly, Source: "aiq", ResetsAt: 100},
+		{AccountID: other, Key: "rolled", Kind: KindShort, Source: "statusline", ResetsAt: 100},
 	} {
 		if err := st.UpsertWindow(w); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := st.DeleteWindowsBefore(acc, "statusline", 200); err != nil {
+	if err := st.DeleteRolledWindows(acc, "statusline", now); err != nil {
 		t.Fatal(err)
 	}
 	keys := func(id string) map[string]bool {
@@ -36,10 +38,13 @@ func TestDeleteWindowsBeforeKeepsNewerAndOtherSources(t *testing.T) {
 		}
 		return out
 	}
-	if got := keys(acc); got["session"] || !got["late"] || !got["weekly"] || len(got) != 2 {
-		t.Errorf("account windows after delete: %v", got)
+	got := keys(acc)
+	for k, want := range map[string]bool{"rolled": false, "at-now": false, "live": true, "no-reset": true, "polled": true} {
+		if got[k] != want {
+			t.Errorf("%s kept = %v, want %v (left %v)", k, got[k], want, got)
+		}
 	}
-	if got := keys(other); !got["session"] {
-		t.Errorf("another account's window went too: %v", got)
+	if !keys(other)["rolled"] {
+		t.Error("another account's window went too")
 	}
 }

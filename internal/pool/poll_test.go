@@ -41,9 +41,16 @@ func TestAgyPollReplacesStaleQuotaAndPreservesMetadata(t *testing.T) {
 		cmd.Env = append(env, "AIQ_TEST_OUTPUT="+output)
 		return cmd
 	}}
+	// The agy poll keeps the status line's windows, rolled or not.
+	st.UpsertWindow(state.Window{AccountID: acc.ID, Key: "line", Kind: state.KindShort,
+		ResetsAt: now.Add(-time.Hour).Unix(), Source: "statusline", ObservedAt: now.Add(-2 * time.Hour).Unix()})
 	if err := p.pollOne(acc, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
+	if ws, _ := st.ListWindows(acc.ID); len(ws) != 2 {
+		t.Fatalf("agy poll windows: %+v", ws)
+	}
+	st.DeleteRolledWindows(acc.ID, "statusline", now.Unix())
 	u, _, _ := st.GetUsage(acc.ID)
 	if u.PollError != "" || u.Plan != "Google AI Pro" || u.ObservedAt < now.Unix() {
 		t.Fatalf("metadata: %+v", u)
@@ -172,9 +179,10 @@ func TestAgyPollGetsAtLeastASecond(t *testing.T) {
 	}
 }
 
-// The usage API leaves the five-hour window out while none is running, so a
-// status-line session window the poll did not confirm goes; a newer one stays.
-func TestClaudePollDropsStatusLineWindowsOlderThanIt(t *testing.T) {
+// The usage API leaves the five-hour window out while none is running, so the
+// status line's last session window goes once its reset time has passed. One
+// still running stays, even when the poll reports nothing.
+func TestClaudePollDropsRolledStatusLineWindows(t *testing.T) {
 	t.Setenv("AIQ_DATA_DIR", t.TempDir())
 	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -187,7 +195,7 @@ func TestClaudePollDropsStatusLineWindowsOlderThanIt(t *testing.T) {
 	}
 	now := time.Now()
 	st.UpsertWindow(state.Window{AccountID: acc.ID, Key: "session", Kind: state.KindShort, UsedPct: 10,
-		Source: "statusline", ObservedAt: now.Add(-240 * time.Hour).Unix()})
+		ResetsAt: now.Add(-239 * time.Hour).Unix(), Source: "statusline", ObservedAt: now.Add(-240 * time.Hour).Unix()})
 	p := &Pool{Cfg: config.Default(), St: st}
 	u := &claude.Usage{Windows: []state.Window{{Key: "weekly", Kind: state.KindWeekly, UsedPct: 2, ObservedAt: now.Unix()}}}
 	if err := p.saveClaudeUsage(acc, u, now); err != nil {
@@ -197,12 +205,12 @@ func TestClaudePollDropsStatusLineWindowsOlderThanIt(t *testing.T) {
 	if len(ws) != 1 || ws[0].Key != "weekly" {
 		t.Fatalf("after the poll: %+v", ws)
 	}
-	st.UpsertWindow(state.Window{AccountID: acc.ID, Key: "session", Kind: state.KindShort, UsedPct: 12,
-		Source: "statusline", ObservedAt: now.Add(time.Second).Unix()})
-	if err := p.saveClaudeUsage(acc, u, now); err != nil {
+	st.UpsertWindow(state.Window{AccountID: acc.ID, Key: "session", Kind: state.KindShort, UsedPct: 97,
+		ResetsAt: now.Add(2 * time.Hour).Unix(), Source: "statusline", ObservedAt: now.Add(-30 * time.Second).Unix()})
+	if err := p.saveClaudeUsage(acc, &claude.Usage{}, now); err != nil {
 		t.Fatal(err)
 	}
-	if ws, _ := st.ListWindows(acc.ID); len(ws) != 2 {
-		t.Fatalf("a status-line window newer than the poll went: %+v", ws)
+	if ws, _ := st.ListWindows(acc.ID); len(ws) != 1 || ws[0].Key != "session" || ws[0].UsedPct != 97 {
+		t.Fatalf("a running status-line window went: %+v", ws)
 	}
 }
