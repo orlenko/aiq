@@ -524,6 +524,13 @@ func (s *Store) PruneWindowSources(accountID string, keep ...string) error {
 	return err
 }
 
+// DeleteWindowsBefore deletes an account's windows from source observed
+// before the given time.
+func (s *Store) DeleteWindowsBefore(accountID, source string, before int64) error {
+	_, err := s.db.Exec(`DELETE FROM windows WHERE account_id = ? AND source = ? AND COALESCE(observed_at,0) < ?`, accountID, source, before)
+	return err
+}
+
 // ReplaceWindows replaces every window recorded by source for an account.
 func (s *Store) ReplaceWindows(accountID, source string, ws []Window) error {
 	tx, err := s.db.Begin()

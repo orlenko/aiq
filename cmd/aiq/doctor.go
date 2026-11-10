@@ -310,6 +310,17 @@ func (a *app) doctorChecks() *doctorReport {
 	return r
 }
 
+// newestObservation is when any of an account's windows was last seen. A
+// window the provider stopped reporting keeps its old time, so the first
+// window says nothing about how fresh the telemetry is.
+func newestObservation(ws []state.Window) int64 {
+	var newest int64
+	for _, w := range ws {
+		newest = max(newest, w.ObservedAt)
+	}
+	return newest
+}
+
 // accountNeeds is what it takes to bring one account back.
 type accountNeeds struct {
 	sync, login, grant, poll bool
@@ -391,7 +402,7 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 	case len(ws) == 0:
 		check(false, &need.poll, "%s: no telemetry yet (aiq account poll)", acc.ID)
 	default:
-		age := now.Sub(time.Unix(ws[0].ObservedAt, 0))
+		age := now.Sub(time.Unix(newestObservation(ws), 0))
 		stale := age > 2*time.Duration(a.cfg.Poll.IntervalSeconds)*time.Second+time.Minute
 		if stale && staleFix != nil {
 			r.check(false, staleFix, "%s: telemetry %s old (aiq cannot reach a daemon)", acc.ID, age.Round(time.Second))
