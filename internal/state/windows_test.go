@@ -3,6 +3,7 @@ package state
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDeleteRolledWindowsKeepsLiveOnesAndOtherSources(t *testing.T) {
@@ -46,5 +47,30 @@ func TestDeleteRolledWindowsKeepsLiveOnesAndOtherSources(t *testing.T) {
 	}
 	if !keys(other)["rolled"] {
 		t.Error("another account's window went too")
+	}
+}
+
+// An exhaustion mark or a ready mark is not a poll: a usage row either one
+// creates has no poll time, and one it updates keeps the poll's.
+func TestMarksSetNoPollTime(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now()
+	st.MarkExhausted("codex/a", "limit", now.Add(time.Hour), now)
+	st.MarkReady("codex/b", now)
+	for _, id := range []string{"codex/a", "codex/b"} {
+		if u, ok, _ := st.GetUsage(id); !ok || u.ObservedAt != 0 {
+			t.Errorf("%s: ok=%v observed_at=%d, want a row with 0", id, ok, u.ObservedAt)
+		}
+	}
+	polled := now.Add(-time.Minute)
+	st.SetUsageMeta("codex/c", "", 0, "", polled)
+	st.MarkExhausted("codex/c", "limit", now.Add(time.Hour), now)
+	st.MarkReady("codex/c", now)
+	if u, _, _ := st.GetUsage("codex/c"); u.ObservedAt != polled.Unix() {
+		t.Errorf("marks moved the poll time: %d, want %d", u.ObservedAt, polled.Unix())
 	}
 }

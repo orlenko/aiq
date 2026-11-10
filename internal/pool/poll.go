@@ -138,13 +138,10 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 	return nil
 }
 
-// saveClaudeUsage stores a successful Claude poll. A reply with no window in
-// it (a page that is not the usage JSON, or a changed format) is recorded as
-// a failed poll, and the last windows stay.
+// saveClaudeUsage stores a successful Claude poll. claude.Poll has already
+// refused a reply that is not usage data, so one with no window in it means
+// none is running.
 func (p *Pool) saveClaudeUsage(a state.Account, u *claude.Usage, now time.Time) error {
-	if len(u.Windows) == 0 {
-		return p.recordError(a, "usage: the reply has no quota windows")
-	}
 	if err := p.St.ReplaceWindows(a.ID, SourceAIQ, u.Windows); err != nil {
 		return err
 	}

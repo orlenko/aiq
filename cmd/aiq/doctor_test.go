@@ -26,23 +26,20 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-// Telemetry comes from a poll: a poll time and a window, whichever source
-// last wrote it (a status line rewrites the poll's rows under its own name).
-func TestPolledNeedsAPollTimeAndAWindow(t *testing.T) {
-	line := state.Window{Key: "weekly", Source: "statusline", ObservedAt: 900}
+// Telemetry comes from a poll: a usage row with a poll time, with or without
+// windows (a good poll may find none running).
+func TestPolledNeedsAPollTime(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		u    state.Usage
 		ok   bool
-		ws   []state.Window
 		want bool
 	}{
-		{"poll time and a window", state.Usage{ObservedAt: 300}, true, []state.Window{line}, true},
-		{"no usage row", state.Usage{}, false, []state.Window{line}, false},
-		{"no poll time", state.Usage{}, true, []state.Window{line}, false},
-		{"no windows", state.Usage{ObservedAt: 300}, true, nil, false},
+		{"poll time", state.Usage{ObservedAt: 300}, true, true},
+		{"no usage row", state.Usage{}, false, false},
+		{"no poll time", state.Usage{}, true, false},
 	} {
-		if got := polled(c.u, c.ok, c.ws); got != c.want {
+		if got := polled(c.u, c.ok); got != c.want {
 			t.Errorf("%s: polled = %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -76,7 +73,12 @@ func TestDoctorTelemetryAgeIsTheLastPolls(t *testing.T) {
 		if err := a.st.AddAccount(acc); err != nil {
 			t.Fatal(err)
 		}
-		a.st.SetUsageMeta(id, "", 0, "", polled)
+		if polled.IsZero() {
+			// Never polled: only an exhaustion mark wrote the usage row.
+			a.st.MarkExhausted(id, "limit", now.Add(time.Hour), now)
+		} else {
+			a.st.SetUsageMeta(id, "", 0, "", polled)
+		}
 		for _, w := range ws {
 			w.AccountID = id
 			if err := a.st.UpsertWindow(w); err != nil {
@@ -105,6 +107,10 @@ func TestDoctorTelemetryAgeIsTheLastPolls(t *testing.T) {
 		state.Window{Key: "weekly", Kind: state.KindWeekly, Source: "statusline", ObservedAt: now.Unix()})
 	if ok, text := telemetry(rewritten); !ok {
 		t.Errorf("status line after a poll: %s", text)
+	}
+	// Polled just now, with no window running.
+	if ok, text := telemetry(add("codex/idle", now)); !ok {
+		t.Errorf("a good poll with no windows: %s", text)
 	}
 	// Never polled: a status line and an exhaustion mark wrote the records.
 	never := add("codex/never", time.Time{},

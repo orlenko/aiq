@@ -314,16 +314,10 @@ func Poll(path string, now time.Time) (*Usage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("usage: %w", err)
 	}
-	if status == 401 {
-		return nil, fmt.Errorf("usage: HTTP 401 — the poll grant was revoked; run: aiq account authorize")
+	u, err := usageFromReply(status, body, now)
+	if err != nil {
+		return nil, err
 	}
-	if status != 200 {
-		return nil, fmt.Errorf("usage: HTTP %d %s", status, truncate(errorDetail(body), 140))
-	}
-	u := &Usage{}
-	u.Windows = NormalizeUsage(body, now)
-	u.ResetCredits, u.ResetCreditExpiry, u.ResetCreditID = NormalizeResetCredits(body, now)
-	u.Extra = ParseExtraUsage(body, now)
 	if pstatus, profile, err := getJSON(oauthProfileURL, headers); err == nil && pstatus == 200 {
 		u.Identity, u.Plan = ParseProfile(profile)
 		// The prepaid balance lives under the organization. Read it only
@@ -515,6 +509,42 @@ func ConsumeResetCredit(path, grantID, requestID string) (outcome string, err er
 
 // NormalizeUsage converts the usage payload into windows with the same keys
 // aiquota uses: "session", "weekly", "weekly:<model>".
+// usageFromReply reads the usage endpoint's reply. A status other than 200,
+// or a 200 that is not the usage document, is an error.
+func usageFromReply(status int, body []byte, now time.Time) (*Usage, error) {
+	if status == 401 {
+		return nil, fmt.Errorf("usage: HTTP 401 — the poll grant was revoked; run: aiq account authorize")
+	}
+	if status != 200 {
+		return nil, fmt.Errorf("usage: HTTP %d %s", status, truncate(errorDetail(body), 140))
+	}
+	if !usageReply(body) {
+		return nil, fmt.Errorf("usage: the reply is not usage data")
+	}
+	u := &Usage{}
+	u.Windows = NormalizeUsage(body, now)
+	u.ResetCredits, u.ResetCreditExpiry, u.ResetCreditID = NormalizeResetCredits(body, now)
+	u.Extra = ParseExtraUsage(body, now)
+	return u, nil
+}
+
+// usageReply reports whether body is the usage document: a JSON object with
+// at least one of its window fields, even a null one. A reply with every
+// window null is still one (no window is running); a page that is not JSON,
+// or JSON without those fields, is not.
+func usageReply(body []byte) bool {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(body, &doc) != nil {
+		return false
+	}
+	for _, k := range []string{"five_hour", "seven_day", "limits"} {
+		if _, ok := doc[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func NormalizeUsage(body []byte, now time.Time) []state.Window {
 	var doc struct {
 		FiveHour *struct {

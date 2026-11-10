@@ -673,7 +673,9 @@ func (s *Store) GetUsage(id string) (Usage, bool, error) {
 	return u, err == nil, err
 }
 
-// MarkExhausted puts an account into cooldown until the given time.
+// MarkExhausted puts an account into cooldown until the given time. Like
+// MarkReady, it is not a poll, so a usage row it creates has no poll time
+// (observed_at 0).
 func (s *Store) MarkExhausted(id, reason string, until, now time.Time) error {
 	_, err := s.db.Exec(
 		`INSERT INTO usage (account_id, exhausted, exhausted_reason, cooldown_until, observed_at, exhausted_at)
@@ -681,7 +683,7 @@ func (s *Store) MarkExhausted(id, reason string, until, now time.Time) error {
 		 ON CONFLICT(account_id) DO UPDATE SET
 		   exhausted = 1, exhausted_reason = excluded.exhausted_reason,
 		   cooldown_until = excluded.cooldown_until, exhausted_at = excluded.exhausted_at`,
-		id, reason, until.Unix(), now.Unix(), now.Unix())
+		id, reason, until.Unix(), 0, now.Unix())
 	return err
 }
 
@@ -689,10 +691,10 @@ func (s *Store) MarkExhausted(id, reason string, until, now time.Time) error {
 func (s *Store) MarkReady(id string, now time.Time) error {
 	_, err := s.db.Exec(
 		`INSERT INTO usage (account_id, exhausted, exhausted_reason, cooldown_until, observed_at, exhausted_at)
-		 VALUES (?, 0, '', 0, ?, 0)
+		 VALUES (?, 0, '', 0, 0, 0)
 		 ON CONFLICT(account_id) DO UPDATE SET
 		   exhausted = 0, exhausted_reason = '', cooldown_until = 0, exhausted_at = 0`,
-		id, now.Unix())
+		id)
 	return err
 }
 

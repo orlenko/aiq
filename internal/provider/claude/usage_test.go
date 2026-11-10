@@ -251,3 +251,43 @@ func TestParseExtraUsageAndPrepaid(t *testing.T) {
 		t.Fatal("a null block (skip_spend) reads as unknown")
 	}
 }
+
+// Only the usage document passes for a poll: every window may be null in it,
+// but a page that is not JSON, or JSON without its fields, does not.
+func TestUsageReply(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{"five_hour":null,"seven_day":null,"extra_usage":{"is_enabled":false}}`: true,
+		`{"seven_day":{"utilization":3}}`:                                        true,
+		`{"limits":[]}`:                                                          true,
+		`{}`:                                                                     false,
+		`{"error":"x"}`:                                                          false,
+		`<html>sign in</html>`:                                                   false,
+		`[]`:                                                                     false,
+		`null`:                                                                   false,
+		``:                                                                       false,
+	} {
+		if got := usageReply([]byte(body)); got != want {
+			t.Errorf("%s: usageReply = %v, want %v", body, got, want)
+		}
+	}
+}
+
+func TestUsageFromReply(t *testing.T) {
+	now := time.Now()
+	if _, err := usageFromReply(200, []byte(`<html>sign in</html>`), now); err == nil || !strings.Contains(err.Error(), "not usage data") {
+		t.Errorf("a page that is not usage data: %v", err)
+	}
+	if _, err := usageFromReply(401, nil, now); err == nil || !strings.Contains(err.Error(), "authorize") {
+		t.Errorf("401: %v", err)
+	}
+	if _, err := usageFromReply(500, []byte(`{}`), now); err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("500: %v", err)
+	}
+	u, err := usageFromReply(200, []byte(`{"five_hour":null,"seven_day":{"utilization":4,"resets_at":""}}`), now)
+	if err != nil || len(u.Windows) != 1 || u.Windows[0].Key != "weekly" {
+		t.Errorf("a usage reply: %+v %v", u, err)
+	}
+	if u, err := usageFromReply(200, []byte(`{"five_hour":null,"seven_day":null}`), now); err != nil || len(u.Windows) != 0 {
+		t.Errorf("a reply with no window running: %+v %v", u, err)
+	}
+}

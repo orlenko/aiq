@@ -213,14 +213,16 @@ func TestClaudePollDropsRolledStatusLineWindows(t *testing.T) {
 	if ws, _ := st.ListWindows(acc.ID); len(ws) != 2 {
 		t.Fatalf("a running status-line window went: %+v", ws)
 	}
-	// A reply with no windows in it is a failed poll, and the windows stay.
-	if err := p.saveClaudeUsage(acc, &claude.Usage{}, now); err == nil {
-		t.Fatal("an empty reply passed for a poll")
+	// A good poll with no window running clears the poll's own windows,
+	// keeps the running status line's, and stores the rest of the reply.
+	st.SetUsageMeta(acc.ID, "pro", 0, "usage: HTTP 500", now.Add(-time.Hour))
+	if err := p.saveClaudeUsage(acc, &claude.Usage{Plan: "max", ResetCredits: 2}, now); err != nil {
+		t.Fatal(err)
 	}
-	if ws, _ := st.ListWindows(acc.ID); len(ws) != 2 {
-		t.Fatalf("an empty reply cleared the windows: %+v", ws)
+	if ws, _ := st.ListWindows(acc.ID); len(ws) != 1 || ws[0].Source != "statusline" {
+		t.Fatalf("after a poll with no windows: %+v", ws)
 	}
-	if got, _, _ := st.GetUsage(acc.ID); !strings.Contains(got.PollError, "no quota windows") {
-		t.Fatalf("poll error %q", got.PollError)
+	if got, _, _ := st.GetUsage(acc.ID); got.PollError != "" || got.Plan != "max" || got.ResetCredits != 2 || got.ObservedAt != now.Unix() {
+		t.Fatalf("usage after a poll with no windows: %+v", got)
 	}
 }
