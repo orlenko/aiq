@@ -310,20 +310,23 @@ func (a *app) doctorChecks() *doctorReport {
 	return r
 }
 
-// telemetryTime is when the account's telemetry was last refreshed: the last
-// successful poll, which a status line does not move, so a running session
-// cannot make a stalled poll look fresh. Without a poll record, the newest
-// window. Not the first window: one the provider stopped reporting keeps its
-// old time and sorts first.
-func telemetryTime(u state.Usage, ok bool, ws []state.Window) int64 {
-	if ok && u.ObservedAt > 0 {
-		return u.ObservedAt
+// polled reports whether the account has telemetry from a poll: a poll time
+// and at least one window the poll stored. Doctor then judges freshness by
+// that poll time, which a status line does not move, so a running session
+// cannot make a stalled poll look fresh; nor can a window the provider
+// stopped reporting, which keeps its old time, make a fresh poll look stale.
+// A status line's windows alone, or a poll that stored none, are not
+// telemetry from a poll.
+func polled(u state.Usage, ok bool, ws []state.Window) bool {
+	if !ok || u.ObservedAt <= 0 {
+		return false
 	}
-	var newest int64
 	for _, w := range ws {
-		newest = max(newest, w.ObservedAt)
+		if w.Source == pool.SourceAIQ {
+			return true
+		}
 	}
-	return newest
+	return false
 }
 
 // accountNeeds is what it takes to bring one account back.
@@ -402,12 +405,12 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 			break
 		}
 		check(false, flag, "%s: last poll failed: %s", acc.ID, u.PollError)
-	case len(ws) == 0 && staleFix != nil:
+	case !polled(u, ok, ws) && staleFix != nil:
 		r.check(false, staleFix, "%s: no telemetry yet (aiq cannot reach a daemon)", acc.ID)
-	case len(ws) == 0:
+	case !polled(u, ok, ws):
 		check(false, &need.poll, "%s: no telemetry yet (aiq account poll)", acc.ID)
 	default:
-		age := now.Sub(time.Unix(telemetryTime(u, ok, ws), 0))
+		age := now.Sub(time.Unix(u.ObservedAt, 0))
 		stale := age > 2*time.Duration(a.cfg.Poll.IntervalSeconds)*time.Second+time.Minute
 		if stale && staleFix != nil {
 			r.check(false, staleFix, "%s: telemetry %s old (aiq cannot reach a daemon)", acc.ID, age.Round(time.Second))

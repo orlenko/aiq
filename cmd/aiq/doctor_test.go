@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/state"
 )
 
@@ -26,23 +27,26 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-// The telemetry is as fresh as the last successful poll. A window the
-// provider stopped reporting keeps its old time and sorts first; a status line
-// can be newer than a stalled poll. Neither decides.
-func TestTelemetryTimeIsTheLastPoll(t *testing.T) {
-	ws := []state.Window{
-		{Key: "session", Kind: state.KindShort, ObservedAt: 100},
-		{Key: "weekly", Kind: state.KindWeekly, ObservedAt: 900},
-		{Key: "weekly:fable", Kind: state.KindWeekly, ObservedAt: 500},
-	}
-	if got := telemetryTime(state.Usage{ObservedAt: 300}, true, ws); got != 300 {
-		t.Errorf("with a poll record = %d, want 300", got)
-	}
-	if got := telemetryTime(state.Usage{}, false, ws); got != 900 {
-		t.Errorf("without one = %d, want the newest window, 900", got)
-	}
-	if got := telemetryTime(state.Usage{}, false, nil); got != 0 {
-		t.Errorf("nothing = %d, want 0", got)
+// Telemetry comes from a poll: a poll time and a window the poll stored.
+func TestPolledNeedsAPollTimeAndAPolledWindow(t *testing.T) {
+	line := state.Window{Key: "session", Source: "statusline", ObservedAt: 900}
+	poll := state.Window{Key: "weekly", Source: pool.SourceAIQ, ObservedAt: 100}
+	for _, c := range []struct {
+		name string
+		u    state.Usage
+		ok   bool
+		ws   []state.Window
+		want bool
+	}{
+		{"poll and window", state.Usage{ObservedAt: 300}, true, []state.Window{line, poll}, true},
+		{"no usage row", state.Usage{}, false, []state.Window{line, poll}, false},
+		{"no poll time", state.Usage{}, true, []state.Window{line, poll}, false},
+		{"status line only", state.Usage{ObservedAt: 300}, true, []state.Window{line}, false},
+		{"no windows", state.Usage{ObservedAt: 300}, true, nil, false},
+	} {
+		if got := polled(c.u, c.ok, c.ws); got != c.want {
+			t.Errorf("%s: polled = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -96,5 +100,17 @@ func TestDoctorTelemetryAgeIsTheLastPolls(t *testing.T) {
 		state.Window{Key: "weekly", Kind: state.KindWeekly, Source: "aiq", ObservedAt: old.Unix()})
 	if ok, text := telemetry(stalled); ok {
 		t.Errorf("stalled poll reported fresh: %s", text)
+	}
+	// A poll that stored no windows, with a status-line window still running.
+	empty := add("codex/empty", now,
+		state.Window{Key: "weekly", Kind: state.KindWeekly, Source: "statusline", ObservedAt: old.Unix(), ResetsAt: now.Add(48 * time.Hour).Unix()})
+	if ok, text := telemetry(empty); ok || !strings.Contains(text, "no telemetry yet") {
+		t.Errorf("empty poll: %v %s", ok, text)
+	}
+	// Never polled: a status line and an exhaustion mark wrote the records.
+	never := add("codex/never", time.Time{},
+		state.Window{Key: "session", Kind: state.KindShort, Source: "statusline", ObservedAt: now.Unix()})
+	if ok, text := telemetry(never); ok || !strings.Contains(text, "no telemetry yet") {
+		t.Errorf("never polled: %v %s", ok, text)
 	}
 }
