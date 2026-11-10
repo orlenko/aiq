@@ -23,9 +23,9 @@ func TestNormalizeUsage(t *testing.T) {
 	  ],
 	  "spend": {"percent": 0, "enabled": false}
 	}`)
-	ws := NormalizeUsage(body, time.Unix(1_700_000_000, 0))
-	if len(ws) != 3 {
-		t.Fatalf("got %d windows: %+v", len(ws), ws)
+	ws, err := NormalizeUsage(body, time.Unix(1_700_000_000, 0))
+	if err != nil || len(ws) != 3 {
+		t.Fatalf("got %d windows: %+v %v", len(ws), ws, err)
 	}
 	if ws[0].Key != "session" || ws[0].Kind != state.KindShort || ws[0].UsedPct != 43 || ws[0].ResetsAt == 0 {
 		t.Fatalf("session: %+v", ws[0])
@@ -252,22 +252,35 @@ func TestParseExtraUsageAndPrepaid(t *testing.T) {
 	}
 }
 
-// Only the usage document passes for a poll: every window may be null in it,
-// but a page that is not JSON, or JSON without its fields, does not.
-func TestUsageReply(t *testing.T) {
-	for body, want := range map[string]bool{
-		`{"five_hour":null,"seven_day":null,"extra_usage":{"is_enabled":false}}`: true,
-		`{"seven_day":{"utilization":3}}`:                                        true,
-		`{"limits":[]}`:                                                          true,
-		`{}`:                                                                     false,
-		`{"error":"x"}`:                                                          false,
-		`<html>sign in</html>`:                                                   false,
-		`[]`:                                                                     false,
-		`null`:                                                                   false,
-		``:                                                                       false,
+// Only the usage document is a poll, and only a null field is no window: a
+// field in a changed form is an error, so a format change cannot pass for
+// "nothing running" and wipe the windows.
+func TestNormalizeUsageRefusesAChangedFormat(t *testing.T) {
+	now := time.Now()
+	for body, want := range map[string]int{
+		`{"five_hour":null,"seven_day":null,"extra_usage":{"is_enabled":false}}`: 0,
+		`{"seven_day":{"utilization":3}}`:                                        1,
+		`{"limits":[]}`:                                                          0,
+		`{"limits":null,"five_hour":null}`:                                       0,
+		`{"five_hour":null,"limits":[{"kind":"other"}]}`:                         0,
 	} {
-		if got := usageReply([]byte(body)); got != want {
-			t.Errorf("%s: usageReply = %v, want %v", body, got, want)
+		if ws, err := NormalizeUsage([]byte(body), now); err != nil || len(ws) != want {
+			t.Errorf("%s: %d windows, %v; want %d", body, len(ws), err, want)
+		}
+	}
+	for _, body := range []string{
+		`{}`, `{"error":"x"}`, `<html>sign in</html>`, `[]`, `null`, ``,
+		`{"five_hour":{"utilization":40,"resets_at":1893456000},"seven_day":{"utilization":20}}`,
+		`{"five_hour":{"utilization":"40"}}`,
+		`{"seven_day":{"used":100}}`,
+		`{"seven_day":{"utilization":null}}`,
+		`{"five_hour":"x"}`,
+		`{"seven_day":{"utilization":20},"limits":{"weekly_scoped":[]}}`,
+		`{"seven_day":{"utilization":20},"limits":[{"kind":"weekly_scoped","percent":"5"}]}`,
+		`{"seven_day":{"utilization":20},"limits":[{"kind":"weekly_scoped"}]}`,
+	} {
+		if ws, err := NormalizeUsage([]byte(body), now); err == nil {
+			t.Errorf("%s: read as %d windows, want an error", body, len(ws))
 		}
 	}
 }
@@ -276,6 +289,9 @@ func TestUsageFromReply(t *testing.T) {
 	now := time.Now()
 	if _, err := usageFromReply(200, []byte(`<html>sign in</html>`), now); err == nil || !strings.Contains(err.Error(), "not usage data") {
 		t.Errorf("a page that is not usage data: %v", err)
+	}
+	if _, err := usageFromReply(200, []byte(`{"seven_day":{"utilization":100,"resets_at":1893456000}}`), now); err == nil || !strings.Contains(err.Error(), "seven_day") {
+		t.Errorf("a changed format: %v", err)
 	}
 	if _, err := usageFromReply(401, nil, now); err == nil || !strings.Contains(err.Error(), "authorize") {
 		t.Errorf("401: %v", err)

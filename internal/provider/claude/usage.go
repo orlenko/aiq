@@ -507,8 +507,6 @@ func ConsumeResetCredit(path, grantID, requestID string) (outcome string, err er
 	return res.Result, nil
 }
 
-// NormalizeUsage converts the usage payload into windows with the same keys
-// aiquota uses: "session", "weekly", "weekly:<model>".
 // usageFromReply reads the usage endpoint's reply. A status other than 200,
 // or a 200 that is not the usage document, is an error.
 func usageFromReply(status int, body []byte, now time.Time) (*Usage, error) {
@@ -518,44 +516,60 @@ func usageFromReply(status int, body []byte, now time.Time) (*Usage, error) {
 	if status != 200 {
 		return nil, fmt.Errorf("usage: HTTP %d %s", status, truncate(errorDetail(body), 140))
 	}
-	if !usageReply(body) {
-		return nil, fmt.Errorf("usage: the reply is not usage data")
+	ws, err := NormalizeUsage(body, now)
+	if err != nil {
+		return nil, err
 	}
-	u := &Usage{}
-	u.Windows = NormalizeUsage(body, now)
+	u := &Usage{Windows: ws}
 	u.ResetCredits, u.ResetCreditExpiry, u.ResetCreditID = NormalizeResetCredits(body, now)
 	u.Extra = ParseExtraUsage(body, now)
 	return u, nil
 }
 
-// usageReply reports whether body is the usage document: a JSON object with
-// at least one of its window fields, even a null one. A reply with every
-// window null is still one (no window is running); a page that is not JSON,
-// or JSON without those fields, is not.
-func usageReply(body []byte) bool {
+// NormalizeUsage converts the usage payload into windows with the same keys
+// aiquota uses: "session", "weekly", "weekly:<model>". It is an error
+// when body is not the usage document (none of five_hour, seven_day and
+// limits is there), or when one of those is there, not null, and not in the
+// form aiq reads: a changed format must not pass for "no window running".
+// A null field, or limits with no entry aiq reads, is no window.
+func NormalizeUsage(body []byte, now time.Time) ([]state.Window, error) {
 	var doc map[string]json.RawMessage
 	if json.Unmarshal(body, &doc) != nil {
-		return false
+		return nil, errNotUsage
 	}
-	for _, k := range []string{"five_hour", "seven_day", "limits"} {
-		if _, ok := doc[k]; ok {
-			return true
+	var out []state.Window
+	obs := now.Unix()
+	present := false
+	for _, f := range []struct {
+		field, key, label, kind string
+		seconds                 int64
+	}{
+		{"five_hour", "session", "Session", state.KindShort, 5 * 3600},
+		{"seven_day", "weekly", "Weekly", state.KindWeekly, 7 * 86400},
+	} {
+		raw, ok := doc[f.field]
+		if !ok {
+			continue
 		}
+		present = true
+		if isNull(raw) {
+			continue
+		}
+		var w struct {
+			Utilization *float64 `json:"utilization"`
+			ResetsAt    string   `json:"resets_at"`
+		}
+		if json.Unmarshal(raw, &w) != nil || w.Utilization == nil {
+			return nil, fmt.Errorf("usage: %s is not in the form aiq reads", f.field)
+		}
+		out = append(out, state.Window{
+			Key: f.key, Label: f.label, Kind: f.kind, UsedPct: *w.Utilization,
+			ResetsAt: parseISO(w.ResetsAt), WindowSeconds: f.seconds, ObservedAt: obs,
+		})
 	}
-	return false
-}
-
-func NormalizeUsage(body []byte, now time.Time) []state.Window {
-	var doc struct {
-		FiveHour *struct {
-			Utilization *float64 `json:"utilization"`
-			ResetsAt    string   `json:"resets_at"`
-		} `json:"five_hour"`
-		SevenDay *struct {
-			Utilization *float64 `json:"utilization"`
-			ResetsAt    string   `json:"resets_at"`
-		} `json:"seven_day"`
-		Limits []struct {
+	if raw, ok := doc["limits"]; ok {
+		present = true
+		var limits []struct {
 			Kind     string   `json:"kind"`
 			Percent  *float64 `json:"percent"`
 			ResetsAt string   `json:"resets_at"`
@@ -566,48 +580,44 @@ func NormalizeUsage(body []byte, now time.Time) []state.Window {
 					DisplayName string `json:"display_name"`
 				} `json:"model"`
 			} `json:"scope"`
-		} `json:"limits"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return nil
-	}
-	var out []state.Window
-	obs := now.Unix()
-	if doc.FiveHour != nil && doc.FiveHour.Utilization != nil {
-		out = append(out, state.Window{
-			Key: "session", Label: "Session", Kind: state.KindShort, UsedPct: *doc.FiveHour.Utilization,
-			ResetsAt: parseISO(doc.FiveHour.ResetsAt), WindowSeconds: 5 * 3600, ObservedAt: obs,
-		})
-	}
-	if doc.SevenDay != nil && doc.SevenDay.Utilization != nil {
-		out = append(out, state.Window{
-			Key: "weekly", Label: "Weekly", Kind: state.KindWeekly, UsedPct: *doc.SevenDay.Utilization,
-			ResetsAt: parseISO(doc.SevenDay.ResetsAt), WindowSeconds: 7 * 86400, ObservedAt: obs,
-		})
-	}
-	for _, l := range doc.Limits {
-		if l.Kind != "weekly_scoped" || l.Percent == nil {
-			continue
 		}
-		label := l.Scope.Model.DisplayName
-		if label == "" {
-			label = l.Scope.Surface
+		if !isNull(raw) && json.Unmarshal(raw, &limits) != nil {
+			return nil, errors.New("usage: limits is not in the form aiq reads")
 		}
-		if label == "" {
-			label = "Scoped"
+		for _, l := range limits {
+			if l.Kind != "weekly_scoped" {
+				continue
+			}
+			if l.Percent == nil {
+				return nil, errors.New("usage: a weekly_scoped limit has no percent")
+			}
+			label := l.Scope.Model.DisplayName
+			if label == "" {
+				label = l.Scope.Surface
+			}
+			if label == "" {
+				label = "Scoped"
+			}
+			severity := l.Severity
+			if severity == "normal" {
+				severity = ""
+			}
+			out = append(out, state.Window{
+				Key: "weekly:" + strings.ToLower(label), Label: label, Kind: state.KindWeekly, Scope: label,
+				UsedPct: *l.Percent, ResetsAt: parseISO(l.ResetsAt), WindowSeconds: 7 * 86400,
+				Severity: severity, ObservedAt: obs,
+			})
 		}
-		severity := l.Severity
-		if severity == "normal" {
-			severity = ""
-		}
-		out = append(out, state.Window{
-			Key: "weekly:" + strings.ToLower(label), Label: label, Kind: state.KindWeekly, Scope: label,
-			UsedPct: *l.Percent, ResetsAt: parseISO(l.ResetsAt), WindowSeconds: 7 * 86400,
-			Severity: severity, ObservedAt: obs,
-		})
 	}
-	return out
+	if !present {
+		return nil, errNotUsage
+	}
+	return out, nil
 }
+
+var errNotUsage = errors.New("usage: the reply is not usage data")
+
+func isNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
 
 // ParseProfile extracts the account email and a short plan name
 // ("default_claude_max_20x" → "max 20x").
