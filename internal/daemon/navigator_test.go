@@ -84,8 +84,9 @@ type testDaemon struct {
 	stop   chan struct{}
 	done   chan error
 
-	mu     sync.Mutex
-	navSrv *http.Server
+	mu        sync.Mutex
+	navSrv    *http.Server
+	statusSrv *http.Server
 }
 
 // startDaemon runs a daemon on the current data directory until the test stops it.
@@ -106,6 +107,9 @@ func startDaemon(t *testing.T, navigator bool) *testDaemon {
 	ready, navReady := make(chan struct{}), make(chan struct{})
 	startLoops = func(*Server) {}
 	serveStatus = func(srv *http.Server, ln net.Listener) error {
+		d.mu.Lock()
+		d.statusSrv = srv
+		d.mu.Unlock()
 		go srv.Serve(ln)
 		close(ready)
 		<-d.stop
@@ -936,18 +940,21 @@ func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
 	}
 }
 
-// The daemon serves the navigator with the status page's deadlines and limits.
-func TestTheNavigatorHasTheStatusPagesSettings(t *testing.T) {
+// The daemon serves the status page and the navigator with statusServer's deadlines
+// and limits.
+func TestBothListenersHaveTheStatusServersSettings(t *testing.T) {
+	useDataDir(t)
 	d := startDaemon(t, true)
 	d.mu.Lock()
-	srv := d.navSrv
+	servers := map[string]*http.Server{"status page": d.statusSrv, "navigator": d.navSrv}
 	d.mu.Unlock()
-	if srv == nil {
-		t.Fatal("the navigator is not served")
-	}
 	want := statusServer(nil)
-	if srv.ReadHeaderTimeout != want.ReadHeaderTimeout || srv.ReadTimeout != want.ReadTimeout || srv.WriteTimeout != want.WriteTimeout ||
-		srv.IdleTimeout != want.IdleTimeout || srv.MaxHeaderBytes != want.MaxHeaderBytes || srv.DisableGeneralOptionsHandler != want.DisableGeneralOptionsHandler {
-		t.Errorf("the navigator's server is %+v", srv)
+	for name, srv := range servers {
+		if srv == nil {
+			t.Errorf("the %s is not served", name)
+		} else if srv.ReadHeaderTimeout != want.ReadHeaderTimeout || srv.ReadTimeout != want.ReadTimeout || srv.WriteTimeout != want.WriteTimeout ||
+			srv.IdleTimeout != want.IdleTimeout || srv.MaxHeaderBytes != want.MaxHeaderBytes || srv.DisableGeneralOptionsHandler != want.DisableGeneralOptionsHandler {
+			t.Errorf("the %s's server is %+v", name, srv)
+		}
 	}
 }
