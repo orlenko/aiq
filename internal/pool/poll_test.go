@@ -1,13 +1,18 @@
 package pool
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/orlenko/aiq/internal/config"
+	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
 )
 
@@ -60,5 +65,108 @@ func TestAgyPollReplacesStaleQuotaAndPreservesMetadata(t *testing.T) {
 	u, _, _ = st.GetUsage(acc.ID)
 	if len(kept) != 1 || kept[0] != ws[0] || !strings.Contains(u.PollError, "no quota buckets") {
 		t.Fatalf("failed poll lost last quota: %+v, error %q", kept, u.PollError)
+	}
+}
+
+// An agy poll the CLI outlasts returns once the CLI and what it started are
+// gone, with the agy poll's own result, so a command that exits right after
+// Poll does not leave them running.
+func TestPollWaitsForAgyToStop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh and process groups")
+	}
+	t.Setenv("AIQ_DATA_DIR", t.TempDir())
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	acc := state.Account{ID: "agy/main", Provider: "agy", Name: "main", Home: t.TempDir(), Enabled: true}
+	if err := st.AddAccount(acc); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	p := &Pool{Cfg: config.Default(), St: st, Command: func(provider string, args, env []string) *exec.Cmd {
+		if i := slices.Index(args, "--print-timeout"); i < 0 || i+1 == len(args) || args[i+1] != "1s" {
+			t.Errorf("agy args %q, want --print-timeout 1s", args)
+		}
+		// The CLI and a process it started both ignore TERM, so only the KILL
+		// that follows TERM by three seconds ends them.
+		cmd := exec.Command("sh", "-c", `trap '' TERM; sleep 60 & echo $! > "$1"; wait`, "sh", pidFile)
+		cmd.Env = env
+		return cmd
+	}}
+	start := time.Now()
+	res := p.Poll(2*time.Second, acc.ID)
+	took := time.Since(start)
+	// The CLI's deadline is 1 s; TERM, three seconds, KILL.
+	if len(res) != 1 || res[0].Err == nil || !strings.Contains(res[0].Err.Error(), "agy /usage timed out after 1s") {
+		t.Fatalf("results = %+v, want the agy poll's own timeout", res)
+	}
+	if took < 4*time.Second || took > 5500*time.Millisecond {
+		t.Errorf("Poll took %s, want about 4.1 s", took)
+	}
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The child is gone at once, short of its new parent reaping it.
+	for deadline := time.Now().Add(time.Second); proc.Alive(pid); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			if p, err := os.FindProcess(pid); err == nil {
+				p.Kill()
+			}
+			t.Fatalf("pid %d still running %s after Poll returned at %s", pid, time.Since(start)-took, took)
+		}
+	}
+}
+
+// Only an agy poll is waited for past the timeout: it stops itself. A Codex
+// poll has no deadline of its own, and Poll returns without it.
+func TestPollDoesNotWaitForAHungCodexPoll(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sleep")
+	}
+	t.Setenv("AIQ_DATA_DIR", t.TempDir())
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	acc := state.Account{ID: "codex/main", Provider: "codex", Name: "main", Home: t.TempDir(), Enabled: true}
+	if err := st.AddAccount(acc); err != nil {
+		t.Fatal(err)
+	}
+	p := &Pool{Cfg: config.Default(), St: st, Command: func(provider string, args, env []string) *exec.Cmd {
+		return exec.Command("sleep", "2")
+	}}
+	start := time.Now()
+	res := p.Poll(time.Second, acc.ID)
+	if took := time.Since(start); took > 2*time.Second || len(res) != 1 || res[0].Err == nil {
+		t.Fatalf("Poll took %s, results %+v", took, res)
+	}
+}
+
+// A one-second poll timeout still gives the agy CLI a second.
+func TestAgyPollGetsAtLeastASecond(t *testing.T) {
+	t.Setenv("AIQ_DATA_DIR", t.TempDir())
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	acc := state.Account{ID: "agy/main", Provider: "agy", Name: "main", Home: t.TempDir(), Enabled: true}
+	var got []string
+	p := &Pool{Cfg: config.Default(), St: st, Command: func(provider string, args, env []string) *exec.Cmd {
+		got = args
+		return exec.Command("true")
+	}}
+	p.pollOne(acc, time.Second)
+	if i := slices.Index(got, "--print-timeout"); i < 0 || i+1 == len(got) || got[i+1] != "1s" {
+		t.Errorf("agy args %q, want --print-timeout 1s", got)
 	}
 }

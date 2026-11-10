@@ -26,7 +26,11 @@ type PollResult struct {
 // Poll refreshes telemetry for every enabled account (or only ids) using
 // aiq's own pollers: the aiq OAuth grant for Claude, the app-server RPC for
 // Codex, and the read-only /usage command for Antigravity.
-// Accounts run concurrently; each is bounded by timeout.
+// Accounts run concurrently; each is bounded by timeout. An agy poll runs
+// the CLI with a deadline of its own just inside timeout, and then stops the
+// CLI and what the CLI started; Poll gives it agy.StopWithin past timeout for
+// that, so those processes do not outlive a command that exits once Poll
+// returns.
 func (p *Pool) Poll(timeout time.Duration, ids ...string) []PollResult {
 	accounts, err := p.St.ListAccounts("")
 	if err != nil {
@@ -47,11 +51,15 @@ func (p *Pool) Poll(timeout time.Duration, ids ...string) []PollResult {
 			defer wg.Done()
 			done := make(chan error, 1)
 			go func() { done <- p.pollOne(a, timeout) }()
+			wait := timeout
+			if a.Provider == "agy" {
+				wait += agy.StopWithin
+			}
 			select {
 			case err := <-done:
 				results <- PollResult{ID: a.ID, Err: err}
-			case <-time.After(timeout):
-				results <- PollResult{ID: a.ID, Err: fmt.Errorf("poll timed out after %s", timeout)}
+			case <-time.After(wait):
+				results <- PollResult{ID: a.ID, Err: fmt.Errorf("poll timed out after %s", wait)}
 			}
 		}(a)
 	}
@@ -74,7 +82,7 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 			return p.recordError(a, "agy binary not available")
 		}
 		prov := &agy.Provider{Command: cmd}
-		u, err := prov.Poll(a.Home, a.Native, agy.ProbeDir(paths.DataDir()), now, timeout-time.Second)
+		u, err := prov.Poll(a.Home, a.Native, agy.ProbeDir(paths.DataDir()), now, max(timeout-time.Second, time.Second))
 		var quota *agy.QuotaError
 		if errors.As(err, &quota) {
 			p.benchRefused(a, quota, now)

@@ -203,10 +203,10 @@ func resumeArgs(s transcript.Session, bypass bool, extra []string) ([]string, er
 	return append(args, verb...), nil
 }
 
-// resumeNote tells the user what resume does. The session id and the live note come from
-// transcripts and tmux, so they go out through sanitize, as in convo.
+// resumeNote tells the user, in one line, what resume does. The session id and the live
+// note come from transcripts and directory names, so the line goes out through oneLine.
 func resumeNote(w io.Writer, format string, args ...any) {
-	fmt.Fprint(w, sanitize(fmt.Sprintf(format, args...)))
+	longNote(w, "%s", strings.TrimSuffix(fmt.Sprintf(format, args...), "\n"))
 }
 
 // resumeSession closes the app and hands the terminal to the resumed CLI.
@@ -268,9 +268,9 @@ var modelDate = regexp.MustCompile(`-\d{8}$`)
 func agentLabel(s transcript.Session) string {
 	model := modelDate.ReplaceAllString(strings.TrimPrefix(s.Model, "claude-"), "")
 	if model == "" {
-		return s.Provider
+		return oneLine(s.Provider)
 	}
-	return s.Provider + " " + model
+	return oneLine(s.Provider + " " + model)
 }
 
 func durationLabel(d time.Duration) string {
@@ -301,7 +301,7 @@ func renderSessionsPlain(dir string, list []transcript.Session, live map[string]
 func sessionsPlain(dir string, list []transcript.Session, live map[string]liveNote, origins map[string]origin) string {
 	var b strings.Builder
 	if len(list) == 0 {
-		fmt.Fprintf(&b, "no sessions in %s\n", dir)
+		fmt.Fprintf(&b, "no sessions in %s\n", oneLine(dir))
 		return b.String()
 	}
 	now := time.Now()
@@ -309,7 +309,7 @@ func sessionsPlain(dir string, list []transcript.Session, live map[string]liveNo
 	for _, s := range list {
 		label := transcript.Clean(s.Label())
 		if n, ok := live[s.ID]; ok {
-			label = "[" + n.note + "] " + label
+			label = "[" + oneLine(n.note) + "] " + label
 		}
 		if tag := originTag(originOf(origins, s)); tag != "" {
 			label = "[" + tag + "] " + label
@@ -317,7 +317,7 @@ func sessionsPlain(dir string, list []transcript.Session, live map[string]liveNo
 		if s.Worker {
 			label = "[worker] " + label
 		}
-		fmt.Fprintf(&b, "%-8s  %-16s  %-22s  %5d  %5d  %s\n", shortID(s.ID), whenLabel(s.Updated, now), truncate(agentLabel(s), 22),
+		fmt.Fprintf(&b, "%-8s  %-16s  %-22s  %5d  %5d  %s\n", oneLine(shortID(s.ID)), whenLabel(s.Updated, now), truncate(agentLabel(s), 22),
 			len(s.Turns), s.Tools(), truncate(label, 100))
 	}
 	return b.String()
@@ -336,7 +336,7 @@ func turnsPlain(s transcript.Session, origins map[string]origin) string {
 	if tag := originTag(originOf(origins, s)); tag != "" {
 		agent += " · " + tag
 	}
-	fmt.Fprintf(&b, "%s session %s · %s · %s\n", s.Provider, s.ID, agent, truncate(transcript.Clean(s.Label()), 100))
+	fmt.Fprintf(&b, "%s session %s · %s · %s\n", oneLine(s.Provider), oneLine(s.ID), agent, truncate(transcript.Clean(s.Label()), 100))
 	for i, t := range s.Turns {
 		from := ""
 		if t.Source != transcript.Human {
