@@ -207,10 +207,20 @@ func TestClaudePollDropsRolledStatusLineWindows(t *testing.T) {
 	}
 	st.UpsertWindow(state.Window{AccountID: acc.ID, Key: "session", Kind: state.KindShort, UsedPct: 97,
 		ResetsAt: now.Add(2 * time.Hour).Unix(), Source: "statusline", ObservedAt: now.Add(-30 * time.Second).Unix()})
-	if err := p.saveClaudeUsage(acc, &claude.Usage{}, now); err != nil {
+	if err := p.saveClaudeUsage(acc, u, now); err != nil {
 		t.Fatal(err)
 	}
-	if ws, _ := st.ListWindows(acc.ID); len(ws) != 1 || ws[0].Key != "session" || ws[0].UsedPct != 97 {
+	if ws, _ := st.ListWindows(acc.ID); len(ws) != 2 {
 		t.Fatalf("a running status-line window went: %+v", ws)
+	}
+	// A reply with no windows in it is a failed poll, and the windows stay.
+	if err := p.saveClaudeUsage(acc, &claude.Usage{}, now); err == nil {
+		t.Fatal("an empty reply passed for a poll")
+	}
+	if ws, _ := st.ListWindows(acc.ID); len(ws) != 2 {
+		t.Fatalf("an empty reply cleared the windows: %+v", ws)
+	}
+	if got, _, _ := st.GetUsage(acc.ID); !strings.Contains(got.PollError, "no quota windows") {
+		t.Fatalf("poll error %q", got.PollError)
 	}
 }

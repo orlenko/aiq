@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/state"
 )
 
@@ -27,10 +26,10 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-// Telemetry comes from a poll: a poll time and a window the poll stored.
-func TestPolledNeedsAPollTimeAndAPolledWindow(t *testing.T) {
-	line := state.Window{Key: "session", Source: "statusline", ObservedAt: 900}
-	poll := state.Window{Key: "weekly", Source: pool.SourceAIQ, ObservedAt: 100}
+// Telemetry comes from a poll: a poll time and a window, whichever source
+// last wrote it (a status line rewrites the poll's rows under its own name).
+func TestPolledNeedsAPollTimeAndAWindow(t *testing.T) {
+	line := state.Window{Key: "weekly", Source: "statusline", ObservedAt: 900}
 	for _, c := range []struct {
 		name string
 		u    state.Usage
@@ -38,10 +37,9 @@ func TestPolledNeedsAPollTimeAndAPolledWindow(t *testing.T) {
 		ws   []state.Window
 		want bool
 	}{
-		{"poll and window", state.Usage{ObservedAt: 300}, true, []state.Window{line, poll}, true},
-		{"no usage row", state.Usage{}, false, []state.Window{line, poll}, false},
-		{"no poll time", state.Usage{}, true, []state.Window{line, poll}, false},
-		{"status line only", state.Usage{ObservedAt: 300}, true, []state.Window{line}, false},
+		{"poll time and a window", state.Usage{ObservedAt: 300}, true, []state.Window{line}, true},
+		{"no usage row", state.Usage{}, false, []state.Window{line}, false},
+		{"no poll time", state.Usage{}, true, []state.Window{line}, false},
 		{"no windows", state.Usage{ObservedAt: 300}, true, nil, false},
 	} {
 		if got := polled(c.u, c.ok, c.ws); got != c.want {
@@ -101,11 +99,12 @@ func TestDoctorTelemetryAgeIsTheLastPolls(t *testing.T) {
 	if ok, text := telemetry(stalled); ok {
 		t.Errorf("stalled poll reported fresh: %s", text)
 	}
-	// A poll that stored no windows, with a status-line window still running.
-	empty := add("codex/empty", now,
-		state.Window{Key: "weekly", Kind: state.KindWeekly, Source: "statusline", ObservedAt: old.Unix(), ResetsAt: now.Add(48 * time.Hour).Unix()})
-	if ok, text := telemetry(empty); ok || !strings.Contains(text, "no telemetry yet") {
-		t.Errorf("empty poll: %v %s", ok, text)
+	// Polled just now, then a running session's status line rewrote every
+	// row the poll stored.
+	rewritten := add("codex/rewritten", now,
+		state.Window{Key: "weekly", Kind: state.KindWeekly, Source: "statusline", ObservedAt: now.Unix()})
+	if ok, text := telemetry(rewritten); !ok {
+		t.Errorf("status line after a poll: %s", text)
 	}
 	// Never polled: a status line and an exhaustion mark wrote the records.
 	never := add("codex/never", time.Time{},

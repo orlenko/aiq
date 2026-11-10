@@ -311,22 +311,13 @@ func (a *app) doctorChecks() *doctorReport {
 }
 
 // polled reports whether the account has telemetry from a poll: a poll time
-// and at least one window the poll stored. Doctor then judges freshness by
-// that poll time, which a status line does not move, so a running session
-// cannot make a stalled poll look fresh; nor can a window the provider
-// stopped reporting, which keeps its old time, make a fresh poll look stale.
-// A status line's windows alone, or a poll that stored none, are not
-// telemetry from a poll.
+// and a window. Doctor then judges freshness by that poll time, which a
+// status line does not move, so a running session cannot make a stalled poll
+// look fresh; nor can a window the provider stopped reporting, which keeps
+// its old time, make a fresh poll look stale. Which source wrote a window
+// does not count: a status line rewrites the poll's own rows under its name.
 func polled(u state.Usage, ok bool, ws []state.Window) bool {
-	if !ok || u.ObservedAt <= 0 {
-		return false
-	}
-	for _, w := range ws {
-		if w.Source == pool.SourceAIQ {
-			return true
-		}
-	}
-	return false
+	return ok && u.ObservedAt > 0 && len(ws) > 0
 }
 
 // accountNeeds is what it takes to bring one account back.
