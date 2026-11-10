@@ -18,6 +18,7 @@
   header h1 { margin: 0; font-size: 18px; font-weight: 650; }
   header .meta { color: var(--muted); font-size: 12px; }
   header a.help { margin-left: auto; color: var(--accent); text-decoration: none; font-size: 13px; }
+  header a.nav { color: var(--accent); text-decoration: none; font-size: 13px; }
   header button { margin-left: 8px; font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); cursor: pointer; }
   main { padding: 16px 20px; display: grid; gap: 16px; grid-template-columns: 1fr; }
   .columns { display: grid; gap: 16px; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); }
@@ -64,6 +65,7 @@
   <h1>aiq</h1>
   <span class="meta" id="meta">loading…</span>
   <a class="help" href="/help">help</a>
+  <span id="navlink"></span>
   <button id="poll">poll now</button>
 </header>
 <main id="main"></main>
@@ -129,10 +131,30 @@ function rankingTable(view) {
   return `<section class="card wide"><h2>next pick</h2><table>${rows.join('')}</table></section>`;
 }
 
+// sessionsLink:begin
+// sessionsLink shows a link to the session navigator while the daemon serves it. The port
+// comes from the API, so the link is built with DOM calls, and only for a port number.
+let shownPort = null;
+function sessionsLink(port) {
+  if (!Number.isInteger(port) || port <= 0 || port >= 65536) port = null;
+  if (port === shownPort) return;
+  shownPort = port;
+  const slot = document.getElementById('navlink');
+  slot.replaceChildren();
+  if (port === null) return;
+  const a = document.createElement('a');
+  a.className = 'nav';
+  a.href = 'http://127.0.0.1:' + port + '/';
+  a.textContent = 'Sessions \u2192';
+  slot.appendChild(a);
+}
+// sessionsLink:end
+
 async function refresh() {
   try {
     const r = await fetch('/api/state', { cache: 'no-store' });
     const { daemon, view } = await r.json();
+    sessionsLink(daemon.navigator_port);
     document.getElementById('meta').textContent =
       `${view.hostname} · polled ${fmtAgo(daemon.last_poll)} every ${daemon.poll_interval}s` +
       (daemon.polling ? ' · polling…' : '') + (daemon.last_error ? ' · ' + daemon.last_error : '') +

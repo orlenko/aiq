@@ -232,11 +232,15 @@ Assets and what protects them:
   requests whose `Host` is not a loopback name, requests with a foreign `Origin`, and
   cross-site requests that change something. A daemon from before 0.7.13 keeps the address it
   started with until it restarts. It has no login, so any local process can read it.
-- **Session navigator.** Off by default, and it serves nothing yet. When `[ui] navigator`
+- **Session navigator.** Off by default, and it shows nothing yet. When `[ui] navigator`
   is on, the daemon also listens on `127.0.0.1` at a port drawn at random at each start
   from those it has not drawn in its last 256 draws, with the same loopback checks as the
-  status page. It writes a secret token, new at each start, to the owner-only `ui-token`
-  file and never sends or logs it. The port is not a secret.
+  status page, and the status page links to it. It writes a secret token, new at each
+  start, to the owner-only `ui-token` file and never sends or logs it. The port is not a
+  secret. The navigator refuses any path with an escape or one that is not in its
+  simplest form, answers `/api/nav/hello` with its version and build to anyone who passes
+  the loopback checks, and refuses everything else under `/api/` without a credential,
+  which nothing issues yet.
 
 Untrusted input: whatever a session reads can carry instructions, a note can pass them to
 the next session, and `aiq run auto` always turns permission prompts off. The owner has put

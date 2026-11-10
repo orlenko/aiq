@@ -276,7 +276,7 @@ func checkIdentity(t *testing.T, d *testDaemon) {
 	if body != "ok\n" || resp.Header.Get(identityHeader) != Identity() || len(resp.Header.Values(identityHeader)) != 1 {
 		t.Errorf("/healthz: %q, %s %q", body, identityHeader, resp.Header.Values(identityHeader))
 	}
-	want := fmt.Sprintf("pid=%d; start=%d; nav=0", os.Getpid(), d.s.started.Unix())
+	want := fmt.Sprintf("pid=%d; start=%d; nav=1", os.Getpid(), d.s.started.Unix())
 	if got := resp.Header.Get(navHeader); got != want {
 		t.Errorf("%s is %q, want %q", navHeader, got, want)
 	}
@@ -361,12 +361,12 @@ func TestNavigatorServesNothingYetOnItsOwnPort(t *testing.T) {
 // The navigator's handler keeps the status page's checks, so a page on another
 // site, a rebound name or another machine gets nothing from it.
 func TestNavigatorHandlerIsLocalOnly(t *testing.T) {
-	h := navigatorHandler()
+	h := New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler()
 	for _, c := range []struct {
 		name, peer, host string
 		want             int
 	}{
-		{"a loopback request", "127.0.0.1:50000", "127.0.0.1:50001", http.StatusNotFound},
+		{"a loopback request", "127.0.0.1:50000", "127.0.0.1:50001", http.StatusOK},
 		{"a rebound name", "127.0.0.1:50000", "evil.example:50001", http.StatusForbidden},
 		{"a network peer", "192.0.2.5:50000", "127.0.0.1:50001", http.StatusForbidden},
 	} {

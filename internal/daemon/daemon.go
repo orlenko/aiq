@@ -57,6 +57,11 @@ type Server struct {
 	// secret for this start.
 	navPort  int
 	navToken string
+
+	// navVerifier decides who may use the navigator's API, and navAPI is what it serves
+	// there. Both are set before Run.
+	navVerifier NavVerifier
+	navAPI      http.Handler
 }
 
 func New(cfg *config.Config, p *pool.Pool, logger *log.Logger) *Server {
@@ -65,6 +70,8 @@ func New(cfg *config.Config, p *pool.Pool, logger *log.Logger) *Server {
 		cfg:    cfg,
 		log:    logger,
 		pollCh: make(chan []string, 8),
+		// Nothing issues credentials yet, so nothing gets past the navigator's gate.
+		navVerifier: denyAll{},
 	}
 }
 

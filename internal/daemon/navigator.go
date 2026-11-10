@@ -26,11 +26,11 @@ import (
 // The daemon writes a fresh secret token for it to an owner-only file at each start.
 
 // navHeader announces navigator support on /healthz, beside the identity header, which
-// stays as it was. nav is the navigator's protocol version: 0 means a listener and token
-// file with nothing behind them yet.
+// stays as it was. nav is the navigator's protocol version: 0 was a listener and token
+// file with nothing behind them, and 1 adds /api/nav/hello behind its gate.
 const (
 	navHeader   = "X-Aiq-Nav"
-	navProtocol = 0
+	navProtocol = 1
 )
 
 const (
@@ -271,14 +271,11 @@ func (s *Server) startNavigator() net.Listener {
 	return ln
 }
 
-// navigatorHandler is what the navigator's port serves. There is nothing to show yet.
-func navigatorHandler() http.Handler { return localOnly(http.NotFoundHandler()) }
-
 // serveNavigator serves the navigator until its listener fails. Then the navigator is
 // gone, in the file and in /api/state at once, and the daemon goes on without it.
 func (s *Server) serveNavigator(ln net.Listener) {
 	srv := &http.Server{
-		Handler:           navigatorHandler(),
+		Handler:           s.navigatorHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       2 * time.Minute,

@@ -147,7 +147,7 @@ func TestDaemonStateSaysWhatIsRunning(t *testing.T) {
 	// A daemon with a navigator adds its own header and leaves the identity as it was.
 	navigator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Aiq-Daemon", daemon.Identity())
-		w.Header().Set("X-Aiq-Nav", "pid=1; start=2; nav=0")
+		w.Header().Set("X-Aiq-Nav", "pid=1; start=2; nav=1")
 		w.Write([]byte("ok\n"))
 	}))
 	t.Cleanup(navigator.Close)
