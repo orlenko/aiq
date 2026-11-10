@@ -13,9 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,7 +232,7 @@ func navFile(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("ui-token has mode %v", info.Mode().Perm())
 	}
 	b, err := os.ReadFile(navTokenPath())
@@ -317,8 +319,9 @@ func TestNavigatorServesNothingYetOnItsOwnPort(t *testing.T) {
 	if got := d.daemonObject()["navigator_port"]; got != float64(port) {
 		t.Errorf("/api/state navigator_port is %v, want %d", got, port)
 	}
+	// A draw can land on a port another program holds, which adds a line before it.
 	ports, torn, err := readNavPorts(navPortsPath())
-	if err != nil || torn || len(ports) != 1 || ports[0].port != port {
+	if err != nil || torn || len(ports) == 0 || ports[len(ports)-1].port != port || !distinctPorts(ports) {
 		t.Errorf("ui-ports after a first start: %v, torn %v, %v", ports, torn, err)
 	}
 	checkIdentity(t, d)
@@ -379,21 +382,22 @@ func TestNavigatorHandlerIsLocalOnly(t *testing.T) {
 
 func TestARestartMovesTheNavigatorAndRotatesItsToken(t *testing.T) {
 	useDataDir(t)
+	bound := trackBinds(t)
 	first := startDaemon(t, true)
 	port1, token1 := navOnFields(t, first.s, navFile(t))
 	first.stopAll()
+	firstLn := bound()
+	if len(firstLn) == 0 || !firstLn[len(firstLn)-1].closed.Load() {
+		t.Error("the first start's navigator was left listening")
+	}
 	second := startDaemon(t, true)
 	port2, token2 := navOnFields(t, second.s, navFile(t))
 	if port1 == port2 || token1 == token2 {
 		t.Errorf("a restart kept the port (%d, %d) or the token", port1, port2)
 	}
 	ports, _, err := readNavPorts(navPortsPath())
-	if err != nil || len(ports) != 2 || ports[0].port != port1 || ports[1].port != port2 {
+	if err != nil || !distinctPorts(ports) || len(ports) < 2 || ports[len(ports)-1].port != port2 || indexOfPort(ports, port1) < 0 {
 		t.Errorf("ui-ports: %v, %v", ports, err)
-	}
-	if conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port1))); err == nil {
-		conn.Close()
-		t.Error("the first start's navigator still answers")
 	}
 }
 
@@ -447,13 +451,10 @@ func TestAnUnwritableTokenFileClosesTheNavigator(t *testing.T) {
 	if err := os.Mkdir(navTokenPath(), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	bound := trackBinds(t)
 	d := startDaemon(t, true)
-	ports, _, err := readNavPorts(navPortsPath())
-	if err != nil || len(ports) != 1 {
-		t.Fatalf("ui-ports: %v, %v", ports, err)
-	}
-	if conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(ports[0].port))); err == nil {
-		conn.Close()
+	lns := bound()
+	if len(lns) == 0 || !lns[len(lns)-1].closed.Load() {
 		t.Error("the navigator listens with no token file")
 	}
 	if _, ok := d.daemonObject()["navigator_port"]; ok {
@@ -512,24 +513,6 @@ func drawsFrom(t *testing.T, ports ...int) *int {
 	return &n
 }
 
-// holdPort listens on a port in the navigator's range.
-func holdPort(t *testing.T) int {
-	t.Helper()
-	for range 100 {
-		port, err := randomPort()
-		if err != nil {
-			t.Fatal(err)
-		}
-		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-		if err == nil {
-			t.Cleanup(func() { ln.Close() })
-			return port
-		}
-	}
-	t.Fatal("no port in the range to hold")
-	return 0
-}
-
 func TestRandomPortStaysInTheRange(t *testing.T) {
 	low, high := false, false
 	for range 2000 {
@@ -563,7 +546,7 @@ func TestNavigatorPortsNeverRepeat(t *testing.T) {
 		seen[port] = true
 	}
 	info, err := os.Stat(navPortsPath())
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("ui-ports: %v, %v", info, err)
 	}
 	ports, torn, err := readNavPorts(navPortsPath())
@@ -572,27 +555,69 @@ func TestNavigatorPortsNeverRepeat(t *testing.T) {
 	}
 }
 
-// A port that is taken is recorded all the same, and the next try draws afresh
+// A port that cannot be bound is recorded all the same, and the next try draws afresh
 // rather than trying the port above it.
 func TestATakenPortIsRecordedAndRedrawn(t *testing.T) {
 	useDataDir(t)
-	held := holdPort(t)
-	other := held + 7
-	if other > navPortMax {
-		other = held - 7
-	}
-	n := drawsFrom(t, held, other)
+	tried := fakeBinds(t, 1)
+	n := drawsFrom(t, 50101, 50201)
 	ln, port, err := bindNavigator()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln.Close()
-	if port != other || *n != 2 {
-		t.Errorf("bound %d after %d draws, want %d after 2", port, *n, other)
+	if port != 50201 || *n != 2 || len(*tried) != 2 || ln.Addr().String() != "127.0.0.1:50201" {
+		t.Errorf("bound %d after %d draws and binds %v, want 50201 after 2", port, *n, *tried)
 	}
 	ports, _, err := readNavPorts(navPortsPath())
-	if err != nil || len(ports) != 2 || ports[0].port != held || ports[1].port != other {
+	if err != nil || len(ports) != 2 || ports[0].port != 50101 || ports[1].port != 50201 {
 		t.Errorf("ui-ports: %v, %v", ports, err)
+	}
+}
+
+// The port is on disk before the bind is tried, so a crash in the bind never leaves a
+// port the navigator may have used out of the list.
+func TestThePortIsListedBeforeTheBind(t *testing.T) {
+	useDataDir(t)
+	drawsFrom(t, 50101, 50201)
+	refused := false
+	saved := listenTCP
+	t.Cleanup(func() { listenTCP = saved })
+	listenTCP = func(addr string) (net.Listener, error) {
+		_, p, _ := net.SplitHostPort(addr)
+		port, _ := strconv.Atoi(p)
+		ports, _, err := readNavPorts(navPortsPath())
+		if err != nil || indexOfPort(ports, port) < 0 {
+			t.Errorf("binding %s with ui-ports %v, %v", addr, ports, err)
+		}
+		if !refused {
+			refused = true
+			return nil, errors.New("address already in use")
+		}
+		return &fakeListener{addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}}, nil
+	}
+	if _, _, err := bindNavigator(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A bind that comes back on another address or port is closed, not served.
+func TestABindOnTheWrongAddressIsClosed(t *testing.T) {
+	for name, addr := range map[string]*net.TCPAddr{
+		"not loopback":   {IP: net.IPv4(192, 0, 2, 5), Port: 50101},
+		"the wrong port": {IP: net.IPv4(127, 0, 0, 1), Port: 50102},
+	} {
+		useDataDir(t)
+		drawsFrom(t, 50101)
+		ln := &fakeListener{addr: addr}
+		saved := listenTCP
+		listenTCP = func(string) (net.Listener, error) { return ln, nil }
+		if _, _, err := bindNavigator(); err == nil {
+			t.Errorf("%s: served", name)
+		}
+		listenTCP = saved
+		if !ln.closed {
+			t.Errorf("%s: left open", name)
+		}
 	}
 }
 
@@ -601,31 +626,28 @@ func TestAListedPortIsNeverDrawn(t *testing.T) {
 	if err := os.WriteFile(navPortsPath(), []byte("50001 1\n50002 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	fakeBinds(t, 0)
 	drawsFrom(t, 50001, 50002, 50003)
-	ln, port, err := bindNavigator()
-	if err != nil {
-		t.Skipf("port 50003 is taken here: %v", err)
-	}
-	ln.Close()
-	if port != 50003 {
-		t.Errorf("bound %d", port)
+	_, port, err := bindNavigator()
+	if err != nil || port != 50003 {
+		t.Errorf("bound %d, %v", port, err)
 	}
 }
 
-func TestTheNavigatorGivesUpAfterSixteenTakenPorts(t *testing.T) {
+func TestTheNavigatorGivesUpAfterSixteenFailedBinds(t *testing.T) {
 	useDataDir(t)
-	var held []int
-	for len(held) < navBindTries {
-		held = append(held, holdPort(t))
+	tried := fakeBinds(t, navBindTries+1)
+	var draws []int
+	for i := range navBindTries + 1 {
+		draws = append(draws, 50101+i)
 	}
-	drawsFrom(t, append(held, held[0]+1)...)
-	if ln, _, err := bindNavigator(); err == nil {
-		ln.Close()
-		t.Fatal("bound past sixteen taken ports")
+	drawsFrom(t, draws...)
+	if _, _, err := bindNavigator(); err == nil {
+		t.Fatal("bound past sixteen failed binds")
 	}
 	ports, _, err := readNavPorts(navPortsPath())
-	if err != nil || len(ports) != navBindTries {
-		t.Errorf("ui-ports: %d lines, %v", len(ports), err)
+	if err != nil || len(ports) != navBindTries || len(*tried) != navBindTries {
+		t.Errorf("ui-ports: %d lines after %d binds, %v", len(ports), len(*tried), err)
 	}
 }
 
@@ -638,16 +660,16 @@ func TestATornPortListIsCleanedBeforeTheDraw(t *testing.T) {
 	if err != nil || !torn || len(ports) != 2 {
 		t.Fatalf("read %v, torn %v, %v", ports, torn, err)
 	}
-	ln, port, err := bindNavigator()
-	if err != nil {
+	fakeBinds(t, 0)
+	drawsFrom(t, 50003)
+	if _, _, err := bindNavigator(); err != nil {
 		t.Fatal(err)
 	}
-	ln.Close()
 	b, err := os.ReadFile(navPortsPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(b), "50001 1\n50002 2\n"+strconv.Itoa(port)+" ") || strings.Count(string(b), "\n") != 3 {
+	if !strings.HasPrefix(string(b), "50001 1\n50002 2\n50003 ") || strings.Count(string(b), "\n") != 3 {
 		t.Errorf("ui-ports is now %q", b)
 	}
 }
@@ -669,10 +691,15 @@ func TestThePortListKeepsTheNewest(t *testing.T) {
 
 func TestAnUnreadablePortListFailsClosed(t *testing.T) {
 	for name, content := range map[string]string{
-		"no line parses": "garbage\n",
-		"spaces":         "50001  1\n",
-		"a signed port":  "+50001 1\n",
-		"too large":      strings.Repeat("#", navPortsMaxBytes+1),
+		"no line parses":   "garbage\n",
+		"spaces":           "50001  1\n",
+		"a signed port":    "+50001 1\n",
+		"a blank line":     "\n",
+		"blanks":           " \n\t\n",
+		"one long line":    strings.Repeat("1", navPortsMaxBytes),
+		"NULs":             strings.Repeat("\x00", navPortsMaxBytes),
+		"too large":        strings.Repeat("#", navPortsMaxBytes+1),
+		"a line with a CR": "50001 1\r\n",
 	} {
 		useDataDir(t)
 		if err := os.WriteFile(navPortsPath(), []byte(content), 0o600); err != nil {
@@ -695,9 +722,9 @@ func TestAnUnreadablePortListFailsClosed(t *testing.T) {
 	}
 }
 
-func TestEmptyPortListIsEmpty(t *testing.T) {
+func TestAnEmptyPortListIsEmpty(t *testing.T) {
 	useDataDir(t)
-	if err := os.WriteFile(navPortsPath(), []byte("\n"), 0o600); err != nil {
+	if err := os.WriteFile(navPortsPath(), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ports, torn, err := readNavPorts(navPortsPath())
@@ -739,5 +766,121 @@ func TestRefusedAndFailedStartsSayWhyInTheTokenFile(t *testing.T) {
 	wantNavState(t, s, navFailed)
 	if _, err := os.Lstat(navPortsPath()); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a start that could not serve drew a navigator port: %v", err)
+	}
+}
+
+// fakeListener stands in for a navigator bind.
+type fakeListener struct {
+	addr   net.Addr
+	closed bool
+}
+
+func (f *fakeListener) Accept() (net.Conn, error) { return nil, net.ErrClosed }
+func (f *fakeListener) Close() error              { f.closed = true; return nil }
+func (f *fakeListener) Addr() net.Addr            { return f.addr }
+
+// fakeBinds makes listenTCP refuse its first refusals binds, then give back a stand-in
+// at the address asked for, so a test of the port policy never meets a port another
+// program holds. It gives back the addresses tried.
+func fakeBinds(t *testing.T, refusals int) *[]string {
+	t.Helper()
+	var tried []string
+	saved := listenTCP
+	t.Cleanup(func() { listenTCP = saved })
+	listenTCP = func(addr string) (net.Listener, error) {
+		tried = append(tried, addr)
+		if len(tried) <= refusals {
+			return nil, errors.New("address already in use")
+		}
+		a, err := net.ResolveTCPAddr("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeListener{addr: a}, nil
+	}
+	return &tried
+}
+
+// trackedListener is a navigator listener that remembers being closed.
+type trackedListener struct {
+	net.Listener
+	closed atomic.Bool
+}
+
+func (l *trackedListener) Close() error {
+	l.closed.Store(true)
+	return l.Listener.Close()
+}
+
+// trackBinds keeps every listener the navigator binds, and gives a way to list them.
+func trackBinds(t *testing.T) func() []*trackedListener {
+	t.Helper()
+	var mu sync.Mutex
+	var bound []*trackedListener
+	saved := listenTCP
+	t.Cleanup(func() { listenTCP = saved })
+	listenTCP = func(addr string) (net.Listener, error) {
+		ln, err := saved(addr)
+		if err != nil {
+			return nil, err
+		}
+		tl := &trackedListener{Listener: ln}
+		mu.Lock()
+		bound = append(bound, tl)
+		mu.Unlock()
+		return tl, nil
+	}
+	return func() []*trackedListener {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]*trackedListener(nil), bound...)
+	}
+}
+
+func indexOfPort(ports []navPort, port int) int {
+	for i, p := range ports {
+		if p.port == port {
+			return i
+		}
+	}
+	return -1
+}
+
+func distinctPorts(ports []navPort) bool {
+	seen := map[int]bool{}
+	for _, p := range ports {
+		if seen[p.port] {
+			return false
+		}
+		seen[p.port] = true
+	}
+	return true
+}
+
+// A daemon restarting over a taken status port, with the navigator off, says nothing
+// about the navigator, but still leaves no earlier start's line behind.
+func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
+	useDataDir(t)
+	if err := os.WriteFile(navTokenPath(), []byte("off 1 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	defer releaseInstanceLock()
+	defer func(loops func(*Server)) { startLoops = loops }(startLoops)
+	startLoops = func(*Server) {}
+	cfg := config.Default()
+	cfg.Daemon.Listen = taken.Addr().String()
+	logged := &lockedBuffer{}
+	s := New(cfg, nil, log.New(logged, "", 0))
+	if err := s.Run(); err == nil {
+		t.Fatal("Run returned no error")
+	}
+	wantNavState(t, s, navFailed)
+	if strings.Contains(logged.String(), "navigator") {
+		t.Errorf("the log speaks of the navigator: %s", logged)
 	}
 }

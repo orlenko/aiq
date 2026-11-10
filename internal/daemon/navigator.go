@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"bufio"
-	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -60,17 +58,22 @@ var randomPort = func() (int, error) {
 	return navPortMin + int(binary.BigEndian.Uint16(b[:]))%(navPortMax-navPortMin+1), nil
 }
 
+// listenTCP binds a navigator port. It is a variable so a test can see what is on disk
+// when the bind is tried, and what the bind gives back.
+var listenTCP = func(addr string) (net.Listener, error) { return net.Listen("tcp", addr) }
+
 // navPort is one line of ui-ports.
 type navPort struct {
 	port int
 	at   int64
 }
 
-// readNavPorts reads the ports the navigator drew before. No file is an empty list. A
-// file that is not a regular one of the owner's alone, or that cannot be read, is an
-// error, and so is one with content but no line that parses: the list keeps a tab from
-// reaching a later daemon, so it is never taken as empty when it might not be. torn says
-// some lines did not parse, which a crash in the middle of a write can leave.
+// readNavPorts reads the ports the navigator drew before. No file, or an empty one, is an
+// empty list. A file that is not a regular one of the owner's alone, or that cannot be
+// read, is an error, and so is one with content but no line that parses, blank lines
+// included: the list keeps a tab from reaching a later daemon, so it is never taken as
+// empty when it might not be. torn says some lines did not parse, which a crash in the
+// middle of a write can leave.
 func readNavPorts(path string) (ports []navPort, torn bool, err error) {
 	f, err := openOwnerOnly(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -87,10 +90,8 @@ func readNavPorts(path string) (ports []navPort, torn bool, err error) {
 	if len(b) > navPortsMaxBytes {
 		return nil, false, fmt.Errorf("%s is larger than %d bytes", path, navPortsMaxBytes)
 	}
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.TrimSpace(line) == "" {
+	for _, line := range strings.Split(string(b), "\n") {
+		if line == "" {
 			continue
 		}
 		p, ok := parseNavPort(line)
@@ -100,7 +101,7 @@ func readNavPorts(path string) (ports []navPort, torn bool, err error) {
 		}
 		ports = append(ports, p)
 	}
-	if torn && len(ports) == 0 {
+	if len(b) > 0 && len(ports) == 0 {
 		return nil, false, fmt.Errorf("%s has no line that reads as a port", path)
 	}
 	return ports, torn, nil
@@ -136,8 +137,10 @@ func writeNavPorts(path string, ports []navPort) error {
 
 // bindNavigator binds the navigator's listener on a port drawn at random from those not
 // in ui-ports, recording each port before trying it, so a crash between the two never
-// leaves a used port out of the list. A taken port costs a fresh draw, never the next
-// port up, and never port 0, which the kernel could answer with a port just freed.
+// leaves a used port out of the list. A port that cannot be bound costs a fresh draw,
+// never the next port up, and never port 0, which the kernel could answer with a port
+// just freed. Any bind error counts, not only a taken port: Windows refuses a port in a
+// range it reserves with an access error.
 func bindNavigator() (net.Listener, int, error) {
 	path := navPortsPath()
 	ports, _, err := readNavPorts(path)
@@ -160,7 +163,7 @@ func bindNavigator() (net.Listener, int, error) {
 		if err := writeNavPorts(path, ports); err != nil {
 			return nil, 0, fmt.Errorf("recording the navigator's port in %s: %w", path, err)
 		}
-		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		ln, err := listenTCP(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 		if err != nil {
 			lastErr = err
 			continue
@@ -220,6 +223,19 @@ func (s *Server) writeNavState(state string) error {
 // so the reason goes to the log either way.
 func (s *Server) failNavigator(reason error) {
 	s.log.Printf("navigator not served: %v", reason)
+	if err := s.writeNavState(navFailed); err != nil {
+		s.log.Printf("navigator: could not record that it is not served in %s: %v", navTokenPath(), err)
+	}
+}
+
+// navigatorEnds records, as Run is about to return an error, that the navigator is not
+// served. Only a navigator that was turned on says so in the log, so a daemon restarting
+// over a taken status port does not point at a feature nobody turned on.
+func (s *Server) navigatorEnds(reason error) {
+	if s.cfg.UI.Navigator {
+		s.failNavigator(reason)
+		return
+	}
 	if err := s.writeNavState(navFailed); err != nil {
 		s.log.Printf("navigator: could not record that it is not served in %s: %v", navTokenPath(), err)
 	}

@@ -283,13 +283,13 @@ func (s *Server) Run() error {
 	if err != nil {
 		// The process exits and the service starts it again, so an earlier start's
 		// token file must not say the navigator is served meanwhile.
-		s.failNavigator(fmt.Errorf("the status page could not listen: %w", err))
+		s.navigatorEnds(fmt.Errorf("the status page could not listen: %w", err))
 		return err
 	}
 	if a, ok := ln.Addr().(*net.TCPAddr); !ok || !a.IP.IsLoopback() {
 		ln.Close()
 		err := fmt.Errorf("daemon.listen %q bound to %v, which is not loopback", s.cfg.Daemon.Listen, ln.Addr())
-		s.failNavigator(err)
+		s.navigatorEnds(err)
 		return err
 	}
 	navLn := s.startNavigator()
@@ -301,7 +301,7 @@ func (s *Server) Run() error {
 	}
 	srv := &http.Server{Handler: localOnly(mux), ReadHeaderTimeout: 5 * time.Second}
 	err = serveStatus(srv, ln)
-	s.failNavigator(fmt.Errorf("the status page stopped: %w", err))
+	s.navigatorEnds(fmt.Errorf("the status page stopped: %w", err))
 	return err
 }
 
