@@ -15,7 +15,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -241,9 +240,19 @@ type Supervisor struct {
 	said map[episode]bool
 	// turns remembers what each transcript showed at a given size and time.
 	turns map[string]turnsMemo
-	// paneAlive and move stand in for tmux in tests; nil means the real ones.
-	paneAlive func(pane string) (exists, running bool)
-	move      func(l state.Lease, acc state.Account, now time.Time)
+	// waits records why each lease's decision could not move it this tick.
+	waits map[int64]waiting
+	// lines and labels are what the daemon last showed of each lease.
+	lines  map[shown]string
+	labels map[shown]named
+	// whyFailed says a line could not be recorded, which is logged once.
+	whyFailed bool
+	// paneAlive, move, rename and windowName stand in for tmux in tests; nil
+	// means the real ones.
+	paneAlive  func(pane string) (exists, running bool)
+	move       func(l state.Lease, acc state.Account, now time.Time)
+	rename     func(pane, name string) error
+	windowName func(pane string) (string, error)
 	// unadoptable remembers orphaned panes already reported as impossible
 	// to re-adopt, keyed by pane and lease id.
 	unadoptable map[string]bool
@@ -286,11 +295,13 @@ func (s *Supervisor) Tick() {
 		return
 	}
 	s.forget(leases)
+	s.waits = map[int64]waiting{}
 	for _, l := range leases {
 		if l.Mode != state.ModeLong || l.Hostname != pool.Hostname() {
 			continue
 		}
 		s.evaluate(l, now)
+		s.apply(l, now)
 	}
 }
 
@@ -330,10 +341,22 @@ func (s *Supervisor) unsayAll(l state.Lease) {
 func (s *Supervisor) forget(leases []state.Lease) {
 	type key struct{ id, startedAt, drainAt int64 }
 	live := map[key]bool{}
+	panes := map[shown]bool{}
 	paths := map[string]bool{}
 	for _, l := range leases {
 		live[key{l.ID, l.StartedAt, l.DrainAt}] = true
+		panes[shown{l.ID, l.StartedAt, l.PID, l.Pane}] = true
 		paths[l.Transcript] = true
+	}
+	for k := range s.lines {
+		if !panes[k] {
+			delete(s.lines, k)
+		}
+	}
+	for k := range s.labels {
+		if !panes[k] {
+			delete(s.labels, k)
+		}
 	}
 	for k := range s.said {
 		if !live[key{k.id, k.startedAt, k.drainAt}] {
@@ -617,25 +640,8 @@ func (s *Supervisor) successorAbove(l state.Lease, now time.Time, minRemaining f
 // its ranking and remaining headroom. Providers go in fallback order, the
 // last-resort ones after all others in their configured order.
 func (s *Supervisor) successorWhere(l state.Lease, now time.Time, ok func(r selector.Ranked, remaining float64) bool) (state.Account, error) {
-	order := strings.Split(l.Fallback, ",")
-	if l.Fallback == "" {
-		order = append([]string{l.Provider}, s.Pool.Cfg.Long.Fallback...)
-	}
-	// A session on a tier's model moves only to providers that have a model
-	// of the same tier; anything else would be a silent downgrade.
-	want := ArgsTier(l.Provider, splitArgs(l.Args))
-	sort.SliceStable(order, func(i, j int) bool {
-		ri, rj := s.Pool.Cfg.LastResortRank(strings.TrimSpace(order[i])), s.Pool.Cfg.LastResortRank(strings.TrimSpace(order[j]))
-		return ri < rj
-	})
-	seen := map[string]bool{}
-	for _, provider := range order {
-		provider = strings.TrimSpace(provider)
-		if provider == "" || seen[provider] {
-			continue
-		}
-		seen[provider] = true
-		if provider != l.Provider && want >= 0 && !tier.Has(provider, want) {
+	for _, provider := range s.providerOrder(l) {
+		if s.tierSkips(l, provider) {
 			continue
 		}
 		cands, err := s.Pool.Candidates(provider)
@@ -670,6 +676,14 @@ const (
 	idleStranded                   // no account can take it; keep it asked
 	idleHold                       // the move would lose its context; wait for its wrap-up
 )
+
+// tierSkips says whether the search skips provider for l. A session on a
+// tier's model moves only to providers that have a model of the same tier;
+// anything else would be a silent downgrade.
+func (s *Supervisor) tierSkips(l state.Lease, provider string) bool {
+	want := ArgsTier(l.Provider, splitArgs(l.Args))
+	return provider != l.Provider && want >= 0 && !tier.Has(provider, want)
+}
 
 // silentLauncher says whether a launched session has reported no turn yet.
 // Turn marks come from its hooks, so it looks idle whatever it is doing,
@@ -715,7 +729,7 @@ func (s *Supervisor) idle(l state.Lease, remaining float64, now time.Time) {
 		return
 	}
 	if l.Pane == "" {
-		s.waitForSuccessor(l, now, noPane)
+		s.waitForSuccessor(l, now, waiting{key: waitNoPane, text: noPane})
 		return
 	}
 	if silentLauncher(l) {
@@ -728,7 +742,7 @@ func (s *Supervisor) idle(l state.Lease, remaining float64, now time.Time) {
 	acc, err := s.successor(l, now)
 	switch decideIdle(l, err == nil, s.hasContext(l), err == nil && s.carriesOver(l, acc)) {
 	case idleStranded:
-		s.waitForSuccessor(l, now, err.Error())
+		s.waitForSuccessor(l, now, s.noSuccessor(l, now))
 	case idleHold:
 		if s.sayOnce(l, "hold") {
 			since := ""
@@ -762,9 +776,9 @@ func (s *Supervisor) unchanged(l state.Lease) (state.Lease, bool) {
 // nothing. One that has not stays asked, so its next prompt or turn end still
 // hands it the wrap-up. One that was never asked (a blocked account, a failed
 // idle rotation) is left as it is: if the account comes back with little left,
-// the drain floor asks then. why is logged once per episode, or not at all when
-// empty.
-func (s *Supervisor) waitForSuccessor(l state.Lease, now time.Time, why string) {
+// the drain floor asks then. w's text is logged once per episode and kind of
+// wait, or not at all when empty, and w is kept for the lease's standing.
+func (s *Supervisor) waitForSuccessor(l state.Lease, now time.Time, w waiting) {
 	st := s.Pool.St
 	switch l.Drain {
 	case state.DrainNone, state.DrainRequested, state.DrainWaiting:
@@ -772,8 +786,12 @@ func (s *Supervisor) waitForSuccessor(l state.Lease, now time.Time, why string) 
 		st.SetLeaseDrain(l.ID, state.DrainWaiting, now)
 		l.Drain, l.DrainAt = state.DrainWaiting, now.Unix()
 	}
-	if why != "" && s.sayOnce(l, "waiting: "+why) {
-		st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: %s", l.ID, why), now)
+	if s.waits == nil {
+		s.waits = map[int64]waiting{}
+	}
+	s.waits[l.ID] = w
+	if w.text != "" && s.sayOnce(l, "waiting: "+w.key) {
+		st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: %s", l.ID, w.text), now)
 	}
 }
 
@@ -788,14 +806,16 @@ func (s *Supervisor) blockedMove(l state.Lease, now time.Time) {
 		s.sayOnce(l, "blocked")
 	}
 	if l.Pane == "" {
-		s.waitForSuccessor(l, now, noPane)
+		s.waitForSuccessor(l, now, waiting{key: waitNoPane, text: noPane})
 		return
 	}
 	acc, err := s.successor(l, now)
 	if err != nil {
+		w := s.noSuccessor(l, now)
+		w.text = ""
+		s.waitForSuccessor(l, now, w)
 		if s.sayOnce(l, "blocked: stays") {
-			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
-				"lease %d: account blocked and no account to move to; it stays until one frees up or the block lifts", l.ID), now)
+			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: %s", l.ID, w.none.event()), now)
 		}
 		return
 	}
@@ -819,12 +839,12 @@ const noPane = "no tmux pane recorded; cannot take over"
 // takeover respawns the pane on the successor account.
 func (s *Supervisor) takeover(l state.Lease, now time.Time) {
 	if l.Pane == "" {
-		s.waitForSuccessor(l, now, noPane)
+		s.waitForSuccessor(l, now, waiting{key: waitNoPane, text: noPane})
 		return
 	}
 	acc, err := s.successor(l, now)
 	if err != nil {
-		s.waitForSuccessor(l, now, err.Error())
+		s.waitForSuccessor(l, now, s.noSuccessor(l, now))
 		return
 	}
 	s.takeoverTo(l, acc, now)
@@ -836,7 +856,7 @@ func (s *Supervisor) takeoverTo(l state.Lease, acc state.Account, now time.Time)
 	// A session started outside tmux has no pane to respawn, and an empty
 	// target would name someone else's.
 	if l.Pane == "" {
-		s.waitForSuccessor(l, now, noPane)
+		s.waitForSuccessor(l, now, waiting{key: waitNoPane, text: noPane})
 		return
 	}
 	if s.staysAfterRefresh(l, now) {
@@ -941,8 +961,9 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 	same := acc.Provider == l.Provider
 	launcher := s.launcherFor(l, acc.Provider)
 	if l.Launcher != "" && launcher == "" {
-		s.waitForSuccessor(l, now, fmt.Sprintf(
-			"no launcher for %s in the %q chain; waiting rather than starting unlaunched", acc.Provider, l.Launcher))
+		s.waitForSuccessor(l, now, waiting{key: waitNoLauncher, text: fmt.Sprintf(
+			"no launcher for %s in the %q chain; waiting rather than starting unlaunched", acc.Provider, l.Launcher),
+			provider: acc.Provider, launcher: l.Launcher})
 		return
 	}
 	old, _ := st.GetAccount(l.AccountID)
@@ -981,7 +1002,7 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 		if s.sayOnce(l, "respawn failed") {
 			st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: respawn failed: %v", l.ID, err), now)
 		}
-		s.waitForSuccessor(l, now, "")
+		s.waitForSuccessor(l, now, waiting{key: waitRespawn})
 		return
 	}
 	st.ReleaseLease(l.ID)

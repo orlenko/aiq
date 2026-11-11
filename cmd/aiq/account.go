@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -247,6 +248,34 @@ func homeFor(provider, name string) string {
 	return filepath.Join(homesDir(provider), name)
 }
 
+// homeOwner names the account other than except whose recorded home is home,
+// or "". An account's home holds its login, so each home belongs to one account.
+func (a *app) homeOwner(home, except string) (string, error) {
+	accounts, err := a.st.ListAccounts("")
+	if err != nil {
+		return "", err
+	}
+	for _, acc := range accounts {
+		if acc.ID != except && acc.Home != "" && sameHome(acc.Home, home) {
+			return acc.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// sameHome says whether two paths name one directory: the same path, the same
+// existing directory under two names, or on macOS, whose file system ignores
+// case, two paths that differ only in case.
+func sameHome(x, y string) bool {
+	x, y = filepath.Clean(x), filepath.Clean(y)
+	if x == y || runtime.GOOS == "darwin" && strings.EqualFold(x, y) {
+		return true
+	}
+	xi, errx := os.Stat(x)
+	yi, erry := os.Stat(y)
+	return errx == nil && erry == nil && os.SameFile(xi, yi)
+}
+
 func validName(name string) error {
 	if name == "" || strings.ContainsAny(name, "/ \t\n") || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-") {
 		return fmt.Errorf("invalid account name %q", name)
@@ -274,16 +303,33 @@ func (a *app) accountAdd(provider, name string, login bool) error {
 		Home: homeFor(provider, name), Priority: 100, CreatedAt: time.Now().Unix(),
 	}
 	if provider == "agy" {
-		if others, _ := a.st.ListAccounts("agy"); len(others) > 0 {
+		others, err := a.st.ListAccounts("agy")
+		if err != nil {
+			return err
+		}
+		if len(others) > 0 {
 			return fmt.Errorf("%s is already registered as the agy account; agy runs on the real ~/.gemini login, one account per machine in this release (aiq account remove %s first)", others[0].ID, others[0].ID)
 		}
 		acc.Native, acc.Home = true, paths.RealAgyHome()
 	}
 	if provider == "copilot" {
-		if others, _ := a.st.ListAccounts("copilot"); len(others) > 0 {
+		others, err := a.st.ListAccounts("copilot")
+		if err != nil {
+			return err
+		}
+		if len(others) > 0 {
 			return fmt.Errorf("%s is already registered as the copilot account; copilot runs on the real ~/.copilot login, one account per machine in this release (aiq account remove %s first)", others[0].ID, others[0].ID)
 		}
 		acc.Native, acc.Home = true, paths.RealCopilotHome()
+	}
+	if !acc.Native {
+		owner, err := a.homeOwner(acc.Home, "")
+		if err != nil {
+			return err
+		}
+		if owner != "" {
+			return fmt.Errorf("%s is already the home of %s; pick another name", shortHome(acc.Home), owner)
+		}
 	}
 	if err := a.prepareHome(acc); err != nil {
 		return err
@@ -591,6 +637,13 @@ func (a *app) accountRemove(id string, purge bool) error {
 	if err != nil {
 		return err
 	}
+	// Another account on the same home keeps it, purge or not.
+	sharer := ""
+	if !acc.Native {
+		if sharer, err = a.homeOwner(acc.Home, acc.ID); err != nil {
+			return err
+		}
+	}
 	if err := a.st.RemoveAccount(id); err != nil {
 		return err
 	}
@@ -604,11 +657,15 @@ func (a *app) accountRemove(id string, purge bool) error {
 	delete(a.cfg.Display.Labels, id)
 	config.Save(a.cfg)
 	fmt.Printf("removed %s\n", id)
-	if purge && !acc.Native && strings.HasPrefix(acc.Home, paths.DataDir()) {
+	if sharer != "" {
+		fmt.Printf("home kept at %s: %s uses it too\n", shortHome(acc.Home), sharer)
+	} else if purge && !acc.Native && strings.HasPrefix(filepath.Clean(acc.Home), filepath.Clean(paths.DataDir())+string(filepath.Separator)) {
 		if err := os.RemoveAll(acc.Home); err != nil {
 			return err
 		}
 		fmt.Printf("deleted %s\n", shortHome(acc.Home))
+	} else if purge && !acc.Native {
+		fmt.Printf("home kept at %s: it is outside aiq's data directory\n", shortHome(acc.Home))
 	} else if !acc.Native {
 		fmt.Printf("home kept at %s (pass --purge to delete it)\n", shortHome(acc.Home))
 	}
@@ -642,6 +699,24 @@ func (a *app) accountRename(oldID, newName string, keepHome bool) error {
 	if _, err := a.st.GetAccount(newID); err == nil {
 		return fmt.Errorf("%s already exists", newID)
 	}
+	newHome := acc.Home
+	move := !acc.Native && !keepHome && filepath.Clean(acc.Home) == homeFor(acc.Provider, acc.Name)
+	if move {
+		newHome = homeFor(acc.Provider, newName)
+		owner, err := a.homeOwner(newHome, acc.ID)
+		if err != nil {
+			return err
+		}
+		if owner != "" {
+			return fmt.Errorf("%s is already the home of %s; pick another name or pass --keep-home", shortHome(newHome), owner)
+		}
+		if owner, err = a.homeOwner(acc.Home, acc.ID); err != nil {
+			return err
+		}
+		if owner != "" {
+			return fmt.Errorf("%s is also the home of %s; pass --keep-home", shortHome(acc.Home), owner)
+		}
+	}
 	live, err := a.st.PruneLeases(pool.Hostname(), proc.Alive)
 	if err != nil {
 		return err
@@ -657,11 +732,8 @@ func (a *app) accountRename(oldID, newName string, keepHome bool) error {
 			acc.ID, strings.Join(busy, "\n  "))
 	}
 
-	newHome := acc.Home
-	move := !acc.Native && !keepHome && filepath.Clean(acc.Home) == homeFor(acc.Provider, acc.Name)
 	keychain := false
 	if move {
-		newHome = homeFor(acc.Provider, newName)
 		if _, err := os.Lstat(newHome); err == nil {
 			return fmt.Errorf("%s already exists; move it aside or pass --keep-home", shortHome(newHome))
 		}
@@ -858,6 +930,25 @@ func (a *app) accountImport(args []string) error {
 			if qa.Provider == "claude" && nativeClaude != "" && strings.EqualFold(nativeClaude, identity[qa.ID]) {
 				acc.Native = true
 				acc.Home = paths.RealClaudeHome()
+			}
+			if acc.Native {
+				claudes, err := a.st.ListAccounts("claude")
+				if err != nil {
+					return err
+				}
+				for _, other := range claudes {
+					if other.Native {
+						return fmt.Errorf("%s is already the native claude login; one per machine in this release (aiq account link %s %s, and import then treats it as %s)", other.ID, other.ID, qa.ID, other.ID)
+					}
+				}
+			} else {
+				owner, err := a.homeOwner(acc.Home, "")
+				if err != nil {
+					return err
+				}
+				if owner != "" {
+					return fmt.Errorf("%s is already the home of %s; pick another name with %s=<name>", shortHome(acc.Home), owner, qa.ID)
+				}
 			}
 		}
 		if qa.Provider == "codex" && !known {

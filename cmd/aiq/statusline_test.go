@@ -13,6 +13,7 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/testenv"
 )
 
 func TestRecordAgyUsageRefreshesIdentityAndPlanWithoutChangingPoll(t *testing.T) {
@@ -80,7 +81,7 @@ func TestStatuslineChainedScriptCallsAiqBack(t *testing.T) {
 	// fails here instead of recursing without limit.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "aiq")
-	build := exec.Command("go", "build", "-o", bin, ".")
+	build := testenv.GoCommand("build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)
 	}

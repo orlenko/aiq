@@ -53,16 +53,16 @@ func TestResumeArgs(t *testing.T) {
 
 func TestFindSession(t *testing.T) {
 	list := []transcript.Session{{ID: "abc123"}, {ID: "abd456"}, {ID: "ab"}}
-	if s, err := findSession(list, "abc"); err != nil || s.ID != "abc123" {
+	if s, err := findSession(list, nil, "abc"); err != nil || s.ID != "abc123" {
 		t.Fatal(s, err)
 	}
-	if s, err := findSession(list, "ab"); err != nil || s.ID != "ab" {
+	if s, err := findSession(list, nil, "ab"); err != nil || s.ID != "ab" {
 		t.Fatal("exact id must win over prefix matches", s, err)
 	}
-	if _, err := findSession(list, "a"); err == nil || !strings.Contains(err.Error(), "matches 3") {
+	if _, err := findSession(list, nil, "a"); err == nil || !strings.Contains(err.Error(), "matches 3") {
 		t.Fatal(err)
 	}
-	if _, err := findSession(list, "zz"); err == nil {
+	if _, err := findSession(list, nil, "zz"); err == nil {
 		t.Fatal("want not found")
 	}
 }

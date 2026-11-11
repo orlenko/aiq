@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -83,8 +84,9 @@ type testDaemon struct {
 	stop   chan struct{}
 	done   chan error
 
-	mu     sync.Mutex
-	navSrv *http.Server
+	mu        sync.Mutex
+	navSrv    *http.Server
+	statusSrv *http.Server
 }
 
 // startDaemon runs a daemon on the current data directory until the test stops it.
@@ -105,6 +107,9 @@ func startDaemon(t *testing.T, navigator bool) *testDaemon {
 	ready, navReady := make(chan struct{}), make(chan struct{})
 	startLoops = func(*Server) {}
 	serveStatus = func(srv *http.Server, ln net.Listener) error {
+		d.mu.Lock()
+		d.statusSrv = srv
+		d.mu.Unlock()
 		go srv.Serve(ln)
 		close(ready)
 		<-d.stop
@@ -882,5 +887,79 @@ func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 	wantNavState(t, s, navFailed)
 	if strings.Contains(logged.String(), "navigator") {
 		t.Errorf("the log speaks of the navigator: %s", logged)
+	}
+}
+
+// The navigator's server bounds a request that is slow to arrive: a request that
+// declares a body and never sends it loses its connection at the read deadline.
+func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
+	srv := statusServer(New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler())
+	srv.ReadTimeout = 300 * time.Millisecond
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+	start := time.Now() // the server's deadline cannot start before the dial
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "POST /x HTTP/1.1\r\nHost: %s\r\nContent-Length: 1000\r\n\r\nab", ln.Addr())
+	if _, err := io.Copy(io.Discard, conn); err != nil {
+		t.Errorf("the connection was not closed: %v after %v", err, time.Since(start))
+	}
+	if d := time.Since(start); d < 150*time.Millisecond {
+		t.Errorf("closed after %v, before the deadline", d)
+	}
+}
+
+// OPTIONS * is the navigator handler's to answer, not the server's: the gate refuses
+// its target, with the navigator's headers.
+func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
+	srv := statusServer(New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler())
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "OPTIONS * HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", ln.Addr())
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || resp.Header.Get("X-Frame-Options") != "DENY" || resp.Header.Get("X-Aiq-Build") == "" {
+		t.Errorf("OPTIONS *: %d %v", resp.StatusCode, resp.Header)
+	}
+}
+
+// The daemon serves the status page and the navigator with statusServer's deadlines
+// and limits.
+func TestBothListenersHaveTheStatusServersSettings(t *testing.T) {
+	useDataDir(t)
+	d := startDaemon(t, true)
+	d.mu.Lock()
+	servers := map[string]*http.Server{"status page": d.statusSrv, "navigator": d.navSrv}
+	d.mu.Unlock()
+	want := statusServer(nil)
+	for name, srv := range servers {
+		if srv == nil {
+			t.Errorf("the %s is not served", name)
+		} else if srv.ReadHeaderTimeout != want.ReadHeaderTimeout || srv.ReadTimeout != want.ReadTimeout || srv.WriteTimeout != want.WriteTimeout ||
+			srv.IdleTimeout != want.IdleTimeout || srv.MaxHeaderBytes != want.MaxHeaderBytes || srv.DisableGeneralOptionsHandler != want.DisableGeneralOptionsHandler {
+			t.Errorf("the %s's server has header %v, read %v, write %v, idle %v, %d header bytes, general OPTIONS off %v", name,
+				srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout, srv.MaxHeaderBytes, srv.DisableGeneralOptionsHandler)
+		}
 	}
 }

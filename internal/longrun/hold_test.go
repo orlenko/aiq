@@ -18,6 +18,7 @@ import (
 type holdPool struct {
 	s     *Supervisor
 	st    *state.Store
+	path  string // the store's file
 	moves []string
 }
 
@@ -42,7 +43,8 @@ func newHoldPool(t *testing.T, codexTarget, claudeTarget bool) *holdPool {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	noTmux(t)
-	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	path := filepath.Join(t.TempDir(), "state.db")
+	st, err := state.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +65,7 @@ func newHoldPool(t *testing.T, codexTarget, claudeTarget bool) *holdPool {
 	}
 	cfg := config.Default()
 	cfg.Providers.Claude.ModelScope = ""
-	h := &holdPool{st: st}
+	h := &holdPool{st: st, path: path}
 	h.s = &Supervisor{Pool: &pool.Pool{Cfg: cfg, St: st}, Logf: func(string, ...any) {}}
 	h.s.paneAlive = func(string) (bool, bool) { return true, true }
 	h.s.move = func(l state.Lease, acc state.Account, _ time.Time) { h.moves = append(h.moves, acc.ID) }
@@ -282,7 +284,7 @@ func TestIdleWithNoSuccessorStaysAsked(t *testing.T) {
 			t.Fatalf("tick %d: drain = %q at %d, want requested at %d", i, got.Drain, got.DrainAt, l.DrainAt)
 		}
 	}
-	if n := h.events(t, "no account with headroom"); n != 1 {
+	if n := h.events(t, "no account to move to; it keeps going"); n != 1 {
 		t.Fatalf("%d events, want 1", n)
 	}
 }
@@ -333,7 +335,7 @@ func TestBlockedWithNoSuccessorLeavesTheSessionAlone(t *testing.T) {
 	if _, err := os.Stat(note); err != nil {
 		t.Fatalf("the note was moved: %v", err)
 	}
-	if h.events(t, "account blocked and no account to move to") != 1 || h.events(t, "taking over") != 0 {
+	if h.events(t, "its account is out and no other account can take it") != 1 || h.events(t, "taking over") != 0 {
 		t.Fatal("want one blocked event that claims no move")
 	}
 	// The block lifts at the floor: the low-quota path asks, and archives the note then.
@@ -373,7 +375,7 @@ func TestDisabledAccountIsNotDrained(t *testing.T) {
 			t.Fatalf("tick %d: drain = %q, want none", i, got.Drain)
 		}
 	}
-	if h.events(t, "account blocked and no account to move to") != 1 || h.events(t, "taking over") != 0 {
+	if h.events(t, "its account is disabled and no other account can take it") != 1 || h.events(t, "taking over") != 0 {
 		t.Fatal("want one blocked event that claims no move")
 	}
 }
@@ -390,7 +392,7 @@ func TestEachBlockIsReported(t *testing.T) {
 		}
 		h.tick(t, l.ID)
 	}
-	if n := h.events(t, "account blocked and no account to move to"); n != 2 {
+	if n := h.events(t, "its account is disabled and no other account can take it"); n != 2 {
 		t.Fatalf("blocked events = %d, want 2", n)
 	}
 	// With somewhere to go, the block moves it, and says so.
@@ -638,7 +640,7 @@ func TestWaitForSuccessorAfterTheWrapUp(t *testing.T) {
 		t.Fatalf("drain = %q, want waiting", got.Drain)
 	}
 	h.tick(t, l.ID)
-	if n := h.events(t, "no account with headroom"); n != 1 {
+	if n := h.events(t, "no account to move to; it keeps going"); n != 1 {
 		t.Fatalf("%d events, want 1", n)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 )
@@ -347,7 +348,7 @@ func Open(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE usage ADD COLUMN cli_login_error TEXT`)
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
 		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
-		"launcher TEXT", "transcript TEXT", "drain_manual INTEGER"} {
+		"launcher TEXT", "transcript TEXT", "drain_manual INTEGER", "why TEXT"} {
 		db.Exec(`ALTER TABLE leases ADD COLUMN ` + col)
 	}
 	db.Exec(`ALTER TABLE launches ADD COLUMN args TEXT`)
@@ -796,6 +797,57 @@ func (s *Store) SetLeaseDrain(id int64, drain string, now time.Time) error {
 	_, err := s.db.Exec(`UPDATE leases SET drain = ?, drain_at = ?,
 		drain_manual = CASE WHEN ? = '' THEN 0 ELSE drain_manual END WHERE id = ?`, drain, now.Unix(), drain, id)
 	return err
+}
+
+// LeaseRef names one lease: ids are reused, so the start time goes with it.
+type LeaseRef struct{ ID, StartedAt int64 }
+
+// MaxWhy caps a lease's why line, in bytes.
+const MaxWhy = 1000
+
+// SetLeaseWhy records why a long lease is where it is, for people to read.
+// It writes only to the lease that was judged: same id, start and pid. The
+// column is read only through LeaseWhys, so the read-only openers, which never
+// add columns, do not name it.
+func (s *Store) SetLeaseWhy(id, startedAt int64, pid int, why string) error {
+	_, err := s.db.Exec(`UPDATE leases SET why = ? WHERE id = ? AND started_at = ? AND pid = ?`,
+		CleanLine(why), id, startedAt, pid)
+	return err
+}
+
+// LeaseWhys returns every lease's why line that is set.
+func (s *Store) LeaseWhys() (map[LeaseRef]string, error) {
+	rows, err := s.db.Query(`SELECT id, started_at, why FROM leases WHERE COALESCE(why,'') != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[LeaseRef]string{}
+	for rows.Next() {
+		var r LeaseRef
+		var why string
+		if err := rows.Scan(&r.ID, &r.StartedAt, &why); err != nil {
+			return nil, err
+		}
+		out[r] = why
+	}
+	return out, rows.Err()
+}
+
+// CleanLine makes text safe to store and print: control characters other
+// than newline become '?', and it is cut at MaxWhy bytes on a rune boundary.
+func CleanLine(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r != '\n' && (r < 0x20 || (r >= 0x7f && r < 0xa0)) {
+			r = '?'
+		}
+		if b.Len()+utf8.RuneLen(r) > MaxWhy {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // RequestDrainByUser starts a drain the supervisor must see through even if

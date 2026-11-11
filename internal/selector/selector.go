@@ -42,8 +42,11 @@ type Candidate struct {
 	// UnavailableReason excludes an account whose credential exists but is
 	// known not to work (for example, a Codex poll rejected a revoked token).
 	UnavailableReason string
-	Priority          int
-	LastSelectedAt    int64
+	// Unavailable is the kind of UnavailableReason, for text that must not
+	// quote it (it can name identities): one of the Unavailable* constants.
+	Unavailable    string
+	Priority       int
+	LastSelectedAt int64
 
 	Windows       []state.Window
 	CooldownUntil int64 // unix seconds, 0 = none
@@ -62,6 +65,13 @@ type Candidate struct {
 	// providers, from 1; 0 for every other provider.
 	LastResort int
 }
+
+// Kinds of Candidate.Unavailable.
+const (
+	UnavailableLoginOut      = "login-out"      // the CLI is not logged in
+	UnavailableLoginMismatch = "login-mismatch" // the CLI is logged in as another identity
+	UnavailableAuthRequired  = "auth-required"  // the provider rejected the credential
+)
 
 // Rungs order capacity by what it costs, before any score: plan quota,
 // then paid extra usage, then last-resort providers (RungLastResort + the
@@ -161,8 +171,8 @@ func binding(w state.Window, modelScope string) bool {
 	return strings.Contains(strings.ToLower(w.Scope), strings.ToLower(modelScope))
 }
 
-// exhaustedWindow returns the window that blocks the account right now.
-func exhaustedWindow(ws []state.Window, modelScope string, now time.Time) (state.Window, bool) {
+// ExhaustedWindow returns the window that blocks the account right now.
+func ExhaustedWindow(ws []state.Window, modelScope string, now time.Time) (state.Window, bool) {
 	for _, w := range ws {
 		if !binding(w, modelScope) {
 			continue
@@ -360,7 +370,7 @@ func Rank(p Policy, cands []Candidate) []Ranked {
 		}
 		extra := ""
 		if r.Eligible {
-			if w, ok := exhaustedWindow(c.Windows, p.ModelScope, p.Now); ok {
+			if w, ok := ExhaustedWindow(c.Windows, p.ModelScope, p.Now); ok {
 				name := w.Label
 				if name == "" {
 					name = w.Key

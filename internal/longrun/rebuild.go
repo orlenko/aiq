@@ -456,7 +456,12 @@ func firstSteer(turns []transcript.Turn) (string, bool) {
 
 func writeTurn(b *strings.Builder, t transcript.Turn) {
 	who := map[transcript.Source]string{transcript.Human: "recorded as typed", transcript.Aiq: "recorded as from aiq", transcript.Peer: "recorded as from a peer session", transcript.Notice: "recorded as from a notifier"}[t.Source]
-	fmt.Fprintf(b, "\n### %s · %s\n\n%s\n\n", stamp(t.Started), who, quoted(cut(t.Prompt, capPrompt)))
+	if t.PromptSkipped {
+		// aiq's words, not the transcript's: no quote.
+		fmt.Fprintf(b, "\n### %s · %s\n\n(%s)\n\n", stamp(t.Started), who, transcript.SkippedNote())
+	} else {
+		fmt.Fprintf(b, "\n### %s · %s\n\n%s\n\n", stamp(t.Started), who, quoted(cut(t.Prompt, capPrompt)))
+	}
 	items := t.Items
 	if len(items) == 0 { // a reader that keeps no items
 		for _, st := range t.Steers {
@@ -656,6 +661,10 @@ func toolText(raw json.RawMessage) string {
 // gitTimeout limits each git command. It is a variable so a test can shorten it.
 var gitTimeout = 5 * time.Second
 
+// redactGit redacts one git command's output. It is a variable so a test can see
+// what reaches it.
+var redactGit = redact.Clean
+
 // gitSummary is recent git history, for a note; "" outside a repo.
 func gitSummary(dir string) string {
 	run := func(args ...string) ([]byte, error) {
@@ -687,7 +696,7 @@ func gitSummary(dir string) string {
 			out = out[:bytes.LastIndexByte(out[:capGitRaw], '\n')+1]
 		}
 		var lines []string
-		if text := strings.TrimRight(redact.Clean(string(out)), "\n"); text != "" || !rawCut {
+		if text := strings.TrimRight(redactGit(string(out)), "\n"); text != "" || !rawCut {
 			lines = strings.Split(text, "\n")
 		}
 		switch {

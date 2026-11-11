@@ -84,9 +84,9 @@ func TestListAgy(t *testing.T) {
 	os.MkdirAll(filepath.Join(appData, "cache"), 0o700)
 	os.WriteFile(filepath.Join(appData, "cache", "last_conversations.json"), []byte(`{"`+work+`":"here2","/other":"gone"}`), 0o600)
 
-	list, err := List(DefaultRoots(filepath.Join(root, "claude"), filepath.Join(root, "codex"), appData, ""), work)
-	if err != nil {
-		t.Fatal(err)
+	list, unreadable, err := List(DefaultRoots(filepath.Join(root, "claude"), filepath.Join(root, "codex"), appData, ""), work)
+	if err != nil || len(unreadable) != 0 {
+		t.Fatal(err, unreadable)
 	}
 	var got []string
 	for _, s := range list {
@@ -95,5 +95,35 @@ func TestListAgy(t *testing.T) {
 	want := []string{"agy/here1/fix the build", "agy/here2/now the tests"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// A conversation id that is not an id is skipped, wherever it would lead.
+func TestListAgySkipsConversationIDsThatAreNotIDs(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	os.MkdirAll(work, 0o700)
+	work = canonical(work)
+	appData := filepath.Join(root, "antigravity-cli")
+	writeLines(t, AgyTranscript(appData, "here1"), agyFixture()...)
+	writeLines(t, AgyTranscript(appData, "good1"), agyFixture()...)
+	// brain/../outside/... is appData/outside/...; brain/x/../here1 is here1.
+	writeLines(t, filepath.Join(appData, "outside", ".system_generated", "logs", "transcript.jsonl"), agyFixture()...)
+	writeLines(t, filepath.Join(appData, "history.jsonl"),
+		`{"display":"x","timestamp":1,"workspace":"`+work+`","conversationId":"../outside"}`,
+		`{"display":"x","timestamp":2,"workspace":"`+work+`","conversationId":"x/../here1"}`,
+	)
+	if err := os.MkdirAll(filepath.Join(appData, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appData, "cache", "last_conversations.json"), []byte(`{"`+work+`":"good1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, unreadable, err := List(DefaultRoots(filepath.Join(root, "claude"), filepath.Join(root, "codex"), appData, ""), work)
+	if err != nil || len(unreadable) != 0 {
+		t.Fatal(unreadable, err)
+	}
+	if len(list) != 1 || list[0].ID != "good1" {
+		t.Fatalf("listed %+v, want good1 only", list)
 	}
 }

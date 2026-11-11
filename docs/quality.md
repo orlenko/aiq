@@ -201,7 +201,7 @@ contains these effects, and a temporary `HOME` is not containment.
 | --- | --- |
 | `gofmt` | None expected |
 | `vet` | Writes the Go build cache; may download modules |
-| `go-test` | The same, and queries the default tmux server. Tests avoid real aiq data by setting their own data directory, with no central guard |
+| `go-test` | The same. Each package's tests run with tmux, the provider homes and aiq data pointed at a temporary directory by `internal/testenv`; the `go` command a test runs keeps the caller's Go settings |
 | `installer-test` | Uses fake commands and temporary homes, and inherits the caller's environment and `PATH` |
 
 `installer-test` is part of the full gate, but CI does not run it.
@@ -287,8 +287,11 @@ Use the same launcher's `install` command first. Do not pass `--execute-trusted`
   or has a disposable environment. The maintainer owns this follow-up.
 - Codex's read-only boundary is unverified. One route with distinct identities
   required proves nothing about independence.
-- The tests have no central guard against real data, and they can reach the default
-  tmux server.
+- `internal/testenv` guards only what the environment decides, and only the variables it
+  lists: others, such as other credentials and agent sockets, pass through to tests. A test
+  that sets its own variable to a real path, the daemon's default port, and provider
+  binaries on `PATH` are outside it, and nothing yet checks that a new package's tests call
+  `testenv.Main`.
 - `installer-test` is not in CI. No race run or secret, privacy or dependency scanner
   is configured.
 - `main` has no branch protection, so the pull request rule is by practice.

@@ -14,6 +14,7 @@ import (
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/testenv"
 	"github.com/orlenko/aiq/internal/tier"
 )
 
@@ -151,7 +152,7 @@ func TestModelFlagsAgyTiers(t *testing.T) {
 func TestExplicitAgyTierOverridesDefaultScope(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "aiq")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	if out, err := testenv.GoCommand("build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)
 	}
 	for _, tt := range []struct {
@@ -303,7 +304,7 @@ func TestAutoEndToEnd(t *testing.T) {
 	// executables are fakes. No accounts, credentials or quota outside temp dirs.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "aiq")
-	build := exec.Command("go", "build", "-o", bin, ".")
+	build := testenv.GoCommand("build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)
 	}

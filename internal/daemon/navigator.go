@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -273,14 +272,9 @@ func (s *Server) startNavigator() net.Listener {
 
 // serveNavigator serves the navigator until its listener fails. Then the navigator is
 // gone, in the file and in /api/state at once, and the daemon goes on without it.
+// Its server has the status page's deadlines and limits.
 func (s *Server) serveNavigator(ln net.Listener) {
-	srv := &http.Server{
-		Handler:           s.navigatorHandler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-	}
-	err := serveNav(srv, ln)
+	err := serveNav(statusServer(s.navigatorHandler()), ln)
 	ln.Close()
 	s.mu.Lock()
 	defer s.mu.Unlock()

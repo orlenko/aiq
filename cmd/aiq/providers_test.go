@@ -12,6 +12,7 @@ import (
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/testenv"
 )
 
 func TestLongArgsPerProvider(t *testing.T) {
@@ -72,7 +73,7 @@ func TestTakeoverNameIsAnArgumentNotPromptText(t *testing.T) {
 func TestInheritedCopilotNameSurvivesTheNextHandoff(t *testing.T) {
 	root := t.TempDir()
 	bin := filepath.Join(root, "aiq")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	if out, err := testenv.GoCommand("build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)
 	}
 	t.Setenv("AIQ_CONFIG", filepath.Join(root, "config.toml"))

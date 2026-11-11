@@ -194,9 +194,9 @@ func TestList(t *testing.T) {
 		`{"id":"c1","thread_name":"blog post"}`,
 	)
 
-	list, err := List(DefaultRoots(claudeHome, codexHome, "", "", overlays), work)
-	if err != nil {
-		t.Fatal(err)
+	list, unreadable, err := List(DefaultRoots(claudeHome, codexHome, "", "", overlays), work)
+	if err != nil || len(unreadable) != 0 {
+		t.Fatal(err, unreadable)
 	}
 	var got []string
 	for _, s := range list {

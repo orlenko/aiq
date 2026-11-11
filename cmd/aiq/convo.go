@@ -556,11 +556,12 @@ func (e ambiguousErr) Error() string { return string(e) }
 
 // resolveID finds a session of dir by id, the way aiq resume does.
 func (r *convoResolver) resolveID(dir, id string) (convoTarget, error) {
-	sessions, err := transcript.List(r.roots, dir)
+	sessions, unreadable, err := transcript.List(r.roots, dir)
+	reportUnreadable(os.Stderr, unreadable)
 	if err != nil {
 		return convoTarget{}, err
 	}
-	s, err := findSession(sessions, id)
+	s, err := findSession(sessions, unreadable, id)
 	if err != nil {
 		return convoTarget{}, err
 	}
@@ -681,6 +682,7 @@ type claudeLive struct {
 
 // liveClaude reads the session files of running Claude processes, from the
 // real home and from any overlay home whose sessions/ is not linked to it.
+// It reads only regular files, so a pipe or a device there cannot hold it.
 func liveClaude() []claudeLive {
 	dirs := []string{filepath.Join(paths.RealClaudeHome(), "sessions")}
 	homes, _ := os.ReadDir(paths.ClaudeHomesDir())
@@ -695,12 +697,14 @@ func liveClaude() []claudeLive {
 	for _, d := range dirs {
 		files, _ := filepath.Glob(filepath.Join(d, "*.json"))
 		for _, f := range files {
-			data, err := os.ReadFile(f)
+			data, err := transcript.ReadRegular(f)
 			if err != nil {
 				continue
 			}
 			var c claudeLive
-			if json.Unmarshal(data, &c) != nil || c.PID <= 0 || c.SessionID == "" || seen[c.PID] || !proc.Alive(c.PID) || strings.HasPrefix(c.Entrypoint, "sdk") {
+			// A session id aiq would not resume is not one it reads either: it names a
+			// file, and must not reach outside the projects folder or match others.
+			if json.Unmarshal(data, &c) != nil || c.PID <= 0 || !transcript.ValidID(c.SessionID) || seen[c.PID] || !proc.Alive(c.PID) || strings.HasPrefix(c.Entrypoint, "sdk") {
 				continue
 			}
 			seen[c.PID] = true
@@ -729,6 +733,9 @@ var claudeNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
 // claudeTranscript finds <id>.jsonl in the project directory Claude Code
 // keeps for cwd, else in any project (cwd spelled through a symlink).
 func claudeTranscript(roots []string, cwd, id string) string {
+	if !transcript.ValidID(id) {
+		return "" // a path or a pattern, not an id
+	}
 	enc := claudeNonAlnum.ReplaceAllString(cwd, "-")
 	if len(enc) > 200 {
 		enc = enc[:200] + "*" // Claude Code cuts long names and adds a hash
@@ -811,6 +818,7 @@ type convoPrinter struct {
 	// has not changed.
 	pending bool
 	seen    map[string]*turnSeen
+	skipped int // records before the first turn shown as skipped
 	// piece, if set, hears every text printed: the turn's key, the kind
 	// (prompt, steer, answer, none) and the text.
 	piece func(key, kind, text string)
@@ -825,7 +833,8 @@ type convoPrinter struct {
 // what it is, and its text as the transcript has it. The kinds are you (a prompt the person
 // typed), steer, notice (a prompt aiq, a peer or a notifier sent), answer, line (a message
 // said on the way, as one line), more (a later part of the answer before it), part (a later
-// part of the line before it, which prints nothing) and none (no reply).
+// part of the line before it, which prints nothing), none (no reply) and skipped (a record
+// too long to read).
 type convoCut struct {
 	end             int
 	key, kind, text string
@@ -849,6 +858,7 @@ type turnSeen struct {
 	done    map[string]bool
 	msgMode map[string]string // how a said message's first part printed: reply or line; its later parts follow suit
 	noReply bool
+	skipped int // records over the line cap shown as skipped
 }
 
 func newConvoPrinter(provider string, color, marks bool) *convoPrinter {
@@ -881,6 +891,11 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	p.pending = false
 	p.cuts = nil
+	if len(s.Turns) == 0 || p.seen[turnKey(0, s.Turns[0])] == nil || !p.seen[turnKey(0, s.Turns[0])].hidden {
+		for ; p.skipped < s.Skipped; p.skipped++ {
+			p.skippedLine(&b, "")
+		}
+	}
 	for i, t := range s.Turns {
 		k := turnKey(i, t)
 		seen := p.seen[k]
@@ -897,15 +912,22 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			if human && t.Open && t.Tools == 0 && len(pieces) == 0 && slashCommand(t.Prompt) {
 				continue // a local command: the parser drops it if nothing comes of it
 			}
-			kind := "you"
-			if human {
-				p.human(&b, "▌ you · "+whenLabel(t.Started, time.Now()), t.Prompt)
-			} else {
+			kind, text := "you", t.Prompt
+			switch {
+			case t.PromptSkipped:
+				// The prompt was a record too long to read: the line saying so
+				// stands in its place, and is that record's one line.
+				text = transcript.SkippedNote()
+				p.block(&b, true, pal.you, youHeader(t.Started), pal.dim, "  · "+text)
+				seen.skipped = 1
+			case human:
+				p.human(&b, youHeader(t.Started), t.Prompt)
+			default:
 				b.WriteString("\n" + p.paint(pal.dim, "· "+promptLine(t)) + "\n")
 				kind = "notice"
 			}
-			p.note(k, "prompt", t.Prompt)
-			p.cut(&b, k, kind, t.Prompt)
+			p.note(k, "prompt", text)
+			p.cut(&b, k, kind, text)
 			seen.head = true
 		}
 		head := "▌ " + p.provider
@@ -1000,6 +1022,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			p.note(k, kind, pc.text)
 			p.cut(&b, k, shown, pc.text)
 		}
+		for ; seen.skipped < t.Skipped; seen.skipped++ {
+			p.skippedLine(&b, k)
+		}
 		if human && !t.Open && len(seen.done) == 0 && !seen.noReply && !(p.live && last) {
 			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
 			p.note(k, "none", "")
@@ -1086,6 +1111,14 @@ func turnPieces(t transcript.Turn) []piece {
 		}
 	}
 	return append(out, piece{kind: transcript.ItemAnswer, text: t.Reply, final: true})
+}
+
+// skippedLine writes a record the parser read past as one dim line.
+func (p *convoPrinter) skippedLine(b *strings.Builder, key string) {
+	text := transcript.SkippedNote()
+	b.WriteString(p.paint(pal.dim, "  · "+text) + "\n")
+	p.note(key, "skipped", text)
+	p.cut(b, key, "skipped", text)
 }
 
 // said writes a message the agent sent on the way as one dim line: cut to
@@ -1303,6 +1336,10 @@ func firstLine(s string) string {
 // turnKey names a turn across re-parses: by its start, which does not move
 // when the file grows.
 func turnKey(i int, t transcript.Turn) string {
+	if t.PromptSkipped {
+		// Its start can come later, from the first record with a time.
+		return fmt.Sprintf("#%d|skipped", i)
+	}
 	if t.Started.IsZero() {
 		return fmt.Sprintf("#%d", i)
 	}
