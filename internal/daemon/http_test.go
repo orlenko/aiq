@@ -283,6 +283,11 @@ func TestRunStopsBesideAnOlderDaemonWithoutTakingTheLock(t *testing.T) {
 	if instanceLock != nil {
 		t.Fatal("the lock was taken")
 	}
+	for _, path := range []string{navTokenPath(), navPortsPath()} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Errorf("%s was written: %v", path, err)
+		}
+	}
 }
 
 func TestClientsDoNotFollowARedirect(t *testing.T) {

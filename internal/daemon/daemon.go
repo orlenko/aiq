@@ -45,10 +45,18 @@ type Server struct {
 	log    *log.Logger
 	pollCh chan []string
 
+	// started is when this daemon took the instance lock; with the pid it tells this
+	// start's navigator token file from an earlier one's.
+	started time.Time
+
 	mu       sync.Mutex
 	lastPoll time.Time
 	lastErr  string
 	polling  bool
+	// navPort is the navigator's port while it is served, else 0. navToken is its
+	// secret for this start.
+	navPort  int
+	navToken string
 }
 
 func New(cfg *config.Config, p *pool.Pool, logger *log.Logger) *Server {
@@ -235,12 +243,17 @@ var (
 	}
 	// waitWithoutHTTP is what a daemon with a refused address does in place of serving.
 	waitWithoutHTTP = func() { select {} }
+	// serveStatus and serveNav serve the status page and the navigator, so a test can
+	// stop either.
+	serveStatus = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
+	serveNav    = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
 )
 
 // Run serves until the listener fails. With a listen address it must refuse, it
 // serves nothing and leaves polling and session supervision running, so a bad
 // setting for the status page does not strand long sessions. A listener failure
-// on an accepted address still ends the process.
+// on an accepted address still ends the process. The navigator, when it is on, is
+// served beside the status page, and its failure leaves the daemon running without it.
 func (s *Server) Run() error {
 	// This comes before the lock, so a daemon about to stop is never seen holding it.
 	if olderDaemonAnswers(s.cfg.Daemon.Listen) {
@@ -250,11 +263,15 @@ func (s *Server) Run() error {
 	if err := holdInstanceLock(); err != nil {
 		return err
 	}
+	s.started = time.Now()
 	listenErr := CheckListen(s.cfg.Daemon.Listen)
 	if FixPATH() {
 		s.log.Printf("PATH: moved %s to the front; a service installed with the shims buried mid-PATH cannot find any provider CLI", paths.ShimsDir())
 	}
 	if listenErr != nil {
+		if err := s.writeNavState(navRefused); err != nil {
+			s.log.Printf("navigator: could not record that it is not served in %s: %v", navTokenPath(), err)
+		}
 		startLoops(s)
 		s.log.Printf("not serving the status page or API: %v", listenErr)
 		waitWithoutHTTP()
@@ -264,24 +281,37 @@ func (s *Server) Run() error {
 	mux := s.routes(Identity())
 	ln, err := net.Listen("tcp", s.cfg.Daemon.Listen)
 	if err != nil {
+		// The process exits and the service starts it again, so an earlier start's
+		// token file must not say the navigator is served meanwhile.
+		s.navigatorEnds(fmt.Errorf("the status page could not listen: %w", err))
 		return err
 	}
 	if a, ok := ln.Addr().(*net.TCPAddr); !ok || !a.IP.IsLoopback() {
 		ln.Close()
-		return fmt.Errorf("daemon.listen %q bound to %v, which is not loopback", s.cfg.Daemon.Listen, ln.Addr())
+		err := fmt.Errorf("daemon.listen %q bound to %v, which is not loopback", s.cfg.Daemon.Listen, ln.Addr())
+		s.navigatorEnds(err)
+		return err
 	}
+	navLn := s.startNavigator()
 	// Only now, so a daemon restarting because it cannot bind never polls or supervises.
 	startLoops(s)
 	s.log.Printf("aiq daemon listening on http://%s/", s.cfg.Daemon.Listen)
-	return statusServer(localOnly(mux)).Serve(ln)
+	if navLn != nil {
+		go s.serveNavigator(navLn)
+	}
+	srv := statusServer(localOnly(mux))
+	err = serveStatus(srv, ln)
+	s.navigatorEnds(fmt.Errorf("the status page stopped: %w", err))
+	return err
 }
 
-// statusServer is the status page's server. Its deadlines bound how long a
-// connection stays open while a request is slow to arrive, its answer is slow to
-// be read, or it sits idle between requests. They are far above what the page's
-// 5 s poll and its kept-alive connection need; an answer that takes longer is
-// lost, and no handler streams or waits. OPTIONS * goes to the handler too, so
-// every request meets its checks.
+// statusServer is the server of the status page and of the navigator. Its deadlines
+// bound how long a connection stays open while a request is slow to arrive, its
+// answer is slow to be read, or it sits idle between requests. They are far above
+// what the page's 5 s poll and its kept-alive connection need; an answer that takes
+// longer is lost, and no handler of either streams or waits. A navigator that does
+// needs its own settings, and the test that the two match changes with it.
+// OPTIONS * goes to the handler too, so every request meets its checks.
 func statusServer(h http.Handler) *http.Server {
 	return &http.Server{
 		Handler:                      h,
@@ -295,6 +325,7 @@ func statusServer(h http.Handler) *http.Server {
 }
 
 func (s *Server) routes(identity string) *http.ServeMux {
+	nav := fmt.Sprintf("pid=%d; start=%d; nav=%d", os.Getpid(), s.started.Unix(), navProtocol)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleUI)
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -306,6 +337,7 @@ func (s *Server) routes(identity string) *http.ServeMux {
 	mux.HandleFunc("/api/poll", s.handlePoll)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(identityHeader, identity)
+		w.Header().Set(navHeader, nav)
 		w.Write([]byte("ok\n"))
 	})
 	return mux
@@ -442,6 +474,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		"polling":       s.polling,
 		"poll_interval": s.cfg.Poll.IntervalSeconds,
 		"listen":        s.cfg.Daemon.Listen,
+	}
+	if s.navPort != 0 {
+		extra["navigator_port"] = s.navPort
 	}
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")

@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// serveStatus serves the status page's handler on a fresh loopback port, with
+// startStatusPage serves the status page's handler on a fresh loopback port, with
 // the server's settings changed by tune, and returns its address.
-func serveStatus(t *testing.T, tune func(*http.Server)) string {
+func startStatusPage(t *testing.T, tune func(*http.Server)) string {
 	t.Helper()
 	srv := statusServer(localOnly((&Server{}).routes("test")))
 	tune(srv)
@@ -46,7 +46,7 @@ func TestStatusServerSettings(t *testing.T) {
 
 // A request whose body stops arriving loses its connection at the read deadline.
 func TestStatusServerCutsOffABodyThatStopsArriving(t *testing.T) {
-	addr := serveStatus(t, func(s *http.Server) { s.ReadTimeout = 300 * time.Millisecond })
+	addr := startStatusPage(t, func(s *http.Server) { s.ReadTimeout = 300 * time.Millisecond })
 	start := time.Now() // the server's deadline cannot start before the dial
 	conn := dialStatus(t, addr)
 	fmt.Fprintf(conn, "POST /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 1000\r\n\r\nab")
@@ -61,7 +61,7 @@ func TestStatusServerCutsOffABodyThatStopsArriving(t *testing.T) {
 
 // A kept-alive connection with no next request is closed at the idle deadline.
 func TestStatusServerClosesAnIdleConnection(t *testing.T) {
-	addr := serveStatus(t, func(s *http.Server) { s.IdleTimeout = 300 * time.Millisecond })
+	addr := startStatusPage(t, func(s *http.Server) { s.IdleTimeout = 300 * time.Millisecond })
 	conn := dialStatus(t, addr)
 	fmt.Fprintf(conn, "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
 	r := bufio.NewReader(conn)
@@ -82,7 +82,7 @@ func TestStatusServerClosesAnIdleConnection(t *testing.T) {
 
 // OPTIONS * meets the same checks as every other request.
 func TestStatusServerChecksOptionsStar(t *testing.T) {
-	addr := serveStatus(t, func(*http.Server) {})
+	addr := startStatusPage(t, func(*http.Server) {})
 	for host, want := range map[string]int{"evil.example": http.StatusForbidden, "127.0.0.1": http.StatusBadRequest} {
 		conn := dialStatus(t, addr)
 		fmt.Fprintf(conn, "OPTIONS * HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host)

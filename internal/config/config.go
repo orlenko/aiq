@@ -249,6 +249,13 @@ type Updates struct {
 	IntervalHours float64 `toml:"interval_hours"`
 }
 
+// UI configures the session navigator, the daemon's second web page.
+type UI struct {
+	// Navigator serves it on a loopback port of its own, chosen at each daemon
+	// start. Off until the navigator has pages to show.
+	Navigator bool `toml:"navigator,omitempty"`
+}
+
 type Telemetry struct {
 	ClaudeStatusline bool `toml:"claude_statusline"`
 	// ClaudeStatuslineInstalled records that the multiplexer was installed
@@ -282,6 +289,7 @@ type Config struct {
 	Long      Long      `toml:"long"`
 	Telemetry Telemetry `toml:"telemetry"`
 	Updates   Updates   `toml:"updates"`
+	UI        UI        `toml:"ui,omitempty"`
 	// Launchers are named programs that start a CLI in an environment of
 	// their own, keyed by the name typed after `aiq`.
 	Launchers map[string]Launcher `toml:"launchers,omitempty"`
