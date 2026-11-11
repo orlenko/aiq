@@ -76,10 +76,12 @@ func (c navRequest) serve(h http.Handler) *httptest.ResponseRecorder {
 }
 
 // navSocket serves s's navigator on a loopback port with the daemon's server settings.
-func navSocket(s *Server) *httptest.Server {
+// errorLog is the server's own log; nil is the standard logger, as in the daemon.
+func navSocket(s *Server, errorLog *log.Logger) *httptest.Server {
 	h := s.navigatorHandler()
 	srv := httptest.NewUnstartedServer(h)
 	srv.Config = statusServer(h)
+	srv.Config.ErrorLog = errorLog
 	srv.Start()
 	return srv
 }
@@ -368,7 +370,7 @@ func TestTheMountedHandlerIsReachedOnlyThroughTheGate(t *testing.T) {
 		s := New(config.Default(), nil, log.New(io.Discard, "", 0))
 		s.navVerifier = v
 		s.MountNavigator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(marker)) }))
-		srv := navSocket(s)
+		srv := navSocket(s, nil)
 		addr := strings.TrimPrefix(srv.URL, "http://")
 		for _, target := range []string{"/api/na%76/sessions", "/%61pi/nav/ping", "/api%2Fnav/ping", "/API/nav/ping", "/api/nav/./ping", "/api/nav//ping", "/api/nav/hello%3F", "/api/nav/a%20b", "/api/nav/%25"} {
 			for _, credential := range []string{"", rightCredential} {
@@ -603,7 +605,7 @@ func TestAPanicBeforeWritingIsAnAnswer(t *testing.T) {
 	s := New(config.Default(), nil, log.New(logged, "", 0))
 	s.navVerifier = testVerifier{}
 	s.MountNavigator(panicking())
-	srv := navSocket(s)
+	srv := navSocket(s, nil)
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	for _, target := range []string{"/api/nav/before", "/api/nav/before", "/api/nav/length"} {
@@ -640,14 +642,13 @@ func TestAPanicBeforeWritingIsAnAnswer(t *testing.T) {
 
 // A handler that panics after its response has begun has its connection aborted, so the
 // client cannot take a cut-short answer for a whole one. ErrAbortHandler aborts without
-// a log line.
+// a log line, in the daemon's log and in the server's.
 func TestAPanicAfterWritingAborts(t *testing.T) {
-	logged := &lockedBuffer{}
+	logged, serverLog := &lockedBuffer{}, &lockedBuffer{}
 	s := New(config.Default(), nil, log.New(logged, "", 0))
 	s.navVerifier = testVerifier{}
 	s.MountNavigator(panicking())
-	srv := navSocket(s)
-	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv := navSocket(s, log.New(serverLog, "", 0))
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	for _, target := range []string{"/api/nav/header", "/api/nav/written", "/api/nav/flushed", "/api/nav/flush", "/api/nav/abort"} {
@@ -663,6 +664,9 @@ func TestAPanicAfterWritingAborts(t *testing.T) {
 	}
 	if strings.Contains(got, "abort") {
 		t.Errorf("ErrAbortHandler was logged: %s", got)
+	}
+	if got := serverLog.String(); got != "" {
+		t.Errorf("the server logged: %s", got)
 	}
 }
 
