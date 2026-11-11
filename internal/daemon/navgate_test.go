@@ -75,6 +75,15 @@ func (c navRequest) serve(h http.Handler) *httptest.ResponseRecorder {
 	return w
 }
 
+// navSocket serves s's navigator on a loopback port with the daemon's server settings.
+func navSocket(s *Server) *httptest.Server {
+	h := s.navigatorHandler()
+	srv := httptest.NewUnstartedServer(h)
+	srv.Config = statusServer(h)
+	srv.Start()
+	return srv
+}
+
 func bearer(v string) map[string]string { return map[string]string{"Authorization": "Bearer " + v} }
 
 func checkNavHeaders(t *testing.T, name string, h http.Header) {
@@ -359,7 +368,7 @@ func TestTheMountedHandlerIsReachedOnlyThroughTheGate(t *testing.T) {
 		s := New(config.Default(), nil, log.New(io.Discard, "", 0))
 		s.navVerifier = v
 		s.MountNavigator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(marker)) }))
-		srv := httptest.NewServer(s.navigatorHandler())
+		srv := navSocket(s)
 		addr := strings.TrimPrefix(srv.URL, "http://")
 		for _, target := range []string{"/api/na%76/sessions", "/%61pi/nav/ping", "/api%2Fnav/ping", "/API/nav/ping", "/api/nav/./ping", "/api/nav//ping", "/api/nav/hello%3F", "/api/nav/a%20b", "/api/nav/%25"} {
 			for _, credential := range []string{"", rightCredential} {
@@ -594,7 +603,7 @@ func TestAPanicBeforeWritingIsAnAnswer(t *testing.T) {
 	s := New(config.Default(), nil, log.New(logged, "", 0))
 	s.navVerifier = testVerifier{}
 	s.MountNavigator(panicking())
-	srv := httptest.NewServer(s.navigatorHandler())
+	srv := navSocket(s)
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	for _, target := range []string{"/api/nav/before", "/api/nav/before", "/api/nav/length"} {
@@ -637,7 +646,7 @@ func TestAPanicAfterWritingAborts(t *testing.T) {
 	s := New(config.Default(), nil, log.New(logged, "", 0))
 	s.navVerifier = testVerifier{}
 	s.MountNavigator(panicking())
-	srv := httptest.NewServer(s.navigatorHandler())
+	srv := navSocket(s)
 	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
