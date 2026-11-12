@@ -310,6 +310,18 @@ func (a *app) doctorChecks() *doctorReport {
 	return r
 }
 
+// polled reports whether the account has been polled: its usage row has a
+// poll time, which only a poll attempt sets. A failed attempt also records
+// its error, which doctor reports first; exhaustion marks set none. Doctor
+// then judges freshness by that time, which a status line does not move, so
+// a running session cannot make a stalled poll look fresh; nor can a window
+// the provider stopped reporting, which keeps its old time, make a fresh poll
+// look stale. A good poll may store no window (none running), and is still
+// telemetry.
+func polled(u state.Usage, ok bool) bool {
+	return ok && u.ObservedAt > 0
+}
+
 // accountNeeds is what it takes to bring one account back.
 type accountNeeds struct {
 	sync, login, grant, poll bool
@@ -363,7 +375,6 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 		}
 	}
 	u, ok, _ := a.st.GetUsage(acc.ID)
-	ws, _ := a.st.ListWindows(acc.ID)
 	switch {
 	case !acc.Enabled:
 		check(true, nil, "%s: disabled, so not polled (aiq account enable %s)", acc.ID, shellQuote(acc.ID))
@@ -386,12 +397,12 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 			break
 		}
 		check(false, flag, "%s: last poll failed: %s", acc.ID, u.PollError)
-	case len(ws) == 0 && staleFix != nil:
+	case !polled(u, ok) && staleFix != nil:
 		r.check(false, staleFix, "%s: no telemetry yet (aiq cannot reach a daemon)", acc.ID)
-	case len(ws) == 0:
+	case !polled(u, ok):
 		check(false, &need.poll, "%s: no telemetry yet (aiq account poll)", acc.ID)
 	default:
-		age := now.Sub(time.Unix(ws[0].ObservedAt, 0))
+		age := now.Sub(time.Unix(u.ObservedAt, 0))
 		stale := age > 2*time.Duration(a.cfg.Poll.IntervalSeconds)*time.Second+time.Minute
 		if stale && staleFix != nil {
 			r.check(false, staleFix, "%s: telemetry %s old (aiq cannot reach a daemon)", acc.ID, age.Round(time.Second))

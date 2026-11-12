@@ -314,16 +314,10 @@ func Poll(path string, now time.Time) (*Usage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("usage: %w", err)
 	}
-	if status == 401 {
-		return nil, fmt.Errorf("usage: HTTP 401 — the poll grant was revoked; run: aiq account authorize")
+	u, err := usageFromReply(status, body, now)
+	if err != nil {
+		return nil, err
 	}
-	if status != 200 {
-		return nil, fmt.Errorf("usage: HTTP %d %s", status, truncate(errorDetail(body), 140))
-	}
-	u := &Usage{}
-	u.Windows = NormalizeUsage(body, now)
-	u.ResetCredits, u.ResetCreditExpiry, u.ResetCreditID = NormalizeResetCredits(body, now)
-	u.Extra = ParseExtraUsage(body, now)
 	if pstatus, profile, err := getJSON(oauthProfileURL, headers); err == nil && pstatus == 200 {
 		u.Identity, u.Plan = ParseProfile(profile)
 		// The prepaid balance lives under the organization. Read it only
@@ -513,70 +507,148 @@ func ConsumeResetCredit(path, grantID, requestID string) (outcome string, err er
 	return res.Result, nil
 }
 
-// NormalizeUsage converts the usage payload into windows with the same keys
-// aiquota uses: "session", "weekly", "weekly:<model>".
-func NormalizeUsage(body []byte, now time.Time) []state.Window {
-	var doc struct {
-		FiveHour *struct {
-			Utilization *float64 `json:"utilization"`
-			ResetsAt    string   `json:"resets_at"`
-		} `json:"five_hour"`
-		SevenDay *struct {
-			Utilization *float64 `json:"utilization"`
-			ResetsAt    string   `json:"resets_at"`
-		} `json:"seven_day"`
-		Limits []struct {
-			Kind     string   `json:"kind"`
-			Percent  *float64 `json:"percent"`
-			ResetsAt string   `json:"resets_at"`
-			Severity string   `json:"severity"`
-			Scope    struct {
-				Surface string `json:"surface"`
-				Model   struct {
-					DisplayName string `json:"display_name"`
-				} `json:"model"`
-			} `json:"scope"`
-		} `json:"limits"`
+// usageFromReply reads the usage endpoint's reply. A status other than 200,
+// or a 200 that is not the usage document, is an error.
+func usageFromReply(status int, body []byte, now time.Time) (*Usage, error) {
+	if status == 401 {
+		return nil, fmt.Errorf("usage: HTTP 401 — the poll grant was revoked; run: aiq account authorize")
 	}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return nil
+	if status != 200 {
+		return nil, fmt.Errorf("usage: HTTP %d %s", status, truncate(errorDetail(body), 140))
+	}
+	ws, err := NormalizeUsage(body, now)
+	if err != nil {
+		return nil, err
+	}
+	u := &Usage{Windows: ws}
+	u.ResetCredits, u.ResetCreditExpiry, u.ResetCreditID = NormalizeResetCredits(body, now)
+	u.Extra = ParseExtraUsage(body, now)
+	return u, nil
+}
+
+// NormalizeUsage converts the usage payload into windows with the same keys
+// aiquota uses: "session", "weekly", "weekly:<model>". It is an error
+// when body is not the usage document (none of five_hour, seven_day and
+// limits is there), or when one of those is there, not null, and not in the
+// form aiq reads: a changed format must not pass for "no window running".
+// A null field, a null utilization or percent, and limits of kinds aiq does
+// not read are no window.
+func NormalizeUsage(body []byte, now time.Time) ([]state.Window, error) {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(body, &doc) != nil {
+		return nil, errNotUsage
 	}
 	var out []state.Window
 	obs := now.Unix()
-	if doc.FiveHour != nil && doc.FiveHour.Utilization != nil {
-		out = append(out, state.Window{
-			Key: "session", Label: "Session", Kind: state.KindShort, UsedPct: *doc.FiveHour.Utilization,
-			ResetsAt: parseISO(doc.FiveHour.ResetsAt), WindowSeconds: 5 * 3600, ObservedAt: obs,
-		})
-	}
-	if doc.SevenDay != nil && doc.SevenDay.Utilization != nil {
-		out = append(out, state.Window{
-			Key: "weekly", Label: "Weekly", Kind: state.KindWeekly, UsedPct: *doc.SevenDay.Utilization,
-			ResetsAt: parseISO(doc.SevenDay.ResetsAt), WindowSeconds: 7 * 86400, ObservedAt: obs,
-		})
-	}
-	for _, l := range doc.Limits {
-		if l.Kind != "weekly_scoped" || l.Percent == nil {
+	present := false
+	for _, f := range []struct {
+		field, key, label, kind string
+		seconds                 int64
+	}{
+		{"five_hour", "session", "Session", state.KindShort, 5 * 3600},
+		{"seven_day", "weekly", "Weekly", state.KindWeekly, 7 * 86400},
+	} {
+		raw, ok := doc[f.field]
+		if !ok {
 			continue
 		}
-		label := l.Scope.Model.DisplayName
-		if label == "" {
-			label = l.Scope.Surface
+		present = true
+		if isNull(raw) {
+			continue
 		}
-		if label == "" {
-			label = "Scoped"
+		var w struct {
+			Utilization json.RawMessage `json:"utilization"`
+			ResetsAt    string          `json:"resets_at"`
 		}
-		severity := l.Severity
-		if severity == "normal" {
-			severity = ""
+		if json.Unmarshal(raw, &w) != nil || w.Utilization == nil {
+			return nil, fmt.Errorf("usage: %s is not in the form aiq reads", f.field)
+		}
+		used, ok, err := number(w.Utilization)
+		if err != nil {
+			return nil, fmt.Errorf("usage: %s is not in the form aiq reads", f.field)
+		}
+		if !ok {
+			continue // a null utilization: not running
 		}
 		out = append(out, state.Window{
-			Key: "weekly:" + strings.ToLower(label), Label: label, Kind: state.KindWeekly, Scope: label,
-			UsedPct: *l.Percent, ResetsAt: parseISO(l.ResetsAt), WindowSeconds: 7 * 86400,
-			Severity: severity, ObservedAt: obs,
+			Key: f.key, Label: f.label, Kind: f.kind, UsedPct: used,
+			ResetsAt: parseISO(w.ResetsAt), WindowSeconds: f.seconds, ObservedAt: obs,
 		})
 	}
-	return out
+	if raw, ok := doc["limits"]; ok {
+		present = true
+		var entries []json.RawMessage
+		if !isNull(raw) && json.Unmarshal(raw, &entries) != nil {
+			return nil, errors.New("usage: limits is not in the form aiq reads")
+		}
+		for _, e := range entries {
+			// Only weekly_scoped limits are read, so only they must match;
+			// a kind aiq does not read may take any form.
+			var kind struct {
+				Kind string `json:"kind"`
+			}
+			if json.Unmarshal(e, &kind) != nil || kind.Kind != "weekly_scoped" {
+				continue
+			}
+			var l struct {
+				Percent  json.RawMessage `json:"percent"`
+				ResetsAt string          `json:"resets_at"`
+				Severity string          `json:"severity"`
+				Scope    struct {
+					Surface string `json:"surface"`
+					Model   struct {
+						DisplayName string `json:"display_name"`
+					} `json:"model"`
+				} `json:"scope"`
+			}
+			if json.Unmarshal(e, &l) != nil || l.Percent == nil {
+				return nil, errors.New("usage: a weekly_scoped limit is not in the form aiq reads")
+			}
+			pct, ok, err := number(l.Percent)
+			if err != nil {
+				return nil, errors.New("usage: a weekly_scoped limit is not in the form aiq reads")
+			}
+			if !ok {
+				continue
+			}
+			label := l.Scope.Model.DisplayName
+			if label == "" {
+				label = l.Scope.Surface
+			}
+			if label == "" {
+				label = "Scoped"
+			}
+			severity := l.Severity
+			if severity == "normal" {
+				severity = ""
+			}
+			out = append(out, state.Window{
+				Key: "weekly:" + strings.ToLower(label), Label: label, Kind: state.KindWeekly, Scope: label,
+				UsedPct: pct, ResetsAt: parseISO(l.ResetsAt), WindowSeconds: 7 * 86400,
+				Severity: severity, ObservedAt: obs,
+			})
+		}
+	}
+	if !present {
+		return nil, errNotUsage
+	}
+	return out, nil
+}
+
+var errNotUsage = errors.New("usage: the reply is not usage data")
+
+func isNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
+
+// number reads a JSON number. ok is false for null; anything else is an
+// error.
+func number(raw json.RawMessage) (v float64, ok bool, err error) {
+	if isNull(raw) {
+		return 0, false, nil
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, false, err
+	}
+	return v, true, nil
 }
 
 // ParseProfile extracts the account email and a short plan name
