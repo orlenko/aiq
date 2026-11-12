@@ -97,15 +97,32 @@ func TestViewResourceAdmissionAndCanceledWaiters(t *testing.T) {
 	// A follower can attach without a third builder slot, then leave independently.
 	followerCtx, cancelFollower := context.WithCancel(context.Background())
 	follower := make(chan viewResult, 1)
-	go func() { v, err := c.ViewContext(followerCtx, viewKey("a"), build); follower <- viewResult{v, err} }()
+	attached := make(chan struct{}, 4)
+	go func() {
+		v, err := c.ViewContext(observedViewContext{followerCtx, attached}, viewKey("a"), build)
+		follower <- viewResult{v, err}
+	}()
+	signalView(t, attached)
 	cancelFollower()
 	if r := receiveView(t, follower); !errors.Is(r.err, context.Canceled) {
 		t.Fatal(r)
 	}
+	if st := c.Stats(); st.BuildingViews != 2 {
+		t.Fatal("attached cancellation released active work", st)
+	}
+	survivor, joined := make(chan viewResult, 1), make(chan struct{}, 4)
+	go func() {
+		v, err := c.ViewContext(observedViewContext{context.Background(), joined}, viewKey("a"), build)
+		survivor <- viewResult{v, err}
+	}()
+	signalView(t, joined)
 	if most.Load() != 2 {
 		t.Fatalf("peak=%d", most.Load())
 	}
 	close(release)
+	if r := receiveView(t, survivor); r.err != nil || r.v.ETag != "full" {
+		t.Fatal("remaining follower lost original result", r)
+	}
 	finishViews(t, c)
 	if _, err := c.View(viewKey("queued"), simpleView); err != nil {
 		t.Fatal(err)
@@ -437,7 +454,7 @@ func TestViewResourceLateBuildAfterParseReadmission(t *testing.T) {
 					if fail {
 						panic("old parsed fixture")
 					}
-					return simpleView()
+					return &View{ETag: "old-parsed", Value: "old parsed result", Bytes: 1, Settled: true}, nil
 				})
 				result <- viewResult{v, e}
 			}()
@@ -461,6 +478,9 @@ func TestViewResourceLateBuildAfterParseReadmission(t *testing.T) {
 			finishViews(t, c)
 			if fail && !errors.Is(r.err, ErrUnshowable) {
 				t.Fatal(r)
+			}
+			if !fail && (r.err != nil || r.v == nil || r.v.ETag != "old-parsed" || r.v.Value != "old parsed result") {
+				t.Fatal("obsolete parsed builder lost its caller outcome", r)
 			}
 			if c.NotModified(k, "", "full") || !c.NotModified(other, "", "full") {
 				t.Fatal("old parsed completion polluted current state")
