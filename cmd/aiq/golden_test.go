@@ -591,12 +591,17 @@ func TestGoldenAsksList(t *testing.T) {
 			fmt.Fprintf(&b, "error: %v\n", runErr)
 		}
 	}
-	b.WriteString("=== aiq asks list --all, after midnight\n")
-	b.WriteString(goldenEnv(t, func() {
-		if err := cmdAsksWithClock([]string{"list", "--all"}, func() time.Time { return now.Add(2 * time.Second) }); err != nil {
-			t.Fatal(err)
-		}
-	}))
+	// This move is exactly at the next day's inclusive lower bound. Yesterday's
+	// two moves disappear, while this one remains at and after midnight.
+	asksSeed(t, reg, ask(alpha, state.AskClosed, ago(time.Hour), now.Add(time.Second).Unix(), "Moved at midnight."))
+	for _, after := range []time.Duration{time.Second, 2 * time.Second} {
+		fmt.Fprintf(&b, "=== aiq asks list --all, %s after the fixture clock\n", after)
+		b.WriteString(goldenEnv(t, func() {
+			if err := cmdAsksWithClock([]string{"list", "--all"}, func() time.Time { return now.Add(after) }); err != nil {
+				t.Fatal(err)
+			}
+		}))
+	}
 	// The asks app's live sessions: long leases on this host whose process runs.
 	gone := goldenDeadPID(t)
 	if st, err = state.Open(filepath.Join(root, "data", "state.db")); err != nil {

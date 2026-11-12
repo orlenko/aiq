@@ -75,9 +75,11 @@ Closed and dismissed
   #5  alpha  claude  30 h ago
       > Old question?
       dismissed
-=== aiq asks list --all, after midnight
+=== aiq asks list --all, 1s after the fixture clock
 Reading: 3 texts waiting. 2 watched
-Moved today: 0 closed, 0 probably done
+Moved today: 1 closed, 0 probably done
+  #6 closed, by: 
+     Moved at midnight.
 
 Asks
   #1  alpha  claude  2 h ago
@@ -93,6 +95,38 @@ Probably done
       probably-done (reply)
 
 Closed and dismissed
+  #6  alpha  claude  1 h ago
+      > Moved at midnight.
+      closed
+  #4  beta  claude  6 h ago
+      > Bump the version?
+      closed (reply)
+  #5  alpha  claude  30 h ago
+      > Old question?
+      dismissed
+=== aiq asks list --all, 2s after the fixture clock
+Reading: 3 texts waiting. 2 watched
+Moved today: 1 closed, 0 probably done
+  #6 closed, by: 
+     Moved at midnight.
+
+Asks
+  #1  alpha  claude  2 h ago
+      > Shall I merge the docs branch?
+
+Warnings
+  #2  beta  claude  3 h ago
+      > The example token is in the log.
+
+Probably done
+  #3  alpha  claude  5 h ago
+      > Run the example check?
+      probably-done (reply)
+
+Closed and dismissed
+  #6  alpha  claude  1 h ago
+      > Moved at midnight.
+      closed
   #4  beta  claude  6 h ago
       > Bump the version?
       closed (reply)
