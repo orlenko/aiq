@@ -110,6 +110,8 @@ Long-running sessions (supervised, moved between accounts before they run dry):
                                     --account starts it on that account
   aiq long resume [same flags]      the same, as the session ran (the long
                                     twin of aiq resume): no forced YOLO or tier
+  aiq long --backend herdr <provider|auto|resume> [args...]
+                                    start in this direct Herdr-core terminal; tmux remains the default
   aiq long list | attach | drain <lease|.> | stop <lease|.>
 
 Sessions in this directory (Claude, Codex and Antigravity transcripts):
@@ -163,9 +165,10 @@ func configErr(token, format string, v ...any) error {
 
 // app bundles everything a subcommand needs.
 type app struct {
-	cfg  *config.Config
-	st   *state.Store
-	pool *pool.Pool
+	longBackend string
+	cfg         *config.Config
+	st          *state.Store
+	pool        *pool.Pool
 	// codexDeviceAuth overrides headless detection for `codex login`:
 	// nil detects, true forces --device-auth, false forces the browser.
 	codexDeviceAuth *bool

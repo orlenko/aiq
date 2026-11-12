@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/term"
 
+	"errors"
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/state"
@@ -92,9 +94,10 @@ func reportUnreadable(w io.Writer, paths []string) {
 // liveNote says where a session is running now, so resuming it does not
 // start a second copy of the same conversation.
 type liveNote struct {
-	pid  int    // an open Claude process
-	tmux string // an aiq long tmux session
-	note string
+	native string // native Herdr runner reference
+	pid    int    // an open Claude process
+	tmux   string // an aiq long tmux session
+	note   string
 }
 
 func cmdResume(args []string) error {
@@ -121,8 +124,8 @@ func cmdResume(args []string) error {
 	if err != nil {
 		return err
 	}
-	live := a.liveSessions()
-	origins := a.loadOrigins(dir, sessions)
+	live := liveSessions(a.st, paths.RealClaudeHome(), a.cfg.Long.TmuxPrefix)
+	origins := loadOrigins(a.st, hostname(), os.Getenv("PWD"), dir, sessions)
 
 	if o.id != "" {
 		s, err := findSession(sessions, unreadable, o.id)
@@ -159,18 +162,23 @@ func cmdResume(args []string) error {
 }
 
 // liveSessions gathers the sessions running right now: open Claude
-// processes and aiq long sessions whose hooks reported a session id.
-func (a *app) liveSessions() map[string]liveNote {
+// processes of the real home realClaude, and aiq long sessions in st whose
+// hooks reported a session id, in tmux sessions named with tmuxPrefix.
+func liveSessions(st *state.Store, realClaude, tmuxPrefix string) map[string]liveNote {
 	out := map[string]liveNote{}
-	for id, pid := range transcript.ClaudeOpen(paths.RealClaudeHome()) {
+	for id, pid := range transcript.ClaudeOpen(realClaude) {
 		out[id] = liveNote{pid: pid, note: fmt.Sprintf("open in pid %d", pid)}
 	}
-	leases, _ := a.st.ListLeases()
+	leases, _ := st.ListLeases()
 	for _, l := range leases {
 		if l.Mode != state.ModeLong || l.SessionID == "" {
 			continue
 		}
-		name := longrun.SessionName(a.cfg.Long.TmuxPrefix, l.Workspace)
+		if herdr.IsRef(l.Pane) {
+			out[l.SessionID] = liveNote{native: l.Pane, note: fmt.Sprintf("running in aiq long (%s, Herdr)", l.AccountID)}
+			continue
+		}
+		name := longrun.SessionName(tmuxPrefix, l.Workspace)
 		out[l.SessionID] = liveNote{tmux: name, note: fmt.Sprintf("running in aiq long (%s, %s)", l.AccountID, name)}
 	}
 	return out
@@ -235,6 +243,13 @@ func resumeNote(w io.Writer, format string, args ...any) {
 
 // resumeSession closes the app and hands the terminal to the resumed CLI.
 func (a *app) resumeSession(s transcript.Session, origins map[string]origin, live liveNote, o resumeOpts) error {
+	if live.native != "" {
+		err := herdr.Attach(live.native)
+		if !errors.Is(err, herdr.ErrEnded) {
+			return err
+		}
+	}
+
 	if live.tmux != "" && tmux.HasSession(live.tmux) {
 		resumeNote(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, live.note)
 		return tmux.Attach(live.tmux)
@@ -326,8 +341,14 @@ func durationLabel(d time.Duration) string {
 }
 
 func homeRel(dir string) string {
-	if h, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(h, dir); err == nil && !strings.HasPrefix(rel, "..") {
+	h, _ := os.UserHomeDir()
+	return homeRelTo(h, dir)
+}
+
+// homeRelTo is dir under home as ~/..., or dir as it is outside it or with no home.
+func homeRelTo(home, dir string) string {
+	if home != "" {
+		if rel, err := filepath.Rel(home, dir); err == nil && !strings.HasPrefix(rel, "..") {
 			return filepath.Join("~", rel)
 		}
 	}

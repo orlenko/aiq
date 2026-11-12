@@ -1,0 +1,120 @@
+=== width 52, colour and marks false
+--- running: the last reply held
+claude opus-5 · ~/work/demo · session c0ffee06
+
+▌ you · 2025-09-07
+rebuild the search index
+
+▌ claude · 16:00:14
+Rebuilding the index.
+
+▌ claude · earlier
+The index is rebuilding in the background.
+
+▌ claude · 1m · 2 tools
+Checking the links.
+
+▌ you · 2025-09-07
+is it done?
+
+▌ claude · 16:01:24
+Reading the log.
+[pending true]
+--- the CLI stops, nothing written: stale
+
+▌ claude · 35s · 1 tool
+Done: 1,204 pages, no broken links.
+[pending false]
+--- running again
+[pending true]
+=== width 52, colour and marks true
+--- running: the last reply held
+\e[0m\e[1;7;38;5;110m aiq convo \e[0m \e[38;5;246mclaude opus-5 · ~/work/demo · session c0ffee06\e[0m                      \e[0m
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-07                                  \e[0m
+\e[48;5;236m\e[1mrebuild the search index                            \e[0m
+\e[48;5;236m                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 16:00:14\e[0m\e[48;5;235m                                 \e[0m
+Rebuilding the index.
+
+\e[0m\e[48;5;235m\e[2m● claude · earlier\e[0m\e[48;5;235m                                  \e[0m
+\e[2mThe index is rebuilding in the background.\e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 1m · 2 tools\e[0m\e[48;5;235m                             \e[0m
+Checking the links.
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-07                                  \e[0m
+\e[48;5;236m\e[1mis it done?                                         \e[0m
+\e[48;5;236m                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 16:01:24\e[0m\e[48;5;235m                                 \e[0m
+Reading the log.
+[pending true]
+--- the CLI stops, nothing written: stale
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 35s · 1 tool\e[0m\e[48;5;235m                             \e[0m
+Done: 1,204 pages, no broken links.
+[pending false]
+--- running again
+[pending true]
+=== width 110, colour and marks false
+--- running: the last reply held
+claude opus-5 · ~/work/demo · session c0ffee06
+
+▌ you · 2025-09-07
+rebuild the search index
+
+▌ claude · 16:00:14
+Rebuilding the index.
+
+▌ claude · earlier
+The index is rebuilding in the background.
+
+▌ claude · 1m · 2 tools
+Checking the links.
+
+▌ you · 2025-09-07
+is it done?
+
+▌ claude · 16:01:24
+Reading the log.
+[pending true]
+--- the CLI stops, nothing written: stale
+
+▌ claude · 35s · 1 tool
+Done: 1,204 pages, no broken links.
+[pending false]
+--- running again
+[pending true]
+=== width 110, colour and marks true
+--- running: the last reply held
+\e[0m\e[1;7;38;5;110m aiq convo \e[0m \e[38;5;246mclaude opus-5 · ~/work/demo · session c0ffee06\e[0m                      \e[0m
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-07                                                                                            \e[0m
+\e[48;5;236m\e[1mrebuild the search index                                                                                      \e[0m
+\e[48;5;236m                                                                                                              \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 16:00:14\e[0m\e[48;5;235m                                                                                           \e[0m
+Rebuilding the index.
+
+\e[0m\e[48;5;235m\e[2m● claude · earlier\e[0m\e[48;5;235m                                                                                            \e[0m
+\e[2mThe index is rebuilding in the background.\e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 1m · 2 tools\e[0m\e[48;5;235m                                                                                       \e[0m
+Checking the links.
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-07                                                                                            \e[0m
+\e[48;5;236m\e[1mis it done?                                                                                                   \e[0m
+\e[48;5;236m                                                                                                              \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 16:01:24\e[0m\e[48;5;235m                                                                                           \e[0m
+Reading the log.
+[pending true]
+--- the CLI stops, nothing written: stale
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 35s · 1 tool\e[0m\e[48;5;235m                                                                                       \e[0m
+Done: 1,204 pages, no broken links.
+[pending false]
+--- running again
+[pending true]

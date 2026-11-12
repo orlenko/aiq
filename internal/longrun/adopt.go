@@ -67,6 +67,7 @@ var fallbackFlag = regexp.MustCompile(`--fallback '?([a-z,]+)'?`)
 // that started the pane's CLI supplies the rest; a pane without one is
 // reported once and left alone.
 func (s *Supervisor) adoptOrphans(leases []state.Lease, now time.Time) {
+	s.adoptHerdr(leases, now)
 	if !tmux.Available() {
 		return
 	}
