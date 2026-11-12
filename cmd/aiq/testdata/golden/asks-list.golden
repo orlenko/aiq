@@ -78,7 +78,7 @@ Closed and dismissed
 === aiq asks list --all, 1s after the fixture clock
 Reading: 3 texts waiting. 2 watched
 Moved today: 1 closed, 0 probably done
-  #6 closed, by: 
+  #6 closed, by: Recorded at midnight.
      Moved at midnight.
 
 Asks
@@ -97,7 +97,7 @@ Probably done
 Closed and dismissed
   #6  alpha  claude  1 h ago
       > Moved at midnight.
-      closed
+      closed (reply)
   #4  beta  claude  6 h ago
       > Bump the version?
       closed (reply)
@@ -107,7 +107,7 @@ Closed and dismissed
 === aiq asks list --all, 2s after the fixture clock
 Reading: 3 texts waiting. 2 watched
 Moved today: 1 closed, 0 probably done
-  #6 closed, by: 
+  #6 closed, by: Recorded at midnight.
      Moved at midnight.
 
 Asks
@@ -126,7 +126,7 @@ Probably done
 Closed and dismissed
   #6  alpha  claude  1 h ago
       > Moved at midnight.
-      closed
+      closed (reply)
   #4  beta  claude  6 h ago
       > Bump the version?
       closed (reply)

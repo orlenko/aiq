@@ -593,7 +593,9 @@ func TestGoldenAsksList(t *testing.T) {
 	}
 	// This move is exactly at the next day's inclusive lower bound. Yesterday's
 	// two moves disappear, while this one remains at and after midnight.
-	asksSeed(t, reg, ask(alpha, state.AskClosed, ago(time.Hour), now.Add(time.Second).Unix(), "Moved at midnight."))
+	midnight := ask(alpha, state.AskClosed, ago(time.Hour), now.Add(time.Second).Unix(), "Moved at midnight.")
+	midnight.StateReason, midnight.StateText = "reply", "Recorded at midnight."
+	asksSeed(t, reg, midnight)
 	for _, after := range []time.Duration{time.Second, 2 * time.Second} {
 		fmt.Fprintf(&b, "=== aiq asks list --all, %s after the fixture clock\n", after)
 		b.WriteString(goldenEnv(t, func() {
