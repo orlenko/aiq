@@ -84,7 +84,7 @@ type Cache struct {
 	cfg   cacheConfig
 	sem   chan struct{}
 	now   func() time.Time
-	parse func(path string) (*Session, error)
+	parse func(path string) (*Session, error) // optional fixture override; nil uses boundedParse
 
 	mu         sync.Mutex
 	full       map[string]*list.Element // by path, the newest parse: *parsed
@@ -159,7 +159,6 @@ func newCache(cfg cacheConfig) *Cache {
 		cfg:        cfg,
 		sem:        make(chan struct{}, cfg.width),
 		now:        time.Now,
-		parse:      ParseFile,
 		full:       map[string]*list.Element{},
 		fullLRU:    list.New(),
 		quarantine: map[string]Snapshot{},
@@ -357,6 +356,9 @@ func (c *Cache) finishFlight(f *flight, s *Session, err error) {
 		}
 	}()
 	f.sess, f.err = s, err
+	if err != nil {
+		f.sess = nil // preserve the detail API's nil session on parse errors
+	}
 	if f.row {
 		f.sum, f.rowErr = c.cacheSummaryLocked(f.snap, s, err)
 		rowDone = true
@@ -378,7 +380,11 @@ func (c *Cache) runParse(snap Snapshot) (s *Session, err error) {
 			s, err = nil, c.quarantined(snap)
 		}
 	}()
-	s, err = c.parse(snap.Path)
+	if c.parse != nil {
+		s, err = c.parse(snap.Path)
+	} else {
+		s, err = boundedParse(snap, c.cfg.ceiling)
+	}
 	switch {
 	case errors.Is(err, ErrUnreadable):
 		return nil, c.quarantined(snap)

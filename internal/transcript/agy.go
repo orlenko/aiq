@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // The Antigravity CLI keeps one directory per conversation under
@@ -129,6 +130,10 @@ func ParseAgy(path string) (*Session, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseAgyReader(path, f, func() time.Time { return descriptorMtime(f.Stat) })
+}
+
+func parseAgyReader(path string, f io.Reader, fallback func() time.Time) (*Session, error) {
 	// brain/<id>/.system_generated/logs/transcript.jsonl
 	id := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(path))))
 	s := &Session{Provider: "agy", ID: id, Path: path}
@@ -201,9 +206,7 @@ func ParseAgy(path string) (*Session, error) {
 	}
 	flush()
 	if s.Updated.IsZero() {
-		if info, err := f.Stat(); err == nil {
-			s.Updated = info.ModTime()
-		}
+		s.Updated = fallback()
 	}
 	return s, nil
 }

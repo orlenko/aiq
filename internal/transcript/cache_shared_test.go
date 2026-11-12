@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -151,7 +152,7 @@ func TestSharedMixedParseErrorRoles(t *testing.T) {
 				case "no-session":
 					return nil, nil
 				case "read-error":
-					return nil, os.ErrPermission
+					return s, os.ErrPermission
 				}
 				return s, nil
 			}
@@ -174,7 +175,7 @@ func TestSharedMixedParseErrorRoles(t *testing.T) {
 					t.Errorf("no session: row %v detail %v", row.err, detail.err)
 				}
 			case "read-error":
-				if !errors.Is(row.err, os.ErrPermission) || !errors.Is(detail.err, os.ErrPermission) {
+				if !errors.Is(row.err, os.ErrPermission) || !errors.Is(detail.err, os.ErrPermission) || detail.sess != nil {
 					t.Errorf("read error: row %v detail %v", row.err, detail.err)
 				}
 			case "parser-panic":
@@ -458,5 +459,181 @@ func TestListDirsCanceledSharedLastCandidate(t *testing.T) {
 	}
 	if n := f.n.Load(); n != 1 {
 		t.Fatalf("parses %d", n)
+	}
+}
+
+func TestSharedFlightTerminalPublicationPanic(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		for _, abandoned := range []bool{false, true} {
+			t.Run(fmt.Sprintf("mixed=%v/abandoned=%v", mixed, abandoned), func(t *testing.T) {
+				path := writeFile(t, filepath.Join(t.TempDir(), "fixture.jsonl"), "invented")
+				release := make(chan struct{})
+				var once sync.Once
+				finish := func() { once.Do(func() { close(release) }) }
+				defer finish()
+				f := &fakeParse{started: make(chan string, 2), release: release}
+				c, clk := testCache(t, f, nil)
+				var armed, fault atomic.Bool
+				armed.Store(true)
+				const marker = "invented-publication-panic-marker"
+				c.now = func() time.Time {
+					if fault.Swap(false) {
+						panic(marker)
+					}
+					return clk.Now()
+				}
+				c.parse = func(path string) (*Session, error) {
+					s, err := f.parse(path)
+					if armed.Swap(false) {
+						fault.Store(true)
+					}
+					return s, err
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				detail := make(chan sharedCallResult, 1)
+				go func() { detail <- sharedCall(c, ctx, path, true) }()
+				select {
+				case <-f.started:
+				case <-time.After(3 * time.Second):
+					t.Fatal("parser not started")
+				}
+				row := make(chan sharedCallResult, 1)
+				if mixed {
+					rowCtx := &observedFlightContext{Context: ctx, seen: make(chan struct{})}
+					go func() { row <- sharedCall(c, rowCtx, path, false) }()
+					awaitFlightSignal(t, rowCtx.seen)
+				}
+				c.mu.Lock()
+				flight := c.flights[path]
+				c.mu.Unlock()
+				if abandoned {
+					cancel()
+					if r := awaitSharedCall(t, detail); !errors.Is(r.err, context.Canceled) {
+						t.Fatal(r.err)
+					}
+					if mixed {
+						if r := awaitSharedCall(t, row); !errors.Is(r.err, ErrBudget) {
+							t.Fatal(r.err)
+						}
+					}
+				}
+				finish()
+				awaitFlightSignal(t, flight.done)
+				st := c.Stats() // terminal lock reacquisition synchronizes token cleanup
+				if !errors.Is(flight.err, ErrUnreadable) || flight.sess != nil || strings.Contains(flight.err.Error(), marker) {
+					t.Fatalf("terminal detail fallback: %+v", flight)
+				}
+				if mixed && (flight.rowErr != nil || flight.sum.ID != "fixture") {
+					t.Fatalf("completed row lost: %+v", flight)
+				}
+				wantRows := 0
+				if mixed {
+					wantRows = 1
+				}
+				if st.Parsed != 0 || st.ParsedBytes != 0 || st.Rows != wantRows {
+					t.Fatalf("fault-point cache state: %+v", st)
+				}
+				c.mu.Lock()
+				_, quarantined := c.quarantine[path]
+				remaining := len(c.flights)
+				c.mu.Unlock()
+				if quarantined || remaining != 0 || len(c.sem) != 0 {
+					t.Fatal("publication failure retained quarantine/work/capacity")
+				}
+				if !abandoned {
+					if r := awaitSharedCall(t, detail); !errors.Is(r.err, ErrUnreadable) || r.sess != nil {
+						t.Fatalf("detail: %+v", r)
+					}
+					if mixed {
+						if r := awaitSharedCall(t, row); r.err != nil || r.sum.ID != "fixture" {
+							t.Fatalf("row: %+v", r)
+						}
+					}
+				}
+				if _, _, err := c.Session(context.Background(), path); err != nil {
+					t.Fatalf("same snapshot not retryable: %v", err)
+				}
+				if f.n.Load() != 2 {
+					t.Fatalf("retry parse count: %d", f.n.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestCachedDetailRowPublicationFailure(t *testing.T) {
+	path := writeFile(t, filepath.Join(t.TempDir(), "fixture.jsonl"), "invented")
+	f := &fakeParse{}
+	c, _ := testCache(t, f, nil)
+	if _, _, err := c.Session(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	c.cfg.rowCount = -1 // supported injection: row eviction fails after removing its row
+	if _, err := c.Summary(context.Background(), path); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("cached derivation fault: %v", err)
+	}
+	if st := c.Stats(); st.Parsed != 1 || st.Rows != 0 {
+		t.Fatalf("cached detail changed: %+v", st)
+	}
+	c.mu.Lock()
+	quarantined := len(c.quarantine)
+	c.mu.Unlock()
+	if quarantined != 0 {
+		t.Fatal("row derivation quarantined a cached parse")
+	}
+	c.cfg.rowCount = defaultCacheConfig.rowCount
+	if sum, err := c.Summary(context.Background(), path); err != nil || sum.ID != "fixture" {
+		t.Fatalf("retry: %+v %v", sum, err)
+	}
+	if f.n.Load() != 1 {
+		t.Fatal("cached detail unnecessarily reparsed")
+	}
+}
+
+func TestSharedMixedRowFaultAfterAllWaitersCancel(t *testing.T) {
+	path := writeFile(t, filepath.Join(t.TempDir(), "fixture.jsonl"), "invented")
+	release := make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	defer finish()
+	f := &fakeParse{started: make(chan string, 2), release: release}
+	c, _ := testCache(t, f, func(cfg *cacheConfig) { cfg.rowCount = -1 })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	leader := make(chan sharedCallResult, 1)
+	go func() { leader <- sharedCall(c, ctx, path, false) }()
+	select {
+	case <-f.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("parser not started")
+	}
+	followerCtx := &observedFlightContext{Context: ctx, seen: make(chan struct{})}
+	follower := make(chan sharedCallResult, 1)
+	go func() { follower <- sharedCall(c, followerCtx, path, true) }()
+	awaitFlightSignal(t, followerCtx.seen)
+	c.mu.Lock()
+	flight := c.flights[path]
+	c.mu.Unlock()
+	cancel()
+	if r := awaitSharedCall(t, leader); !errors.Is(r.err, ErrBudget) {
+		t.Fatal(r.err)
+	}
+	if r := awaitSharedCall(t, follower); !errors.Is(r.err, context.Canceled) {
+		t.Fatal(r.err)
+	}
+	finish()
+	awaitFlightSignal(t, flight.done)
+	if st := c.Stats(); st.Parsed != 1 || st.Rows != 0 {
+		t.Fatalf("abandoned row fault affected detail: %+v", st)
+	}
+	c.mu.Lock()
+	quarantined, remaining := len(c.quarantine), len(c.flights)
+	c.mu.Unlock()
+	if quarantined != 0 || remaining != 0 || len(c.sem) != 0 {
+		t.Fatal("row fault retained quarantine/work/capacity")
+	}
+	if flight.err != nil || flight.sess == nil || !errors.Is(flight.rowErr, ErrUnreadable) {
+		t.Fatalf("role outcomes: %+v", flight)
 	}
 }

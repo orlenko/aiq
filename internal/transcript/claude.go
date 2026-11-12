@@ -159,6 +159,10 @@ func ParseClaude(path string) (*Session, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseClaudeReader(path, f, func() time.Time { return descriptorMtime(f.Stat) })
+}
+
+func parseClaudeReader(path string, f io.Reader, fallback func() time.Time) (*Session, error) {
 	s := &Session{Provider: "claude", ID: strings.TrimSuffix(filepath.Base(path), ".jsonl"), Path: path}
 
 	var cur *Turn
@@ -436,9 +440,7 @@ func ParseClaude(path string) (*Session, error) {
 	}
 	flush(true)
 	if s.Updated.IsZero() {
-		if info, err := f.Stat(); err == nil {
-			s.Updated = info.ModTime()
-		}
+		s.Updated = fallback()
 	}
 	return s, nil
 }
