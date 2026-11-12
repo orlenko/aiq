@@ -274,7 +274,7 @@ func (s *Server) startNavigator() net.Listener {
 // gone, in the file and in /api/state at once, and the daemon goes on without it.
 // Its server has the status page's deadlines and limits.
 func (s *Server) serveNavigator(ln net.Listener) {
-	err := serveNav(statusServer(s.navigatorHandler()), ln)
+	err := serveNav(s.slots.server(s.navigatorHandler()), ln)
 	ln.Close()
 	s.mu.Lock()
 	defer s.mu.Unlock()
