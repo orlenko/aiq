@@ -113,7 +113,7 @@ func (c Core) verify() error {
 	return nil
 }
 
-var terminalID = regexp.MustCompile(`^t[1-9][0-9]*$`)
+var terminalID = regexp.MustCompile(`^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$`)
 
 // CurrentCore verifies direct terminal ownership, including the controlling
 // TTY. An inherited HC_TERMINAL_ID inside tmux/screen is not sufficient.
