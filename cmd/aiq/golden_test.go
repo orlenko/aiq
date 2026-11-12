@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -11,8 +12,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -27,11 +31,18 @@ var goldenDir, _ = filepath.Abs(filepath.Join("testdata", "golden"))
 
 // visibleEscapes writes the control characters of s as text, so a golden reads as
 // text and its escapes show in a diff: a backslash is \\, ESC \e, a carriage return
-// \r, any other control character but a newline or a tab \xNN. Different strings stay
-// different.
+// \r, any other C0 control but a newline or a tab \xNN, a C1 control \u00NN, and a
+// byte that is not UTF-8 \xNN (always 0x80 or above). Different strings stay different.
 func visibleEscapes(s string) string {
 	var b strings.Builder
-	for _, r := range s {
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		if r == utf8.RuneError && size == 1 {
+			fmt.Fprintf(&b, `\x%02x`, s[0])
+			s = s[1:]
+			continue
+		}
+		s = s[size:]
 		switch {
 		case r == '\\':
 			b.WriteString(`\\`)
@@ -43,11 +54,23 @@ func visibleEscapes(s string) string {
 			b.WriteRune(r)
 		case r < 0x20 || r == 0x7f:
 			fmt.Fprintf(&b, `\x%02x`, r)
+		case r >= 0x80 && r <= 0x9f:
+			fmt.Fprintf(&b, `\u%04x`, r)
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+func TestVisibleEscapesTellsBytesApart(t *testing.T) {
+	for in, want := range map[string]string{
+		"\xff": `\xff`, "\ufffd": "\ufffd", "\u0085": `\u0085`, `\xff`: `\\xff`, "\x1b[1m": `\e[1m`, "\x01": `\x01`,
+	} {
+		if got := visibleEscapes(in); got != want {
+			t.Errorf("visibleEscapes(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 // checkGolden compares got with testdata/golden/name, escapes made visible.
@@ -272,7 +295,68 @@ func TestGoldenResumePrint(t *testing.T) {
 			fmt.Fprintf(&b, "error: %v\n", runErr)
 		}
 	}
-	checkGolden(t, "resume-print.golden", strings.ReplaceAll(b.String(), fmt.Sprintf("pid %d", os.Getpid()), "pid <test>"))
+	// A shell that reached the directory through a link: $PWD spells it so, and a launch
+	// recorded under that spelling explains a session. A launch on another host does not.
+	link := filepath.Join(home, "demo-link")
+	if err := os.Symlink(work, link); err != nil {
+		t.Fatal(err)
+	}
+	c5 := &goldenClaude{cwd: work, id: "c0ffee05-0000-4000-8000-000000000005", at: goldenAt(5, 10, 0, 0)}
+	c5.typed("check the link")
+	c5.answer("m1", "Checked.")
+	goldenWrite(t, filepath.Join(project, c5.id+".jsonl"), c5.lines...)
+	if st, err = state.Open(filepath.Join(data, "state.db")); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []state.Launch{
+		{StartedAt: goldenAt(5, 9, 59, 0), Hostname: hostname(), Provider: "claude", AccountID: "claude/a", Launcher: "linked",
+			Cwd: link, Mode: state.ModeInteractive},
+		{StartedAt: goldenAt(5, 9, 59, 30), Hostname: "invented-other-host", Provider: "claude", AccountID: "claude/a", Launcher: "elsewhere",
+			Cwd: work, Mode: state.ModeInteractive, SessionID: c5.id},
+	} {
+		if _, err := st.AddLaunch(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+	// os.Getwd answers $PWD as it is spelled, trailing slash and all; loadOrigins adds it
+	// cleaned.
+	t.Setenv("PWD", link+"/")
+	b.WriteString("=== aiq resume --print, $PWD through a link\n")
+	var runErr error
+	b.WriteString(goldenEnv(t, func() { runErr = cmdResume([]string{"--print"}) }))
+	if runErr != nil {
+		fmt.Fprintf(&b, "error: %v\n", runErr)
+	}
+	checkGolden(t, "resume-print.golden", goldenPID(b.String(), os.Getpid()))
+}
+
+// goldenPID writes the test's own pid as <test> where a live note names it, and nowhere
+// else: a pid can be spelled like a year or part of an id.
+func goldenPID(s string, pid int) string {
+	return strings.ReplaceAll(s, fmt.Sprintf("[open in pid %d]", pid), "[open in pid <test>]")
+}
+
+// A pid spelled like the fixtures' year or an id's group leaves their dates, ids and paths
+// as they are.
+func TestGoldenPIDTouchesOnlyTheLiveNote(t *testing.T) {
+	for _, pid := range []int{2025, 4000, 7000, 8000} {
+		fixture := "c0ffee02  2025-09-02  sessions/2025/09/03/rollout-2025-09-03T11-00-00-019a0000-0000-7000-8000-0000000000a1.jsonl"
+		in := fmt.Sprintf("%s [open in pid %d]\n", fixture, pid)
+		if got, want := goldenPID(in, pid), fixture+" [open in pid <test>]\n"; got != want {
+			t.Errorf("pid %d: got %q, want %q", pid, got, want)
+		}
+	}
+}
+
+// goldenDeadPID is a pid that no longer runs: a child that has exited.
+func goldenDeadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	return cmd.Process.Pid
 }
 
 // goldenConvo is a session with something of every kind aiq convo shows.
@@ -422,7 +506,8 @@ func TestGoldenAsksSections(t *testing.T) {
 
 // TestGoldenAsksList is aiq asks list as typed, with and without --here and --all, on a
 // temporary data directory: a key, a watcher's report, and asks in two workspaces, two of
-// them moved today. The clock is the real one, so the ages are minutes and hours wide.
+// them moved today. The clock is the real one, so the watcher's report says no age, and
+// each ask's age is at least half an hour from the next one shown.
 func TestGoldenAsksList(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -458,18 +543,20 @@ func TestGoldenAsksList(t *testing.T) {
 			RaisedAt: raised, State: s, StateAt: moved, FirstQuote: quote, LastQuote: quote}
 	}
 	items := []state.Ask{
-		ask(alpha, state.AskOpen, ago(10*time.Minute), ago(10*time.Minute), "Shall I merge the docs branch?"),
-		ask(beta, state.AskOpen, ago(3*time.Hour), ago(3*time.Hour), "The example token is in the log."),
-		ask(alpha, state.AskProbablyDone, ago(5*time.Hour), now.Unix(), "Run the example check?"),
-		ask(beta, state.AskClosed, ago(6*time.Hour), now.Unix(), "Bump the version?"),
-		ask(alpha, state.AskDismissed, ago(30*time.Hour), ago(29*time.Hour), "Old question?"),
+		ask(alpha, state.AskOpen, ago(150*time.Minute), ago(150*time.Minute), "Shall I merge the docs branch?"),
+		ask(beta, state.AskOpen, ago(210*time.Minute), ago(210*time.Minute), "The example token is in the log."),
+		ask(alpha, state.AskProbablyDone, ago(330*time.Minute), now.Unix(), "Run the example check?"),
+		ask(beta, state.AskClosed, ago(390*time.Minute), now.Unix(), "Bump the version?"),
+		ask(alpha, state.AskDismissed, ago(30*time.Hour+30*time.Minute), ago(29*time.Hour), "Old question?"),
 	}
 	items[0].AsksReader = .9
 	items[1].Risk, items[1].AsksReader = .9, .2
 	items[2].StateReason, items[2].StateText = "reply", "The check ran."
 	items[3].StateReason, items[3].StateText = "reply", "Bumped to 1.4.0."
 	asksSeed(t, reg, items...)
-	if err := reg.SetAsksStatus(state.AsksStatus{PassAt: ago(150 * time.Second), Watched: 2}); err != nil {
+	// A pass a minute ago with texts waiting reads as "Reading", which names no age, for
+	// four minutes.
+	if err := reg.SetAsksStatus(state.AsksStatus{PassAt: ago(time.Minute), Watched: 2, Waiting: 3}); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(alpha)
@@ -482,6 +569,35 @@ func TestGoldenAsksList(t *testing.T) {
 		if runErr != nil {
 			fmt.Fprintf(&b, "error: %v\n", runErr)
 		}
+	}
+	// The asks app's live sessions: long leases on this host whose process runs.
+	gone := goldenDeadPID(t)
+	if st, err = state.Open(filepath.Join(root, "data", "state.db")); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []state.Lease{
+		{AccountID: "claude/a", PID: os.Getpid(), Hostname: hostname(), Workspace: alpha},
+		{AccountID: "claude/b", PID: gone, Hostname: hostname(), Workspace: beta},
+		{AccountID: "claude/c", PID: os.Getpid(), Hostname: "invented-other-host", Workspace: beta},
+	} {
+		l.Provider, l.Mode, l.Cwd, l.StartedAt = "claude", state.ModeLong, l.Workspace, now.Unix()
+		if _, err := st.AddLease(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+	leases, err := state.OpenReadOnly(filepath.Join(root, "data", "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leases.Close()
+	snap, err := asksLoad(reg, leases, false, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.WriteString("=== the asks app's live leases\n")
+	for _, l := range snap.leases {
+		fmt.Fprintf(&b, "%s in %s\n", l.AccountID, l.Workspace)
 	}
 	checkGolden(t, "asks-list.golden", strings.ReplaceAll(b.String(), root, "<root>"))
 }
@@ -680,6 +796,9 @@ func TestGoldenResolve(t *testing.T) {
 	if err := os.Chmod(filepath.Join(bin, "tmux"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := exec.Command(filepath.Join(bin, "tmux"), "display-message", "-p", "-t", "%4", "x").Run(); err != nil {
+		t.Skipf("the fake tmux cannot run, as on a noexec temporary directory: %v", err)
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	work := filepath.Join(root, "work", "demo")
 	for _, d := range []string{work, data} {
@@ -727,9 +846,18 @@ func TestGoldenResolve(t *testing.T) {
 		fmt.Printf("%s: provider %s, path %s, account %q, pane %q, stale %v, id %q\n",
 			call, tgt.provider, tgt.path, tgt.account, tgt.pane, tgt.stale, tgt.id)
 	}
+	t.Chdir(work)
 	got := goldenEnv(t, func() {
 		// Built here, so the transcripts it cannot read are named on the stderr goldenEnv holds.
 		r := newConvoResolver(st, defaultRoots())
+		// resolveHere resolves from where aiq convo runs, as cmdConvo reads it.
+		resolveHere := func(o convoOpts) (convoTarget, error) {
+			dir, pane, err := convoHere()
+			if err != nil {
+				return convoTarget{}, err
+			}
+			return r.resolve(o, dir, pane)
+		}
 		for _, dir := range []string{work, filepath.Join(work, "sub"), filepath.Join(root, "work"), filepath.Join(root, "other")} {
 			tgt, err := r.resolveDir(dir)
 			show("dir "+dir, tgt, err)
@@ -746,14 +874,14 @@ func TestGoldenResolve(t *testing.T) {
 			name string
 			o    convoOpts
 		}{{"resolve here", convoOpts{}}, {"resolve --pane %5", convoOpts{pane: "%5"}}, {"resolve c0ffee01", convoOpts{id: "c0ffee01"}}} {
-			tgt, err := r.resolve(c.o, work, os.Getenv("TMUX_PANE"))
+			tgt, err := resolveHere(c.o)
 			show(c.name, tgt, err)
 		}
 		t.Setenv("TMUX_PANE", "%8")
-		tgt, err := r.resolve(convoOpts{}, work, os.Getenv("TMUX_PANE"))
+		tgt, err := resolveHere(convoOpts{})
 		show("resolve in pane %8", tgt, err)
 		t.Setenv("TMUX_PANE", "%5")
-		tgt, err = r.resolve(convoOpts{}, work, os.Getenv("TMUX_PANE"))
+		tgt, err = resolveHere(convoOpts{})
 		show("resolve in pane %5", tgt, err)
 		fmt.Printf("stale %s: %v\n", goldenX1, r.stale(convoTarget{provider: "codex", path: leased, id: goldenX1}))
 		fmt.Printf("stale %s: %v\n", goldenX2, r.stale(convoTarget{provider: "codex", path: leased, id: goldenX2}))
@@ -769,7 +897,161 @@ func TestGoldenResolve(t *testing.T) {
 			tgt, err := r.resolveID(work, id)
 			show("id "+id+", c0ffee03 unreadable", tgt, err)
 		}
+
+		// What the resolver reads of this machine by default: a Claude session and a lease
+		// whose processes have ended, and a Codex transcript written two hours ago.
+		gone := goldenDeadPID(t)
+		goldenWrite(t, filepath.Join(claudeHome, "sessions", "2.json"),
+			fmt.Sprintf(`{"pid":%d,"sessionId":"%s","cwd":%q,"tmux":"demo:@1.%%6"}`, gone, goldenC1, work))
+		old := filepath.Join(day, "rollout-2025-09-09T12-00-00-019d0000-0000-7000-8000-0000000000d1.jsonl")
+		goldenWrite(t, old, goldenCodex("019d0000-0000-7000-8000-0000000000d1", work, "cli", goldenAt(9, 12, 0, 0), [2]string{"old", "Old."})...)
+		if err := os.Chtimes(old, time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AddLease(state.Lease{AccountID: "codex/d", Provider: "codex", Mode: state.ModeLong, PID: gone, Hostname: hostname(),
+			Workspace: work, Cwd: work, Pane: "%9", SessionID: "019d0000-0000-7000-8000-0000000000d1", Transcript: old,
+			StartedAt: goldenAt(9, 11, 59, 0).Unix()}); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Println("--- ended processes and an old transcript")
+		r = newConvoResolver(st, defaultRoots())
+		tgt, err = r.resolveDir(work)
+		show("dir "+work, tgt, err)
+		fmt.Printf("stale %s: %v\n", goldenC1, r.stale(convoTarget{provider: "claude", id: goldenC1}))
+		fmt.Printf("stale 019d0000-0000-7000-8000-0000000000d1: %v\n",
+			r.stale(convoTarget{provider: "codex", path: old, id: "019d0000-0000-7000-8000-0000000000d1"}))
 	})
 	out := strings.ReplaceAll(got, regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(root, "-"), "<root as a project>")
-	checkGolden(t, "resolve.golden", strings.ReplaceAll(strings.ReplaceAll(out, root, "<root>"), strconv.Itoa(pid), "<pid>"))
+	checkGolden(t, "resolve.golden", strings.ReplaceAll(out, root, "<root>"))
+}
+
+// TestGoldenResolveMachine is what aiq convo resolves when the machine says no: through
+// the resolver's own seams, a process that has ended, a lease on another host, a session
+// in the home directory, and transcripts older and newer than staleAfter. The pids are
+// invented; alive says which of them run.
+func TestGoldenResolveMachine(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", root)
+	data, claudeHome, codexHome := filepath.Join(root, "data"), filepath.Join(root, "claude"), filepath.Join(root, "codex")
+	t.Setenv("AIQ_DATA_DIR", data)
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
+	t.Setenv("CODEX_HOME", codexHome)
+	work, other := filepath.Join(root, "work", "demo"), filepath.Join(root, "work", "other")
+	for _, d := range []string{work, other, data} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const live, live2, dead = 900002, 900003, 900009
+	alive := func(pid int) bool { return pid == live || pid == live2 }
+	now := time.Now()
+
+	const c4 = "c0ffee04-0000-4000-8000-000000000004"
+	claudeIn := map[string]string{goldenC1: work, goldenC2: work, c4: root}
+	for _, id := range []string{goldenC1, goldenC2, c4} {
+		cwd := claudeIn[id]
+		c := &goldenClaude{cwd: cwd, id: id, at: goldenAt(10, 9, 0, 0)}
+		c.typed("look at " + id[:8])
+		c.answer("m1", "Looked.")
+		project := filepath.Join(claudeHome, "projects", regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(cwd, "-"))
+		goldenWrite(t, filepath.Join(project, id+".jsonl"), c.lines...)
+	}
+	for name, c := range map[string]claudeLive{
+		"1.json": {PID: live, SessionID: goldenC2, Cwd: work, Tmux: "demo:@1.%5"},
+		"2.json": {PID: dead, SessionID: goldenC1, Cwd: work, Tmux: "demo:@1.%6"},
+		"3.json": {PID: live2, SessionID: c4, Cwd: root},
+	} {
+		goldenWrite(t, filepath.Join(claudeHome, "sessions", name),
+			fmt.Sprintf(`{"pid":%d,"sessionId":%q,"cwd":%q,"tmux":%q}`, c.PID, c.SessionID, c.Cwd, c.Tmux))
+	}
+	// Codex transcripts, each written age before now.
+	codex := map[string]string{}
+	for i, x := range []struct {
+		name, cwd string
+		age       time.Duration
+	}{
+		{"x1", work, 10 * time.Minute}, {"x2", work, 2 * time.Hour}, {"x3", work, 2 * time.Hour},
+		{"x4", work, 2 * time.Hour}, {"x5", work, 10 * time.Minute},
+		{"x6", other, 5 * time.Minute}, {"x7", other, 20 * time.Minute}, {"x8", work, 20 * time.Minute},
+	} {
+		id := fmt.Sprintf("019c0000-0000-7000-8000-0000000000%02d", i+1)
+		path := filepath.Join(codexHome, "sessions", "2025", "09", "10", "rollout-2025-09-10T10-00-00-"+id+".jsonl")
+		goldenWrite(t, path, goldenCodex(id, x.cwd, "cli", goldenAt(10, 10, i, 0), [2]string{"task " + x.name, "Done " + x.name + "."})...)
+		if err := os.Chtimes(path, now.Add(-x.age), now.Add(-x.age)); err != nil {
+			t.Fatal(err)
+		}
+		codex[x.name] = path
+	}
+	idOf := func(name string) string { return sessionIDOf(codex[name]) }
+
+	st, err := state.Open(filepath.Join(data, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	long := func(account string, pid int, host, cwd, pane, x string) state.Lease {
+		return state.Lease{AccountID: account, Provider: "codex", Mode: state.ModeLong, PID: pid, Hostname: host, Workspace: cwd, Cwd: cwd,
+			Pane: pane, SessionID: idOf(x), Transcript: codex[x], StartedAt: now.Add(-3 * time.Hour).Unix()}
+	}
+	for _, l := range []state.Lease{
+		long("codex/b", live, hostname(), work, "%4", "x1"),
+		long("codex/c", live, "invented-other-host", work, "%7", "x2"),
+		long("codex/d", dead, hostname(), work, "%8", "x3"),
+		// Two that hold x6 but do not count: on another host, and ended.
+		long("codex/f", live, "invented-other-host", other, "", "x6"),
+		long("codex/g", dead, hostname(), other, "", "x6"),
+		// A bare lease: no hook reported its transcript.
+		{AccountID: "codex/e", Provider: "codex", Mode: state.ModeInteractive, PID: live, Hostname: hostname(), Cwd: other,
+			StartedAt: now.Add(-time.Hour).Unix()},
+	} {
+		if _, err := st.AddLease(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	show := func(call string, tgt convoTarget, err error) {
+		if err != nil {
+			fmt.Printf("%s: error: %v\n", call, err)
+			return
+		}
+		fmt.Printf("%s: provider %s, path %s, account %q, pane %q, stale %v, id %q\n",
+			call, tgt.provider, tgt.path, tgt.account, tgt.pane, tgt.stale, tgt.id)
+	}
+	got := goldenEnv(t, func() {
+		r := newConvoResolver(st, defaultRoots())
+		r.alive = alive
+		r.claude = func() []claudeLive { return liveClaude(paths.RealClaudeHome(), paths.ClaudeHomesDir(), alive) }
+		// Each pane's process is its lease's, so only the host and alive say no.
+		r.paneInfo = func(pane string) (tmux.Pane, error) {
+			pid := live
+			if pane == "%8" {
+				pid = dead
+			}
+			return tmux.Pane{ID: pane, PID: pid, StartCommand: "codex"}, nil
+		}
+		r.parents = func() map[int]int { return nil }
+		// The resolver's clock is a quarter of an hour ahead of the files' one: x8, written
+		// twenty minutes before the files' now, is stale by it and by no other.
+		r.now = func() time.Time { return now.Add(15 * time.Minute) }
+		for _, dir := range []string{work, other, root, filepath.Join(root, "elsewhere")} {
+			tgt, err := r.resolveDir(dir)
+			show("dir "+dir, tgt, err)
+		}
+		for _, pane := range []string{"%4", "%7", "%8"} {
+			tgt, err := r.resolvePane(pane)
+			show("pane "+pane, tgt, err)
+		}
+		for _, id := range []string{goldenC1, goldenC2} {
+			tgt, err := r.resolveID(work, id)
+			show("id "+id, tgt, err)
+		}
+		for _, x := range []string{"x1", "x2", "x3", "x4", "x5", "x8"} {
+			fmt.Printf("stale %s: %v\n", x, r.stale(convoTarget{provider: "codex", path: codex[x], id: idOf(x)}))
+		}
+	})
+	out := strings.ReplaceAll(got, regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(root, "-"), "<root as a project>")
+	checkGolden(t, "resolve-machine.golden", strings.ReplaceAll(out, root, "<root>"))
 }

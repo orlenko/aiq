@@ -34,3 +34,10 @@ codex session 019a0000-0000-7000-8000-0000000000a1 · codex gpt-6 · release 1.4
 Shipped 1.4.0.
 === aiq resume --print c0ffee
 error: "c0ffee" matches 2 sessions; give more of the id
+=== aiq resume --print, $PWD through a link
+ID        UPDATED           AGENT                   TURNS  TOOLS  NAME / FIRST PROMPT
+c0ffee05  2025-09-05        claude opus-5               1      0  [via linked?] check the link
+019a0000  2025-09-03        codex gpt-6                 1      1  [running in aiq long (codex/b, aiq-demo-60c1)] release 1.4
+c0ffee02  2025-09-02        claude opus-5               1      0  [via box?] [open in pid <test>] add a test for the parser with two cases
+c0ffee01  2025-09-01        claude opus-5               2      1  [via safe-claude] rename the config loader
+(1 worker session hidden; --all shows it)

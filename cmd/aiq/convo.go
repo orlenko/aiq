@@ -192,11 +192,11 @@ func cmdConvo(args []string) error {
 		r.st = st
 		defer st.Close()
 	}
-	dir, err := os.Getwd()
+	dir, pane, err := convoHere()
 	if err != nil {
 		return err
 	}
-	tgt, err := r.resolve(o, dir, os.Getenv("TMUX_PANE"))
+	tgt, err := r.resolve(o, dir, pane)
 	if err != nil {
 		return err
 	}
@@ -332,6 +332,15 @@ func (t convoTarget) label() string {
 	return t.provider
 }
 
+// convoHere is where aiq convo runs: the working directory, and the tmux pane, if any.
+func convoHere() (dir, pane string, err error) {
+	dir, err = os.Getwd()
+	return dir, os.Getenv("TMUX_PANE"), err
+}
+
+// convoResolver finds the transcript aiq convo reads. Make one with newConvoResolver,
+// then replace what a caller gives its own: a zero convoResolver has nothing to read the
+// machine with.
 type convoResolver struct {
 	st    *state.Store // nil without a database
 	roots transcript.Roots

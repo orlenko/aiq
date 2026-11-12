@@ -1,5 +1,5 @@
 === aiq asks list
-Watching 2, 2 min ago (long sessions, this machine)
+Reading: 3 texts waiting. 2 watched
 Moved today: 1 closed, 1 probably done
   #4 closed, by: Bumped to 1.4.0.
      Bump the version?
@@ -7,7 +7,7 @@ Moved today: 1 closed, 1 probably done
      Run the example check?
 
 Asks
-  #1  alpha  claude  10 min ago
+  #1  alpha  claude  2 h ago
       > Shall I merge the docs branch?
 
 Warnings
@@ -16,7 +16,7 @@ Warnings
 
 1 probably done, 2 closed or dismissed: aiq asks list --all
 === aiq asks list --all
-Watching 2, 2 min ago (long sessions, this machine)
+Reading: 3 texts waiting. 2 watched
 Moved today: 1 closed, 1 probably done
   #4 closed, by: Bumped to 1.4.0.
      Bump the version?
@@ -24,7 +24,7 @@ Moved today: 1 closed, 1 probably done
      Run the example check?
 
 Asks
-  #1  alpha  claude  10 min ago
+  #1  alpha  claude  2 h ago
       > Shall I merge the docs branch?
 
 Warnings
@@ -45,25 +45,25 @@ Closed and dismissed
       dismissed
 === aiq asks list --here
 Only <root>/ws/alpha. 2 others hidden, all states.
-Watching 2, 2 min ago (long sessions, this machine)
+Reading: 3 texts waiting. 2 watched
 Moved today: 0 closed, 1 probably done
   #3 probably-done, by: The check ran.
      Run the example check?
 
 Asks
-  #1  alpha  claude  10 min ago
+  #1  alpha  claude  2 h ago
       > Shall I merge the docs branch?
 
 1 probably done, 1 closed or dismissed: aiq asks list --all
 === aiq asks list --here --all
 Only <root>/ws/alpha. 2 others hidden, all states.
-Watching 2, 2 min ago (long sessions, this machine)
+Reading: 3 texts waiting. 2 watched
 Moved today: 0 closed, 1 probably done
   #3 probably-done, by: The check ran.
      Run the example check?
 
 Asks
-  #1  alpha  claude  10 min ago
+  #1  alpha  claude  2 h ago
       > Shall I merge the docs branch?
 
 Probably done
@@ -75,3 +75,5 @@ Closed and dismissed
   #5  alpha  claude  30 h ago
       > Old question?
       dismissed
+=== the asks app's live leases
+claude/a in <root>/ws/alpha
