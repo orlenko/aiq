@@ -1083,7 +1083,7 @@ Depth is 1, well under `max_depth`.
 | Shims | `~/.local/share/aiq/shims/` |
 | State (accounts, windows, leases, affinity, launches, events; no credentials) | `~/.local/share/aiq/state.db` |
 | Daemon log | `~/.local/share/aiq/log/daemon.log` |
-| Session navigator: its state at each daemon start, with a secret token while it is on; the ports it used lately (off by default, serves nothing yet) | `~/.local/share/aiq/ui-token`, `~/.local/share/aiq/ui-ports` |
+| Session navigator: its state at each daemon start, with a secret token while it is on; the ports it used lately (off by default, shows nothing yet) | `~/.local/share/aiq/ui-token`, `~/.local/share/aiq/ui-ports` |
 | `aiq asks` items, with quotes of the agents' messages | `~/.local/share/aiq/asks.db` |
 | `aiq asks` TypeSafe key | `~/.config/aiq/typesafe.key` |
 | Config | `~/.config/aiq/config.toml` |

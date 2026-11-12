@@ -281,7 +281,7 @@ func checkIdentity(t *testing.T, d *testDaemon) {
 	if body != "ok\n" || resp.Header.Get(identityHeader) != Identity() || len(resp.Header.Values(identityHeader)) != 1 {
 		t.Errorf("/healthz: %q, %s %q", body, identityHeader, resp.Header.Values(identityHeader))
 	}
-	want := fmt.Sprintf("pid=%d; start=%d; nav=0", os.Getpid(), d.s.started.Unix())
+	want := fmt.Sprintf("pid=%d; start=%d; nav=1", os.Getpid(), d.s.started.Unix())
 	if got := resp.Header.Get(navHeader); got != want {
 		t.Errorf("%s is %q, want %q", navHeader, got, want)
 	}
@@ -366,12 +366,12 @@ func TestNavigatorServesNothingYetOnItsOwnPort(t *testing.T) {
 // The navigator's handler keeps the status page's checks, so a page on another
 // site, a rebound name or another machine gets nothing from it.
 func TestNavigatorHandlerIsLocalOnly(t *testing.T) {
-	h := navigatorHandler()
+	h := New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler()
 	for _, c := range []struct {
 		name, peer, host string
 		want             int
 	}{
-		{"a loopback request", "127.0.0.1:50000", "127.0.0.1:50001", http.StatusNotFound},
+		{"a loopback request", "127.0.0.1:50000", "127.0.0.1:50001", http.StatusOK},
 		{"a rebound name", "127.0.0.1:50000", "evil.example:50001", http.StatusForbidden},
 		{"a network peer", "192.0.2.5:50000", "127.0.0.1:50001", http.StatusForbidden},
 	} {
@@ -893,7 +893,7 @@ func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 // The navigator's server bounds a request that is slow to arrive: a request that
 // declares a body and never sends it loses its connection at the read deadline.
 func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
-	srv := statusServer(navigatorHandler())
+	srv := statusServer(New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler())
 	srv.ReadTimeout = 300 * time.Millisecond
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -917,9 +917,10 @@ func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
 	}
 }
 
-// OPTIONS * is the navigator handler's to answer, not the server's.
+// OPTIONS * is the navigator handler's to answer, not the server's: the gate refuses
+// its target, with the navigator's headers.
 func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
-	srv := statusServer(navigatorHandler())
+	srv := statusServer(New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -938,7 +939,7 @@ func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound || resp.Header.Get("X-Frame-Options") != "DENY" {
+	if resp.StatusCode != http.StatusBadRequest || resp.Header.Get("X-Frame-Options") != "DENY" || resp.Header.Get("X-Aiq-Build") == "" {
 		t.Errorf("OPTIONS *: %d %v", resp.StatusCode, resp.Header)
 	}
 }
