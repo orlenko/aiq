@@ -273,8 +273,12 @@ func Stop(ref string, pid int) error {
 		return err
 	}
 	_, err = call(ref, "stop", request{PID: pid, Generation: g})
-	if errors.Is(err, ErrEnded) {
-		return nil
+	if err != nil {
+		// Shutdown can close the control connection before its reply is read.
+		// Observe only this original family; never retry against a new child.
+		if _, e := load(ref); errors.Is(e, ErrEnded) {
+			return nil
+		}
 	}
 	return err
 }

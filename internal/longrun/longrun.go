@@ -795,6 +795,16 @@ func (s *Supervisor) unchanged(l state.Lease) (state.Lease, bool) {
 	if err != nil || cur.StartedAt != l.StartedAt || cur.Drain != l.Drain || cur.DrainAt != l.DrainAt || cur.TurnStartedAt != l.TurnStartedAt {
 		return l, false
 	}
+	// Reading current state must not renew a stale native decision into
+	// authority over another generation or a newly selected backend.
+	if herdr.IsRef(l.Pane) || herdr.IsRef(cur.Pane) {
+		if cur.Pane != l.Pane || cur.PID != l.PID {
+			return l, false
+		}
+		if _, generation, err := herdr.ParseRef(l.Pane); err != nil || generation == 0 {
+			return l, false
+		}
+	}
 	return cur, true
 }
 

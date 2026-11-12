@@ -3,6 +3,7 @@ package herdr
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -152,5 +153,81 @@ func TestNativeGenerationGrammarAndStaleAuthority(t *testing.T) {
 	}
 	if got, err := Info(old.Target()); err != nil || got.Generation != 2 {
 		t.Fatalf("observation cannot follow family: %+v %v", got, err)
+	}
+}
+
+func TestNativeStopReconcilesOnlyConfirmedEndedAfterLostReply(t *testing.T) {
+	for _, after := range []string{"ended", "superseded", "new-generation", "unreadable"} {
+		t.Run(after, func(t *testing.T) {
+			root, err := os.MkdirTemp("/tmp", "aiqh-stop-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(root)
+			t.Setenv("AIQ_DATA_DIR", filepath.Join(root, "data"))
+			ws := filepath.Join(root, "workspace")
+			ref, err := newRef(ws)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := Record{Ref: ref, Workspace: ws, Socket: filepath.Join(root, "control"), RunnerPID: os.Getpid(), PID: 123, Generation: 1, State: "running", Core: Core{Socket: filepath.Join(root, "core"), ID: "fiction-core", Terminal: "t1", PID: 456}}
+			if err := os.MkdirAll(directory(), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := save(r); err != nil {
+				t.Fatal(err)
+			}
+			l, err := net.Listen("unix", r.Socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			serverDone := make(chan error, 1)
+			go func() {
+				c, err := l.Accept()
+				if err != nil {
+					serverDone <- err
+					return
+				}
+				defer c.Close()
+				var envelope struct {
+					Method string  `json:"method"`
+					Params request `json:"params"`
+				}
+				if err := json.NewDecoder(c).Decode(&envelope); err != nil {
+					serverDone <- err
+					return
+				}
+				if envelope.Method != "stop" || envelope.Params.Ref != ref || envelope.Params.Generation != 1 {
+					serverDone <- fmt.Errorf("wrong stop request")
+					return
+				}
+				next := r
+				switch after {
+				case "ended":
+					next.State = "ended"
+					next.PID = 0
+				case "superseded":
+					next.Ref, err = newRef(ws)
+				case "new-generation":
+					next.Generation = 2
+				case "unreadable":
+					err = os.WriteFile(recordPath(workspaceKey(ws)), []byte("unreadable fiction"), 0600)
+				}
+				if err == nil && after != "unreadable" {
+					err = save(next)
+				}
+				serverDone <- err
+				// Deliberately close without replying, as runner shutdown may do.
+			}()
+			err = Stop(r.Target(), r.PID)
+			if e := <-serverDone; e != nil {
+				t.Fatal(e)
+			}
+			wantSuccess := after == "ended" || after == "superseded"
+			if (err == nil) != wantSuccess {
+				t.Fatalf("lost reply after %s: %v", after, err)
+			}
+		})
 	}
 }
