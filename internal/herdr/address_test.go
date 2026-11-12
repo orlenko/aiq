@@ -206,8 +206,15 @@ func TestAlphanumericCurrentCoreStages(t *testing.T) {
 				t.Fatal("request did not preserve exact terminal")
 			}
 			if !tc.progress {
-				if err == nil {
-					t.Fatal("invalid origin accepted")
+				expected := "Herdr terminal is not live"
+				if tc.calls == 0 {
+					expected = "native Herdr sessions need a direct Herdr-core terminal; open one, or use hc run --cwd <workspace> -- aiq long --backend herdr <provider>"
+				}
+				if tc.calls == 1 {
+					expected = "unsupported Herdr core protocol (tested with hc 0.1.20)"
+				}
+				if err == nil || err.Error() != expected {
+					t.Fatalf("wrong discovery failure stage: got %v, want %q", err, expected)
 				}
 				return
 			}

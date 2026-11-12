@@ -29,7 +29,6 @@ import (
 )
 
 const fakeHerdrProviderScript = `#!/bin/sh
-if [ -n "$GO_HERDR_ENTRY_MARKER" ]; then : > "$GO_HERDR_ENTRY_MARKER" || exit 70; fi
 case "$AIQ_PROVIDER" in claude) payload=$GO_HERDR_CLAUDE_PAYLOAD;; codex) payload=$GO_HERDR_CODEX_PAYLOAD;; *) exit 3;; esac
 hook() { printf '%s' "$payload" | "$GO_HERDR_AIQ" "$AIQ_PROVIDER-hook" "$1"; }
 hook sessionstart
@@ -65,7 +64,6 @@ func TestHerdrAccountAndProviderRollover(t *testing.T) {
 		t.Fatalf("build fixture aiq: %v %s", err, out)
 	}
 	t.Setenv("GO_HERDR_AIQ", bin)
-	t.Setenv("GO_HERDR_ENTRY_MARKER", "")
 	for provider, id := range map[string]string{"claude": "11111111-1111-4111-8111-111111111111", "codex": "22222222-2222-4222-8222-222222222222"} {
 		name := id + ".jsonl"
 		if provider == "codex" {
@@ -279,9 +277,12 @@ func TestHerdrAccountAndProviderRollover(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	positiveNativeProviderEntry(t, root)
 	for _, table := range []string{"leases", "launches"} {
 		entry := filepath.Join(root, table+"-provider-entry")
-		t.Setenv("GO_HERDR_ENTRY_MARKER", entry)
+		if err := os.WriteFile(fake, []byte(fakeProviderWithEntry(entry)), 0700); err != nil {
+			t.Fatal(err)
+		}
 		assertNoProviderEntry(t, entry)
 		beforeLeases, beforeLaunches := nativeSQLIDs(t, db, "leases"), nativeSQLIDs(t, db, "launches")
 		setFakeUsage(t, st, "claude/fiction-a", 10)

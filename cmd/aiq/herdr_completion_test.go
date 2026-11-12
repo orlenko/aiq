@@ -210,6 +210,9 @@ func TestHerdrCompletionFixture(t *testing.T) {
 		until := time.Now().Add(20 * time.Second)
 		for time.Now().Before(until) {
 			if _, err := os.Stat(filepath.Join(root, "release")); err == nil {
+				if err := os.WriteFile(filepath.Join(root, "consumed"), []byte("acknowledged"), 0600); err != nil {
+					os.Exit(2)
+				}
 				os.Exit(0)
 			}
 			time.Sleep(5 * time.Millisecond)
@@ -276,12 +279,26 @@ func TestNativeCompletionWaitsForHeldChild(t *testing.T) {
 	waitFakeText(t, address.Address, "FICTION REGISTRATION ERROR")
 	observed := make(chan struct{})
 	var once sync.Once
-	result := make(chan error, 1)
+	type completion struct {
+		record       herdr.Record
+		acknowledged bool
+		err          error
+	}
+	result := make(chan completion, 1)
 	waiting = true
 	go func() {
 		defer close(done)
-		_, err := waitNativeAttemptEnd(nativeAttempt{root, os.Getenv("HC_SOCKET"), address.Address, ""}, func() (herdr.Record, bool, error) { return herdr.Workspace(root) }, time.Now, time.Sleep, 8*time.Second, func() { once.Do(func() { close(observed) }) })
-		result <- err
+		acknowledged := false
+		r, err := waitNativeAttemptEnd(nativeAttempt{root, os.Getenv("HC_SOCKET"), address.Address, ""}, func() (herdr.Record, bool, error) {
+			r, owned, err := herdr.Workspace(root)
+			_, ackErr := os.Stat(filepath.Join(root, "consumed"))
+			acknowledged = ackErr == nil
+			if ackErr != nil && !os.IsNotExist(ackErr) {
+				err = errors.New("release acknowledgement unreadable")
+			}
+			return r, owned, err
+		}, time.Now, time.Sleep, 8*time.Second, func() { once.Do(func() { close(observed) }) })
+		result <- completion{r, acknowledged, err}
 	}()
 	select {
 	case <-observed:
@@ -289,17 +306,17 @@ func TestNativeCompletionWaitsForHeldChild(t *testing.T) {
 		t.Fatal("incomplete ownership not acknowledged")
 	}
 	select {
-	case err := <-result:
-		t.Fatalf("diagnostic released next row before completion: %v", err)
+	case got := <-result:
+		t.Fatalf("diagnostic released next row before completion: %v", got.err)
 	default:
 	}
 	if err := os.WriteFile(filepath.Join(root, "release"), []byte("release"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatal(err)
+	case got := <-result:
+		if got.err != nil || !got.acknowledged || got.record.State != "ended" || got.record.PID != 0 {
+			t.Fatal("completion lacked observed release acknowledgement and ended record", got.err)
 		}
 	case <-time.After(17 * time.Second):
 		t.Fatal("completion never confirmed")
@@ -315,7 +332,7 @@ func assertNativeSQLIDs(t *testing.T, db *sql.DB, leases, launches []int64) {
 func TestNativeEntryMarkerPrecedesReadiness(t *testing.T) {
 	root := t.TempDir()
 	script, entry := filepath.Join(root, "provider"), filepath.Join(root, "entry")
-	if err := os.WriteFile(script, []byte(fakeHerdrProviderScript), 0700); err != nil {
+	if err := os.WriteFile(script, []byte(fakeProviderWithEntry(entry)), 0700); err != nil {
 		t.Fatal(err)
 	}
 	assertNoProviderEntry(t, entry)
@@ -323,7 +340,7 @@ func TestNativeEntryMarkerPrecedesReadiness(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", script)
 	cmd.WaitDelay = time.Second
-	cmd.Env = append(os.Environ(), "AIQ_PROVIDER=fiction-unknown", "GO_HERDR_ENTRY_MARKER="+entry)
+	cmd.Env = append(os.Environ(), "AIQ_PROVIDER=fiction-unknown")
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 3 {
@@ -334,5 +351,79 @@ func TestNativeEntryMarkerPrecedesReadiness(t *testing.T) {
 	}
 	if strings.Contains(string(out), "FAKE READY") {
 		t.Fatal("fixture reached readiness unexpectedly")
+	}
+}
+
+// Encode the invented marker in the executable, independent of the persistent
+// core's environment snapshot or arbitrary client-variable forwarding.
+func fakeProviderWithEntry(marker string) string {
+	quoted := "'" + strings.ReplaceAll(marker, "'", "'\\''") + "'"
+	return "#!/bin/sh\n: > " + quoted + " || exit 70\n" + strings.TrimPrefix(fakeHerdrProviderScript, "#!/bin/sh\n")
+}
+func positiveNativeProviderEntry(t *testing.T, root string) {
+	t.Helper()
+	marker, script := filepath.Join(root, "positive-entry"), filepath.Join(root, "positive-provider")
+	assertNoProviderEntry(t, marker)
+	if err := os.WriteFile(script, []byte(fakeProviderWithEntry(marker)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := fixtureHC(ctx, "run", "--bg", "--json", "--no-parent", "--cwd", root, "--", "/usr/bin/env", "AIQ_PROVIDER=fiction-unknown", "/bin/sh", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("native entry positive control failed to launch: %v", err)
+	}
+	var launched struct {
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal(out, &launched); err != nil || launched.Address == "" {
+		t.Fatal("invalid entry positive-control result")
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	finished := false
+	for time.Now().Before(deadline) {
+		var terminal struct {
+			Address, State string
+			ExitCode       *int `json:"exit_code"`
+		}
+		if err := fixtureRPC("terminal.get", map[string]any{"terminal": launched.Address}, &terminal); err != nil {
+			t.Fatal("entry positive-control observation failed")
+		}
+		if terminal.Address != launched.Address {
+			t.Fatal("entry positive-control terminal mismatch")
+		}
+		if terminal.State == "finished" {
+			if terminal.ExitCode == nil || *terminal.ExitCode != 3 {
+				t.Fatal("provider positive control did not reach its early exit")
+			}
+			finished = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !finished {
+		t.Fatal("entry positive control did not finish")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("already-running core did not execute the encoded marker", err)
+	}
+	var screen struct{ Text string }
+	if err := fixtureRPC("terminal.read", map[string]any{"terminal": launched.Address, "lines": 100}, &screen); err != nil {
+		t.Fatal("entry positive-control screen unavailable")
+	}
+	if strings.Contains(screen.Text, "FAKE READY") {
+		t.Fatal("entry positive control reached readiness")
+	}
+}
+
+func TestNativeIncompleteCallbackCannotAuthorizeCompletion(t *testing.T) {
+	ref := herdr.Prefix + strings.Repeat("a", 32) + "-" + strings.Repeat("b", 32)
+	want := nativeAttempt{"/invented/work", "/invented/core", "t7", ""}
+	live := herdr.Record{Ref: ref, Workspace: want.workspace, Generation: 1, PID: 123, State: "running", Core: herdr.Core{Socket: want.socket, Terminal: want.terminal}}
+	now := time.Unix(100, 0)
+	callbacks := 0
+	_, err := waitNativeAttemptEnd(want, func() (herdr.Record, bool, error) { return live, true, nil }, func() time.Time { return now }, func(d time.Duration) { now = now.Add(d) }, 30*time.Millisecond, func() { callbacks++ })
+	if callbacks == 0 || err == nil {
+		t.Fatal("incomplete callback allowed premature completion")
 	}
 }
