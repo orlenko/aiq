@@ -28,6 +28,23 @@ import (
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
+const fakeHerdrProviderScript = `#!/bin/sh
+if [ -n "$GO_HERDR_ENTRY_MARKER" ]; then : > "$GO_HERDR_ENTRY_MARKER" || exit 70; fi
+case "$AIQ_PROVIDER" in claude) payload=$GO_HERDR_CLAUDE_PAYLOAD;; codex) payload=$GO_HERDR_CODEX_PAYLOAD;; *) exit 3;; esac
+hook() { printf '%s' "$payload" | "$GO_HERDR_AIQ" "$AIQ_PROVIDER-hook" "$1"; }
+hook sessionstart
+printf 'FAKE READY %s/%s\n' "$AIQ_PROVIDER" "$AIQ_ACCOUNT"
+printf 'FAKE ARGS'; printf ' <%s>' "$@"; printf '\n'
+while IFS= read -r line; do
+ case "$line" in
+  quit) exit 0;;
+  busy) hook userpromptsubmit; printf 'FAKE BUSY\n';;
+  idle) hook stop; printf 'FAKE IDLE\n';;
+  *) hook userpromptsubmit; printf 'FAKE ANSWER\n'; hook stop;;
+ esac
+done
+`
+
 // This exercises the real CLI/daemon takeover boundary and hooks, but every
 // account, credential marker, provider program and transcript is invented.
 func TestHerdrAccountAndProviderRollover(t *testing.T) {
@@ -48,6 +65,7 @@ func TestHerdrAccountAndProviderRollover(t *testing.T) {
 		t.Fatalf("build fixture aiq: %v %s", err, out)
 	}
 	t.Setenv("GO_HERDR_AIQ", bin)
+	t.Setenv("GO_HERDR_ENTRY_MARKER", "")
 	for provider, id := range map[string]string{"claude": "11111111-1111-4111-8111-111111111111", "codex": "22222222-2222-4222-8222-222222222222"} {
 		name := id + ".jsonl"
 		if provider == "codex" {
@@ -65,22 +83,8 @@ func TestHerdrAccountAndProviderRollover(t *testing.T) {
 		t.Setenv("GO_HERDR_"+strings.ToUpper(provider)+"_PAYLOAD", string(payload))
 	}
 	fake := filepath.Join(root, "fiction-provider")
-	script := `#!/bin/sh
-case "$AIQ_PROVIDER" in claude) payload=$GO_HERDR_CLAUDE_PAYLOAD;; codex) payload=$GO_HERDR_CODEX_PAYLOAD;; *) exit 3;; esac
-hook() { printf '%s' "$payload" | "$GO_HERDR_AIQ" "$AIQ_PROVIDER-hook" "$1"; }
-hook sessionstart
-printf 'FAKE READY %s/%s\n' "$AIQ_PROVIDER" "$AIQ_ACCOUNT"
-printf 'FAKE ARGS'; printf ' <%s>' "$@"; printf '\n'
-while IFS= read -r line; do
- case "$line" in
-  quit) exit 0;;
-  busy) hook userpromptsubmit; printf 'FAKE BUSY\n';;
-  idle) hook stop; printf 'FAKE IDLE\n';;
-  *) hook userpromptsubmit; printf 'FAKE ANSWER\n'; hook stop;;
- esac
-done
-`
-	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+
+	if err := os.WriteFile(fake, []byte(fakeHerdrProviderScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
@@ -109,12 +113,10 @@ done
 		}
 		setFakeUsage(t, st, id, 10)
 	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		exec.CommandContext(ctx, "hc", "server", "stop", "--json").Run()
-	}()
-	cmd := exec.Command("hc", "run", "--bg", "--json", "--no-parent", "--cwd", root, "--", bin, "long", "--backend", "herdr", "claude", "--account", "fiction-a")
+	defer stopFixtureCore(t)
+	startCtx, cancelStart := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelStart()
+	cmd := fixtureHC(startCtx, "run", "--bg", "--json", "--no-parent", "--cwd", root, "--", bin, "long", "--backend", "herdr", "claude", "--account", "fiction-a")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("start native CLI: %v %s", err, out)
@@ -256,6 +258,20 @@ done
 	if err := herdr.Stop(adopted.Pane, adopted.PID); err != nil {
 		t.Fatal(err)
 	}
+	previousEnd := awaitNativeAttempt(t, nativeAttempt{root, os.Getenv("HC_SOCKET"), started.Address, ""})
+	// Normalize only the known completed prior lease before measuring new rows.
+	if err := st.ForLease(adopted, 0).ReleaseLease(adopted.ID); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := st.ListLeases()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lease := range remaining {
+		if lease.ID == adopted.ID {
+			t.Fatal("completed fixture lease remains before baseline")
+		}
+	}
 	// A native launch must never exec an untracked provider when lease or
 	// launch registration fails. The failure injection touches this test DB.
 	db, err := sql.Open("sqlite", paths.StateDB())
@@ -264,12 +280,26 @@ done
 	}
 	defer db.Close()
 	for _, table := range []string{"leases", "launches"} {
+		entry := filepath.Join(root, table+"-provider-entry")
+		t.Setenv("GO_HERDR_ENTRY_MARKER", entry)
+		assertNoProviderEntry(t, entry)
+		beforeLeases, beforeLaunches := nativeSQLIDs(t, db, "leases"), nativeSQLIDs(t, db, "launches")
 		setFakeUsage(t, st, "claude/fiction-a", 10)
 		_, err := db.Exec("CREATE TRIGGER reject_native_registration BEFORE INSERT ON " + table + " BEGIN SELECT RAISE(ABORT, 'fiction registration failure'); END")
 		if err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command("hc", "run", "--bg", "--json", "--no-parent", "--cwd", root, "--", bin, "long", "--backend", "herdr", "claude", "--account", "fiction-a")
+		dropped := false
+		defer func() {
+			if !dropped {
+				if _, err := db.Exec("DROP TRIGGER IF EXISTS reject_native_registration"); err != nil {
+					t.Errorf("fixture trigger cleanup: %v", err)
+				}
+			}
+		}()
+		launchCtx, cancelLaunch := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelLaunch()
+		cmd := fixtureHC(launchCtx, "run", "--bg", "--json", "--no-parent", "--cwd", root, "--", bin, "long", "--backend", "herdr", "claude", "--account", "fiction-a")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("start registration fixture: %v %s", err, out)
@@ -288,9 +318,22 @@ done
 		if strings.Contains(text, "FAKE READY") {
 			t.Fatal("provider ran without registration")
 		}
+		previousEnd = awaitNativeAttempt(t, nativeAttempt{root, os.Getenv("HC_SOCKET"), failed.Address, previousEnd.Ref})
+		assertNoProviderEntry(t, entry)
+		var final struct {
+			Text string `json:"text"`
+		}
+		if err := fixtureRPC("terminal.read", map[string]any{"terminal": failed.Address, "lines": 100}, &final); err != nil {
+			t.Fatal("post-completion terminal read failed")
+		}
+		if !strings.Contains(final.Text, want) || strings.Contains(final.Text, "FAKE READY") {
+			t.Fatal("post-completion registration evidence is inconsistent")
+		}
+		assertNativeSQLIDs(t, db, beforeLeases, beforeLaunches)
 		if _, err := db.Exec("DROP TRIGGER reject_native_registration"); err != nil {
 			t.Fatal(err)
 		}
+		dropped = true
 	}
 }
 
