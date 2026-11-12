@@ -389,8 +389,9 @@ func (c *Cache) removeFullLocked(path string) {
 
 // Summary is the list row of the transcript at path: from the row cache, or
 // the cached parse, or else a parse that waits for a slot until ctx ends and
-// then answers ErrBudget. It is ListWith's parse on the navigator path. A
-// list's parse fills the row cache only, so a long list cannot push the
+// then answers ErrBudget. Once admitted, a parse keeps its slot and fills the row
+// cache even if its caller stops waiting. It is ListWith's parse on the navigator
+// path. A list's parse fills the row cache only, so a long list cannot push the
 // full parses out.
 func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 	if ctx.Err() != nil {
@@ -407,6 +408,9 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 	sum, err, ok := c.rowLocked(snap)
 	c.mu.Unlock()
 	if ok {
+		if ctx.Err() != nil {
+			return Summary{}, ErrBudget
+		}
 		return sum, err
 	}
 	select {
@@ -414,13 +418,52 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 	case <-ctx.Done():
 		return Summary{}, ErrBudget
 	}
-	defer func() { <-c.sem }()
+	if ctx.Err() != nil {
+		<-c.sem
+		return Summary{}, ErrBudget
+	}
 	c.mu.Lock()
 	sum, err, ok = c.rowLocked(snap)
 	c.mu.Unlock()
 	if ok {
+		<-c.sem
+		if ctx.Err() != nil {
+			return Summary{}, ErrBudget
+		}
 		return sum, err
 	}
+	if ctx.Err() != nil {
+		<-c.sem
+		return Summary{}, ErrBudget
+	}
+	type result struct {
+		sum Summary
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer func() { <-c.sem }()
+		sum, err := c.fillSummary(snap)
+		done <- result{sum, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return Summary{}, ErrBudget
+	case r := <-done:
+		if ctx.Err() != nil {
+			return Summary{}, ErrBudget
+		}
+		return r.sum, r.err
+	}
+}
+
+// fillSummary completes already-admitted work without retaining the waiter's context.
+func (c *Cache) fillSummary(snap Snapshot) (sum Summary, err error) {
+	defer func() {
+		if recover() != nil {
+			sum, err = Summary{}, c.quarantined(snap)
+		}
+	}()
 	s, err := c.runParse(snap)
 	if err != nil && !errors.Is(err, errNoSession) {
 		return Summary{}, err
@@ -430,8 +473,8 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 		r.sum = Summarize(s)
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.putRowLocked(r)
-	c.mu.Unlock()
 	return r.sum, r.err
 }
 
