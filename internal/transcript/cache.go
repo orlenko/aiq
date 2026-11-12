@@ -461,7 +461,9 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 func (c *Cache) fillSummary(snap Snapshot) (sum Summary, err error) {
 	defer func() {
 		if recover() != nil {
-			sum, err = Summary{}, c.quarantined(snap)
+			// runParse alone quarantines parser failures. A failure after parsing
+			// retains ListWith's sanitized error without changing that policy.
+			sum, err = Summary{}, &unreadableError{snap.Path}
 		}
 	}()
 	s, err := c.runParse(snap)
