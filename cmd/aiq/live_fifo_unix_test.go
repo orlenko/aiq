@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/orlenko/aiq/internal/paths"
+	"github.com/orlenko/aiq/internal/proc"
 )
 
 // A pipe among Claude's session files, in the real home or an overlay
@@ -36,7 +37,7 @@ func TestLiveClaudeSkipsAPipe(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan []claudeLive, 1)
-	go func() { done <- liveClaude() }()
+	go func() { done <- liveClaude(paths.RealClaudeHome(), paths.ClaudeHomesDir(), proc.Alive) }()
 	select {
 	case got := <-done:
 		if len(got) != 1 || got[0].PID != os.Getpid() {

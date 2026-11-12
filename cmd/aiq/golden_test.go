@@ -357,13 +357,13 @@ func TestGoldenAsksSections(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(goldenEnv(t, func() {
 		fmt.Println("=== list")
-		fmt.Print(renderAsksList(items, moved, watching, true, false, now))
+		fmt.Print(renderAsksList(items, moved, watching, true, false, now, asksCmd))
 		fmt.Println("=== list --all, a skipped text, an unwatched workspace")
 		st := watching
 		st.Skipped, st.NotWatched = 2, []string{"/invented/ws/delta"}
-		fmt.Print(renderAsksList(items, moved, st, true, true, now))
+		fmt.Print(renderAsksList(items, moved, st, true, true, now, asksCmd))
 		fmt.Println("=== nothing open")
-		fmt.Print(renderAsksList(nil, nil, watching, true, false, now))
+		fmt.Print(renderAsksList(nil, nil, watching, true, false, now, asksCmd))
 
 		fmt.Println("=== status lines")
 		for _, c := range []struct {
@@ -380,7 +380,7 @@ func TestGoldenAsksSections(t *testing.T) {
 			{watching, true, 0},
 			{state.AsksStatus{PassAt: ago(50 * time.Minute), Watched: 1}, true, 2},
 		} {
-			fmt.Println(asksStatusLine(c.st, c.keyOK, c.open, now))
+			fmt.Println(asksStatusLine(c.st, c.keyOK, c.open, now, asksCmd))
 		}
 
 		fmt.Println("=== sections")
@@ -403,9 +403,9 @@ func TestGoldenAsksSections(t *testing.T) {
 			{"", "/invented/ws/alpha"},
 			{"/invented/ws/alpha", ""},
 		} {
-			fmt.Printf("%q in %q: %v\n", c[0], c[1], asksInDir(c[0], c[1]))
+			fmt.Printf("%q in %q: %v\n", c[0], c[1], asksInDir(c[0], c[1], asksRealPath))
 		}
-		for _, it := range asksFilter(items, "/invented/ws/beta") {
+		for _, it := range asksFilter(items, "/invented/ws/beta", asksRealPath) {
 			fmt.Printf("under beta: #%d\n", it.ID)
 		}
 	}))
@@ -631,7 +631,7 @@ func TestGoldenResolve(t *testing.T) {
 		}
 	}
 
-	r := &convoResolver{st: st, roots: defaultRoots()}
+	r := newConvoResolver(st, defaultRoots())
 	var b strings.Builder
 	show := func(call string, tgt convoTarget, err error) {
 		if err != nil {
@@ -654,19 +654,18 @@ func TestGoldenResolve(t *testing.T) {
 			tgt, err := r.resolvePane(pane)
 			show("pane "+pane, tgt, err)
 		}
-		t.Chdir(work)
 		for _, c := range []struct {
 			name string
 			o    convoOpts
 		}{{"resolve here", convoOpts{}}, {"resolve --pane %5", convoOpts{pane: "%5"}}, {"resolve c0ffee01", convoOpts{id: "c0ffee01"}}} {
-			tgt, err := r.resolve(c.o)
+			tgt, err := r.resolve(c.o, work, os.Getenv("TMUX_PANE"))
 			show(c.name, tgt, err)
 		}
 		t.Setenv("TMUX_PANE", "%8")
-		tgt, err := r.resolve(convoOpts{})
+		tgt, err := r.resolve(convoOpts{}, work, os.Getenv("TMUX_PANE"))
 		show("resolve in pane %8", tgt, err)
 		t.Setenv("TMUX_PANE", "%5")
-		tgt, err = r.resolve(convoOpts{})
+		tgt, err = r.resolve(convoOpts{}, work, os.Getenv("TMUX_PANE"))
 		show("resolve in pane %5", tgt, err)
 		fmt.Printf("stale %s: %v\n", goldenX1, r.stale(convoTarget{provider: "codex", path: leased, id: goldenX1}))
 		fmt.Printf("stale %s: %v\n", goldenX2, r.stale(convoTarget{provider: "codex", path: leased, id: goldenX2}))

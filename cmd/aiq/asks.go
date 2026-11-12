@@ -320,7 +320,7 @@ func asksReset(reg *state.Store, dir string, now time.Time) (int, error) {
 	if err := asksFence(reg, dir, now); err != nil {
 		return 0, err
 	}
-	return reg.ResetAsks(func(workspace string) bool { return dir == "" || asksInDir(workspace, dir) }, now)
+	return reg.ResetAsks(func(workspace string) bool { return dir == "" || asksInDir(workspace, dir, asksRealPath) }, now)
 }
 
 func asksFence(reg *state.Store, dir string, now time.Time) error {
@@ -416,15 +416,15 @@ func asksHereDir() (string, error) {
 }
 
 // asksInDir says an item belongs with a directory: its workspace is that directory, holds
-// it, or sits under it, by the paths as written or with their links resolved, since a lease
-// records a checkout's real root while a shell may name it through a link.
-func asksInDir(workspace, dir string) bool {
+// it, or sits under it, by the paths as written or with their links resolved by realPath,
+// since a lease records a checkout's real root while a shell may name it through a link.
+func asksInDir(workspace, dir string, realPath func(string) string) bool {
 	if workspace == "" || dir == "" {
 		return false
 	}
 	under := func(a, b string) bool { return strings.HasPrefix(a, strings.TrimSuffix(b, "/")+"/") }
 	match := func(ws, d string) bool { return ws == d || under(d, ws) || under(ws, d) }
-	return match(workspace, dir) || match(asksRealPath(workspace), asksRealPath(dir))
+	return match(workspace, dir) || match(realPath(workspace), realPath(dir))
 }
 
 // asksRealPaths remembers resolved paths for the life of the process.
@@ -442,14 +442,15 @@ func asksRealPath(p string) string {
 	return real
 }
 
-// asksFilter keeps the items that belong with a directory. No directory keeps all of them.
-func asksFilter(items []state.Ask, dir string) []state.Ask {
+// asksFilter keeps the items that belong with a directory, as asksInDir says with
+// realPath. No directory keeps all of them.
+func asksFilter(items []state.Ask, dir string, realPath func(string) string) []state.Ask {
 	if dir == "" {
 		return items
 	}
 	out := []state.Ask{}
 	for _, it := range items {
-		if asksInDir(it.Workspace, dir) {
+		if asksInDir(it.Workspace, dir, realPath) {
 			out = append(out, it)
 		}
 	}
@@ -462,7 +463,7 @@ func printAsksList(reg *state.Store, all bool, here string) error {
 	if err != nil {
 		return err
 	}
-	shown := asksFilter(items, here)
+	shown := asksFilter(items, here, asksRealPath)
 	hidden := len(items) - len(shown)
 	items = shown
 	st, err := reg.GetAsksStatus(now)
@@ -475,9 +476,9 @@ func printAsksList(reg *state.Store, all bool, here string) error {
 	}
 	if here != "" {
 		fmt.Printf("Only %s. %d others hidden, all states.\n", sanitize(here), hidden)
-		moved = asksFilter(moved, here)
+		moved = asksFilter(moved, here, asksRealPath)
 	}
-	fmt.Print(renderAsksList(items, moved, st, asksKey() != "", all, now))
+	fmt.Print(renderAsksList(items, moved, st, asksKey() != "", all, now, asksCmd))
 	return nil
 }
 
@@ -490,20 +491,20 @@ func asksDayStart(now time.Time) int64 {
 // asksStaleAfter is how long since a pass counts as nothing watching.
 const asksStaleAfter = 5 * time.Minute
 
-// asksStatusLine says plainly whether an empty list can be trusted. The side app and the
-// list both use it, so they never disagree.
-func asksStatusLine(st state.AsksStatus, keyOK bool, open int, now time.Time) string {
+// asksStatusLine says plainly whether an empty list can be trusted, its advice naming the
+// feature's command cmd. The side app and the list both use it, so they never disagree.
+func asksStatusLine(st state.AsksStatus, keyOK bool, open int, now time.Time, cmd string) string {
 	clock := func(t int64) string { return time.Unix(t, 0).Format("15:04") }
 	scope := "long sessions, this machine"
 	switch {
 	case !keyOK:
-		return "Off: no key. Run " + asksCmd + " setup"
+		return "Off: no key. Run " + cmd + " setup"
 	case st.PassAt == 0:
-		return "Not watching. Run " + asksCmd + " service install, or " + asksCmd + " watch in its own window"
+		return "Not watching. Run " + cmd + " service install, or " + cmd + " watch in its own window"
 	case st.LastError != "" && st.NextTryAt > now.Unix():
 		return "Failing since " + clock(st.ErrorAt) + ": " + sanitize(st.LastError) + ". Next try " + clock(st.NextTryAt)
 	case now.Sub(time.Unix(st.PassAt, 0)) > asksStaleAfter:
-		return "Not watching since " + clock(st.PassAt) + ". Run " + asksCmd + " service install, or " + asksCmd + " watch"
+		return "Not watching since " + clock(st.PassAt) + ". Run " + cmd + " service install, or " + cmd + " watch"
 	case st.LastError != "":
 		return "Failing since " + clock(st.ErrorAt) + ": " + sanitize(st.LastError)
 	case st.Waiting > 0:
@@ -537,7 +538,8 @@ func asksGroup(it state.Ask, now int64) string {
 	return "Other open"
 }
 
-func renderAsksList(items, moved []state.Ask, st state.AsksStatus, keyOK, all bool, now time.Time) string {
+// renderAsksList is aiq asks list, its advice naming the feature's command cmd.
+func renderAsksList(items, moved []state.Ask, st state.AsksStatus, keyOK, all bool, now time.Time, cmd string) string {
 	groups := map[string][]state.Ask{}
 	open := 0
 	var done, shut []state.Ask
@@ -554,7 +556,7 @@ func renderAsksList(items, moved []state.Ask, st state.AsksStatus, keyOK, all bo
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintln(&b, asksStatusLine(st, keyOK, open, now))
+	fmt.Fprintln(&b, asksStatusLine(st, keyOK, open, now, cmd))
 	if st.Skipped > 0 {
 		fmt.Fprintf(&b, "%d texts could not be read\n", st.Skipped)
 	}
@@ -603,7 +605,7 @@ func renderAsksList(items, moved []state.Ask, st state.AsksStatus, keyOK, all bo
 		section("Probably done", done)
 		section("Closed and dismissed", shut)
 	} else if len(done)+len(shut) > 0 {
-		fmt.Fprintf(&b, "\n%d probably done, %d closed or dismissed: %s list --all\n", len(done), len(shut), asksCmd)
+		fmt.Fprintf(&b, "\n%d probably done, %d closed or dismissed: %s list --all\n", len(done), len(shut), cmd)
 	}
 	return b.String()
 }
