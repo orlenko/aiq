@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/tmux"
@@ -22,6 +23,7 @@ const (
 	waitNoPane      = "no pane"
 	waitNoLauncher  = "no launcher"
 	waitRespawn     = "respawn failed"
+	waitTerminal    = "terminal unavailable"
 )
 
 // waiting is why a decision could not move a lease this tick.
@@ -357,6 +359,8 @@ type facts struct {
 func standing(l state.Lease, f facts) (label, line string) {
 	acc := tmux.SafeName(l.AccountID)
 	switch {
+	case f.wait.key == waitTerminal:
+		return acc + " · terminal unavailable", f.wait.text
 	case l.Drain == state.DrainNone && !f.blocked:
 		return acc, ""
 	case l.Pane == "":
@@ -449,7 +453,7 @@ func (s *Supervisor) show(l state.Lease, label, line string, now time.Time) {
 	}
 	k := shown{l.ID, l.StartedAt, l.PID, l.Pane}
 	if last, ok := s.lines[k]; !ok || last != line {
-		if err := s.Pool.St.SetLeaseWhy(l.ID, l.StartedAt, l.PID, line); err == nil {
+		if err := s.leaseStore(l).SetLeaseWhy(l.ID, l.StartedAt, l.PID, line); err == nil {
 			s.lines[k] = line
 		} else if !s.whyFailed {
 			s.whyFailed = true
@@ -459,6 +463,18 @@ func (s *Supervisor) show(l state.Lease, label, line string, now time.Time) {
 	if label == "" {
 		return
 	}
+	if herdr.IsRef(l.Pane) {
+		last := s.labels[k]
+		if label != last.label || (!last.failed.IsZero() && now.Sub(last.failed) >= renameRetry) {
+			next := named{label: label}
+			if err := herdr.NameFor(l.Pane, l.PID, label); err != nil {
+				next.failed = now
+			}
+			s.labels[k] = next
+		}
+		return
+	}
+
 	last, ok := s.labels[k]
 	if !ok {
 		acc := tmux.SafeName(l.AccountID)

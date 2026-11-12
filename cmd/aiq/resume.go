@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/term"
 
+	"errors"
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/state"
@@ -92,9 +94,10 @@ func reportUnreadable(w io.Writer, paths []string) {
 // liveNote says where a session is running now, so resuming it does not
 // start a second copy of the same conversation.
 type liveNote struct {
-	pid  int    // an open Claude process
-	tmux string // an aiq long tmux session
-	note string
+	native string // native Herdr runner reference
+	pid    int    // an open Claude process
+	tmux   string // an aiq long tmux session
+	note   string
 }
 
 func cmdResume(args []string) error {
@@ -170,6 +173,10 @@ func (a *app) liveSessions() map[string]liveNote {
 		if l.Mode != state.ModeLong || l.SessionID == "" {
 			continue
 		}
+		if herdr.IsRef(l.Pane) {
+			out[l.SessionID] = liveNote{native: l.Pane, note: fmt.Sprintf("running in aiq long (%s, Herdr)", l.AccountID)}
+			continue
+		}
 		name := longrun.SessionName(a.cfg.Long.TmuxPrefix, l.Workspace)
 		out[l.SessionID] = liveNote{tmux: name, note: fmt.Sprintf("running in aiq long (%s, %s)", l.AccountID, name)}
 	}
@@ -235,6 +242,13 @@ func resumeNote(w io.Writer, format string, args ...any) {
 
 // resumeSession closes the app and hands the terminal to the resumed CLI.
 func (a *app) resumeSession(s transcript.Session, origins map[string]origin, live liveNote, o resumeOpts) error {
+	if live.native != "" {
+		err := herdr.Attach(live.native)
+		if !errors.Is(err, herdr.ErrEnded) {
+			return err
+		}
+	}
+
 	if live.tmux != "" && tmux.HasSession(live.tmux) {
 		resumeNote(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, live.note)
 		return tmux.Attach(live.tmux)
