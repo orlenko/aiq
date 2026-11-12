@@ -57,9 +57,28 @@ func claudeFiles(ctx context.Context, roots []string, dir string) []Candidate {
 				for _, f := range files {
 					if !seen[f] {
 						seen[f] = true
-						out = append(out, Candidate{"claude", f})
+						out = append(out, Candidate{Provider: "claude", Path: f})
 					}
 				}
+			}
+		}
+	}
+	return out
+}
+
+// claudeByID is <id>.jsonl in each project directory of each root, until
+// ctx ends.
+func claudeByID(ctx context.Context, r Roots, id string) []Candidate {
+	var out []Candidate
+	for _, root := range r.ClaudeProjects {
+		entries, _ := os.ReadDir(root)
+		for _, e := range entries {
+			if ctx.Err() != nil {
+				return out
+			}
+			p := filepath.Join(root, e.Name(), id+".jsonl")
+			if _, err := os.Stat(p); err == nil {
+				out = append(out, Candidate{Provider: "claude", Path: p, Root: root, Account: r.Labels[root]})
 			}
 		}
 	}

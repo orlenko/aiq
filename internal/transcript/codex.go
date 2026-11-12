@@ -50,7 +50,7 @@ func codexFiles(ctx context.Context, roots []string, dir string, since time.Time
 	var out []Candidate
 	for i, p := range all {
 		if match[i] {
-			out = append(out, Candidate{"codex", p})
+			out = append(out, Candidate{Provider: "codex", Path: p})
 		}
 	}
 	return out
