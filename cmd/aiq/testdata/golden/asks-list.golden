@@ -75,5 +75,29 @@ Closed and dismissed
   #5  alpha  claude  30 h ago
       > Old question?
       dismissed
+=== aiq asks list --all, after midnight
+Reading: 3 texts waiting. 2 watched
+Moved today: 0 closed, 0 probably done
+
+Asks
+  #1  alpha  claude  2 h ago
+      > Shall I merge the docs branch?
+
+Warnings
+  #2  beta  claude  3 h ago
+      > The example token is in the log.
+
+Probably done
+  #3  alpha  claude  5 h ago
+      > Run the example check?
+      probably-done (reply)
+
+Closed and dismissed
+  #4  beta  claude  6 h ago
+      > Bump the version?
+      closed (reply)
+  #5  alpha  claude  30 h ago
+      > Old question?
+      dismissed
 === the asks app's live leases
 claude/a in <root>/ws/alpha

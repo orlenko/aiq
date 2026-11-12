@@ -110,8 +110,8 @@ func checkGolden(t *testing.T, name, got string) {
 
 // goldenEnv fixes what the output reads from the process: a UTF-8 locale, which picks
 // the Unicode marks, the palette, the Markdown marks, and a stdout that is not a terminal,
-// so every width aiq reads from it is its fallback. What fn printed on stdout and stderr
-// comes back.
+// so every width aiq reads from it is its fallback. What fn printed on stdout comes
+// back; stderr must stay empty unless a test captures it explicitly.
 func goldenEnv(t *testing.T, fn func()) string {
 	t.Helper()
 	return goldenEnvIn(t, "C.UTF-8", fn)
@@ -119,6 +119,16 @@ func goldenEnv(t *testing.T, fn func()) string {
 
 // goldenEnvIn is goldenEnv with LANG set to lang: "C" picks the ASCII marks.
 func goldenEnvIn(t *testing.T, lang string, fn func()) string {
+	t.Helper()
+	out, diagnostics := goldenStreamsIn(t, lang, fn)
+	if diagnostics != "" {
+		t.Fatalf("unexpected stderr: %q", diagnostics)
+	}
+	return out
+}
+
+// goldenStreamsIn preserves the command's two output streams independently.
+func goldenStreamsIn(t *testing.T, lang string, fn func()) (string, string) {
 	t.Helper()
 	t.Setenv("LC_ALL", "")
 	t.Setenv("LC_CTYPE", "")
@@ -129,8 +139,14 @@ func goldenEnvIn(t *testing.T, lang string, fn func()) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer out.Close()
+	diagnostics, err := os.Create(filepath.Join(t.TempDir(), "err"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer diagnostics.Close()
 	stdout, stderr := os.Stdout, os.Stderr
-	os.Stdout, os.Stderr = out, out
+	os.Stdout, os.Stderr = out, diagnostics
 	func() {
 		defer func() {
 			os.Stdout, os.Stderr = stdout, stderr
@@ -138,12 +154,15 @@ func goldenEnvIn(t *testing.T, lang string, fn func()) string {
 		}()
 		fn()
 	}()
-	out.Close()
 	data, err := os.ReadFile(out.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(data)
+	warnings, err := os.ReadFile(diagnostics.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data), string(warnings)
 }
 
 // goldenAt is a fixture time on the local clock, a year before any run: its local
@@ -506,8 +525,8 @@ func TestGoldenAsksSections(t *testing.T) {
 
 // TestGoldenAsksList is aiq asks list as typed, with and without --here and --all, on a
 // temporary data directory: a key, a watcher's report, and asks in two workspaces, two of
-// them moved today. The clock is the real one, so the watcher's report says no age, and
-// each ask's age is at least half an hour from the next one shown.
+// them moved today. One clock drives both the fixture and each command invocation,
+// including a transition across midnight.
 func TestGoldenAsksList(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -536,7 +555,7 @@ func TestGoldenAsksList(t *testing.T) {
 	if err := reg.EnsureAsks(); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now()
+	now := goldenAt(11, 23, 59, 59)
 	ago := func(d time.Duration) int64 { return now.Add(-d).Unix() }
 	ask := func(ws string, s state.AskState, raised, moved int64, quote string) state.Ask {
 		return state.Ask{Chain: "example", Workspace: ws, Provider: "claude", SessionID: "example-session",
@@ -565,11 +584,19 @@ func TestGoldenAsksList(t *testing.T) {
 	for _, args := range [][]string{{}, {"--all"}, {"--here"}, {"--here", "--all"}} {
 		fmt.Fprintf(&b, "=== %s\n", strings.TrimSpace("aiq asks list "+strings.Join(args, " ")))
 		var runErr error
-		b.WriteString(goldenEnv(t, func() { runErr = cmdAsks(append([]string{"list"}, args...)) }))
+		b.WriteString(goldenEnv(t, func() {
+			runErr = cmdAsksWithClock(append([]string{"list"}, args...), func() time.Time { return now })
+		}))
 		if runErr != nil {
 			fmt.Fprintf(&b, "error: %v\n", runErr)
 		}
 	}
+	b.WriteString("=== aiq asks list --all, after midnight\n")
+	b.WriteString(goldenEnv(t, func() {
+		if err := cmdAsksWithClock([]string{"list", "--all"}, func() time.Time { return now.Add(2 * time.Second) }); err != nil {
+			t.Fatal(err)
+		}
+	}))
 	// The asks app's live sessions: long leases on this host whose process runs.
 	gone := goldenDeadPID(t)
 	if st, err = state.Open(filepath.Join(root, "data", "state.db")); err != nil {
@@ -847,8 +874,8 @@ func TestGoldenResolve(t *testing.T) {
 			call, tgt.provider, tgt.path, tgt.account, tgt.pane, tgt.stale, tgt.id)
 	}
 	t.Chdir(work)
-	got := goldenEnv(t, func() {
-		// Built here, so the transcripts it cannot read are named on the stderr goldenEnv holds.
+	got, warnings := goldenStreamsIn(t, "C.UTF-8", func() {
+		// Build after redirecting stderr so unreadable-transcript warnings retain their stream.
 		r := newConvoResolver(st, defaultRoots())
 		// resolveHere resolves from where aiq convo runs, as cmdConvo reads it.
 		resolveHere := func(o convoOpts) (convoTarget, error) {
@@ -921,8 +948,12 @@ func TestGoldenResolve(t *testing.T) {
 		fmt.Printf("stale 019d0000-0000-7000-8000-0000000000d1: %v\n",
 			r.stale(convoTarget{provider: "codex", path: old, id: "019d0000-0000-7000-8000-0000000000d1"}))
 	})
-	out := strings.ReplaceAll(got, regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(root, "-"), "<root as a project>")
-	checkGolden(t, "resolve.golden", strings.ReplaceAll(out, root, "<root>"))
+	normalize := func(s string) string {
+		s = strings.ReplaceAll(s, regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(root, "-"), "<root as a project>")
+		return strings.ReplaceAll(s, root, "<root>")
+	}
+	checkGolden(t, "resolve.golden", normalize(got))
+	checkGolden(t, "resolve-stderr.golden", normalize(warnings))
 }
 
 // TestGoldenResolveMachine is what aiq convo resolves when the machine says no: through

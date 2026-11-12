@@ -75,6 +75,11 @@ func openAsks() (reg, leases *state.Store, err error) {
 }
 
 func cmdAsks(args []string) error {
+	return cmdAsksWithClock(args, time.Now)
+}
+
+// cmdAsksWithClock reads the list's clock only when its output is collected.
+func cmdAsksWithClock(args []string, now func() time.Time) error {
 	sub := ""
 	if len(args) > 0 {
 		sub, args = args[0], args[1:]
@@ -85,7 +90,7 @@ func cmdAsks(args []string) error {
 	case "dismiss", "restore":
 		return asksSetState(sub, args)
 	case "list":
-		return asksList(args)
+		return asksList(args, now)
 	case "watch":
 		switch {
 		case len(args) == 0:
@@ -386,7 +391,7 @@ func asksCut(s string, n int) string {
 	return s
 }
 
-func asksList(args []string) error {
+func asksList(args []string, now func() time.Time) error {
 	reg, leases, err := openAsks()
 	if err != nil {
 		return err
@@ -399,7 +404,7 @@ func asksList(args []string) error {
 			return err
 		}
 	}
-	return printAsksList(reg, hasFlag(args, "--all"), here)
+	return printAsksListAt(reg, hasFlag(args, "--all"), here, now())
 }
 
 // asksHereDir is the directory --here and the f key filter on. It fails rather than return
@@ -458,7 +463,10 @@ func asksFilter(items []state.Ask, dir string, realPath func(string) string) []s
 }
 
 func printAsksList(reg *state.Store, all bool, here string) error {
-	now := time.Now()
+	return printAsksListAt(reg, all, here, time.Now())
+}
+
+func printAsksListAt(reg *state.Store, all bool, here string, now time.Time) error {
 	items, err := reg.ListAsks("")
 	if err != nil {
 		return err

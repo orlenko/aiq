@@ -30,9 +30,7 @@ resolve in pane %5: provider claude, path <root>/claude/projects/<root as a proj
 stale 019a0000-0000-7000-8000-0000000000a1: false
 stale 019b0000-0000-7000-8000-0000000000b2: false
 stale c0ffee01-0000-4000-8000-000000000001: true
-aiq: could not read transcript "<root>/claude/projects/<root as a project>-work-demo/c0ffee03-0000-4000-8000-000000000003.jsonl"
 id c0ffee01, c0ffee03 unreadable: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee01-0000-4000-8000-000000000001.jsonl, account "", pane "", stale true, id "c0ffee01-0000-4000-8000-000000000001"
-aiq: could not read transcript "<root>/claude/projects/<root as a project>-work-demo/c0ffee03-0000-4000-8000-000000000003.jsonl"
 id c0ffee03, c0ffee03 unreadable: error: no readable session "c0ffee03" in this directory; the transcripts named above could not be read
 --- ended processes and an old transcript
 dir <root>/work/demo: error: 3 live sessions in ~/work/demo; name one:
