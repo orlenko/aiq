@@ -93,8 +93,11 @@ type Cache struct {
 	held       *parsed // an oversized parse not admitted, for the floor
 	quarantine map[string]Snapshot
 	flights    map[string]*flight
-	rows       map[string]*list.Element // by path: *row
-	rowLRU     *list.List
+	changed    chan struct{} // registry changes wake caller-owned admission waits
+	// beforeAdmit is a test barrier after slot acquisition, before installation.
+	beforeAdmit func(path string)
+	rows        map[string]*list.Element // by path: *row
+	rowLRU      *list.List
 	viewState
 
 	stats cacheStats
@@ -123,6 +126,10 @@ type flight struct {
 	done chan struct{}
 	sess *Session
 	err  error
+	// Admission roles are guarded by Cache.mu until terminal publication.
+	full, row bool
+	sum       Summary
+	rowErr    error
 }
 
 type cacheStats struct {
@@ -157,6 +164,7 @@ func newCache(cfg cacheConfig) *Cache {
 		fullLRU:    list.New(),
 		quarantine: map[string]Snapshot{},
 		flights:    map[string]*flight{},
+		changed:    make(chan struct{}),
 		rows:       map[string]*list.Element{},
 		rowLRU:     list.New(),
 		viewState:  newViewState(),
@@ -187,11 +195,21 @@ func (c *Cache) Stats() CacheStats {
 // ErrUnreadable until it changes.
 func (c *Cache) Session(ctx context.Context, path string) (*Session, Snapshot, error) {
 	start := c.now()
+	expires := time.Now().Add(c.cfg.wait)
 	timer := time.NewTimer(c.cfg.wait)
 	defer timer.Stop()
-	preparing := func() (*Session, Snapshot, error) {
+	preparing := func() error {
 		c.stats.preparing.Add(1)
-		return nil, Snapshot{}, &PreparingError{Waited: c.now().Sub(start)}
+		return &PreparingError{Waited: c.now().Sub(start)}
+	}
+	stopped := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !time.Now().Before(expires) {
+			return preparing()
+		}
+		return nil
 	}
 
 	snap, err := Stat(path)
@@ -201,43 +219,77 @@ func (c *Cache) Session(ctx context.Context, path string) (*Session, Snapshot, e
 	if snap.Size > c.cfg.ceiling {
 		return nil, snap, ErrTooLarge
 	}
-	c.mu.Lock()
-	p, f, err := c.findLocked(snap)
-	c.mu.Unlock()
-	if p != nil || err != nil {
-		return sessionOf(p, snap, err)
-	}
-	if f == nil {
+	var f *flight
+	for {
+		c.mu.Lock()
+		p, running, err := c.findLocked(snap)
+		if p != nil || err != nil {
+			c.mu.Unlock()
+			return sessionOf(p, snap, err)
+		}
+		if err := stopped(); err != nil {
+			c.mu.Unlock()
+			return nil, Snapshot{}, err
+		}
+		if running != nil {
+			running.full = true
+			f = running
+			c.mu.Unlock()
+			break
+		}
+		changed := c.changed
+		c.mu.Unlock()
 		select {
 		case c.sem <- struct{}{}:
+		case <-changed:
+			continue
 		case <-timer.C:
-			return preparing()
+			return nil, Snapshot{}, preparing()
 		case <-ctx.Done():
 			return nil, Snapshot{}, ctx.Err()
 		}
+		if c.beforeAdmit != nil {
+			c.beforeAdmit(path)
+		}
 		// Another request may have started or finished the parse meanwhile.
 		c.mu.Lock()
-		p, f, err = c.findLocked(snap)
-		if p == nil && err == nil && f == nil {
-			f = &flight{snap: snap, done: make(chan struct{})}
+		p, running, err = c.findLocked(snap)
+		if p != nil || err != nil {
+			c.mu.Unlock()
+			<-c.sem
+			return sessionOf(p, snap, err)
+		}
+		if err := stopped(); err != nil {
+			c.mu.Unlock()
+			<-c.sem
+			return nil, Snapshot{}, err
+		}
+		if running == nil {
+			f = &flight{snap: snap, done: make(chan struct{}), full: true}
 			c.flights[path] = f
+			c.flightChangedLocked()
 			go c.fly(f) // holds the slot until it ends
 		} else {
+			running.full = true
+			f = running
 			<-c.sem
 		}
 		c.mu.Unlock()
-		if p != nil || err != nil {
-			return sessionOf(p, snap, err)
-		}
+		break
 	}
 	select {
 	case <-f.done:
 		return f.sess, f.snap, f.err
 	case <-timer.C:
-		return preparing()
+		return nil, Snapshot{}, preparing()
 	case <-ctx.Done():
 		return nil, Snapshot{}, ctx.Err()
 	}
+}
+
+func (c *Cache) flightChangedLocked() {
+	close(c.changed)
+	c.changed = make(chan struct{})
 }
 
 func sessionOf(p *parsed, snap Snapshot, err error) (*Session, Snapshot, error) {
@@ -273,22 +325,48 @@ func (c *Cache) findLocked(snap Snapshot) (*parsed, *flight, error) {
 // fly runs f's parse on the slot its request took, and always completes f:
 // a result or an error, done closed, the record gone, the slot freed.
 func (c *Cache) fly(f *flight) {
+	var s *Session
+	var err error
 	defer func() {
-		c.mu.Lock()
-		delete(c.flights, f.snap.Path)
-		c.mu.Unlock()
-		close(f.done)
-		<-c.sem
+		if recover() != nil {
+			s, err = nil, &unreadableError{f.snap.Path}
+		}
+		c.finishFlight(f, s, err)
 	}()
-	s, err := c.runParse(f.snap)
-	if err != nil {
-		f.err = err
-		return
-	}
+	s, err = c.runParse(f.snap)
+}
+
+// finishFlight owns terminal publication. Roles cannot join between capturing
+// them and retiring the record; cleanup runs even if cache publication panics.
+func (c *Cache) finishFlight(f *flight, s *Session, err error) {
 	c.mu.Lock()
-	c.admitLocked(f.snap, s)
-	c.mu.Unlock()
-	f.sess = s
+	defer func() {
+		delete(c.flights, f.snap.Path)
+		close(f.done)
+		c.flightChangedLocked()
+		<-c.sem
+		c.mu.Unlock()
+	}()
+	rowDone := false
+	defer func() {
+		if recover() != nil {
+			f.sess, f.err = nil, &unreadableError{f.snap.Path}
+			if !rowDone {
+				f.sum, f.rowErr = Summary{}, f.err
+			}
+		}
+	}()
+	f.sess, f.err = s, err
+	if f.row {
+		f.sum, f.rowErr = c.cacheSummaryLocked(f.snap, s, err)
+		rowDone = true
+	}
+	if f.full && err == nil {
+		c.admitLocked(f.snap, s)
+	}
+	if !f.full {
+		f.sess = nil // a pure list never retains a directory of full sessions
+	}
 }
 
 // runParse parses the file of snap on a slot the caller holds. A parse that
@@ -404,69 +482,81 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 	if snap.Size > c.cfg.ceiling {
 		return Summary{}, ErrTooLarge
 	}
-	c.mu.Lock()
-	sum, err, ok := c.rowLocked(snap)
-	c.mu.Unlock()
-	if ok {
+	var f *flight
+	for {
+		c.mu.Lock()
+		sum, err, ok := c.rowLocked(snap)
 		if ctx.Err() != nil {
+			c.mu.Unlock()
 			return Summary{}, ErrBudget
 		}
-		return sum, err
+		if ok {
+			c.mu.Unlock()
+			return sum, err
+		}
+		if running := c.flights[path]; running != nil {
+			running.row = true
+			f = running
+			c.mu.Unlock()
+			break
+		}
+		changed := c.changed
+		c.mu.Unlock()
+		select {
+		case c.sem <- struct{}{}:
+		case <-changed:
+			continue
+		case <-ctx.Done():
+			return Summary{}, ErrBudget
+		}
+		if c.beforeAdmit != nil {
+			c.beforeAdmit(path)
+		}
+		c.mu.Lock()
+		sum, err, ok = c.rowLocked(snap)
+		if ctx.Err() != nil {
+			c.mu.Unlock()
+			<-c.sem
+			return Summary{}, ErrBudget
+		}
+		if ok {
+			c.mu.Unlock()
+			<-c.sem
+			return sum, err
+		}
+		if running := c.flights[path]; running != nil {
+			running.row = true
+			f = running
+			<-c.sem
+		} else {
+			f = &flight{snap: snap, done: make(chan struct{}), row: true}
+			c.flights[path] = f
+			c.flightChangedLocked()
+			go c.fly(f)
+		}
+		c.mu.Unlock()
+		break
 	}
 	select {
-	case c.sem <- struct{}{}:
 	case <-ctx.Done():
 		return Summary{}, ErrBudget
-	}
-	if ctx.Err() != nil {
-		<-c.sem
-		return Summary{}, ErrBudget
-	}
-	c.mu.Lock()
-	sum, err, ok = c.rowLocked(snap)
-	c.mu.Unlock()
-	if ok {
-		<-c.sem
+	case <-f.done:
 		if ctx.Err() != nil {
 			return Summary{}, ErrBudget
 		}
-		return sum, err
-	}
-	if ctx.Err() != nil {
-		<-c.sem
-		return Summary{}, ErrBudget
-	}
-	type result struct {
-		sum Summary
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		defer func() { <-c.sem }()
-		sum, err := c.fillSummary(snap)
-		done <- result{sum, err}
-	}()
-	select {
-	case <-ctx.Done():
-		return Summary{}, ErrBudget
-	case r := <-done:
-		if ctx.Err() != nil {
-			return Summary{}, ErrBudget
-		}
-		return r.sum, r.err
+		return f.sum, f.rowErr
 	}
 }
 
-// fillSummary completes already-admitted work without retaining the waiter's context.
-func (c *Cache) fillSummary(snap Snapshot) (sum Summary, err error) {
+// cacheSummaryLocked publishes a row without changing the parser's outcome.
+// A row-publication failure must not quarantine a healthy parse or poison a
+// detail waiter sharing that parse. The caller holds mu throughout publication.
+func (c *Cache) cacheSummaryLocked(snap Snapshot, s *Session, err error) (sum Summary, rowErr error) {
 	defer func() {
 		if recover() != nil {
-			// runParse alone quarantines parser failures. A failure after parsing
-			// retains ListWith's sanitized error without changing that policy.
-			sum, err = Summary{}, &unreadableError{snap.Path}
+			sum, rowErr = Summary{}, &unreadableError{snap.Path}
 		}
 	}()
-	s, err := c.runParse(snap)
 	if err != nil && !errors.Is(err, errNoSession) {
 		return Summary{}, err
 	}
@@ -474,8 +564,6 @@ func (c *Cache) fillSummary(snap Snapshot) (sum Summary, err error) {
 	if s != nil {
 		r.sum = Summarize(s)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.putRowLocked(r)
 	return r.sum, r.err
 }
@@ -493,9 +581,8 @@ func (c *Cache) rowLocked(snap Snapshot) (Summary, error, bool) {
 	}
 	if el := c.full[snap.Path]; el != nil {
 		if p := el.Value.(*parsed); p.snap == snap {
-			r := &row{snap: snap, sum: Summarize(p.sess)}
-			c.putRowLocked(r)
-			return r.sum, nil, true
+			sum, err := c.cacheSummaryLocked(snap, p.sess, nil)
+			return sum, err, true
 		}
 	}
 	return Summary{}, nil, false
