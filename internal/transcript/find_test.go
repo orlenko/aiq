@@ -241,3 +241,29 @@ func TestIndexFindFollowsANewerClaudeCopy(t *testing.T) {
 		t.Errorf("after one TTL: %+v", hit)
 	}
 }
+
+// A remembered Codex lookup is forgotten as soon as the next scan
+// completes, before its TTL is out.
+func TestIndexFindForgetsOnANewScan(t *testing.T) {
+	r, _ := findFixture(t)
+	x, clk := testIndex(r)
+	name := "rollout-2026-09-15T21-08-05-" + idA + ".jsonl"
+	first := filepath.Join(r.CodexSessions[0], "2026", "09", "15", name)
+	writeLines(t, first, codexFixture("/w", idA)...)
+	setMtime(t, first, t0)
+	x.Find(context.Background(), "codex", idA, ParseSummary)
+	newer := filepath.Join(r.CodexSessions[1], "2026", "09", "16", name)
+	writeLines(t, newer, codexFixture("/w", idA)...)
+	setMtime(t, newer, t0.Add(time.Hour))
+	clk.Add(DiscoveryTTL)
+	// Past the TTL: answered from the last scan, remembered, and a scan
+	// started.
+	if hit, _ := x.Find(context.Background(), "codex", idA, ParseSummary); hit.Path != first {
+		t.Fatalf("past the TTL: %+v", hit)
+	}
+	waitWalk(t, x, 2)
+	clk.Add(time.Second)
+	if hit, _ := x.Find(context.Background(), "codex", idA, ParseSummary); hit.Path != newer {
+		t.Errorf("after the next scan completed: %+v, want the newer copy", hit)
+	}
+}
