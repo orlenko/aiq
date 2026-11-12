@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,36 +50,45 @@ func Stat(path string) (Snapshot, error) {
 
 // cacheConfig holds a Cache's bounds; tests shrink them.
 type cacheConfig struct {
-	parseBytes int64         // estimated bytes the full parses may hold
-	parseCount int           // full parses kept
-	rowCount   int           // list rows kept
-	viewBytes  int64         // estimated bytes the built views may hold
-	viewCount  int           // views and ETag records kept
-	ceiling    int64         // the largest file parsed
-	floor      time.Duration // the shortest time between two parses of a file
-	wait       time.Duration // how long a request waits for a parse
-	width      int           // parses at once
+	parseBytes      int64         // estimated bytes the full parses may hold
+	parseCount      int           // full parses kept
+	rowCount        int           // list rows kept
+	rowBytes        int64         // estimated bytes the list rows may hold
+	quarantineCount int           // parser failures kept
+	viewBytes       int64         // estimated bytes the built views may hold
+	viewCount       int           // views and ETag records kept
+	viewFailures    int           // renderer failures kept
+	viewWidth       int           // view builders at once
+	ceiling         int64         // the largest file parsed
+	floor           time.Duration // the shortest time between two parses of a file
+	wait            time.Duration // how long a request waits for a parse
+	width           int           // parses at once
 }
 
 // The bounds until real-workload figures set them.
 var defaultCacheConfig = cacheConfig{
-	parseBytes: 64 << 20,
-	parseCount: 32,
-	rowCount:   4096,
-	viewBytes:  16 << 20,
-	viewCount:  64,
-	ceiling:    128 << 20,
-	floor:      2 * time.Second,
-	wait:       5 * time.Second,
-	width:      2,
+	parseBytes:      64 << 20,
+	parseCount:      32,
+	rowCount:        4096,
+	rowBytes:        16 << 20,
+	quarantineCount: 4096,
+	viewBytes:       16 << 20,
+	viewCount:       64,
+	viewFailures:    64,
+	viewWidth:       2,
+	ceiling:         128 << 20,
+	floor:           2 * time.Second,
+	wait:            5 * time.Second,
+	width:           2,
 }
 
 // Cache is the navigator's way to transcripts. Every parse goes through its
 // entry: the parse holds one of a few slots shared by the whole process,
 // runs the recovering parser and is keyed by the snapshot taken before it
 // opened the file; a snapshot whose parse panicked is not parsed again until
-// the file changes. It keeps full parses, list rows and built views, each
-// bounded. Cached sessions are shared: whoever reads one copies what it
+// the file changes or its bounded failure record is evicted. It keeps full
+// parses, list rows and built views, each bounded. Cached sessions are shared:
+// whoever reads one copies what it
 // changes.
 type Cache struct {
 	cfg   cacheConfig
@@ -86,18 +96,21 @@ type Cache struct {
 	now   func() time.Time
 	parse func(path string) (*Session, error) // optional fixture override; nil uses boundedParse
 
-	mu         sync.Mutex
-	full       map[string]*list.Element // by path, the newest parse: *parsed
-	fullLRU    *list.List
-	fullBytes  int64
-	held       *parsed // an oversized parse not admitted, for the floor
-	quarantine map[string]Snapshot
-	flights    map[string]*flight
-	changed    chan struct{} // registry changes wake caller-owned admission waits
+	mu              sync.Mutex
+	full            map[string]*list.Element // by path, the newest parse: *parsed
+	fullLRU         *list.List
+	fullBytes       int64
+	held            *parsed // an oversized parse not admitted, for the floor
+	quarantine      map[string]Snapshot
+	quarantineLRU   *list.List // Snapshot, newest first
+	quarantineNodes map[string]*list.Element
+	flights         map[string]*flight
+	changed         chan struct{} // registry changes wake caller-owned admission waits
 	// beforeAdmit is a test barrier after slot acquisition, before installation.
 	beforeAdmit func(path string)
 	rows        map[string]*list.Element // by path: *row
 	rowLRU      *list.List
+	rowBytes    int64
 	viewState
 
 	stats cacheStats
@@ -114,9 +127,10 @@ type parsed struct {
 
 // row is one list row, or the parse that found no session.
 type row struct {
-	snap Snapshot
-	sum  Summary
-	err  error
+	snap  Snapshot
+	sum   Summary
+	err   error
+	bytes int64
 }
 
 // flight is a parse running for one file, detached from the requests that
@@ -147,6 +161,11 @@ type CacheStats struct {
 	Parsed         int   // full parses kept
 	ParsedBytes    int64 // their estimated size
 	Rows           int   // list rows kept
+	RowBytes       int64 // their estimated size
+	Quarantined    int   // parser failure records kept
+	FailedViews    int   // renderer failure records kept
+	ViewOwners     int   // referenced view path incarnations
+	BuildingViews  int   // admitted view builders
 	Views          int   // views and ETag records kept
 	ViewBytes      int64 // the views' estimated size
 }
@@ -156,17 +175,19 @@ func NewCache() *Cache { return newCache(defaultCacheConfig) }
 
 func newCache(cfg cacheConfig) *Cache {
 	return &Cache{
-		cfg:        cfg,
-		sem:        make(chan struct{}, cfg.width),
-		now:        time.Now,
-		full:       map[string]*list.Element{},
-		fullLRU:    list.New(),
-		quarantine: map[string]Snapshot{},
-		flights:    map[string]*flight{},
-		changed:    make(chan struct{}),
-		rows:       map[string]*list.Element{},
-		rowLRU:     list.New(),
-		viewState:  newViewState(),
+		cfg:             cfg,
+		sem:             make(chan struct{}, cfg.width),
+		now:             time.Now,
+		full:            map[string]*list.Element{},
+		fullLRU:         list.New(),
+		quarantine:      map[string]Snapshot{},
+		quarantineLRU:   list.New(),
+		quarantineNodes: map[string]*list.Element{},
+		flights:         map[string]*flight{},
+		changed:         make(chan struct{}),
+		rows:            map[string]*list.Element{},
+		rowLRU:          list.New(),
+		viewState:       newViewState(cfg.viewWidth),
 	}
 }
 
@@ -179,6 +200,8 @@ func (c *Cache) Stats() CacheStats {
 		ViewBuilds: c.stats.viewBuilds.Load(), OversizedViews: c.stats.oversizedViews.Load(),
 		ViewTime: time.Duration(c.stats.viewNanos.Load()),
 		Parsed:   c.fullLRU.Len(), ParsedBytes: c.fullBytes, Rows: c.rowLRU.Len(),
+		RowBytes: c.rowBytes, Quarantined: len(c.quarantine),
+		FailedViews: len(c.broken), ViewOwners: len(c.viewOwners), BuildingViews: len(c.building),
 		Views: c.viewLRU.Len(), ViewBytes: c.viewBytes,
 	}
 }
@@ -191,7 +214,7 @@ func (c *Cache) Stats() CacheStats {
 // leaves the parse to finish and be cached. Within the reparse floor a
 // request gets the file's last parse, whatever its snapshot. A file over the
 // ceiling answers ErrTooLarge without a parse, one whose parse panicked
-// ErrUnreadable until it changes.
+// ErrUnreadable until it changes or its failure record is evicted.
 func (c *Cache) Session(ctx context.Context, path string) (*Session, Snapshot, error) {
 	start := c.now()
 	expires := time.Now().Add(c.cfg.wait)
@@ -302,11 +325,8 @@ func sessionOf(p *parsed, snap Snapshot, err error) (*Session, Snapshot, error) 
 // cached parse (of this snapshot, or any within the floor), or the parse in
 // flight.
 func (c *Cache) findLocked(snap Snapshot) (*parsed, *flight, error) {
-	if q, ok := c.quarantine[snap.Path]; ok {
-		if q == snap {
-			return nil, nil, &unreadableError{snap.Path}
-		}
-		delete(c.quarantine, snap.Path)
+	if c.quarantinedLocked(snap) {
+		return nil, nil, &unreadableError{snap.Path}
 	}
 	if el := c.full[snap.Path]; el != nil {
 		p := el.Value.(*parsed)
@@ -396,15 +416,45 @@ func (c *Cache) runParse(snap Snapshot) (s *Session, err error) {
 
 func (c *Cache) quarantined(snap Snapshot) error {
 	c.mu.Lock()
-	c.quarantine[snap.Path] = snap
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	if !c.quarantinedLocked(snap) && c.cfg.quarantineCount > 0 {
+		snap.Path = strings.Clone(snap.Path)
+		c.quarantine[snap.Path] = snap
+		c.quarantineNodes[snap.Path] = c.quarantineLRU.PushFront(snap)
+	}
+	for c.quarantineLRU.Len() > c.cfg.quarantineCount && c.quarantineLRU.Len() > 0 {
+		c.removeQuarantineLocked(c.quarantineLRU.Back().Value.(Snapshot).Path)
+	}
 	return &unreadableError{snap.Path}
+}
+
+// quarantinedLocked touches an exact failure, retiring a changed snapshot.
+// Both list and detail lookups must maintain these same indexes.
+func (c *Cache) quarantinedLocked(snap Snapshot) bool {
+	q, ok := c.quarantine[snap.Path]
+	if !ok {
+		return false
+	}
+	if q != snap {
+		c.removeQuarantineLocked(snap.Path)
+		return false
+	}
+	c.quarantineLRU.MoveToFront(c.quarantineNodes[snap.Path])
+	return true
+}
+
+func (c *Cache) removeQuarantineLocked(path string) {
+	c.quarantineLRU.Remove(c.quarantineNodes[path])
+	delete(c.quarantineNodes, path)
+	delete(c.quarantine, path)
 }
 
 // heldLocked is the oversized parse held for the floor, while the floor lasts.
 func (c *Cache) heldLocked() *parsed {
 	if c.held != nil && c.now().Sub(c.held.at) >= c.cfg.floor {
+		path := c.held.snap.Path
 		c.held = nil
+		c.dropViewsLocked(path)
 	}
 	return c.held
 }
@@ -415,14 +465,22 @@ func (c *Cache) heldLocked() *parsed {
 // against the budget while held.
 func (c *Cache) admitLocked(snap Snapshot, s *Session) {
 	p := &parsed{snap: snap, sess: s, bytes: sessionBytes(s), at: c.now()}
+	h := c.heldLocked()
+	// Even an equal snapshot can be a new parse incarnation. Do this after
+	// fallible accounting/timing, before replacing any authoritative parse.
+	c.dropViewsLocked(snap.Path)
 	p.oversized = p.bytes > c.cfg.parseBytes
-	if h := c.heldLocked(); h != nil && h.snap.Path == snap.Path {
+	if h != nil && h.snap.Path == snap.Path {
 		c.held = nil
 	}
 	if p.oversized {
 		for el := c.fullLRU.Front(); el != nil; el = el.Next() {
 			if q := el.Value.(*parsed); q.oversized && q.snap.Path != snap.Path {
 				c.removeFullLocked(snap.Path)
+				if h := c.held; h != nil {
+					c.held = nil
+					c.dropViewsLocked(h.snap.Path)
+				}
 				c.held = p
 				c.stats.holds.Add(1)
 				c.evictFullLocked()
@@ -576,7 +634,7 @@ func (c *Cache) cacheSummaryLocked(snap Snapshot, s *Session, err error) (sum Su
 
 // rowLocked answers snap's row without a parse, if it can.
 func (c *Cache) rowLocked(snap Snapshot) (Summary, error, bool) {
-	if q, ok := c.quarantine[snap.Path]; ok && q == snap {
+	if c.quarantinedLocked(snap) {
 		return Summary{}, &unreadableError{snap.Path}, true
 	}
 	if el := c.rows[snap.Path]; el != nil {
@@ -595,17 +653,61 @@ func (c *Cache) rowLocked(snap Snapshot) (Summary, error, bool) {
 }
 
 func (c *Cache) putRowLocked(r *row) {
-	if el := c.rows[r.snap.Path]; el != nil {
-		el.Value = r
-		c.rowLRU.MoveToFront(el)
+	n := estimateRowBytes(r)
+	if n > c.cfg.rowBytes {
+		c.removeRowLocked(r.snap.Path)
+		return // return the complete row to the caller without retaining a copy
+	}
+	owned := *r
+	owned.bytes = n
+	owned.snap.Path = strings.Clone(r.snap.Path)
+	if r.sum.Path == r.snap.Path {
+		owned.sum.Path = owned.snap.Path
 	} else {
-		c.rows[r.snap.Path] = c.rowLRU.PushFront(r)
+		owned.sum.Path = strings.Clone(r.sum.Path)
 	}
-	for c.rowLRU.Len() > c.cfg.rowCount {
+	owned.sum.Provider = strings.Clone(r.sum.Provider)
+	owned.sum.ID = strings.Clone(r.sum.ID)
+	owned.sum.Cwd = strings.Clone(r.sum.Cwd)
+	owned.sum.Label = strings.Clone(r.sum.Label)
+	owned.sum.Title = strings.Clone(r.sum.Title)
+	owned.sum.Model = strings.Clone(r.sum.Model)
+	owned.sum.Branch = strings.Clone(r.sum.Branch)
+	// Delete before reinserting: assigning an equal map key may retain the
+	// old key's backing allocation, even when the new row owns its strings.
+	c.removeRowLocked(r.snap.Path)
+	c.rows[owned.snap.Path] = c.rowLRU.PushFront(&owned)
+	c.rowBytes += n
+	for c.rowLRU.Len() > c.cfg.rowCount || c.rowBytes > c.cfg.rowBytes {
 		back := c.rowLRU.Back()
-		delete(c.rows, back.Value.(*row).snap.Path)
-		c.rowLRU.Remove(back)
+		if back == nil {
+			// Preserve the supported negative-count publication fault seam,
+			// after all retained rows and their bytes have been removed.
+			panic("transcript: invalid row limit")
+		}
+		c.removeRowLocked(back.Value.(*row).snap.Path)
 	}
+}
+
+func (c *Cache) removeRowLocked(path string) {
+	if el := c.rows[path]; el != nil {
+		c.rowBytes -= el.Value.(*row).bytes
+		c.rowLRU.Remove(el)
+		delete(c.rows, path)
+	}
+}
+
+// estimateRowBytes includes conservative row/list/map overhead and owned
+// UTF-8 string bytes. Snapshot.Path, its map key and an equal Summary.Path
+// share one allocation. Estimate before cloning, including negative rows.
+func estimateRowBytes(r *row) int64 {
+	n := int64(512) + int64(len(r.snap.Path))
+	if r.sum.Path != r.snap.Path {
+		n += int64(len(r.sum.Path))
+	}
+	return n + int64(len(r.sum.Provider)) + int64(len(r.sum.ID)) +
+		int64(len(r.sum.Cwd)) + int64(len(r.sum.Label)) +
+		int64(len(r.sum.Title)) + int64(len(r.sum.Model)) + int64(len(r.sum.Branch))
 }
 
 // sessionBytes estimates what a parse holds: its text, and a fixed cost for

@@ -428,7 +428,7 @@ func TestNavSoak(t *testing.T) {
 			return "", false
 		}
 		if fromKey != "" {
-			c.NoteDelta(k, fromKey, v.ETag+"/"+fromKey)
+			c.NoteDelta(k, v, fromKey, v.ETag+"/"+fromKey)
 			return v.ETag + "/" + fromKey, false
 		}
 		return v.ETag, false

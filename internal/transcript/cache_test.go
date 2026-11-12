@@ -490,8 +490,8 @@ func TestCacheConcurrentUse(t *testing.T) {
 					continue
 				}
 				k := ViewKey{Snap: snap, Last: i % 3, Markup: g%2 == 0}
-				c.View(k, func() (*View, error) { return &View{ETag: "e", Bytes: 100, Settled: true}, nil })
-				c.NoteDelta(k, fmt.Sprint(i), "d")
+				v, _ := c.View(k, func() (*View, error) { return &View{ETag: "e", Bytes: 100, Settled: true}, nil })
+				c.NoteDelta(k, v, fmt.Sprint(i), "d")
 				c.NotModified(k, "", "e")
 			}
 		}()

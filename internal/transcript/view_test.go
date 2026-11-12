@@ -40,16 +40,19 @@ func TestViewTwoFollowersOneBuild(t *testing.T) {
 	c, _ := testCache(t, &fakeParse{}, nil)
 	k := ViewKey{Snap: viewFixture(t, c), Last: 50, Markup: true}
 	b := &viewBuilder{bytes: 100, settled: true}
+	var producer *View
 	for i := 0; i < 2; i++ {
-		if v, err := c.View(k, b.build("full")); err != nil || v.ETag != "full" {
+		v, err := c.View(k, b.build("full"))
+		if err != nil || v.ETag != "full" {
 			t.Fatal(v, err)
 		}
+		producer = v
 	}
 	if b.n.Load() != 1 {
 		t.Errorf("%d builds for two followers", b.n.Load())
 	}
-	c.NoteDelta(k, "k1", "d1")
-	c.NoteDelta(k, "k2", "d2")
+	c.NoteDelta(k, producer, "k1", "d1")
+	c.NoteDelta(k, producer, "k2", "d2")
 	switch {
 	case !c.NotModified(k, "k1", "d1") || !c.NotModified(k, "k2", "d2"):
 		t.Error("a follower's own delta ETag did not answer from a stat")
@@ -59,7 +62,7 @@ func TestViewTwoFollowersOneBuild(t *testing.T) {
 		t.Error("the full window's ETag was not the one compared")
 	}
 	for i := 0; i < maxDeltas+2; i++ {
-		c.NoteDelta(k, fmt.Sprint("n", i), "x")
+		c.NoteDelta(k, producer, fmt.Sprint("n", i), "x")
 	}
 	if c.NotModified(k, "k1", "d1") {
 		t.Errorf("more than %d delta ETags kept", maxDeltas)
@@ -126,8 +129,11 @@ func TestViewOversizedHeldWithItsRecord(t *testing.T) {
 
 	settled := ViewKey{Snap: snap, Last: 10000, Markup: true}
 	sb := &viewBuilder{bytes: 5000, settled: true}
-	c.View(settled, sb.build("s"))
-	c.NoteDelta(settled, "k", "ds")
+	producer, err := c.View(settled, sb.build("s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.NoteDelta(settled, producer, "k", "ds")
 	clk.Add(2 * time.Second)
 	if !c.NotModified(settled, "", "s") || !c.NotModified(settled, "k", "ds") {
 		t.Error("a settled oversized view did not answer from its ETag record")
