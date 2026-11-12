@@ -22,11 +22,12 @@ const retireWrite = time.Second
 // aLongTimeAgo is a read deadline that has already passed.
 var aLongTimeAgo = time.Unix(1, 0)
 
-// connSlots is one count of open connections shared by the daemon's listeners. When
+// connSlots is one count of admitted connections shared by the daemon's listeners. When
 // every slot is taken, a new connection makes room by retiring the connection that
 // has gone longest without a request being answered, unless it is inside a handler.
 // When every connection is inside a handler, the new one waits until a handler ends
 // or a connection closes.
+// Each HTTP server may also hold one accepted connection waiting outside this count.
 type connSlots struct {
 	max int
 	// now is the log's clock, and logf where the log goes.
