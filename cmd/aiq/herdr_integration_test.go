@@ -74,6 +74,8 @@ printf 'FAKE ARGS'; printf ' <%s>' "$@"; printf '\n'
 while IFS= read -r line; do
  case "$line" in
   quit) exit 0;;
+  busy) hook userpromptsubmit; printf 'FAKE BUSY\n';;
+  idle) hook stop; printf 'FAKE IDLE\n';;
   *) hook userpromptsubmit; printf 'FAKE ANSWER\n'; hook stop;;
  esac
 done
@@ -172,7 +174,7 @@ done
 	tick()
 	text := waitFakeText(t, started.Address, "FAKE READY claude/fiction-b")
 	second := nativeLease(t, st)
-	if second.Pane != first.Pane || second.PID == first.PID || second.SessionID != first.SessionID || second.TakeoverOf != first.ID {
+	if !sameNativeFamily(second.Pane, first.Pane) || second.Pane == first.Pane || second.PID == first.PID || second.SessionID != first.SessionID || second.TakeoverOf != first.ID {
 		t.Fatalf("same-provider rollover lost identity: before=%+v after=%+v", first, second)
 	}
 	if !strings.Contains(text, "<--resume> <"+first.SessionID+">") {
@@ -182,7 +184,7 @@ done
 	tick()
 	text = waitFakeText(t, started.Address, "FAKE READY codex/fiction-c")
 	third := nativeLease(t, st)
-	if third.Provider != "codex" || third.Pane != first.Pane || third.SessionID == first.SessionID || third.TakeoverOf != second.ID {
+	if third.Provider != "codex" || !sameNativeFamily(third.Pane, first.Pane) || third.Pane == second.Pane || third.SessionID == first.SessionID || third.TakeoverOf != second.ID {
 		t.Fatalf("provider rollover lost chain: %+v", third)
 	}
 	if !strings.Contains(text, "from a claude session") {
@@ -193,7 +195,7 @@ done
 	tick()
 	text = waitFakeText(t, started.Address, "FAKE READY codex/fiction-d")
 	fourth := nativeLease(t, st)
-	if fourth.Pane != first.Pane || fourth.SessionID != third.SessionID || !strings.Contains(text, "<resume> <"+third.SessionID+">") {
+	if !sameNativeFamily(fourth.Pane, first.Pane) || fourth.Pane == third.Pane || fourth.SessionID != third.SessionID || !strings.Contains(text, "<resume> <"+third.SessionID+">") {
 		t.Fatal("Codex rollover did not keep terminal and conversation")
 	}
 	// Following resolves the stable terminal across the transcript gap and
@@ -213,17 +215,43 @@ done
 	if r.Core.Terminal != started.Address || r.Generation != 4 {
 		t.Fatalf("rollovers replaced terminal: %+v", r)
 	}
+	sendFakeLine(t, started.Address, "busy")
+	waitFakeText(t, started.Address, "FAKE BUSY")
 	// An intentionally missing lease is reconstructed from its immutable
 	// launch and saved fallback, even after the current config changes.
 	st.ForLease(fourth, 0).ReleaseLease(fourth.ID)
 	cfg.Long.Fallback = []string{"agy"}
+	cfg.Long.IdleGraceSeconds = 1
 	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	tick()
 	adopted := nativeLease(t, st)
-	if adopted.PID != fourth.PID || adopted.Fallback != fourth.Fallback || adopted.SessionID != fourth.SessionID {
+	if adopted.PID != fourth.PID || adopted.Fallback != fourth.Fallback || adopted.SessionID != fourth.SessionID || !adopted.InTurn() {
 		t.Fatalf("native adoption lost session policy: %+v", adopted)
+	}
+	// A healthy fallback exists, but the adopted turn must prevent idle takeover.
+	setFakeUsage(t, st, "claude/fiction-b", 10)
+	setFakeUsage(t, st, adopted.AccountID, 97)
+	tick()
+	dbTurn, err := sql.Open("sqlite", paths.StateDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbTurn.Exec("UPDATE leases SET drain_at = ? WHERE id = ?", time.Now().Add(-time.Minute).Unix(), adopted.ID); err != nil {
+		t.Fatal(err)
+	}
+	dbTurn.Close()
+	tick()
+	busy := nativeLease(t, st)
+	if busy.Pane != adopted.Pane || !busy.InTurn() {
+		t.Fatalf("adopted turn was cut off: %+v", busy)
+	}
+	sendFakeLine(t, started.Address, "idle")
+	waitFakeText(t, started.Address, "FAKE IDLE")
+	idle, err := st.GetLease(adopted.ID)
+	if err != nil || idle.InTurn() {
+		t.Fatalf("genuine stop did not clear adopted turn: %+v %v", idle, err)
 	}
 	if err := herdr.Stop(adopted.Pane, adopted.PID); err != nil {
 		t.Fatal(err)
@@ -348,4 +376,18 @@ func TestNativeSupervisorFixture(t *testing.T) {
 	sup.Tick()
 	st.Close()
 	os.Exit(0)
+}
+
+func sameNativeFamily(a, b string) bool {
+	fa, _, ea := herdr.ParseRef(a)
+	fb, _, eb := herdr.ParseRef(b)
+	return ea == nil && eb == nil && fa == fb
+}
+
+func sendFakeLine(t *testing.T, address, line string) {
+	t.Helper()
+	var result json.RawMessage
+	if err := fixtureRPC("terminal.send", map[string]any{"terminal": address, "text": line}, &result); err != nil {
+		t.Fatal(err)
+	}
 }

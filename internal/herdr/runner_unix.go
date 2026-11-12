@@ -170,7 +170,7 @@ func Run(o Options) (int, error) {
 				continue
 			}
 			if in.method != "info" && (q.PID != s.r.PID || q.Generation != s.r.Generation) {
-				out.Error = "stale Herdr child generation"
+				out.Error = ErrGenerationChanged.Error()
 				in.reply <- out
 				continue
 			}
@@ -194,7 +194,7 @@ func Run(o Options) (int, error) {
 				}
 				h := *q.Hook
 				h.LaunchID = s.r.LaunchID
-				h.Ref = s.r.Ref
+				h.Ref = s.r.Target()
 				out.Output = s.options.Hook(s.r.PID, s.r.Generation, h)
 				state := ""
 				switch q.Hook.Event {
@@ -227,6 +227,28 @@ func Run(o Options) (int, error) {
 				if err := s.validCommand(q.Dir, q.Args); err != nil {
 					out.Error = err.Error()
 					break
+				}
+				// A queued request cannot revive a child whose ordinary exit
+				// already happened, even if the wait observer has not run yet.
+				live, err := s.replacementLive()
+				if err != nil {
+					s.r.State = "lost"
+					save(s.r)
+					out.Error = err.Error()
+					break
+				}
+				if !live {
+					code, err := s.stopChild()
+					if err != nil {
+						s.r.State = "lost"
+						save(s.r)
+						out.Error = err.Error()
+						break
+					}
+					finish()
+					out.Record, out.Error = s.r, ErrEnded.Error()
+					in.reply <- out
+					return code, nil
 				}
 				s.r.State = "replacing"
 				s.r.PreviousPID = s.r.PID
@@ -406,7 +428,27 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 
+// replacementLive is the acceptance boundary: an observed exit is final,
+// and a positive leader snapshot also covers delayed observer scheduling.
+func (s *session) replacementLive() (bool, error) {
+	select {
+	case err := <-s.exited:
+		if err != nil {
+			return false, errors.New("Herdr child exit observation is uncertain")
+		}
+		return false, nil
+	default:
+	}
+	_, leader, err := groupSnapshot(s.r.PID)
+	return leader, err
+}
+
 func groupActive(pgid int) (bool, error) {
+	active, _, err := groupSnapshot(pgid)
+	return active, err
+}
+
+func groupSnapshot(pgid int) (active, leader bool, err error) {
 	// Only IDs and state are read; command lines/environments are not inspected.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -416,7 +458,7 @@ func groupActive(pgid int) (bool, error) {
 	cmd.Stdout = &out
 	cmd.WaitDelay = time.Second
 	if err := cmd.Run(); err != nil {
-		return false, errors.New("cannot establish Herdr child group cleanup")
+		return false, false, errors.New("cannot establish Herdr child group cleanup")
 	}
 	for _, line := range strings.Split(out.String(), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -424,17 +466,20 @@ func groupActive(pgid int) (bool, error) {
 		}
 		f := strings.Fields(line)
 		if len(f) != 3 {
-			return false, errors.New("invalid process group snapshot")
+			return false, false, errors.New("invalid process group snapshot")
 		}
 		g, err := strconv.Atoi(f[1])
 		if err != nil {
-			return false, errors.New("invalid process group snapshot")
+			return false, false, errors.New("invalid process group snapshot")
 		}
-		if g == pgid && !strings.HasPrefix(f[2], "Z") {
-			return true, nil
+		if g == pgid && !strings.HasPrefix(f[2], "Z") && !strings.HasPrefix(f[2], "X") {
+			active = true
+			if f[0] == strconv.Itoa(pgid) {
+				leader = true
+			}
 		}
 	}
-	return false, nil
+	return active, leader, nil
 }
 
 // Reclaim only after positive absence evidence, under the workspace startup

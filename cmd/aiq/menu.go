@@ -738,7 +738,11 @@ func (a *app) menuEnvironment(dir string) *menuEnv {
 		if leases, err := a.longLeases(); err == nil {
 			for _, l := range leases {
 				if l.Workspace == ws {
-					e.longHere = l.AccountID
+					if !owned {
+						e.longHere = l.AccountID
+					} else if nativeErr == nil && native.State == "running" && native.Target() == l.Pane {
+						e.longHere += " · " + l.AccountID
+					}
 				}
 			}
 		}

@@ -453,7 +453,7 @@ func (s *Supervisor) show(l state.Lease, label, line string, now time.Time) {
 	}
 	k := shown{l.ID, l.StartedAt, l.PID, l.Pane}
 	if last, ok := s.lines[k]; !ok || last != line {
-		if err := s.Pool.St.SetLeaseWhy(l.ID, l.StartedAt, l.PID, line); err == nil {
+		if err := s.leaseStore(l).SetLeaseWhy(l.ID, l.StartedAt, l.PID, line); err == nil {
 			s.lines[k] = line
 		} else if !s.whyFailed {
 			s.whyFailed = true

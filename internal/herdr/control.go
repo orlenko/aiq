@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,39 @@ import (
 const Prefix = "herdr:"
 
 var ErrEnded = errors.New("Herdr session ended")
+var ErrGenerationChanged = errors.New("Herdr terminal has moved to another child generation; use aiq long attach in the workspace to inspect it")
+
+// ParseRef separates stable terminal ownership from an optional immutable
+// child generation. A bare family permits observation, never mutation.
+func ParseRef(ref string) (family string, generation uint64, err error) {
+	family, suffix, tagged := strings.Cut(ref, "@")
+	s, ok := strings.CutPrefix(family, Prefix)
+	if !ok || len(s) != 65 || s[32] != '-' || strings.ToLower(s) != s {
+		return "", 0, errors.New("invalid Herdr session reference")
+	}
+	if _, e := hex.DecodeString(s[:32] + s[33:]); e != nil {
+		return "", 0, errors.New("invalid Herdr session reference")
+	}
+	if tagged {
+		generation, err = strconv.ParseUint(suffix, 10, 64)
+		if err != nil || generation == 0 || strconv.FormatUint(generation, 10) != suffix {
+			return "", 0, errors.New("invalid Herdr child generation")
+		}
+	}
+	return family, generation, nil
+}
+
+// Target is the opaque lease identity of this snapshot's child. Records keep
+// their stable Ref while every child gets a different target.
+func (r Record) Target() string { return r.Ref + "@" + strconv.FormatUint(r.Generation, 10) }
+
+func mutationGeneration(ref string) (uint64, error) {
+	_, g, err := ParseRef(ref)
+	if err == nil && g == 0 {
+		err = errors.New("Herdr mutation requires a saved child generation; inspect the original terminal")
+	}
+	return g, err
+}
 
 // Record has no command, environment, credential or transcript contents.
 // One file per workspace retains an ended tombstone until its next start.
@@ -49,14 +83,11 @@ func directory() string            { return filepath.Join(paths.DataDir(), "herd
 func recordPath(key string) string { return filepath.Join(directory(), key+".json") }
 
 func refKey(ref string) (string, error) {
-	s, ok := strings.CutPrefix(ref, Prefix)
-	if !ok || len(s) != 65 || s[32] != '-' {
-		return "", errors.New("invalid Herdr session reference")
+	family, g, err := ParseRef(ref)
+	if err != nil || g != 0 {
+		return "", errors.New("invalid Herdr ownership reference")
 	}
-	if _, err := hex.DecodeString(s[:32] + s[33:]); err != nil {
-		return "", errors.New("invalid Herdr session reference")
-	}
-	return s[:32], nil
+	return strings.TrimPrefix(family, Prefix)[:32], nil
 }
 
 func IsRef(ref string) bool { return strings.HasPrefix(ref, Prefix) }
@@ -95,15 +126,16 @@ func loadKey(key string) (Record, error) {
 }
 
 func load(ref string) (Record, error) {
-	k, err := refKey(ref)
+	family, _, err := ParseRef(ref)
 	if err != nil {
 		return Record{}, err
 	}
+	k, _ := refKey(family)
 	r, err := loadKey(k)
 	if err != nil {
 		return r, err
 	}
-	if r.Ref != ref || r.State == "ended" {
+	if r.Ref != family || r.State == "ended" {
 		return r, ErrEnded
 	}
 	return r, nil
@@ -192,17 +224,31 @@ type response struct {
 func call(ref, op string, q request) (response, error) { return callFor(ref, op, q, callTimeout) }
 
 func callFor(ref, op string, q request, timeout time.Duration) (response, error) {
-	r, err := load(ref)
+	family, generation, err := ParseRef(ref)
 	if err != nil {
 		return response{}, err
 	}
-	q.Ref = ref
+	if op != "info" && generation != 0 && generation != q.Generation {
+		return response{}, ErrGenerationChanged
+	}
+	r, err := load(family)
+	if err != nil {
+		return response{}, err
+	}
+	q.Ref = family
 	var out response
 	err = exchange(r.Socket, op, q, &out, timeout)
 	if err == nil && out.Error != "" {
-		err = errors.New(out.Error)
+		switch out.Error {
+		case ErrGenerationChanged.Error():
+			err = ErrGenerationChanged
+		case ErrEnded.Error():
+			err = ErrEnded
+		default:
+			err = errors.New(out.Error)
+		}
 	}
-	if err == nil && out.Record.Ref != ref {
+	if err == nil && out.Record.Ref != family {
 		err = errors.New("Herdr runner identity mismatch")
 	}
 	return out, err
@@ -213,30 +259,22 @@ func Info(ref string) (Record, error) { r, err := call(ref, "info", request{}); 
 // Replace is conditional on the exact child; a stale or repeated request can
 // never terminate a newer generation. Success means process started, not ready.
 func Replace(ref string, pid int, dir string, args []string) error {
-	r, err := Info(ref)
+	g, err := mutationGeneration(ref)
 	if err != nil {
 		return err
 	}
-	if r.PID != pid {
-		return errors.New("Herdr child changed; reconcile its lease before replacing it")
-	}
-	_, err = call(ref, "replace", request{PID: pid, Generation: r.Generation, Dir: dir, Args: args})
+	_, err = call(ref, "replace", request{PID: pid, Generation: g, Dir: dir, Args: args})
 	return err
 }
 
 func Stop(ref string, pid int) error {
-	r, err := Info(ref)
+	g, err := mutationGeneration(ref)
 	if err != nil {
 		return err
 	}
-	if pid != 0 && r.PID != pid {
-		return errors.New("Herdr child changed; stop its current lease instead")
-	}
-	_, err = call(ref, "stop", request{PID: r.PID, Generation: r.Generation})
-	if err != nil {
-		if _, e := load(ref); errors.Is(e, ErrEnded) {
-			return nil
-		}
+	_, err = call(ref, "stop", request{PID: pid, Generation: g})
+	if errors.Is(err, ErrEnded) {
+		return nil
 	}
 	return err
 }
@@ -252,38 +290,48 @@ func ReportHook(ref string, generation uint64, pid int, h Hook) ([]byte, error) 
 }
 
 func Attach(ref string) error {
+	_, generation, err := ParseRef(ref)
+	if err != nil {
+		return err
+	}
 	r, err := Info(ref)
 	if err != nil {
 		return err
+	}
+	if generation != 0 && generation != r.Generation {
+		return ErrGenerationChanged
 	}
 	return r.Core.attach()
 }
 func NameFor(ref string, pid int, name string) error {
-	r, err := Info(ref)
+	g, err := mutationGeneration(ref)
 	if err != nil {
 		return err
 	}
-	if r.PID != pid {
-		return errors.New("Herdr child changed")
-	}
-	_, err = call(ref, "label", request{PID: pid, Generation: r.Generation, Label: name})
+	_, err = call(ref, "label", request{PID: pid, Generation: g, Label: name})
 	return err
 }
 
 // Records is only local runner metadata, never a listing of private Herdr
 // terminals. Ended/superseded descriptors need no socket query.
 func Records() ([]Record, error) {
-	es, err := os.ReadDir(directory())
+	dir, err := os.Open(directory())
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	defer dir.Close()
+	es, err := dir.ReadDir(20001)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
 	if len(es) > 20000 {
 		return nil, errors.New("too many Herdr workspace records")
 	}
 	var out []Record
+	var bytes int64
 	for _, e := range es {
 		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -294,6 +342,14 @@ func Records() ([]Record, error) {
 		}
 		if _, err := hex.DecodeString(key); err != nil {
 			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			return nil, errors.New("Herdr ownership cannot be inspected")
+		}
+		bytes += fi.Size()
+		if bytes > 8*1024*1024 {
+			return nil, errors.New("Herdr ownership metadata exceeds discovery limit")
 		}
 		r, err := loadKey(key)
 		if err != nil {
@@ -326,7 +382,7 @@ func ChildEnv(env []string, ref string, generation uint64) []string {
 
 func Current() string {
 	if r := os.Getenv("AIQ_TERMINAL"); IsRef(r) {
-		return r
+		return r + "@" + os.Getenv("AIQ_TERMINAL_GENERATION")
 	}
 	return os.Getenv("TMUX_PANE")
 }

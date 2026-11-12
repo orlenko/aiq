@@ -311,7 +311,11 @@ rollover replaces the provider while keeping the same Herdr terminal. The
 runner keeps workspace ownership through startup and rollover gaps, so a
 second start attaches instead of creating a duplicate. A failed control query
 means unknown, and blocks another start. `long list` shows `herdr/tN` and
-reports unknown/starting state when applicable.
+reports unknown/starting ownership even before a lease registers. The displayed
+`herdr/tN` is a label; lease pane references are opaque and generation-specific.
+Conversation following tracks the stable terminal. A saved resume selection that
+has moved to another generation refuses attachment; use `aiq long attach` from
+its workspace to inspect the current terminal before explicitly resuming.
 
 Turn hooks report working/idle through Herdr's Program Status Protocol;
 permission-dialog detection is not provided by these hooks. The quota/move
@@ -322,12 +326,23 @@ no navigator/browser authentication or API changes are needed.
 A normal provider exit, a rejected resume, and `aiq long stop` are final for
 a native session. Native sessions do not use tmux's eight-second failed-resume
 retry that starts fresh; use an explicit resume after inspecting the error.
-Viewer detach, desktop-window closure, and a normal core restart leave the
-terminal running. Closing/killing the terminal ends its active group. Processes
+Viewer detach and a normal core restart leave the terminal running. Desktop
+window lifetime depends on whether the app detaches or kills its terminal; direct
+desktop-window closure has not been verified here. Closing/killing the terminal ends its active group. Processes
 that deliberately detach into other sessions are outside that group. A runner
 crash or uncertain cleanup retains ownership until its runner and child/group
 are confirmed gone; it does not automatically resume after a reboot. Inspect
 the original Herdr terminal before clearing an uncertain workspace descriptor.
+Orphan adoption requires the original launch row (aiq retains at most 50,000).
+An adopted child stays conservatively busy until a later matching Stop hook;
+an earlier or missing Stop can delay idle rollover. Inspect it, then use existing
+stop and explicit resume commands when needed. Exhausted-account takeover still
+follows the existing long-session policy.
+
+This native reference format has not shipped before this backend. Untagged
+prototype leases cannot authorize mutations; inspect the original core terminal
+for recovery. Rolling back aiq while native sessions run can lose native control;
+end those sessions first. The existing tmux format and database schema are unchanged.
 
 Private runner descriptors live under `$AIQ_DATA_DIR/herdr/` (the normal aiq
 data directory when unset), one per workspace, with an ended record replaced

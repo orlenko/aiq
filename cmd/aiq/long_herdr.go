@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
@@ -133,4 +134,56 @@ func (a *app) attachLongWorkspace(ws string) error {
 		return fmt.Errorf("no long session for %s", oneLine(ws))
 	}
 	return tmux.Attach(name)
+}
+
+// Listing observes each family once, within one aggregate control budget.
+// A timed-out or unqueried descriptor still reserves and displays its workspace.
+type nativeListing struct {
+	record herdr.Record
+	err    error
+}
+
+func listNativeOwnership(leases []state.Lease) (map[string]nativeListing, []herdr.Record, error) {
+	records, err := herdr.Records()
+	if err != nil {
+		return nil, nil, err
+	}
+	out := map[string]nativeListing{}
+	deadline := time.Now().Add(2 * time.Second)
+	observe := func(ref string, saved herdr.Record) {
+		family, _, err := herdr.ParseRef(ref)
+		if err != nil {
+			out[ref] = nativeListing{saved, err}
+			return
+		}
+		if _, exists := out[family]; exists {
+			return
+		}
+		left := min(500*time.Millisecond, time.Until(deadline))
+		if left <= 0 {
+			out[family] = nativeListing{saved, errors.New("Herdr listing control budget exhausted")}
+			return
+		}
+		current, err := herdr.InfoWithin(family, left)
+		if err == nil {
+			saved = current
+		}
+		out[family] = nativeListing{saved, err}
+	}
+	for _, r := range records {
+		observe(r.Ref, r)
+	}
+	for _, l := range leases {
+		if herdr.IsRef(l.Pane) {
+			observe(l.Pane, herdr.Record{})
+		}
+	}
+	return out, records, nil
+}
+func listingFamily(ref string) string {
+	family, _, err := herdr.ParseRef(ref)
+	if err != nil {
+		return ref
+	}
+	return family
 }

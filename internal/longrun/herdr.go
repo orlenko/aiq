@@ -32,7 +32,7 @@ func (s *Supervisor) adoptHerdr(leases []state.Lease, now time.Time) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for _, saved := range records {
-		if watch[saved.Ref] {
+		if watch[saved.Target()] {
 			continue
 		}
 		left := time.Until(deadline)
@@ -40,7 +40,7 @@ func (s *Supervisor) adoptHerdr(leases []state.Lease, now time.Time) {
 			return
 		}
 		r, err := herdr.InfoWithin(saved.Ref, left)
-		if err != nil || r.State != "running" || r.PID <= 0 || r.LeaseID <= 0 || r.LaunchID <= 0 {
+		if err != nil || watch[r.Target()] || r.State != "running" || r.PID <= 0 || r.LeaseID <= 0 || r.LaunchID <= 0 {
 			continue
 		}
 		launch, err := s.Pool.St.GetLaunch(r.LaunchID)
@@ -53,7 +53,7 @@ func (s *Supervisor) adoptHerdr(leases []state.Lease, now time.Time) {
 			id = 0
 		}
 		l := state.Lease{ID: id, AccountID: launch.AccountID, PID: r.PID, Hostname: launch.Hostname, Mode: state.ModeLong, Cwd: launch.Cwd,
-			Args: string(args), StartedAt: launch.StartedAt.Unix(), Workspace: r.Workspace, Pane: r.Ref, SessionID: launch.SessionID,
+			Args: string(args), StartedAt: launch.StartedAt.Unix(), Workspace: r.Workspace, Pane: r.Target(), SessionID: launch.SessionID,
 			Provider: launch.Provider, Fallback: r.Fallback, Launcher: launch.Launcher, TurnStartedAt: now.Unix()}
 		if id, err := s.Pool.St.AddLease(l); err == nil {
 			held[id] = true

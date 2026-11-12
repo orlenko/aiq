@@ -85,7 +85,7 @@ func cmdLong(args []string) error {
 					if e != nil {
 						return e
 					}
-					return herdr.Stop(r.Ref, r.PID)
+					return herdr.Stop(r.Target(), r.PID)
 				}
 			}
 			return err
@@ -373,7 +373,7 @@ func placeLongSession(name string, panes []tmux.Pane, self string) (string, erro
 		}
 	}
 	switch {
-	case len(liveAiq) > 0 && (inside || len(foreign) > 0):
+	case len(liveAiq) > 0:
 		return "", fmt.Errorf(
 			"pane %s of tmux session %s runs an aiq long session that no lease holds yet; the daemon takes it back within a minute. Use that pane rather than start a second session",
 			liveAiq[0], name)
@@ -451,8 +451,11 @@ func (a *app) longLaunchInPlace(t longTarget, ws, dir, what, launcher string, cm
 	if launcher != "" {
 		fmt.Fprintf(os.Stderr, "aiq: takeover order: %s\n", strings.Join(a.launcherFallbackProviders(launcher), " → "))
 	}
+	// In self-respawn tmux kills this caller, closing the lock only after
+	// accepting the serialized respawn. Otherwise release after the command.
+	err := tmux.RespawnLong(t.pane, dir, tmux.Quote(cmdArgs))
 	t.unlock()
-	if err := tmux.RespawnLong(t.pane, dir, tmux.Quote(cmdArgs)); err != nil || t.inside {
+	if err != nil || t.inside {
 		return err
 	}
 	if term.IsTerminal(int(os.Stdout.Fd())) {
@@ -810,7 +813,12 @@ func (a *app) longList() error {
 	if err != nil {
 		return err
 	}
-	if len(leases) == 0 {
+	native, records, err := listNativeOwnership(leases)
+	if err != nil {
+		return err
+	}
+	represented := map[string]bool{}
+	if len(leases) == 0 && len(records) == 0 {
 		fmt.Printf("no long sessions — start one with: aiq long %s [args]\n", config.ProviderList("|"))
 		return nil
 	}
@@ -833,15 +841,21 @@ func (a *app) longList() error {
 		}
 		pane := l.Pane
 		if herdr.IsRef(l.Pane) {
-			r, e := herdr.InfoWithin(l.Pane, 500*time.Millisecond)
+			view := native[listingFamily(l.Pane)]
+			r := view.record
 			pane = "herdr"
-			if e != nil {
+			if r.Core.Terminal != "" {
+				pane += "/" + r.Core.Terminal
+			}
+			if view.err != nil {
 				turn = "unknown"
-			} else {
-				pane = "herdr/" + r.Core.Terminal
-				if r.State != "running" {
-					turn = r.State
-				}
+			} else if r.Target() != l.Pane {
+				turn = "stale"
+			} else if r.State != "running" {
+				turn = r.State
+			}
+			if r.Target() == l.Pane {
+				represented[r.Target()] = true
 			}
 		}
 		fmt.Printf("%-5d %-20s %-12s %-9s %-10s %-6s %-8s %s\n", l.ID, l.AccountID, launcher, pane, drain, turn, fmtAgo(l.StartedAt, now), oneLine(l.Workspace))
@@ -858,6 +872,19 @@ func (a *app) longList() error {
 			fmt.Println(indent + line)
 		}
 	}
+	for _, saved := range records {
+		view := native[saved.Ref]
+		r := view.record
+		if represented[r.Target()] {
+			continue
+		}
+		status := r.State
+		if view.err != nil {
+			status = "unknown (" + r.State + ")"
+		}
+		fmt.Printf("%-5s %-20s %-12s %-9s %-10s %-6s %-8s %s\n", "-", "-", "-", "herdr/"+r.Core.Terminal, "-", status, "-", oneLine(r.Workspace))
+	}
+
 	// The daemon writes these lines; without it they stand as it left them.
 	if held, err := daemon.LockHeld(); shown && err == nil && !held {
 		fmt.Println("(the daemon is not running; these may be out of date)")

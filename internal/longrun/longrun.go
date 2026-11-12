@@ -449,9 +449,9 @@ func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
 			s.waitForSuccessor(l, now, waiting{key: waitTerminal, text: "Herdr control unavailable; no replacement attempted"})
 			return
 		}
-		if r.State != "running" || r.PID != l.PID {
-			if r.PID != l.PID {
-				if current, e := st.LongLeaseByPane(l.Pane); e == nil && current.PID == r.PID && current.TakeoverOf == l.ID {
+		if r.State != "running" || r.PID != l.PID || r.Target() != l.Pane {
+			if r.Target() != l.Pane || r.PID != l.PID {
+				if current, e := st.LongLeaseByPane(r.Target()); e == nil && current.PID == r.PID && current.TakeoverOf == l.ID {
 					st.ReleaseLease(l.ID)
 					return
 				}

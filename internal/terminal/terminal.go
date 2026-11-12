@@ -39,7 +39,7 @@ func Info(ref string) (tmux.Pane, error) {
 	if err != nil {
 		return tmux.Pane{}, err
 	}
-	return tmux.Pane{ID: r.Ref, Session: r.Session, PID: r.PID, Dead: r.State == "ended", StartCommand: "native Herdr agent"}, nil
+	return tmux.Pane{ID: r.Target(), Session: r.Session, PID: r.PID, Dead: r.State == "ended", StartCommand: "native Herdr agent"}, nil
 }
 
 func Respawn(ref string, pid int, dir string, args []string) error {

@@ -43,7 +43,20 @@ func TestHerdrFixture(t *testing.T) {
 		before, _ := fixtureMode()
 		code, err := Run(Options{Core: core, Workspace: ws, Session: "aiq-fixture", Dir: ws,
 			Args: []string{os.Args[0], "-test.run=^TestHerdrFixture$", "--", "child"},
-			Hook: func(pid int, g uint64, h Hook) []byte { fmt.Printf("HOOK %d %d %s\n", pid, g, h.Event); return nil }})
+			Hook: func(pid int, g uint64, h Hook) []byte {
+				fmt.Printf("HOOK %d %d %s\n", pid, g, h.Event)
+				if h.Event == "barrier" {
+					os.WriteFile(filepath.Join(ws, "hook-entered"), []byte("ready"), 0600)
+					until := time.Now().Add(5 * time.Second)
+					for time.Now().Before(until) {
+						if _, err := os.Stat(filepath.Join(ws, "release-hook")); err == nil {
+							break
+						}
+						time.Sleep(5 * time.Millisecond)
+					}
+				}
+				return nil
+			}})
 		if err != nil {
 			fmt.Println("FIXTURE ERROR", err)
 			os.Exit(1)
@@ -204,7 +217,7 @@ func TestNativeCoreReplacementAndExit(t *testing.T) {
 	sendFixture(t, c, "fork")
 	waitText(t, c, "DESCENDANT")
 	old := r
-	if err := Replace(r.Ref, r.PID, ws, []string{os.Args[0], "-test.run=^TestHerdrFixture$", "--", "child"}); err != nil {
+	if err := Replace(r.Target(), r.PID, ws, []string{os.Args[0], "-test.run=^TestHerdrFixture$", "--", "child"}); err != nil {
 		t.Fatal(err)
 	}
 	waitText(t, c, "NATIVE READY 2")
@@ -218,7 +231,7 @@ func TestNativeCoreReplacementAndExit(t *testing.T) {
 	if active, err := groupActive(old.PID); err != nil || active {
 		t.Fatalf("old executable group survived replacement: %v %v", active, err)
 	}
-	if err := Replace(old.Ref, old.PID, ws, []string{os.Args[0], "-test.run=^TestHerdrFixture$", "--", "child"}); err == nil {
+	if err := Replace(old.Target(), old.PID, ws, []string{os.Args[0], "-test.run=^TestHerdrFixture$", "--", "child"}); err == nil {
 		t.Fatal("replayed old replacement accepted")
 	}
 	if _, err := ReportHook(old.Ref, old.Generation, old.PID, Hook{Provider: "codex", Event: "stop", Payload: json.RawMessage(`{}`), LeaseID: 1}); err == nil {
@@ -267,7 +280,7 @@ func TestNativeStopIsFinal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Stop(r.Ref, r.PID); err != nil {
+	if err := Stop(r.Target(), r.PID); err != nil {
 		t.Fatal(err)
 	}
 	ended, err := loadKey(workspaceKey(ws))
@@ -383,7 +396,95 @@ func TestNativeViewerResizeReconnectAndCoreRestart(t *testing.T) {
 	waitText(t, c, "RESIZE 102 38")
 	v.frame(t, v.channel, 0, []byte("after reconnect\n"))
 	waitText(t, c, "ECHO after reconnect")
-	if err := Stop(old.Ref, old.PID); err != nil {
+	if err := Stop(old.Target(), old.PID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Hold the actor in a callback, queue replacement, then exit the leader.
+// The observer and replacement are both ready when the callback returns.
+func TestNativeQueuedReplacementCannotReviveExitedLeader(t *testing.T) {
+	for _, descendant := range []bool{false, true} {
+		t.Run(fmt.Sprint(descendant), func(t *testing.T) {
+			c, ws := fixtureCore(t)
+			r, _, err := Workspace(ws)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if descendant {
+				sendFixture(t, c, "fork")
+				waitText(t, c, "DESCENDANT")
+			}
+			hookDone := make(chan error, 1)
+			go func() {
+				_, err := ReportHook(r.Ref, r.Generation, r.PID, Hook{Provider: "codex", Event: "barrier", Payload: json.RawMessage(`{}`)})
+				hookDone <- err
+			}()
+			until := time.Now().Add(3 * time.Second)
+			for {
+				if _, err := os.Stat(filepath.Join(ws, "hook-entered")); err == nil {
+					break
+				}
+				if time.Now().After(until) {
+					t.Fatal("hook barrier not reached")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			replacement := make(chan error, 1)
+			go func() {
+				replacement <- Replace(r.Target(), r.PID, ws, []string{os.Args[0], "-test.run=^TestHerdrFixture$", "--", "child"})
+			}()
+			if err := syscall.Kill(r.PID, syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			// Positive snapshot proves the leader exited before releasing the actor.
+			for {
+				_, leader, err := groupSnapshot(r.PID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !leader {
+					break
+				}
+				if time.Now().After(until) {
+					t.Fatal("leader did not exit")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			os.WriteFile(filepath.Join(ws, "release-hook"), nil, 0600)
+			<-hookDone
+			<-replacement // Either final reply or closed control is safe; no successor.
+			waitText(t, c, "MODE RESTORED")
+			ended, err := loadKey(workspaceKey(ws))
+			if err != nil || ended.State != "ended" || ended.Generation != 1 {
+				t.Fatalf("exited child revived: %+v %v", ended, err)
+			}
+			if active, err := groupActive(r.PID); err != nil || active {
+				t.Fatalf("descendant survived finality: %v %v", active, err)
+			}
+		})
+	}
+}
+
+// Simulate the wait observer not having been scheduled yet. A zombie leader
+// with executable descendants is still a final ordinary exit.
+func TestNativeReplacementChecksLeaderBeforeObserver(t *testing.T) {
+	root := t.TempDir()
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30 & echo $! > \"$1\"; exit 0", "sh", filepath.Join(root, "descendant"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() }()
+	if err := waitExited(cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	s := session{r: Record{PID: cmd.Process.Pid}, cmd: cmd, exited: make(chan error, 1)}
+	active, leader, err := groupSnapshot(cmd.Process.Pid)
+	if err != nil || !active || leader {
+		t.Fatalf("fixture lacks exited leader plus living group: %v %v %v", active, leader, err)
+	}
+	if live, err := s.replacementLive(); err != nil || live {
+		t.Fatalf("observer lag revived exited leader: %v %v", live, err)
 	}
 }

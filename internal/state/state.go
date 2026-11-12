@@ -731,12 +731,16 @@ func (s *Store) AddLease(l Lease) (int64, error) {
 	if l.ID != 0 {
 		want = l.ID
 	}
-	res, err := s.db.Exec(
-		`INSERT INTO leases (id, account_id, pid, hostname, mode, cwd, depth, parent_account, root_id, args, started_at,
-		                     workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of, launcher, drain_manual, transcript)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		want, l.AccountID, l.PID, l.Hostname, l.Mode, l.Cwd, l.Depth, l.ParentAccount, l.RootID, l.Args, l.StartedAt,
-		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf, l.Launcher, l.DrainManual, l.Transcript)
+	cols := `id, account_id, pid, hostname, mode, cwd, depth, parent_account, root_id, args, started_at,
+ workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of, launcher, drain_manual, transcript`
+	args := []any{want, l.AccountID, l.PID, l.Hostname, l.Mode, l.Cwd, l.Depth, l.ParentAccount, l.RootID, l.Args, l.StartedAt,
+		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf, l.Launcher, l.DrainManual, l.Transcript}
+	if strings.HasPrefix(l.Pane, "herdr:") {
+		// Adoption must become visible conservatively busy in this INSERT.
+		cols += ", turn_started_at, turn_ended_at"
+		args = append(args, l.TurnStartedAt, l.TurnEndedAt)
+	}
+	res, err := s.db.Exec("INSERT INTO leases ("+cols+") VALUES ("+strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")+")", args...)
 	if err != nil {
 		return 0, err
 	}
@@ -745,7 +749,12 @@ func (s *Store) AddLease(l Lease) (int64, error) {
 		return 0, err
 	}
 	if l.RootID == 0 {
-		s.db.Exec(`UPDATE leases SET root_id = ? WHERE id = ?`, id, id)
+		if strings.HasPrefix(l.Pane, "herdr:") {
+			l.ID = id
+			s.ForLease(l, 0).leaseExec(`UPDATE leases SET root_id = ? WHERE id = ?`, id, id)
+		} else {
+			s.db.Exec(`UPDATE leases SET root_id = ? WHERE id = ?`, id, id)
+		}
 	}
 	return id, nil
 }
@@ -850,8 +859,8 @@ const MaxWhy = 1000
 // column is read only through LeaseWhys, so the read-only openers, which never
 // add columns, do not name it.
 func (s *Store) SetLeaseWhy(id, startedAt int64, pid int, why string) error {
-	_, err := s.db.Exec(`UPDATE leases SET why = ? WHERE id = ? AND started_at = ? AND pid = ?`,
-		CleanLine(why), id, startedAt, pid)
+	_, err := s.leaseExec(`UPDATE leases SET why = ? WHERE started_at = ? AND pid = ? AND id = ?`,
+		id, CleanLine(why), startedAt, pid)
 	return err
 }
 
