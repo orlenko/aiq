@@ -39,6 +39,17 @@ func TestHerdrFixture(t *testing.T) {
 			fmt.Println("FIXTURE ERROR", err)
 			os.Exit(1)
 		}
+		if fakeSocket := os.Getenv("GO_HERDR_WRONG_TTY_SOCKET"); fakeSocket != "" {
+			originalSocket := os.Getenv("HC_SOCKET")
+			os.Setenv("HC_SOCKET", fakeSocket)
+			_, wrongErr := CurrentCore()
+			os.Setenv("HC_SOCKET", originalSocket)
+			if wrongErr == nil || !strings.Contains(wrongErr.Error(), "this TTY") {
+				fmt.Println("FIXTURE ERROR wrong TTY was not rejected at its guard")
+				os.Exit(2)
+			}
+			fmt.Println("MISMATCHED TTY REJECTED")
+		}
 		ws := os.Getenv("GO_HERDR_WORKSPACE")
 		before, _ := fixtureMode()
 		code, err := Run(Options{Core: core, Workspace: ws, Session: "aiq-fixture", Dir: ws,
@@ -72,6 +83,13 @@ func TestHerdrFixture(t *testing.T) {
 		}
 		fmt.Println("MODE RESTORED")
 		os.Exit(code)
+	case "notty":
+		if _, err := Run(Options{}); err == nil || !strings.Contains(err.Error(), "terminal stdin and stdout") {
+			fmt.Println("FIXTURE ERROR nonterminal admission")
+			os.Exit(2)
+		}
+		fmt.Println("NATIVE NONTERMINAL REFUSED")
+		os.Exit(0)
 	case "descendant":
 		signal.Ignore(syscall.SIGTERM)
 		fmt.Printf("DESCENDANT %d\n", os.Getpid())
@@ -145,9 +163,15 @@ func fixtureCore(t *testing.T) (Core, string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "hc", "server", "stop", "--json")
-		cmd.Run()
+		cmd.WaitDelay = time.Second
+		if _, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("private core cleanup failed: %v", err)
+		}
 	})
-	cmd := exec.Command("hc", "run", "--bg", "--json", "--no-parent", "--cwd", root, "--", os.Args[0], "-test.run=^TestHerdrFixture$", "--", "runner")
+	launchCtx, cancelLaunch := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelLaunch()
+	cmd := exec.CommandContext(launchCtx, "hc", "run", "--bg", "--json", "--no-parent", "--cwd", root, "--", os.Args[0], "-test.run=^TestHerdrFixture$", "--", "runner")
+	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("scratch core launch: %v: %s", err, out)
