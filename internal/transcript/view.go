@@ -71,6 +71,15 @@ type heldView struct {
 	view *View
 	at   time.Time
 }
+
+// viewBuildKey distinguishes simultaneous incarnations of one logical view.
+// Keep typed references so pointer reuse cannot resurrect a retired identity.
+type viewBuildKey struct {
+	key    ViewKey
+	owner  *viewOwner
+	parsed *parsed
+}
+
 type viewFlight struct {
 	done  chan struct{}
 	view  *View
@@ -84,7 +93,7 @@ type viewState struct {
 	heldView    *heldView
 	broken      map[viewShape]*list.Element
 	brokenLRU   *list.List
-	building    map[ViewKey]*viewFlight
+	building    map[viewBuildKey]*viewFlight
 	viewOwners  map[string]*viewOwner
 	viewSem     chan struct{}
 	viewChanged chan struct{}
@@ -98,7 +107,7 @@ func newViewState(width int) viewState {
 	return viewState{
 		views: map[ViewKey]*list.Element{}, viewLRU: list.New(),
 		broken: map[viewShape]*list.Element{}, brokenLRU: list.New(),
-		building: map[ViewKey]*viewFlight{}, viewOwners: map[string]*viewOwner{},
+		building: map[viewBuildKey]*viewFlight{}, viewOwners: map[string]*viewOwner{},
 		viewSem: make(chan struct{}, width), viewChanged: make(chan struct{}),
 	}
 }
@@ -110,7 +119,8 @@ func (c *Cache) View(k ViewKey, build func() (*View, error)) (*View, error) {
 	return c.ViewContext(context.Background(), k, build)
 }
 
-// ViewContext shares an exact-key build, or waits cancelably for one of the
+// ViewContext shares an exact-key build in the current parse incarnation, or
+// waits cancelably for one of the
 // process cache's builder slots. Waiting callers create no queue or owner.
 // Admitted work holds its slot through publication even if all callers leave.
 func (c *Cache) ViewContext(ctx context.Context, k ViewKey, build func() (*View, error)) (*View, error) {
@@ -183,7 +193,7 @@ func (c *Cache) viewRole(ctx context.Context, k ViewKey, build func() (*View, er
 		v, found = h.view, true
 		return
 	}
-	if f = c.building[k]; f != nil {
+	if f = c.joinViewLocked(k, c.viewParseLocked(k.Snap.Path)); f != nil {
 		return
 	}
 	changed = c.viewChanged
@@ -196,16 +206,21 @@ func (c *Cache) viewRole(ctx context.Context, k ViewKey, build func() (*View, er
 		found = true
 		return
 	}
+	authority := c.viewParseLocked(k.Snap.Path)
+	if f = c.joinViewLocked(k, authority); f != nil {
+		return
+	}
 	owner := c.viewOwnerLocked(k.Snap)
 	k = ownedViewKey(k)
 	if owner != nil {
 		k.Snap.Path = owner.snap.Path
 	}
 	f = &viewFlight{done: make(chan struct{}), owner: owner}
-	c.building[k] = f
+	bk := viewBuildKey{key: k, owner: owner, parsed: authority}
+	c.building[bk] = f
 	c.viewChangedLocked()
 	launched = true
-	go c.flyView(k, f, build)
+	go c.flyView(bk, f, build)
 	return
 }
 func waitView(ctx context.Context, f *viewFlight) (*View, error) {
@@ -225,14 +240,38 @@ func ownedViewKey(k ViewKey) ViewKey {
 	k.Lease = strings.Clone(k.Lease)
 	return k
 }
+
+// Authority observation never changes an LRU or allocates path ownership.
+func (c *Cache) viewParseLocked(path string) *parsed {
+	if el := c.full[path]; el != nil {
+		return el.Value.(*parsed)
+	}
+	if c.held != nil && c.held.snap.Path == path {
+		return c.held
+	}
+	return nil
+}
+func (c *Cache) joinViewLocked(k ViewKey, p *parsed) *viewFlight {
+	for bk, f := range c.building {
+		if bk.key != k || bk.parsed != p {
+			continue
+		}
+		if p != nil && p.snap != k.Snap {
+			if bk.owner == nil {
+				return f
+			}
+			continue
+		}
+		o := bk.owner
+		if o != nil && o.parsed == p && o.snap == k.Snap && c.currentViewOwnerLocked(k.Snap.Path, o) {
+			return f
+		}
+	}
+	return nil
+}
+
 func (c *Cache) viewOwnerLocked(snap Snapshot) *viewOwner {
-	var p *parsed
-	if el := c.full[snap.Path]; el != nil {
-		p = el.Value.(*parsed)
-	}
-	if p == nil && c.held != nil && c.held.snap.Path == snap.Path {
-		p = c.held
-	}
+	p := c.viewParseLocked(snap.Path)
 	if p != nil && p.snap != snap {
 		return nil
 	}
@@ -252,7 +291,7 @@ func (c *Cache) currentViewOwnerLocked(path string, o *viewOwner) bool {
 // Cleanup is registered before the first clock read. Renderer classification
 // is separate from internal faults, and an ordinary partial/error pair survives
 // a later timing fault unchanged.
-func (c *Cache) flyView(k ViewKey, f *viewFlight, build func() (*View, error)) {
+func (c *Cache) flyView(bk viewBuildKey, f *viewFlight, build func() (*View, error)) {
 	var v *View
 	var err error
 	var rendererFailure, ordinary bool
@@ -261,7 +300,7 @@ func (c *Cache) flyView(k ViewKey, f *viewFlight, build func() (*View, error)) {
 			v, err = nil, ErrUnshowable
 			rendererFailure = false
 		}
-		c.finishView(k, f, v, err, rendererFailure, ordinary)
+		c.finishView(bk, f, v, err, rendererFailure, ordinary)
 	}()
 	start := c.now()
 	v, err = buildView(build)
@@ -282,11 +321,12 @@ func buildView(build func() (*View, error)) (v *View, err error) {
 	}
 	return
 }
-func (c *Cache) finishView(k ViewKey, f *viewFlight, v *View, err error, rendererFailure, ordinary bool) {
+func (c *Cache) finishView(bk viewBuildKey, f *viewFlight, v *View, err error, rendererFailure, ordinary bool) {
+	k := bk.key
 	c.mu.Lock()
 	defer func() {
-		if c.building[k] == f {
-			delete(c.building, k)
+		if c.building[bk] == f {
+			delete(c.building, bk)
 		}
 		close(f.done)
 		c.viewChangedLocked()
