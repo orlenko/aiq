@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"sync"
@@ -23,9 +26,28 @@ func renderTestTime(t *testing.T, value string) time.Time {
 }
 
 func TestConvoContextTimeInputs(t *testing.T) {
-	saved := time.Local
-	time.Local = time.FixedZone("ambient", -5*3600)
-	defer func() { time.Local = saved }()
+	const childMarker = "AIQ_TEST_CONVO_TIME_CHILD"
+	if os.Getenv(childMarker) != "1" {
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, self, "-test.run=^TestConvoContextTimeInputs$", "-test.count=1")
+		cmd.WaitDelay = 2 * time.Second
+		cmd.Env = append(os.Environ(), childMarker+"=1", "TZ=Etc/GMT+5", "AIQ_DATA_DIR="+t.TempDir())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("isolated timezone fixture: %v\n%s", err, out)
+		}
+		return
+	}
+	// Starting a separate process selects its local zone without writing the
+	// parent's time.Local while another test's screen goroutine may read it.
+	_, offset := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC).In(time.Local).Zone()
+	if offset != -5*3600 {
+		t.Fatalf("timezone fixture offset %d, want -18000", offset)
+	}
 	cases := []struct {
 		event, now, head, clock string
 		offset                  int
