@@ -140,7 +140,7 @@ done
 		t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GO_HERDR_ATTACH_MARKER", marker)
 		a := &app{cfg: cfg, st: st}
-		if err := a.resumeSession(transcript.Session{ID: first.SessionID}, nil, a.liveSessions()[first.SessionID], resumeOpts{}); err != nil {
+		if err := a.resumeSession(transcript.Session{ID: first.SessionID}, nil, liveSessions(a.st, paths.RealClaudeHome(), a.cfg.Long.TmuxPrefix)[first.SessionID], resumeOpts{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := a.attachLongWorkspace(root); err != nil {

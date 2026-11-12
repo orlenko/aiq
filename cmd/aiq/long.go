@@ -16,6 +16,7 @@ import (
 	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
+	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
@@ -596,8 +597,8 @@ func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
 	if err != nil {
 		return p, false, err
 	}
-	live := a.liveSessions()
-	origins := a.loadOrigins(p.dir, sessions)
+	live := liveSessions(a.st, paths.RealClaudeHome(), a.cfg.Long.TmuxPrefix)
+	origins := loadOrigins(a.st, hostname(), os.Getenv("PWD"), p.dir, sessions)
 	o := r.o
 	switch {
 	case o.id != "":

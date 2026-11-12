@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/orlenko/aiq/internal/paths"
+	"github.com/orlenko/aiq/internal/proc"
 )
 
 // claudeTranscript takes an id, never a path or a pattern: each of these
@@ -49,7 +52,7 @@ func TestLiveClaudeSkipsSessionFilesWithoutAnID(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := liveClaude()
+	got := liveClaude(paths.RealClaudeHome(), paths.ClaudeHomesDir(), proc.Alive)
 	if len(got) != 1 || got[0].SessionID != "good-1" {
 		t.Fatalf("liveClaude = %+v, want only good-1", got)
 	}

@@ -1,0 +1,3 @@
+pane %10: provider claude, path <root>/claude/projects/<root as a project>-work/c0ffee01-0000-4000-8000-000000000001.jsonl, account "", pane "%10"
+pane %11: provider codex, path <root>/codex/rollout-019a0000-0000-7000-8000-0000000000a1.jsonl, account "codex/descendant", pane "%11"
+pane %12: error: pane %12 runs shell, not an agent session aiq can find; aiq convo <session-id> reads one by id

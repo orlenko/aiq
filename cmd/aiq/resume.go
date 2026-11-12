@@ -124,8 +124,8 @@ func cmdResume(args []string) error {
 	if err != nil {
 		return err
 	}
-	live := a.liveSessions()
-	origins := a.loadOrigins(dir, sessions)
+	live := liveSessions(a.st, paths.RealClaudeHome(), a.cfg.Long.TmuxPrefix)
+	origins := loadOrigins(a.st, hostname(), os.Getenv("PWD"), dir, sessions)
 
 	if o.id != "" {
 		s, err := findSession(sessions, unreadable, o.id)
@@ -162,13 +162,14 @@ func cmdResume(args []string) error {
 }
 
 // liveSessions gathers the sessions running right now: open Claude
-// processes and aiq long sessions whose hooks reported a session id.
-func (a *app) liveSessions() map[string]liveNote {
+// processes of the real home realClaude, and aiq long sessions in st whose
+// hooks reported a session id, in tmux sessions named with tmuxPrefix.
+func liveSessions(st *state.Store, realClaude, tmuxPrefix string) map[string]liveNote {
 	out := map[string]liveNote{}
-	for id, pid := range transcript.ClaudeOpen(paths.RealClaudeHome()) {
+	for id, pid := range transcript.ClaudeOpen(realClaude) {
 		out[id] = liveNote{pid: pid, note: fmt.Sprintf("open in pid %d", pid)}
 	}
-	leases, _ := a.st.ListLeases()
+	leases, _ := st.ListLeases()
 	for _, l := range leases {
 		if l.Mode != state.ModeLong || l.SessionID == "" {
 			continue
@@ -177,7 +178,7 @@ func (a *app) liveSessions() map[string]liveNote {
 			out[l.SessionID] = liveNote{native: l.Pane, note: fmt.Sprintf("running in aiq long (%s, Herdr)", l.AccountID)}
 			continue
 		}
-		name := longrun.SessionName(a.cfg.Long.TmuxPrefix, l.Workspace)
+		name := longrun.SessionName(tmuxPrefix, l.Workspace)
 		out[l.SessionID] = liveNote{tmux: name, note: fmt.Sprintf("running in aiq long (%s, %s)", l.AccountID, name)}
 	}
 	return out
@@ -340,8 +341,14 @@ func durationLabel(d time.Duration) string {
 }
 
 func homeRel(dir string) string {
-	if h, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(h, dir); err == nil && !strings.HasPrefix(rel, "..") {
+	h, _ := os.UserHomeDir()
+	return homeRelTo(h, dir)
+}
+
+// homeRelTo is dir under home as ~/..., or dir as it is outside it or with no home.
+func homeRelTo(home, dir string) string {
+	if home != "" {
+		if rel, err := filepath.Rel(home, dir); err == nil && !strings.HasPrefix(rel, "..") {
 			return filepath.Join("~", rel)
 		}
 	}
