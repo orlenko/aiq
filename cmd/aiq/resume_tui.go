@@ -221,7 +221,7 @@ func (b *browser) handle(k keypress) (pick *transcript.Session, done bool) {
 		if bare && b.launcherOf(s) == "" {
 			return nil, false // nothing to leave out
 		}
-		if n, ok := b.live[s.ID]; ok && n.tmux == "" && confirm != string(k.r) {
+		if n, ok := b.live[s.ID]; ok && n.tmux == "" && n.native == "" && confirm != string(k.r) {
 			b.confirm = string(k.r)
 			b.confirmText = fmt.Sprintf("this session is %s — press %c again to open a second copy", n.note, k.r)
 			return nil, false

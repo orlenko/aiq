@@ -15,7 +15,7 @@ id c0ffee: error: "c0ffee" matches 2 sessions; give more of the id
 id 0000: error: no session "0000" in this directory (aiq resume --print --all lists them)
 pane %4: provider codex, path <root>/codex/sessions/2025/09/09/rollout-2025-09-09T10-00-00-019a0000-0000-7000-8000-0000000000a1.jsonl, account "codex/b", pane "%4", stale false, id ""
 pane %5: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee02-0000-4000-8000-000000000002.jsonl, account "", pane "%5", stale false, id ""
-pane %8: error: no tmux pane %8
+pane %8: error: terminal %8 is unavailable: tmux display-message -p -t %8 #{pane_id}:#{pane_pid}:#{pane_dead}:#{session_name}:#{pane_current_command}: exit status 1: can't find pane: %8
 resolve here: error: 3 live sessions in ~/work/demo; name one:
   aiq convo 019a0000-0000-7000-8000-0000000000a1   (or --pane %4)   codex/b
   aiq convo 019b0000-0000-7000-8000-0000000000b2   codex/c

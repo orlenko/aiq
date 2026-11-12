@@ -14,8 +14,10 @@ import (
 
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/daemon"
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/overlay"
+	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/provider/agy"
@@ -24,6 +26,7 @@ import (
 	"github.com/orlenko/aiq/internal/runner"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/tmux"
 )
 
@@ -430,7 +433,7 @@ func cmdRun(provider string, args []string) error {
 			RootID: int64(envInt("AIQ_ROOT")), Args: strings.Join(trimArgs(f.rest), " "), StartedAt: now.Unix(),
 		}
 		if mode == state.ModeLong {
-			lease.Workspace, lease.Provider, lease.Pane = workspace, provider, os.Getenv("TMUX_PANE")
+			lease.Workspace, lease.Provider, lease.Pane = workspace, provider, terminal.Current()
 			lease.Fallback, lease.TakeoverOf = f.fallback, f.takeover
 			lease.Launcher = f.launcher
 			// baseFlags, not f: a Codex named thread replaced f's id with a new, empty one.
@@ -443,7 +446,20 @@ func cmdRun(provider string, args []string) error {
 				lease.Args = string(enc) // exact args: replayed on a same-provider takeover, translated on a cross-provider one
 			}
 		}
-		leaseID, _ := a.st.AddLease(lease)
+		native := mode == state.ModeLong && herdr.IsRef(lease.Pane)
+		leaseID, leaseErr := a.st.AddLease(lease)
+		if native && leaseErr != nil {
+			return fmt.Errorf("register native long lease: %w", leaseErr)
+		}
+		lease.ID = leaseID
+		if native {
+			defer func() {
+				if st, err := state.Open(paths.StateDB()); err == nil {
+					defer st.Close()
+					st.ForLease(lease, 0).ReleaseLease(leaseID)
+				}
+			}()
+		}
 		if lease.RootID == 0 {
 			env = append(env, "AIQ_ROOT="+strconv.FormatInt(leaseID, 10))
 		}
@@ -459,10 +475,13 @@ func cmdRun(provider string, args []string) error {
 		default:
 			sessionID, f.rest = providerSession(provider, f.rest)
 		}
-		a.st.AddLaunch(state.Launch{
+		launchID, launchErr := a.st.AddLaunch(state.Launch{
 			StartedAt: now, Hostname: hostname(), Provider: provider, AccountID: acc.ID,
 			Launcher: f.launcher, Cwd: lease.Cwd, Mode: mode, SessionID: sessionID, LeaseID: leaseID, Args: userArgs,
 		})
+		if native && launchErr != nil {
+			return fmt.Errorf("record native long launch: %w", launchErr)
+		}
 		a.st.LogEvent(provider, acc.ID, "launch", mode+" "+lease.Args, now)
 
 		// A launcher asking for `credential = "file"` cuts the CLI off from
@@ -478,11 +497,21 @@ func cmdRun(provider string, args []string) error {
 
 		if mode == state.ModeLong {
 			env = append(env, "AIQ_LONG=1", "AIQ_LEASE="+strconv.FormatInt(leaseID, 10))
+			if native {
+				generation, _ := strconv.ParseUint(os.Getenv("AIQ_TERMINAL_GENERATION"), 10, 64)
+				if err := herdr.Register(lease.Pane, generation, leaseID, launchID, f.fallback); err != nil {
+					return err
+				}
+				env = append(env, "AIQ_TERMINAL_PID="+strconv.Itoa(os.Getpid()))
+			}
+
 			self, _ := os.Executable()
 			prepareLong(provider, workspace)
 			// The account is otherwise invisible from inside the session, and
 			// a takeover changes it; the window name shows it in tmux's bar.
-			if pane := os.Getenv("TMUX_PANE"); pane != "" {
+			if native {
+				herdr.NameFor(lease.Pane, lease.PID, acc.ID)
+			} else if pane := os.Getenv("TMUX_PANE"); pane != "" {
 				tmux.NameWindow(pane, tmux.SafeName(acc.ID))
 			}
 			args, err := longArgs(provider, self, f)

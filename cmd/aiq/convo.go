@@ -22,6 +22,7 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -332,10 +333,10 @@ func (t convoTarget) label() string {
 	return t.provider
 }
 
-// convoHere is where aiq convo runs: the working directory, and the tmux pane, if any.
+// convoHere is where aiq convo runs: the working directory and terminal reference, if any.
 func convoHere() (dir, pane string, err error) {
 	dir, err = os.Getwd()
-	return dir, os.Getenv("TMUX_PANE"), err
+	return dir, terminal.Current(), err
 }
 
 // convoResolver finds the transcript aiq convo reads. Make one with newConvoResolver,
@@ -362,7 +363,7 @@ func newConvoResolver(st *state.Store, roots transcript.Roots) *convoResolver {
 	home, _ := os.UserHomeDir()
 	return &convoResolver{st: st, roots: roots, host: hostname, home: home,
 		claude:   func() []claudeLive { return liveClaude(paths.RealClaudeHome(), paths.ClaudeHomesDir(), proc.Alive) },
-		paneInfo: tmux.PaneInfo, parents: processParents, alive: proc.Alive, now: time.Now, warn: os.Stderr}
+		paneInfo: terminal.Info, parents: processParents, alive: proc.Alive, now: time.Now, warn: os.Stderr}
 }
 
 // resolve finds what o names, from the working directory dir and the tmux
@@ -398,7 +399,7 @@ func (r *convoResolver) resolve(o convoOpts, dir, pane string) (convoTarget, err
 func (r *convoResolver) resolvePane(pane string) (convoTarget, error) {
 	info, err := r.paneInfo(pane)
 	if err != nil {
-		return convoTarget{}, fmt.Errorf("no tmux pane %s", pane)
+		return convoTarget{}, fmt.Errorf("terminal %s is unavailable: %w", oneLine(pane), err)
 	}
 	parents := r.parents()
 	lease, leased := r.paneLease(info, parents)
