@@ -1,0 +1,36 @@
+=== aiq resume --print
+ID        UPDATED           AGENT                   TURNS  TOOLS  NAME / FIRST PROMPT
+019a0000  2025-09-03        codex gpt-6                 1      1  [running in aiq long (codex/b, aiq-demo-60c1)] release 1.4
+c0ffee02  2025-09-02        claude opus-5               1      0  [via box?] [open in pid <test>] add a test for the parser with two cases
+c0ffee01  2025-09-01        claude opus-5               2      1  [via safe-claude] rename the config loader
+(1 worker session hidden; --all shows it)
+=== aiq resume --print --all
+ID        UPDATED           AGENT                   TURNS  TOOLS  NAME / FIRST PROMPT
+019b0000  2025-09-03        codex gpt-6                 1      1  [worker] summarise the diff
+019a0000  2025-09-03        codex gpt-6                 1      1  [running in aiq long (codex/b, aiq-demo-60c1)] release 1.4
+c0ffee02  2025-09-02        claude opus-5               1      0  [via box?] [open in pid <test>] add a test for the parser with two cases
+c0ffee01  2025-09-01        claude opus-5               2      1  [via safe-claude] rename the config loader
+=== aiq resume --print c0ffee01
+claude session c0ffee01-0000-4000-8000-000000000001 · claude opus-5 · via safe-claude · rename the config loader
+
+## Turn 1 · 2025-09-01 09:00 · 35s · 1 tools
+
+> rename the config loader
+
+Renamed it to `loadConfig` and updated the callers.
+
+## Turn 2 (notice) · 2025-09-01 09:00 · 14s · 0 tools
+
+> [agent-nudge] PR #12 has a review
+
+Read the review; nothing to change.
+=== aiq resume --print 019a0000-0000-7000-8000-0000000000a1
+codex session 019a0000-0000-7000-8000-0000000000a1 · codex gpt-6 · release 1.4
+
+## Turn 1 · 2025-09-03 11:00 · 2s · 1 tools
+
+> ship the release
+
+Shipped 1.4.0.
+=== aiq resume --print c0ffee
+error: "c0ffee" matches 2 sessions; give more of the id
