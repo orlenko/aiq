@@ -258,15 +258,30 @@ func TestListDirsBudget(t *testing.T) {
 }
 
 // With no scan completed, a reader waits for the first only as long as its
-// context lets it.
+// context lets it: a cancelled reader returns at once, and the scan carries
+// on and answers the readers after it.
 func TestIndexFirstScanUnderTheReadersContext(t *testing.T) {
 	x, _ := testIndex(Roots{})
 	release := make(chan struct{})
+	var runs atomic.Int64
+	run := func(any) any { runs.Add(1); <-release; return "first" }
 	var s scan
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if _, err := x.read(ctx, &s, run); !errors.Is(err, context.Canceled) || time.Since(start) > time.Second {
+		t.Fatalf("cancelled reader: %v after %s", err, time.Since(start))
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, err := x.read(ctx, &s, func(any) any { <-release; return 1 }); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("first read past its deadline: %v", err)
+	if _, err := x.read(ctx, &s, run); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("reader past its deadline: %v", err)
 	}
 	close(release)
+	if d, err := x.read(context.Background(), &s, run); d != "first" || err != nil {
+		t.Errorf("a later reader: %v %v", d, err)
+	}
+	if runs.Load() != 1 {
+		t.Errorf("%d scans, want the one the cancelled reader started", runs.Load())
+	}
 }

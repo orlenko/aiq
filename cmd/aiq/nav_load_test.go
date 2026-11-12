@@ -234,6 +234,8 @@ func procUsage() (rssMB float64, cpu time.Duration) {
 }
 
 // TestNavFigures records the figures the caches' bounds are to be set from.
+// It is library-level (no HTTP) and gated by AIQ_TEST_NAV_FIGURES: "fixture"
+// runs it on generated transcripts, "real" on a workload the owner names.
 func TestNavFigures(t *testing.T) {
 	mode := os.Getenv("AIQ_TEST_NAV_FIGURES")
 	var roots transcript.Roots
@@ -350,10 +352,13 @@ func transcriptFiles(r transcript.Roots) (n int, total int64, largest string, si
 	return n, total, largest, size
 }
 
-// TestNavSoak drives the caches for a while as three clients would: one
+// TestNavSoak is library-level (no HTTP), runs on generated transcripts
+// only, and is gated by AIQ_TEST_NAV_SOAK, its length. It drives the caches
+// for that long as three clients would: one
 // lists the directory every 15 s, one follows a session appended every
 // second, polling every 2 s with its last ETag, and one opens a session
-// every 2 s, every fifth time the largest one shown in full.
+// every 2 s, with markup and without by turns, every fifth time the
+// largest one shown in full.
 func TestNavSoak(t *testing.T) {
 	d, err := time.ParseDuration(os.Getenv("AIQ_TEST_NAV_SOAK"))
 	if err != nil || d <= 0 {
@@ -390,13 +395,13 @@ func TestNavSoak(t *testing.T) {
 		}
 		mu.Unlock()
 	}
-	detail := func(path string, last int, etag, fromKey string) (string, bool) {
+	detail := func(path string, last int, markup bool, etag, fromKey string) (string, bool) {
 		snap, err := transcript.Stat(path)
 		if err != nil {
 			fail("stat: %v", err)
 			return "", false
 		}
-		k := transcript.ViewKey{Snap: snap, Last: last, Markup: true}
+		k := transcript.ViewKey{Snap: snap, Last: last, Markup: markup}
 		if etag != "" && c.NotModified(k, fromKey, etag) {
 			notModified.Add(1)
 			return etag, true
@@ -417,7 +422,7 @@ func TestNavSoak(t *testing.T) {
 			return "", false
 		}
 		k.Snap = got
-		v, err := c.View(k, func() (*transcript.View, error) { return navView(s, last, true), nil })
+		v, err := c.View(k, func() (*transcript.View, error) { return navView(s, last, markup), nil })
 		if err != nil {
 			fail("view: %v", err)
 			return "", false
@@ -489,13 +494,13 @@ func TestNavSoak(t *testing.T) {
 	var etag string
 	every(&wg, 2*time.Second, func(i int) {
 		polls.Add(1)
-		etag, _ = detail(followed, 50, etag, "k")
+		etag, _ = detail(followed, 50, true, etag, "k")
 	})
 	pick := rand.New(rand.NewSource(3))
 	every(&wg, 2*time.Second, func(i int) {
 		opens.Add(1)
 		if i%5 == 4 {
-			detail(largest, 10000, "", "")
+			detail(largest, 10000, true, "", "")
 			return
 		}
 		mu.Lock()
@@ -505,7 +510,7 @@ func TestNavSoak(t *testing.T) {
 		}
 		mu.Unlock()
 		if p != "" {
-			detail(p, 50, "", "")
+			detail(p, 50, i%2 == 0, "", "") // markup on and off at once
 		}
 	})
 	wg.Wait()

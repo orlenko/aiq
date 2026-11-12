@@ -6,8 +6,9 @@ import (
 	"testing"
 )
 
-// The Codex scan once the heads are known: the walk and a stat of each
-// rollout, no open. Generated rollouts only.
+// BenchmarkIndexRescan times the Codex scan once the heads are known: the
+// walk and a stat of each rollout, no open. It is library-level, runs on
+// generated rollouts only, and runs only under go test -bench IndexRescan.
 func BenchmarkIndexRescan(b *testing.B) {
 	root := b.TempDir()
 	for i := 0; i < 5000; i++ {
