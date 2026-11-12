@@ -270,7 +270,7 @@ func TestLongAndConvoNameAnUnreadableTranscript(t *testing.T) {
 			return err
 		},
 		"convo": func() error {
-			_, err := (&convoResolver{roots: defaultRoots()}).resolveID(work, "5e551011-0000-4000-8000-000000000001")
+			_, err := newConvoResolver(nil, defaultRoots()).resolveID(work, "5e551011-0000-4000-8000-000000000001")
 			return err
 		},
 	} {
@@ -319,7 +319,7 @@ func TestNoReadableSessionGivesNoAllHint(t *testing.T) {
 				return err
 			},
 			"convo": func() error {
-				_, err := (&convoResolver{roots: defaultRoots()}).resolveID(work, id)
+				_, err := newConvoResolver(nil, defaultRoots()).resolveID(work, id)
 				return err
 			},
 		} {

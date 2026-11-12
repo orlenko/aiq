@@ -1,0 +1,90 @@
+=== list
+Watching 3, 40 s ago (long sessions, this machine)
+Moved today: 1 closed, 1 probably done
+  #6 closed, by: Bumped to 1.4.0 in the release commit.
+     Bump the version?
+  #5 probably-done, by: The check passed.
+     Run the example check?
+
+Asks
+  #1  alpha  claude  5 min ago  asked 2x
+      > Shall I merge the docs branch?
+      > It has two commits.
+
+Warnings
+  #2  beta  codex  2 h ago
+      > The example token is printed in the log.
+
+Other open
+  #3  alpha  claude  3 d ago
+      > Which port should the stub use?
+  #4  gamma  agy  30 s ago
+      > Noted for later.
+
+1 probably done, 2 closed or dismissed: aiq asks list --all
+=== list --all, a skipped text, an unwatched workspace
+Watching 3, 40 s ago (long sessions, this machine)
+2 texts could not be read
+Not watched: /invented/ws/delta
+Moved today: 1 closed, 1 probably done
+  #6 closed, by: Bumped to 1.4.0 in the release commit.
+     Bump the version?
+  #5 probably-done, by: The check passed.
+     Run the example check?
+
+Asks
+  #1  alpha  claude  5 min ago  asked 2x
+      > Shall I merge the docs branch?
+      > It has two commits.
+
+Warnings
+  #2  beta  codex  2 h ago
+      > The example token is printed in the log.
+
+Other open
+  #3  alpha  claude  3 d ago
+      > Which port should the stub use?
+  #4  gamma  agy  30 s ago
+      > Noted for later.
+
+Probably done
+  #5  alpha  claude  3 h ago
+      > Run the example check?
+      probably-done (the agent ran it)
+
+Closed and dismissed
+  #6  beta  codex  26 h ago
+      > Bump the version?
+      closed
+  #7  beta  codex  9 d ago
+      > Old question.
+      dismissed
+=== nothing open
+Nothing open. Watching 3, 40 s ago (long sessions, this machine)
+Moved today: 0 closed, 0 probably done
+=== status lines
+Off: no key. Run aiq asks setup
+Not watching. Run aiq asks service install, or aiq asks watch in its own window
+Not watching since 15:21. Run aiq asks service install, or aiq asks watch
+Failing since 15:27: example failure
+Failing since 15:21: example failure. Next try 15:36
+Reading: 4 texts waiting. 3 watched
+Nothing open. Watching 3, 40 s ago (long sessions, this machine)
+Not watching since 14:40. Run aiq asks service install, or aiq asks watch
+=== sections
+Asks: #1
+Warnings: #2
+Other open: #3 #4
+Probably done: #5
+Closed and dismissed: #6 #7
+=== in a directory
+"/invented/ws/alpha" in "/invented/ws/alpha": true
+"/invented/ws/alpha" in "/invented/ws/alpha/sub": true
+"/invented/ws/alpha/sub" in "/invented/ws/alpha": true
+"/invented/ws/alpha" in "/invented/ws/alphabet": false
+"/invented/ws/alpha" in "/invented/ws/": true
+"" in "/invented/ws/alpha": false
+"/invented/ws/alpha" in "": false
+under beta: #2
+under beta: #6
+under beta: #7

@@ -80,7 +80,7 @@ func TestLongListKeepsOneRowPerSession(t *testing.T) {
 }
 
 func TestLiveSessionsErrKeepsOneLinePerSession(t *testing.T) {
-	err := liveSessionsErr("/w/"+forged, []convoTarget{
+	err := liveSessionsErr("", "/w/"+forged, []convoTarget{
 		{provider: "claude", path: "/p/" + forged + ".jsonl", pane: "%1" + forged},
 		{provider: "codex", path: "/p/b.jsonl", account: "codex/" + forged},
 	})
@@ -144,7 +144,7 @@ func TestFolderErrorsAreOneLine(t *testing.T) {
 	} else {
 		checkLines(t, "long attach", errorText(err), 1)
 	}
-	if _, err := (&convoResolver{}).resolveDir(dir); err == nil {
+	if _, err := newConvoResolver(nil, transcript.Roots{}).resolveDir(dir); err == nil {
 		t.Error("convo found a live session")
 	} else {
 		checkLines(t, "convo", errorText(err), 1)

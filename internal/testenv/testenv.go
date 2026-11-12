@@ -83,7 +83,7 @@ func run(m *testing.M) int {
 func isolate(root, tmuxDir string) error {
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(k, "AIQ_") && !testSwitch(k) || strings.HasPrefix(k, "GIT_") {
+		if strings.HasPrefix(k, "AIQ_") && !testSwitch(k) || strings.HasPrefix(k, "GIT_") || strings.HasPrefix(k, "HC_") || strings.HasPrefix(k, "HERDR_") {
 			os.Unsetenv(k)
 		}
 	}

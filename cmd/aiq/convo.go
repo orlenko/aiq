@@ -23,6 +23,7 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -186,14 +187,18 @@ func cmdConvo(args []string) error {
 	if err != nil {
 		return configErr("bad-flags", "%v", err)
 	}
-	r := &convoResolver{roots: defaultRoots()}
+	r := newConvoResolver(nil, defaultRoots())
 	// Leases are only read: the viewer never creates or migrates the
 	// database, and works without one for plain Claude sessions.
 	if st, err := state.OpenReadOnly(paths.StateDB()); err == nil {
 		r.st = st
 		defer st.Close()
 	}
-	tgt, err := r.resolve(o)
+	dir, pane, err := convoHere()
+	if err != nil {
+		return err
+	}
+	tgt, err := r.resolve(o, dir, pane)
 	if err != nil {
 		return err
 	}
@@ -329,26 +334,52 @@ func (t convoTarget) label() string {
 	return t.provider
 }
 
+// convoHere is where aiq convo runs: the working directory and terminal reference, if any.
+func convoHere() (dir, pane string, err error) {
+	dir, err = os.Getwd()
+	return dir, terminal.Current(), err
+}
+
+// convoResolver finds the transcript aiq convo reads. Make one with newConvoResolver,
+// then replace what a caller gives its own: a zero convoResolver has nothing to read the
+// machine with.
 type convoResolver struct {
 	st    *state.Store // nil without a database
 	roots transcript.Roots
 	// src finds the transcripts of leases no hook reported; nil walks the
 	// roots each time, as the CLI does.
 	src transcript.Discovery
+	// What it reads of the machine: this host's name, the home directory, the Claude
+	// sessions running, a tmux pane, every process's parent, whether a process lives, and
+	// the clock. warn hears the transcripts a list could not read.
+	host     func() string
+	home     string
+	claude   func() []claudeLive
+	paneInfo func(pane string) (tmux.Pane, error)
+	parents  func() map[int]int
+	alive    func(pid int) bool
+	now      func() time.Time
+	warn     io.Writer
 }
 
-func (r *convoResolver) resolve(o convoOpts) (convoTarget, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return convoTarget{}, err
-	}
+// newConvoResolver is a resolver that reads this machine, as aiq convo does.
+func newConvoResolver(st *state.Store, roots transcript.Roots) *convoResolver {
+	home, _ := os.UserHomeDir()
+	return &convoResolver{st: st, roots: roots, host: hostname, home: home,
+		claude:   func() []claudeLive { return liveClaude(paths.RealClaudeHome(), paths.ClaudeHomesDir(), proc.Alive) },
+		paneInfo: terminal.Info, parents: processParents, alive: proc.Alive, now: time.Now, warn: os.Stderr}
+}
+
+// resolve finds what o names, from the working directory dir and the tmux
+// pane aiq runs in, if any.
+func (r *convoResolver) resolve(o convoOpts, dir, pane string) (convoTarget, error) {
 	if o.id != "" {
 		return r.resolveID(dir, o.id)
 	}
 	if o.pane != "" {
 		return r.resolvePane(o.pane)
 	}
-	if pane := os.Getenv("TMUX_PANE"); pane != "" {
+	if pane != "" {
 		t, err := r.resolvePane(pane)
 		if err == nil {
 			return t, nil
@@ -370,16 +401,16 @@ func (r *convoResolver) resolve(o convoOpts) (convoTarget, error) {
 // after a tmux restart, so a Claude session file or lease that names the
 // pane counts only while its process lives inside that pane.
 func (r *convoResolver) resolvePane(pane string) (convoTarget, error) {
-	info, err := tmux.PaneInfo(pane)
+	info, err := r.paneInfo(pane)
 	if err != nil {
-		return convoTarget{}, fmt.Errorf("no tmux pane %s", pane)
+		return convoTarget{}, fmt.Errorf("terminal %s is unavailable: %w", oneLine(pane), err)
 	}
-	parents := processParents()
+	parents := r.parents()
 	lease, leased := r.paneLease(info, parents)
 	// The agent is the Claude closest to the pane's shell; one started
 	// under it (an interactive claude a tool opened) runs deeper.
 	var in []claudeLive
-	for _, c := range liveClaude() {
+	for _, c := range r.claude() {
 		// A Claude that a leased Codex or Antigravity agent started is
 		// that agent's tool, not the pane's agent.
 		if leased && leaseProvider(lease) != "claude" && c.PID != lease.PID && descends(parents, c.PID, lease.PID) {
@@ -426,7 +457,7 @@ func (r *convoResolver) paneLease(p tmux.Pane, parents map[int]int) (state.Lease
 		return state.Lease{}, false
 	}
 	l, err := r.st.LongLeaseByPane(p.ID)
-	if err != nil || l.Hostname != hostname() || !proc.Alive(l.PID) || !descends(parents, l.PID, p.PID) {
+	if err != nil || l.Hostname != r.host() || !r.alive(l.PID) || !descends(parents, l.PID, p.PID) {
 		return state.Lease{}, false
 	}
 	return l, true
@@ -440,8 +471,7 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 	// A session counts here when it runs in dir or in a directory holding
 	// it (but not the home directory or /, which hold everything); the
 	// sessions closest to dir win.
-	home, _ := os.UserHomeDir()
-	home = canonicalPath(home)
+	home := canonicalPath(r.home)
 	best := -1
 	add := func(cwd string, t convoTarget) {
 		cwd = canonicalPath(cwd)
@@ -471,7 +501,7 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 		leases, _ := r.st.ListLeases()
 		var bare []state.Lease
 		for _, l := range leases {
-			if l.Hostname != hostname() || !proc.Alive(l.PID) {
+			if l.Hostname != r.host() || !r.alive(l.PID) {
 				continue
 			}
 			if l.Transcript == "" {
@@ -487,26 +517,27 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 			}
 		}
 	}
-	for _, c := range liveClaude() {
+	for _, c := range r.claude() {
 		if p := claudeTranscript(r.roots.ClaudeProjects, c.Cwd, c.SessionID); p != "" {
 			add(c.Cwd, convoTarget{provider: "claude", path: p, pane: c.pane()})
 		}
 	}
 	switch len(found) {
 	case 0:
-		return convoTarget{}, fmt.Errorf("no live agent session in %s; aiq resume --print lists its sessions, aiq convo <session-id> reads one", oneLine(homeRel(dir)))
+		return convoTarget{}, fmt.Errorf("no live agent session in %s; aiq resume --print lists its sessions, aiq convo <session-id> reads one", oneLine(homeRelTo(r.home, dir)))
 	case 1:
 		return found[0], nil
 	}
-	return convoTarget{}, liveSessionsErr(dir, found)
+	return convoTarget{}, liveSessionsErr(r.home, dir, found)
 }
 
 // liveSessionsErr asks which of several live sessions in dir to read, one
-// line a session. The directory and the id from a transcript's file name
-// print as one line each, so neither can add a line of its own.
-func liveSessionsErr(dir string, found []convoTarget) error {
+// line a session, dir shown under home. The directory and the id from a
+// transcript's file name print as one line each, so neither can add a line
+// of its own.
+func liveSessionsErr(home, dir string, found []convoTarget) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d live sessions in %s; name one:", len(found), oneLine(homeRel(dir)))
+	fmt.Fprintf(&b, "%d live sessions in %s; name one:", len(found), oneLine(homeRelTo(home, dir)))
 	for _, t := range found {
 		fmt.Fprintf(&b, "\n  aiq convo %s", oneLine(sessionIDOf(t.path)))
 		if t.pane != "" {
@@ -531,7 +562,7 @@ func (r *convoResolver) unreported(bare []state.Lease) map[int64]string {
 	held := map[string]bool{}
 	if leases, err := r.st.ListLeases(); err == nil {
 		for _, l := range leases {
-			if l.Transcript != "" && l.Hostname == hostname() && proc.Alive(l.PID) {
+			if l.Transcript != "" && l.Hostname == r.host() && r.alive(l.PID) {
 				held[canonicalPath(l.Transcript)] = true
 			}
 		}
@@ -568,7 +599,7 @@ func (e ambiguousErr) Error() string { return string(e) }
 // resolveID finds a session of dir by id, the way aiq resume does.
 func (r *convoResolver) resolveID(dir, id string) (convoTarget, error) {
 	sessions, unreadable, err := transcript.List(r.roots, dir)
-	reportUnreadable(os.Stderr, unreadable)
+	reportUnreadable(r.warn, unreadable)
 	if err != nil {
 		return convoTarget{}, err
 	}
@@ -596,12 +627,12 @@ func (r *convoResolver) stale(t convoTarget) bool {
 		return true
 	}
 	_, mod := statFile(t.path)
-	return time.Since(mod) > staleAfter
+	return r.now().Sub(mod) > staleAfter
 }
 
 // running reports whether a live Claude process or a lease holds session id.
 func (r *convoResolver) running(id string) bool {
-	for _, c := range liveClaude() {
+	for _, c := range r.claude() {
 		if c.SessionID == id {
 			return true
 		}
@@ -611,7 +642,7 @@ func (r *convoResolver) running(id string) bool {
 	}
 	leases, _ := r.st.ListLeases()
 	for _, l := range leases {
-		if l.SessionID == id && l.Hostname == hostname() && proc.Alive(l.PID) {
+		if l.SessionID == id && l.Hostname == r.host() && r.alive(l.PID) {
 			return true
 		}
 	}
@@ -692,13 +723,14 @@ type claudeLive struct {
 }
 
 // liveClaude reads the session files of running Claude processes, from the
-// real home and from any overlay home whose sessions/ is not linked to it.
-// It reads only regular files, so a pipe or a device there cannot hold it.
-func liveClaude() []claudeLive {
-	dirs := []string{filepath.Join(paths.RealClaudeHome(), "sessions")}
-	homes, _ := os.ReadDir(paths.ClaudeHomesDir())
+// real home realClaude and from any overlay home in homesDir whose sessions/
+// is not linked to it; alive says which processes run. It reads only regular
+// files, so a pipe or a device there cannot hold it.
+func liveClaude(realClaude, homesDir string, alive func(pid int) bool) []claudeLive {
+	dirs := []string{filepath.Join(realClaude, "sessions")}
+	homes, _ := os.ReadDir(homesDir)
 	for _, h := range homes {
-		d := filepath.Join(paths.ClaudeHomesDir(), h.Name(), "sessions")
+		d := filepath.Join(homesDir, h.Name(), "sessions")
 		if info, err := os.Lstat(d); err == nil && info.IsDir() {
 			dirs = append(dirs, d)
 		}
@@ -715,7 +747,7 @@ func liveClaude() []claudeLive {
 			var c claudeLive
 			// A session id aiq would not resume is not one it reads either: it names a
 			// file, and must not reach outside the projects folder or match others.
-			if json.Unmarshal(data, &c) != nil || c.PID <= 0 || !transcript.ValidID(c.SessionID) || seen[c.PID] || !proc.Alive(c.PID) || strings.HasPrefix(c.Entrypoint, "sdk") {
+			if json.Unmarshal(data, &c) != nil || c.PID <= 0 || !transcript.ValidID(c.SessionID) || seen[c.PID] || !alive(c.PID) || strings.HasPrefix(c.Entrypoint, "sdk") {
 				continue
 			}
 			seen[c.PID] = true

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,9 +9,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/terminal"
 )
 
 // Hooks attached to long sessions. They must never break the session:
@@ -39,6 +42,21 @@ func cmdHook(provider string, args []string) {
 		return
 	}
 	input, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	if ref := terminal.Current(); herdr.IsRef(ref) {
+		generation, _ := strconv.ParseUint(os.Getenv("AIQ_TERMINAL_GENERATION"), 10, 64)
+		pid, _ := strconv.Atoi(os.Getenv("AIQ_TERMINAL_PID"))
+		out, err := herdr.ReportHook(ref, generation, pid, herdr.Hook{Provider: provider, Event: event, Payload: input, LeaseID: leaseID})
+		if err == nil {
+			os.Stdout.Write(out)
+		}
+		return
+	}
+	processHook(provider, event, input, leaseID, terminal.Current(), 0, 0, os.Stdout)
+}
+
+// Native callbacks execute inside the runner's serialized generation boundary;
+// guarded SQL also excludes external pruning and numeric lease-id reuse.
+func processHook(provider, event string, input []byte, leaseID int64, pane string, wantPID int, launchID int64, output io.Writer) {
 	var payload struct {
 		SessionID      string `json:"session_id"`
 		TranscriptPath string `json:"transcript_path"`
@@ -54,7 +72,11 @@ func cmdHook(provider string, args []string) {
 		payload.TranscriptPath = payload.Transcript
 	}
 
-	st, err := state.Open(paths.StateDB())
+	open := state.Open
+	if wantPID > 0 {
+		open = state.OpenHook
+	}
+	st, err := open(paths.StateDB())
 	if err != nil {
 		return
 	}
@@ -64,11 +86,17 @@ func cmdHook(provider string, args []string) {
 	// carries may name a worker or another pane's session, and a session
 	// re-adopted while another held its id runs under a new one. The pane
 	// says which lease is this session's.
-	if pane := os.Getenv("TMUX_PANE"); pane != "" && (err != nil || l.Mode != state.ModeLong || (l.Pane != "" && l.Pane != pane)) {
+	if pane != "" && (err != nil || l.Mode != state.ModeLong || (l.Pane != "" && l.Pane != pane) || (wantPID > 0 && l.PID != wantPID)) {
 		l, err = st.LongLeaseByPane(pane)
 	}
 	if err != nil || l.Mode != state.ModeLong {
 		return
+	}
+	if wantPID > 0 {
+		if l.PID != wantPID || l.Pane != pane {
+			return
+		}
+		st = st.ForLease(l, launchID)
 	}
 	if l.Provider != "" && l.Provider != provider {
 		return // a hook of one CLI inherited a lease of another (nested launch)
@@ -104,7 +132,7 @@ func cmdHook(provider string, args []string) {
 					"additionalContext": instruction,
 				}}
 			}
-			json.NewEncoder(os.Stdout).Encode(out)
+			json.NewEncoder(output).Encode(out)
 		}
 	case "stop":
 		st.MarkTurn(l.ID, false, now)
@@ -122,7 +150,7 @@ func cmdHook(provider string, args []string) {
 				decision = "continue"
 			}
 			out := map[string]any{"decision": decision, "reason": longrun.DrainInstruction(l.Workspace, remaining, until)}
-			json.NewEncoder(os.Stdout).Encode(out)
+			json.NewEncoder(output).Encode(out)
 		case state.DrainDraining:
 			st.SetLeaseDrain(l.ID, state.DrainReady, now)
 			st.LogEvent(provider, l.AccountID, "long", fmt.Sprintf("lease %d: wrap-up finished, ready for takeover", l.ID), now)
@@ -148,4 +176,10 @@ func currentHeadroom(st *state.Store, l state.Lease) (float64, string) {
 		}
 	}
 	return remaining, until
+}
+
+func nativeHook(pid int, _ uint64, h herdr.Hook) []byte {
+	var output bytes.Buffer
+	processHook(h.Provider, h.Event, h.Payload, h.LeaseID, h.Ref, pid, h.LaunchID, &output)
+	return output.Bytes()
 }
