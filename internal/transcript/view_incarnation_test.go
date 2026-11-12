@@ -326,6 +326,13 @@ func TestViewIncarnationCanceledWorkersKeepTheirSlots(t *testing.T) {
 			t.Fatal(got)
 		}
 	}
+	// Worker admission is independent of whether any waiter remains.
+	c.mu.Lock()
+	slots := len(c.viewSem)
+	c.mu.Unlock()
+	if slots != 2 {
+		t.Fatal("canceled waiters returned active workers' tokens", slots)
+	}
 	queuedCtx, cancelQueued := context.WithCancel(context.Background())
 	defer cancelQueued()
 	calls := make(chan struct{}, 4)
@@ -347,4 +354,46 @@ func TestViewIncarnationCanceledWorkersKeepTheirSlots(t *testing.T) {
 	if st := c.Stats(); st.ViewOwners != 0 {
 		t.Fatal("unreferenced authority remained", st)
 	}
+}
+
+func TestViewIncarnationCurrentFollowerNeedsNoSpareSlot(t *testing.T) {
+	c, _ := testCache(t, &fakeParse{}, nil)
+	k := ViewKey{Snap: viewFixture(t, c), Last: 50}
+	oldGate, releaseOld := viewGate()
+	newGate, releaseNew := viewGate()
+	t.Cleanup(func() { releaseOld(); releaseNew(); finishViews(t, c) })
+	oldEntered, newEntered := make(chan struct{}), make(chan struct{})
+	old := asyncView(c, context.Background(), k, func() (*View, error) { close(oldEntered); <-oldGate; return simpleView() })
+	signalView(t, oldEntered)
+	replaceViewParse(t, c, k)
+	partial := &View{Value: "current partial"}
+	sentinel := errors.New("current uncached outcome")
+	var builds atomic.Int64
+	current := asyncView(c, context.Background(), k, func() (*View, error) { builds.Add(1); close(newEntered); <-newGate; return partial, sentinel })
+	signalView(t, newEntered)
+	observed := make(chan struct{}, 4)
+	follower := asyncView(c, observedViewContext{context.Background(), observed}, k, func() (*View, error) {
+		builds.Add(1)
+		return &View{Value: "wrong new callback"}, errors.New("wrong outcome")
+	})
+	signalView(t, observed)
+	// Release current work while the obsolete worker still holds the other
+	// slot. Its ordinary error is never cached: a caller that waited for a
+	// slot instead of joining cannot recover this outcome from a positive hit.
+	releaseNew()
+	for _, result := range []<-chan viewResult{current, follower} {
+		r := receiveView(t, result)
+		if r.v != partial || r.err != sentinel {
+			t.Fatal("full-capacity follower was not attached to current work", r)
+		}
+	}
+	if builds.Load() != 1 {
+		t.Fatal("follower ran another callback", builds.Load())
+	}
+	if st := c.Stats(); st.BuildingViews != 1 || st.Views != 0 {
+		t.Fatal(st)
+	}
+	releaseOld()
+	receiveView(t, old)
+	finishViews(t, c)
 }
