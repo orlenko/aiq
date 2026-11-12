@@ -85,15 +85,21 @@ func checkGolden(t *testing.T, name, got string) {
 	}
 }
 
-// goldenEnv fixes what the output reads from the process: the locale that picks the
-// marks, the palette, the Markdown marks, and a stdout that is not a terminal, so every
-// width aiq reads from it is its fallback. What fn printed on stdout and stderr comes
-// back.
+// goldenEnv fixes what the output reads from the process: a UTF-8 locale, which picks
+// the Unicode marks, the palette, the Markdown marks, and a stdout that is not a terminal,
+// so every width aiq reads from it is its fallback. What fn printed on stdout and stderr
+// comes back.
 func goldenEnv(t *testing.T, fn func()) string {
+	t.Helper()
+	return goldenEnvIn(t, "C.UTF-8", fn)
+}
+
+// goldenEnvIn is goldenEnv with LANG set to lang: "C" picks the ASCII marks.
+func goldenEnvIn(t *testing.T, lang string, fn func()) string {
 	t.Helper()
 	t.Setenv("LC_ALL", "")
 	t.Setenv("LC_CTYPE", "")
-	t.Setenv("LANG", "C.UTF-8")
+	t.Setenv("LANG", lang)
 	savedPal, savedMarkup, savedCmd := pal, convoMarkup, asksCmd
 	pal, convoMarkup, asksCmd = darkPalette, true, "aiq asks"
 	out, err := os.Create(filepath.Join(t.TempDir(), "out"))
@@ -312,15 +318,17 @@ func TestGoldenRenderConvo(t *testing.T) {
 		tgt   convoTarget
 		last  int
 		color bool
+		lang  string
 	}{
-		{"plain, account and pane", convoTarget{account: "claude/a", pane: "%3"}, 0, false},
-		{"colour, account and pane", convoTarget{account: "claude/a", pane: "%3"}, 0, true},
-		{"plain, --last 2", convoTarget{}, 2, false},
-		{"colour, --last 2", convoTarget{}, 2, true},
-		{"colour, markup hidden", convoTarget{}, 0, true},
+		{"plain, account and pane", convoTarget{account: "claude/a", pane: "%3"}, 0, false, "C.UTF-8"},
+		{"colour, account and pane", convoTarget{account: "claude/a", pane: "%3"}, 0, true, "C.UTF-8"},
+		{"plain, --last 2", convoTarget{}, 2, false, "C.UTF-8"},
+		{"colour, --last 2", convoTarget{}, 2, true, "C.UTF-8"},
+		{"colour, markup hidden", convoTarget{}, 0, true, "C.UTF-8"},
+		{"colour, account and pane, LANG=C: ASCII marks", convoTarget{account: "claude/a", pane: "%3"}, 0, true, "C"},
 	} {
 		fmt.Fprintf(&b, "=== %s\n", c.name)
-		b.WriteString(goldenEnv(t, func() {
+		b.WriteString(goldenEnvIn(t, c.lang, func() {
 			if strings.Contains(c.name, "markup hidden") {
 				convoMarkup = false
 			}
@@ -412,6 +420,72 @@ func TestGoldenAsksSections(t *testing.T) {
 	checkGolden(t, "asks-sections.golden", b.String())
 }
 
+// TestGoldenAsksList is aiq asks list as typed, with and without --here and --all, on a
+// temporary data directory: a key, a watcher's report, and asks in two workspaces, two of
+// them moved today. The clock is the real one, so the ages are minutes and hours wide.
+func TestGoldenAsksList(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", root)
+	t.Setenv("AIQ_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("AIQ_CONFIG", filepath.Join(root, "config", "config.toml"))
+	alpha, beta := filepath.Join(root, "ws", "alpha"), filepath.Join(root, "ws", "beta")
+	for _, d := range []string{filepath.Join(root, "data"), alpha, beta} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	goldenWrite(t, filepath.Join(root, "config", asksKeyName), "invented-key")
+	st, err := state.Open(filepath.Join(root, "data", "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	reg, err := state.Open(filepath.Join(root, "data", asksDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	if err := reg.EnsureAsks(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	ago := func(d time.Duration) int64 { return now.Add(-d).Unix() }
+	ask := func(ws string, s state.AskState, raised, moved int64, quote string) state.Ask {
+		return state.Ask{Chain: "example", Workspace: ws, Provider: "claude", SessionID: "example-session",
+			RaisedAt: raised, State: s, StateAt: moved, FirstQuote: quote, LastQuote: quote}
+	}
+	items := []state.Ask{
+		ask(alpha, state.AskOpen, ago(10*time.Minute), ago(10*time.Minute), "Shall I merge the docs branch?"),
+		ask(beta, state.AskOpen, ago(3*time.Hour), ago(3*time.Hour), "The example token is in the log."),
+		ask(alpha, state.AskProbablyDone, ago(5*time.Hour), now.Unix(), "Run the example check?"),
+		ask(beta, state.AskClosed, ago(6*time.Hour), now.Unix(), "Bump the version?"),
+		ask(alpha, state.AskDismissed, ago(30*time.Hour), ago(29*time.Hour), "Old question?"),
+	}
+	items[0].AsksReader = .9
+	items[1].Risk, items[1].AsksReader = .9, .2
+	items[2].StateReason, items[2].StateText = "reply", "The check ran."
+	items[3].StateReason, items[3].StateText = "reply", "Bumped to 1.4.0."
+	asksSeed(t, reg, items...)
+	if err := reg.SetAsksStatus(state.AsksStatus{PassAt: ago(150 * time.Second), Watched: 2}); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(alpha)
+
+	var b strings.Builder
+	for _, args := range [][]string{{}, {"--all"}, {"--here"}, {"--here", "--all"}} {
+		fmt.Fprintf(&b, "=== %s\n", strings.TrimSpace("aiq asks list "+strings.Join(args, " ")))
+		var runErr error
+		b.WriteString(goldenEnv(t, func() { runErr = cmdAsks(append([]string{"list"}, args...)) }))
+		if runErr != nil {
+			fmt.Fprintf(&b, "error: %v\n", runErr)
+		}
+	}
+	checkGolden(t, "asks-list.golden", strings.ReplaceAll(b.String(), root, "<root>"))
+}
+
 // goldenFollow is one --follow run, step by step, as convoFollow.loop composes it: the
 // header and the first emit, then one emit for each later parse, with the printer's width
 // what termWidth gave. The steps name what changed before each emit.
@@ -461,15 +535,22 @@ func (g *goldenFollow) load(tgt convoTarget) *transcript.Session {
 	return s
 }
 
-// runFollow runs seq at two widths, plain and on a terminal, into one golden.
+// runFollow runs seq at two widths, plain and on a terminal, into one golden. The width is
+// the printer's only: the coloured header reads the terminal itself, as convoHeader does,
+// and shows at its 80-column fallback in every section.
 func runFollow(t *testing.T, name string, seq func(g *goldenFollow)) {
+	runFollowIn(t, name, "C.UTF-8", seq)
+}
+
+// runFollowIn is runFollow with LANG set to lang.
+func runFollowIn(t *testing.T, name, lang string, seq func(g *goldenFollow)) {
 	t.Setenv("HOME", "/invented/home")
 	var b strings.Builder
 	for _, width := range []int{52, 110} {
 		for _, color := range []bool{false, true} {
 			fmt.Fprintf(&b, "=== width %d, colour and marks %v\n", width, color)
 			g := &goldenFollow{t: t, width: width, color: color}
-			b.WriteString(goldenEnv(t, func() { seq(g) }))
+			b.WriteString(goldenEnvIn(t, lang, func() { seq(g) }))
 			b.WriteString(g.b.String())
 		}
 	}
@@ -539,30 +620,37 @@ func TestGoldenFollowStaleFlip(t *testing.T) {
 
 // A followed pane moves to another session, which shows from --last 1.
 func TestGoldenFollowPaneMove(t *testing.T) {
-	runFollow(t, "follow-pane-move.golden", func(g *goldenFollow) {
-		dir := g.t.TempDir()
-		first := filepath.Join(dir, "c0ffee07-0000-4000-8000-000000000007.jsonl")
-		c := &goldenClaude{cwd: "/invented/home/work/demo", id: "c0ffee07-0000-4000-8000-000000000007", at: goldenAt(8, 11, 0, 0)}
-		c.typed("tidy the imports")
-		c.answer("m1", "Tidied.")
-		goldenWrite(g.t, first, c.lines...)
-		tgt := convoTarget{provider: "claude", path: first, account: "claude/a", pane: "%9"}
-		g.step("the first session")
-		g.begin(g.load(tgt), tgt, 1, false)
-		second := filepath.Join(dir, "rollout-2025-09-08T11-30-00-019a0000-0000-7000-8000-0000000000c3.jsonl")
-		turns := [][2]string{{"list the open issues", "Three are open."}, {"close the stale one", "Closed #41."}}
-		write := func(n int) {
-			goldenWrite(g.t, second, goldenCodex("019a0000-0000-7000-8000-0000000000c3", "/invented/home/work/demo", "cli", goldenAt(8, 11, 30, 0), turns[:n]...)...)
-		}
-		write(2)
-		moved := convoTarget{provider: "codex", path: second, account: "codex/b", pane: "%9"}
-		g.step("the pane moves")
-		g.moved(g.load(moved), moved, 1, goldenAt(8, 11, 32, 0), false)
-		turns = append(turns, [2]string{"and the duplicate", "Closed #42 as a duplicate of #40."})
-		write(3)
-		g.step("the new session goes on")
-		g.emit(g.load(moved), false)
-	})
+	runFollow(t, "follow-pane-move.golden", goldenPaneMove)
+}
+
+// The same with LANG=C, whose marks are ASCII: the moved bar and the live mark.
+func TestGoldenFollowPaneMoveASCII(t *testing.T) {
+	runFollowIn(t, "follow-pane-move-ascii.golden", "C", goldenPaneMove)
+}
+
+func goldenPaneMove(g *goldenFollow) {
+	dir := g.t.TempDir()
+	first := filepath.Join(dir, "c0ffee07-0000-4000-8000-000000000007.jsonl")
+	c := &goldenClaude{cwd: "/invented/home/work/demo", id: "c0ffee07-0000-4000-8000-000000000007", at: goldenAt(8, 11, 0, 0)}
+	c.typed("tidy the imports")
+	c.answer("m1", "Tidied.")
+	goldenWrite(g.t, first, c.lines...)
+	tgt := convoTarget{provider: "claude", path: first, account: "claude/a", pane: "%9"}
+	g.step("the first session")
+	g.begin(g.load(tgt), tgt, 1, false)
+	second := filepath.Join(dir, "rollout-2025-09-08T11-30-00-019a0000-0000-7000-8000-0000000000c3.jsonl")
+	turns := [][2]string{{"list the open issues", "Three are open."}, {"close the stale one", "Closed #41."}}
+	write := func(n int) {
+		goldenWrite(g.t, second, goldenCodex("019a0000-0000-7000-8000-0000000000c3", "/invented/home/work/demo", "cli", goldenAt(8, 11, 30, 0), turns[:n]...)...)
+	}
+	write(2)
+	moved := convoTarget{provider: "codex", path: second, account: "codex/b", pane: "%9"}
+	g.step("the pane moves")
+	g.moved(g.load(moved), moved, 1, goldenAt(8, 11, 32, 0), false)
+	turns = append(turns, [2]string{"and the duplicate", "Closed #42 as a duplicate of #40."})
+	write(3)
+	g.step("the new session goes on")
+	g.emit(g.load(moved), false)
 }
 
 // TestGoldenResolve is what aiq convo resolves, by directory, id and pane, on temporary
@@ -631,17 +719,17 @@ func TestGoldenResolve(t *testing.T) {
 		}
 	}
 
-	r := newConvoResolver(st, defaultRoots())
-	var b strings.Builder
 	show := func(call string, tgt convoTarget, err error) {
 		if err != nil {
-			fmt.Fprintf(&b, "%s: error: %v\n", call, err)
+			fmt.Printf("%s: error: %v\n", call, err)
 			return
 		}
-		fmt.Fprintf(&b, "%s: provider %s, path %s, account %q, pane %q, stale %v, id %q\n",
+		fmt.Printf("%s: provider %s, path %s, account %q, pane %q, stale %v, id %q\n",
 			call, tgt.provider, tgt.path, tgt.account, tgt.pane, tgt.stale, tgt.id)
 	}
-	b.WriteString(goldenEnv(t, func() {
+	got := goldenEnv(t, func() {
+		// Built here, so the transcripts it cannot read are named on the stderr goldenEnv holds.
+		r := newConvoResolver(st, defaultRoots())
 		for _, dir := range []string{work, filepath.Join(work, "sub"), filepath.Join(root, "work"), filepath.Join(root, "other")} {
 			tgt, err := r.resolveDir(dir)
 			show("dir "+dir, tgt, err)
@@ -670,7 +758,18 @@ func TestGoldenResolve(t *testing.T) {
 		fmt.Printf("stale %s: %v\n", goldenX1, r.stale(convoTarget{provider: "codex", path: leased, id: goldenX1}))
 		fmt.Printf("stale %s: %v\n", goldenX2, r.stale(convoTarget{provider: "codex", path: leased, id: goldenX2}))
 		fmt.Printf("stale %s: %v\n", goldenC1, r.stale(convoTarget{provider: "claude", id: goldenC1}))
-	}))
-	out := strings.ReplaceAll(b.String(), regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(root, "-"), "<root as a project>")
+
+		// A transcript that cannot be read is named before the answer.
+		bad := filepath.Join(project, "c0ffee03-0000-4000-8000-000000000003.jsonl")
+		c := &goldenClaude{cwd: work, id: "c0ffee03-0000-4000-8000-000000000003", at: goldenAt(9, 9, 30, 0)}
+		c.typed("look at c0ffee03")
+		goldenWrite(t, bad, c.lines...)
+		panicOn(t, bad)
+		for _, id := range []string{"c0ffee01", "c0ffee03"} {
+			tgt, err := r.resolveID(work, id)
+			show("id "+id+", c0ffee03 unreadable", tgt, err)
+		}
+	})
+	out := strings.ReplaceAll(got, regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(root, "-"), "<root as a project>")
 	checkGolden(t, "resolve.golden", strings.ReplaceAll(strings.ReplaceAll(out, root, "<root>"), strconv.Itoa(pid), "<pid>"))
 }

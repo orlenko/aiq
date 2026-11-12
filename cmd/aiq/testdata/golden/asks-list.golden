@@ -1,0 +1,77 @@
+=== aiq asks list
+Watching 2, 2 min ago (long sessions, this machine)
+Moved today: 1 closed, 1 probably done
+  #4 closed, by: Bumped to 1.4.0.
+     Bump the version?
+  #3 probably-done, by: The check ran.
+     Run the example check?
+
+Asks
+  #1  alpha  claude  10 min ago
+      > Shall I merge the docs branch?
+
+Warnings
+  #2  beta  claude  3 h ago
+      > The example token is in the log.
+
+1 probably done, 2 closed or dismissed: aiq asks list --all
+=== aiq asks list --all
+Watching 2, 2 min ago (long sessions, this machine)
+Moved today: 1 closed, 1 probably done
+  #4 closed, by: Bumped to 1.4.0.
+     Bump the version?
+  #3 probably-done, by: The check ran.
+     Run the example check?
+
+Asks
+  #1  alpha  claude  10 min ago
+      > Shall I merge the docs branch?
+
+Warnings
+  #2  beta  claude  3 h ago
+      > The example token is in the log.
+
+Probably done
+  #3  alpha  claude  5 h ago
+      > Run the example check?
+      probably-done (reply)
+
+Closed and dismissed
+  #4  beta  claude  6 h ago
+      > Bump the version?
+      closed (reply)
+  #5  alpha  claude  30 h ago
+      > Old question?
+      dismissed
+=== aiq asks list --here
+Only <root>/ws/alpha. 2 others hidden, all states.
+Watching 2, 2 min ago (long sessions, this machine)
+Moved today: 0 closed, 1 probably done
+  #3 probably-done, by: The check ran.
+     Run the example check?
+
+Asks
+  #1  alpha  claude  10 min ago
+      > Shall I merge the docs branch?
+
+1 probably done, 1 closed or dismissed: aiq asks list --all
+=== aiq asks list --here --all
+Only <root>/ws/alpha. 2 others hidden, all states.
+Watching 2, 2 min ago (long sessions, this machine)
+Moved today: 0 closed, 1 probably done
+  #3 probably-done, by: The check ran.
+     Run the example check?
+
+Asks
+  #1  alpha  claude  10 min ago
+      > Shall I merge the docs branch?
+
+Probably done
+  #3  alpha  claude  5 h ago
+      > Run the example check?
+      probably-done (reply)
+
+Closed and dismissed
+  #5  alpha  claude  30 h ago
+      > Old question?
+      dismissed

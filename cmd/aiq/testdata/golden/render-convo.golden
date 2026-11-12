@@ -341,3 +341,104 @@ Tagging v1.2.
 \e[48;5;236m                                                                                                    \e[0m
 
 \e[33mworking · 12m · 5 tools\e[0m
+=== colour, account and pane, LANG=C: ASCII marks
+\e[0m\e[1;7;38;5;110m aiq convo \e[0m \e[38;5;246mclaude opus-5 · claude/a · ~/work/demo · session c0ffee04 · pane %3\e[0m \e[0m
+\e[2m  · a record over 32 MB was skipped\e[0m
+
+\e[48;5;236m\e[1;36m▌ you · 2025-09-04                                                                                  \e[0m
+\e[48;5;236m\e[1msummarise the failing tests                                                                         \e[0m
+\e[48;5;236m                                                                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 09:00:10\e[0m\e[48;5;235m                                                                                 \e[0m
+Running the suite.
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 3m · 3 tools\e[0m\e[48;5;235m                                                                             \e[0m
+Two tests fail:
+
+1. \e[33m`TestLoad`\e[0m: \e[1m**timeout**\e[0m
+2. \e[33m`TestSave`\e[0m: \e[3m*wrong path*\e[0m
+
+\e[2m|\e[0m \e[1mtest\e[0m     \e[2m|\e[0m \e[1mcause\e[0m              \e[2m|\e[0m
+\e[2m|\e[0m \e[2m--------\e[0m \e[2m|\e[0m \e[2m------------------\e[0m \e[2m|\e[0m
+\e[2m|\e[0m TestLoad \e[2m|\e[0m timeout after 30 s \e[2m|\e[0m
+\e[2m|\e[0m TestSave \e[2m|\e[0m path               \e[2m|\e[0m
+
+\e[2m```go\e[0m
+\e[33mt.Setenv("X", "1")\e[0m
+\e[2m```\e[0m
+
+\e[2m> \e[0ma quoted line
+
+See [the guide](\e[2mhttps://example.invalid/guide\e[0m).
+
+\e[2m· aiq: aiq moved this session to claude/b\e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 1m\e[0m\e[48;5;235m                                                                                       \e[0m
+Picking up where it left off.
+more
+
+\e[48;5;236m\e[1;36m▌ you · 2025-09-04                                                                                  \e[0m
+\e[48;5;236m\e[1mfix the build                                                                                       \e[0m
+\e[48;5;236m                                                                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 09:10:05\e[0m\e[48;5;235m                                                                                 \e[0m
+Starting on the fix.
+
+\e[48;5;236m\e[1;36m▌ you, while it worked                                                                              \e[0m
+\e[48;5;236m\e[1malso update the changelog                                                                           \e[0m
+\e[48;5;236m                                                                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 09:12:30\e[0m\e[48;5;235m                                                                                 \e[0m
+Fixed both; updating the changelog now.
+It has two entries.
+
+\e[0m\e[48;5;235m\e[2m* claude · earlier\e[0m\e[48;5;235m                                                                                  \e[0m
+\e[2mChangelog updated.\e[0m
+\e[2m  · Checking CI once more.\e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 12m · 47 tools\e[0m\e[48;5;235m                                                                           \e[0m
+All done: the fix and the changelog.
+
+\e[2m· peer agent: Another Claude session sent a message: hi\e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 1m\e[0m\e[48;5;235m                                                                                       \e[0m
+Answered the peer.
+
+\e[2m· orchestra inbox · 09:25:00\e[0m
+
+\e[2m· notice: [agent-nudge] PR #4 has a review\e[0m
+
+\e[48;5;236m\e[1;36m▌ you · 2025-09-04                                                                                  \e[0m
+\e[48;5;236m\e[1msilent one                                                                                          \e[0m
+\e[48;5;236m                                                                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 1m\e[0m\e[48;5;235m                                                                                       \e[0m
+\e[2m(no reply)\e[0m
+
+\e[1;36m▌ you · 2025-09-04\e[0m
+\e[2m  · a record over 32 MB was skipped\e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 1m\e[0m\e[48;5;235m                                                                                       \e[0m
+Handled the long paste.
+
+\e[48;5;236m\e[1;36m▌ you · 2025-09-04                                                                                  \e[0m
+\e[48;5;236m\e[1ma prompt that runs on for long enough that the band has to wrap it onto a second line at the narrow \e[0m
+\e[48;5;236m\e[1mwidth                                                                                               \e[0m
+\e[48;5;236m                                                                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 1m\e[0m\e[48;5;235m                                                                                       \e[0m
+Wrapped.
+\e[2m  · a record over 32 MB was skipped\e[0m
+
+\e[48;5;236m\e[1;36m▌ you · 2025-09-04                                                                                  \e[0m
+\e[48;5;236m\e[1mnow ship it                                                                                         \e[0m
+\e[48;5;236m                                                                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m* claude · 09:40:30\e[0m\e[48;5;235m                                                                                 \e[0m
+Tagging v1.2.
+
+\e[48;5;236m\e[1;36m▌ you, while it worked                                                                              \e[0m
+\e[48;5;236m\e[1mwait for me                                                                                         \e[0m
+\e[48;5;236m                                                                                                    \e[0m
+
+\e[33mworking · 12m · 5 tools\e[0m
