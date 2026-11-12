@@ -19,7 +19,8 @@ const DiscoveryTTL = 15 * time.Second
 // as the direct walk finds it. The Codex rollouts and Antigravity's history
 // are scanned on a shared TTL: a read past it starts one scan, shared by
 // concurrent readers, and is answered from the last completed scan while it
-// runs; nothing else starts one. A rollout is opened once per (path, inode),
+// runs; nothing else starts one. A successfully classified rollout is opened
+// once per (path, inode); unsuccessful heads are retried on the next scan,
 // and a path the latest scan did not see is dropped. The completion of a
 // provider's scan is its generation.
 type Index struct {
@@ -54,6 +55,7 @@ type codexSeen struct {
 	dev, ino    uint64
 	cwd         string // canonical; "" when the head names none
 	interactive bool
+	classified  bool // only successful heads are immutable at their inode
 }
 
 type agyScan struct {
@@ -132,8 +134,8 @@ func (x *Index) agyScan(ctx context.Context) (*agyScan, error) {
 	return &agyScan{}, nil
 }
 
-// scanCodex walks the rollouts and reads the head of each one prev has not
-// seen at its inode.
+// scanCodex walks the rollouts and reads each head prev has not successfully
+// classified at its inode.
 func (x *Index) scanCodex(prev any) any {
 	x.walks.Add(1)
 	old, _ := prev.(*codexScan)
@@ -160,7 +162,7 @@ func (x *Index) scanCodex(prev any) any {
 	parallel(len(all), func(i int) {
 		f := all[i]
 		if old != nil {
-			if s, ok := old.seen[f.c.Path]; ok && s.ino != 0 && s.dev == f.dev && s.ino == f.ino {
+			if s, ok := old.seen[f.c.Path]; ok && s.classified && s.ino != 0 && s.dev == f.dev && s.ino == f.ino {
 				seen[i] = s
 				return
 			}
@@ -171,6 +173,7 @@ func (x *Index) scanCodex(prev any) any {
 		defer func() { recover() }()
 		if meta, ok := codexMeta(f.c.Path); ok {
 			seen[i].cwd, seen[i].interactive = canonical(meta.Cwd), interactive(meta)
+			seen[i].classified = true
 		}
 	})
 	for i, f := range all {
@@ -186,18 +189,20 @@ func (x *Index) scanCodex(prev any) any {
 // scanAgy maps each recorded workspace to its conversations' transcripts.
 func (x *Index) scanAgy(any) any {
 	next := &agyScan{byDir: map[string][]Candidate{}}
-	seen := map[string]bool{}
+	type association struct{ dir, path string }
+	seen := map[association]bool{}
 	for _, root := range x.r.AgyAppData {
 		for dir, ids := range agyWorkspaces(context.Background(), root) {
 			for _, id := range ids {
 				p := AgyTranscript(root, id)
-				if seen[p] {
+				key := association{dir, p}
+				if seen[key] {
 					continue
 				}
 				if _, err := os.Stat(p); err != nil {
 					continue
 				}
-				seen[p] = true
+				seen[key] = true
 				next.byDir[dir] = append(next.byDir[dir], Candidate{Provider: "agy", Path: p})
 			}
 		}

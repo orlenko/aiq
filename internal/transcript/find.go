@@ -54,6 +54,9 @@ func FindByID(ctx context.Context, src Discovery, provider, id string, parse fun
 	if !validFullID(provider, id) {
 		return Hit{}, ErrBadID
 	}
+	if err := ctx.Err(); err != nil {
+		return Hit{}, err
+	}
 	cands, err := src.ByID(ctx, provider, id)
 	if err != nil {
 		return Hit{}, err
@@ -96,24 +99,49 @@ func FindByID(ctx context.Context, src Discovery, provider, id string, parse fun
 		byFile[k] = cp
 		copies = append(copies, cp)
 	}
+	if err := ctx.Err(); err != nil {
+		return Hit{}, err
+	}
 	if len(copies) == 0 {
 		return Hit{}, ErrNoSuchSession
 	}
-	updated := func(cp *copyOf) time.Time {
+	updated := func(cp *copyOf) (time.Time, error) {
+		if err := ctx.Err(); err != nil {
+			return time.Time{}, err
+		}
 		if cp.updated == nil {
-			s, _ := recovered(ctx, parse, cp.hit.Path)
+			s, err := recovered(ctx, parse, cp.hit.Path)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return time.Time{}, ctxErr
+			}
+			if errors.Is(err, ErrBudget) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return time.Time{}, err
+			}
 			cp.updated = &s.Updated
 		}
-		return *cp.updated
+		return *cp.updated, nil
 	}
 	best := copies[0]
 	for _, cp := range copies[1:] {
 		switch {
 		case cp.mtime.After(best.mtime):
 			best = cp
-		case cp.mtime.Equal(best.mtime) && updated(cp).After(updated(best)):
-			best = cp
+		case cp.mtime.Equal(best.mtime):
+			at, err := updated(cp)
+			if err != nil {
+				return Hit{}, err
+			}
+			bestAt, err := updated(best)
+			if err != nil {
+				return Hit{}, err
+			}
+			if at.After(bestAt) {
+				best = cp
+			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return Hit{}, err
 	}
 	return best.hit, nil
 }
@@ -133,11 +161,17 @@ const memoMax = 4096
 // copy under another root is followed within that time. A lookup it does
 // not remember goes through the index, which walks nothing within its TTL.
 func (x *Index) Find(ctx context.Context, provider, id string, parse func(ctx context.Context, path string) (Summary, error)) (Hit, error) {
+	if err := ctx.Err(); err != nil {
+		return Hit{}, err
+	}
 	k := provider + "\x00" + id
 	gen := x.generation(provider)
 	x.mu.Lock()
 	if e, ok := x.memo[k]; ok && e.gen == gen && x.now().Sub(e.at) < x.ttl {
 		x.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return Hit{}, err
+		}
 		return e.hit, nil
 	}
 	x.mu.Unlock()
@@ -147,6 +181,9 @@ func (x *Index) Find(ctx context.Context, provider, id string, parse func(ctx co
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Hit{}, err
+	}
 	if len(x.memo) >= memoMax {
 		for k, e := range x.memo {
 			if x.now().Sub(e.at) >= x.ttl {
