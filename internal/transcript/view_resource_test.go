@@ -482,14 +482,14 @@ func TestViewResourceLateBuildAfterParseReadmission(t *testing.T) {
 			if !fail && (r.err != nil || r.v == nil || r.v.ETag != "old-parsed" || r.v.Value != "old parsed result") {
 				t.Fatal("obsolete parsed builder lost its caller outcome", r)
 			}
-			if c.NotModified(k, "", "full") || !c.NotModified(other, "", "full") {
+			if c.NotModified(k, "", "old-parsed") || !c.NotModified(other, "", "full") {
 				t.Fatal("old parsed completion polluted current state")
 			}
 			c.NoteDelta(other, current, "valid", "delta")
 			if !c.NotModified(other, "valid", "delta") {
 				t.Fatal("new owner removed by old cleanup")
 			}
-			if st := c.Stats(); st.FailedViews != 0 || st.ViewOwners != 1 {
+			if st := c.Stats(); st.FailedViews != 0 || st.ViewOwners != 1 || st.Views != 1 {
 				t.Fatal(st)
 			}
 		})
