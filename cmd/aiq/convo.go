@@ -22,6 +22,7 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -344,7 +345,7 @@ func (r *convoResolver) resolve(o convoOpts) (convoTarget, error) {
 	if o.pane != "" {
 		return r.resolvePane(o.pane)
 	}
-	if pane := os.Getenv("TMUX_PANE"); pane != "" {
+	if pane := terminal.Current(); pane != "" {
 		t, err := r.resolvePane(pane)
 		if err == nil {
 			return t, nil
@@ -366,9 +367,9 @@ func (r *convoResolver) resolve(o convoOpts) (convoTarget, error) {
 // after a tmux restart, so a Claude session file or lease that names the
 // pane counts only while its process lives inside that pane.
 func (r *convoResolver) resolvePane(pane string) (convoTarget, error) {
-	info, err := tmux.PaneInfo(pane)
+	info, err := terminal.Info(pane)
 	if err != nil {
-		return convoTarget{}, fmt.Errorf("no tmux pane %s", pane)
+		return convoTarget{}, fmt.Errorf("terminal %s is unavailable: %w", oneLine(pane), err)
 	}
 	parents := processParents()
 	lease, leased := r.paneLease(info, parents)

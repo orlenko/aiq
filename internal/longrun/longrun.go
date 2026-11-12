@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/provider/agy"
@@ -26,6 +28,7 @@ import (
 	"github.com/orlenko/aiq/internal/provider/codex"
 	"github.com/orlenko/aiq/internal/selector"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/tier"
 	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
@@ -229,9 +232,10 @@ func opensAsRebuilt(p string) bool {
 
 // Supervisor runs inside the daemon.
 type Supervisor struct {
-	Pool   *pool.Pool
-	Logf   func(format string, v ...any)
-	AiqBin string
+	herdrDiscoveryFailed bool
+	Pool                 *pool.Pool
+	Logf                 func(format string, v ...any)
+	AiqBin               string
 	// Refresh re-polls one account's telemetry; nil skips the re-poll.
 	Refresh func(accountID string)
 
@@ -408,7 +412,7 @@ func recovered(l state.Lease, remaining, drainPct float64, blocked bool) bool {
 
 // cancelDrain puts a recovered lease back to running normally.
 func (s *Supervisor) cancelDrain(l state.Lease, remaining float64, now time.Time) {
-	s.Pool.St.SetLeaseDrain(l.ID, state.DrainNone, now)
+	s.leaseStore(l).SetLeaseDrain(l.ID, state.DrainNone, now)
 	s.Pool.St.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf(
 		"lease %d: %.0f%% left again, drain cancelled; staying on %s", l.ID, remaining, l.AccountID), now)
 }
@@ -434,8 +438,28 @@ func (s *Supervisor) staysAfterRefresh(l state.Lease, now time.Time) bool {
 }
 
 func (s *Supervisor) evaluate(l state.Lease, now time.Time) {
-	st := s.Pool.St
-	if l.Pane != "" {
+	st := s.leaseStore(l)
+	if herdr.IsRef(l.Pane) {
+		r, err := herdr.Info(l.Pane)
+		if errors.Is(err, herdr.ErrEnded) {
+			st.ReleaseLease(l.ID)
+			return
+		}
+		if err != nil {
+			s.waitForSuccessor(l, now, waiting{key: waitTerminal, text: "Herdr control unavailable; no replacement attempted"})
+			return
+		}
+		if r.State != "running" || r.PID != l.PID {
+			if r.PID != l.PID {
+				if current, e := st.LongLeaseByPane(l.Pane); e == nil && current.PID == r.PID && current.TakeoverOf == l.ID {
+					st.ReleaseLease(l.ID)
+					return
+				}
+			}
+			s.waitForSuccessor(l, now, waiting{key: waitTerminal, text: "Herdr child is starting or changed; waiting for its registered lease"})
+			return
+		}
+	} else if l.Pane != "" {
 		alive := tmux.PaneAlive
 		if s.paneAlive != nil {
 			alive = s.paneAlive
@@ -579,6 +603,9 @@ func (s *Supervisor) rotateIfIdle(l state.Lease, remaining float64, now time.Tim
 // "Keep current model" when it is open in the lease's pane. Sessions launched
 // with codex.UnattendedArgs never show it; this covers older ones.
 func (s *Supervisor) dismissRateLimitPrompt(l state.Lease, now time.Time) {
+	if herdr.IsRef(l.Pane) {
+		return
+	} // New native Codex sessions already suppress this menu.
 	screen, err := tmux.Capture(l.Pane)
 	if err != nil || !codex.RateLimitPromptOpen(screen) {
 		return
@@ -723,7 +750,7 @@ func decideIdle(l state.Lease, found, hasContext, carries bool) idleAction {
 // That started a fresh successor with no handoff note from a session that had
 // quota left to write one, and whose next prompt would have asked it to.
 func (s *Supervisor) idle(l state.Lease, remaining float64, now time.Time) {
-	st := s.Pool.St
+	st := s.leaseStore(l)
 	l, ok := s.unchanged(l)
 	if !ok {
 		return
@@ -779,7 +806,7 @@ func (s *Supervisor) unchanged(l state.Lease) (state.Lease, bool) {
 // the drain floor asks then. w's text is logged once per episode and kind of
 // wait, or not at all when empty, and w is kept for the lease's standing.
 func (s *Supervisor) waitForSuccessor(l state.Lease, now time.Time, w waiting) {
-	st := s.Pool.St
+	st := s.leaseStore(l)
 	switch l.Drain {
 	case state.DrainNone, state.DrainRequested, state.DrainWaiting:
 	default:
@@ -799,7 +826,7 @@ func (s *Supervisor) waitForSuccessor(l state.Lease, now time.Time, w waiting) {
 // stops serving it. The CLI cannot make another request, so it moves now. With
 // nowhere to go it stays as it is, and each block is said once.
 func (s *Supervisor) blockedMove(l state.Lease, now time.Time) {
-	st := s.Pool.St
+	st := s.leaseStore(l)
 	if s.sayOnce(l, "blocked") {
 		// A new block says everything again, a failure said before it too.
 		s.unsayAll(l)
@@ -957,7 +984,7 @@ func badSessionID(l state.Lease) string {
 
 // moveTo respawns the lease's pane on acc.
 func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
-	st := s.Pool.St
+	st := s.leaseStore(l)
 	same := acc.Provider == l.Provider
 	launcher := s.launcherFor(l, acc.Provider)
 	if l.Launcher != "" && launcher == "" {
@@ -980,15 +1007,18 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 	launch := func(resume bool) error {
 		offer := s.prepareNote(l, resume, now)
 		args := s.successorArgs(l, acc, launcher, title, resume, takeoverPrompt(l.Workspace, resume, l.Provider, offer))
-		cmd := tmux.Quote(args)
-		s.Logf("lease %d: respawn %s in %s: %s", l.ID, l.Pane, l.Workspace, cmd)
-		return tmux.Respawn(l.Pane, l.Workspace, cmd)
+		if herdr.IsRef(l.Pane) {
+			s.Logf("lease %d: start native Herdr successor", l.ID)
+		} else {
+			s.Logf("lease %d: respawn %s in %s: %s", l.ID, l.Pane, l.Workspace, tmux.Quote(args))
+		}
+		return terminal.Respawn(l.Pane, l.PID, l.Workspace, args)
 	}
 	// died reports whether the pane's command has exited, and describes what
 	// is on screen. A tmux query that fails is not a death: respawning then
 	// would kill a session that is merely slow to start.
 	died := func() (bool, string) {
-		exists, running, err := tmux.PaneState(l.Pane)
+		exists, running, err := terminal.State(l.Pane)
 		if err != nil {
 			s.Logf("lease %d: pane %s query failed, leaving it alone: %v", l.ID, l.Pane, err)
 			return false, ""
@@ -996,7 +1026,7 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 		if !exists || running {
 			return false, ""
 		}
-		return true, tmux.PaneDiag(l.Pane) + " | screen: " + tmux.Tail(l.Pane, 6)
+		return true, terminal.Diagnostic(l.Pane)
 	}
 	if err := launch(resume); err != nil {
 		if s.sayOnce(l, "respawn failed") {
@@ -1007,6 +1037,11 @@ func (s *Supervisor) moveTo(l state.Lease, acc state.Account, now time.Time) {
 	}
 	st.ReleaseLease(l.ID)
 	st.LogEvent(acc.Provider, acc.ID, "long", fmt.Sprintf("took over lease %d from %s in pane %s (resume=%v)", l.ID, l.AccountID, l.Pane, resume), now)
+	// Native child exit is final, including a rejected resume or a quick
+	// user exit. The runner never inherits tmux's early-exit fresh retry.
+	if herdr.IsRef(l.Pane) {
+		return
+	}
 	// A resume that the CLI rejects exits within seconds; fall back to a
 	// fresh session so the pane never sits dead.
 	time.Sleep(8 * time.Second)
@@ -1334,4 +1369,11 @@ func splitArgs(s string) []string {
 		return strings.Fields(s)
 	}
 	return out
+}
+
+func (s *Supervisor) leaseStore(l state.Lease) *state.Store {
+	if herdr.IsRef(l.Pane) {
+		return s.Pool.St.ForLease(l, 0)
+	}
+	return s.Pool.St
 }

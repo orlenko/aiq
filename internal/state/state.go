@@ -312,7 +312,28 @@ type Event struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db          *sql.DB
+	leaseGuard  *Lease
+	launchGuard int64
+}
+
+// ForLease restricts hook/supervisor updates to this exact lease instance.
+// A native runner serializes generations, while these SQL predicates also
+// protect against external pruning and reuse of a numeric lease id.
+func (s *Store) ForLease(l Lease, launchID int64) *Store {
+	return &Store{db: s.db, leaseGuard: &l, launchGuard: launchID}
+}
+
+func (s *Store) leaseExec(query string, id int64, args ...any) (sql.Result, error) {
+	args = append(args, id)
+	if l := s.leaseGuard; l != nil {
+		if l.ID != id {
+			return nil, errors.New("lease identity changed")
+		}
+		query += " AND started_at = ? AND pid = ? AND pane = ?"
+		args = append(args, l.StartedAt, l.PID, l.Pane)
+	}
+	return s.db.Exec(query, args...)
 }
 
 // AccountID builds the canonical "<provider>/<name>" identifier.
@@ -353,6 +374,18 @@ func Open(path string) (*Store, error) {
 	}
 	db.Exec(`ALTER TABLE launches ADD COLUMN args TEXT`)
 	os.Chmod(path, 0o600)
+	return &Store{db: db}, nil
+}
+
+// OpenHook opens an already initialized native session store without schema
+// writes. Short lock waits bound a callback that shares the runner's control
+// loop; a busy store must not hold stop behind repeated five-second waits.
+func OpenHook(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=rw&_pragma=busy_timeout(250)", path))
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
 	return &Store{db: db}, nil
 }
 
@@ -718,7 +751,7 @@ func (s *Store) AddLease(l Lease) (int64, error) {
 }
 
 func (s *Store) ReleaseLease(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM leases WHERE id = ?`, id)
+	_, err := s.leaseExec(`DELETE FROM leases WHERE id = ?`, id)
 	return err
 }
 
@@ -778,24 +811,31 @@ func (s *Store) GetLease(id int64) (Lease, error) {
 // the status line) so the session can be resumed on another account. The
 // launch that started the lease learns the id too, if it did not know it.
 func (s *Store) SetLeaseSession(id int64, sessionID string) error {
-	_, err := s.db.Exec(`UPDATE leases SET session_id = ? WHERE id = ?`, sessionID, id)
+	_, err := s.leaseExec(`UPDATE leases SET session_id = ? WHERE id = ?`, id, sessionID)
 	if err == nil && sessionID != "" {
-		s.db.Exec(`UPDATE launches SET session_id = ? WHERE lease_id = ? AND COALESCE(session_id,'') = ''`, sessionID, id)
+		if l := s.leaseGuard; l != nil {
+			s.db.Exec(`UPDATE launches SET session_id = ? WHERE id = ? AND COALESCE(session_id,'') = ''
+			 AND account_id = ? AND mode = ? AND started_at_ms >= ? AND started_at_ms < ?
+			 AND EXISTS (SELECT 1 FROM leases WHERE id = ? AND started_at = ? AND pid = ? AND pane = ?)`,
+				sessionID, s.launchGuard, l.AccountID, ModeLong, l.StartedAt*1000, (l.StartedAt+1)*1000, l.ID, l.StartedAt, l.PID, l.Pane)
+		} else {
+			s.db.Exec(`UPDATE launches SET session_id = ? WHERE lease_id = ? AND COALESCE(session_id,'') = ''`, sessionID, id)
+		}
 	}
 	return err
 }
 
 // SetLeaseTranscript records the transcript file a hook reported.
 func (s *Store) SetLeaseTranscript(id int64, path string) error {
-	_, err := s.db.Exec(`UPDATE leases SET transcript = ? WHERE id = ?`, path, id)
+	_, err := s.leaseExec(`UPDATE leases SET transcript = ? WHERE id = ?`, id, path)
 	return err
 }
 
 // SetLeaseDrain moves a long lease through the drain state machine. Back to
 // DrainNone also forgets that the user asked for the drain.
 func (s *Store) SetLeaseDrain(id int64, drain string, now time.Time) error {
-	_, err := s.db.Exec(`UPDATE leases SET drain = ?, drain_at = ?,
-		drain_manual = CASE WHEN ? = '' THEN 0 ELSE drain_manual END WHERE id = ?`, drain, now.Unix(), drain, id)
+	_, err := s.leaseExec(`UPDATE leases SET drain = ?, drain_at = ?,
+		drain_manual = CASE WHEN ? = '' THEN 0 ELSE drain_manual END WHERE id = ?`, id, drain, now.Unix(), drain)
 	return err
 }
 
@@ -853,7 +893,7 @@ func CleanLine(s string) string {
 // RequestDrainByUser starts a drain the supervisor must see through even if
 // the account's quota recovers.
 func (s *Store) RequestDrainByUser(id int64, now time.Time) error {
-	_, err := s.db.Exec(`UPDATE leases SET drain = ?, drain_at = ?, drain_manual = 1 WHERE id = ?`, DrainRequested, now.Unix(), id)
+	_, err := s.leaseExec(`UPDATE leases SET drain = ?, drain_at = ?, drain_manual = 1 WHERE id = ?`, id, DrainRequested, now.Unix())
 	return err
 }
 
@@ -863,7 +903,7 @@ func (s *Store) MarkTurn(id int64, started bool, now time.Time) error {
 	if started {
 		col = "turn_started_at"
 	}
-	_, err := s.db.Exec(`UPDATE leases SET `+col+` = ? WHERE id = ?`, now.Unix(), id)
+	_, err := s.leaseExec(`UPDATE leases SET `+col+` = ? WHERE id = ?`, id, now.Unix())
 	return err
 }
 
@@ -890,7 +930,11 @@ func (s *Store) PruneLeases(hostname string, alive func(pid int) bool) ([]Lease,
 	var live []Lease
 	for _, l := range leases {
 		if (l.Hostname == hostname && !alive(l.PID)) || (l.Hostname != hostname && l.StartedAt < cutoff) {
-			s.ReleaseLease(l.ID)
+			if strings.HasPrefix(l.Pane, "herdr:") {
+				s.ForLease(l, 0).ReleaseLease(l.ID)
+			} else {
+				s.ReleaseLease(l.ID)
+			}
 			continue
 		}
 		live = append(live, l)
@@ -998,6 +1042,22 @@ func (s *Store) AddLaunch(l Launch) (int64, error) {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// GetLaunch resolves the immutable launch id a native runner registered.
+// It avoids guessing among historical launches with reused lease ids.
+func (s *Store) GetLaunch(id int64) (Launch, error) {
+	var l Launch
+	var ms int64
+	var args string
+	err := s.db.QueryRow(`SELECT id, started_at_ms, COALESCE(hostname,''), COALESCE(provider,''), COALESCE(account_id,''),
+	 COALESCE(launcher,''), COALESCE(cwd,''), COALESCE(mode,''), COALESCE(session_id,''), COALESCE(lease_id,0), COALESCE(args,'') FROM launches WHERE id = ?`, id).
+		Scan(&l.ID, &ms, &l.Hostname, &l.Provider, &l.AccountID, &l.Launcher, &l.Cwd, &l.Mode, &l.SessionID, &l.LeaseID, &args)
+	l.StartedAt = time.UnixMilli(ms)
+	if err == nil {
+		err = json.Unmarshal([]byte(args), &l.Args)
+	}
+	return l, err
 }
 
 // ListLaunches returns the launches on hostname in any of cwds, or with one

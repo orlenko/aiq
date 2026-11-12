@@ -15,6 +15,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/orlenko/aiq/internal/config"
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
@@ -724,7 +725,16 @@ func (a *app) menuEnvironment(dir string) *menuEnv {
 		}
 	}
 	ws := workspaceID()
-	if tmux.Available() && tmux.HasSession(longrun.SessionName(a.cfg.Long.TmuxPrefix, ws)) {
+	native, owned, nativeErr := herdr.Workspace(ws)
+	if owned {
+		e.longHere = "Herdr"
+		if nativeErr != nil {
+			e.longHere = "Herdr (unreachable)"
+		} else if native.State == "starting" {
+			e.longHere = "Herdr (starting)"
+		}
+	}
+	if owned || (tmux.Available() && tmux.HasSession(longrun.SessionName(a.cfg.Long.TmuxPrefix, ws))) {
 		if leases, err := a.longLeases(); err == nil {
 			for _, l := range leases {
 				if l.Workspace == ws {
