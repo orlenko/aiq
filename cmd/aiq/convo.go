@@ -831,9 +831,14 @@ const (
 // convoPrinter writes a conversation append-only: each piece once, in the
 // order it turned up, so a snapshot and a --follow run print the same text.
 type convoPrinter struct {
-	provider string
-	color    bool
-	marks    bool
+	palette                         convoPalette
+	renderer                        convoMarkdownRenderer
+	liveMark, itemBand, skippedNote string
+	promptHead                      func(time.Time) string
+	clock                           func(time.Time) string
+	provider                        string
+	color                           bool
+	marks                           bool
 	// width is the terminal's, for rendering the agent's Markdown (with
 	// colour only); 0 means unknown.
 	width int
@@ -893,10 +898,6 @@ type turnSeen struct {
 	skipped int // records over the line cap shown as skipped
 }
 
-func newConvoPrinter(provider string, color, marks bool) *convoPrinter {
-	return &convoPrinter{provider: provider, color: color, marks: marks, markup: convoMarkup, seen: map[string]*turnSeen{}}
-}
-
 // convoMarkup is what new printers do with the Markdown marks: keep them,
 // unless --hide-markup.
 var convoMarkup = true
@@ -949,13 +950,13 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			case t.PromptSkipped:
 				// The prompt was a record too long to read: the line saying so
 				// stands in its place, and is that record's one line.
-				text = transcript.SkippedNote()
-				p.block(&b, true, pal.you, youHeader(t.Started), pal.dim, "  · "+text)
+				text = p.skippedNote
+				p.block(&b, true, p.palette.you, p.promptHead(t.Started), p.palette.dim, "  · "+text)
 				seen.skipped = 1
 			case human:
-				p.human(&b, youHeader(t.Started), t.Prompt)
+				p.human(&b, p.promptHead(t.Started), t.Prompt)
 			default:
-				b.WriteString("\n" + p.paint(pal.dim, "· "+promptLine(t)) + "\n")
+				b.WriteString("\n" + p.paint(p.palette.dim, "· "+promptLineWithClock(t, p.clock)) + "\n")
 				kind = "notice"
 			}
 			p.note(k, "prompt", text)
@@ -1040,11 +1041,11 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			shown := "answer"
 			switch {
 			case pc.final:
-				p.answer(&b, pal.agent, head, "", pc.text)
+				p.answer(&b, p.palette.agent, head, "", pc.text)
 			case pc.kind == transcript.ItemAnswer:
-				p.answer(&b, pal.dim, "▌ "+p.provider+" · earlier", pal.dim, pc.text)
+				p.answer(&b, p.palette.dim, "▌ "+p.provider+" · earlier", p.palette.dim, pc.text)
 			case reply:
-				p.answer(&b, pal.agent, "▌ "+p.provider+" · "+clockLabel(pc.at), "", pc.text)
+				p.answer(&b, p.palette.agent, "▌ "+p.provider+" · "+p.clock(pc.at), "", pc.text)
 				seen.msgMode[pc.msg] = "reply"
 			default:
 				p.said(&b, pc.text)
@@ -1058,7 +1059,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			p.skippedLine(&b, k)
 		}
 		if human && !t.Open && len(seen.done) == 0 && !seen.noReply && !(p.live && last) {
-			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
+			p.block(&b, false, p.palette.agent, head, p.palette.dim, "(no reply)")
 			p.note(k, "none", "")
 			p.cut(&b, k, "none", "")
 			seen.noReply = true
@@ -1147,8 +1148,8 @@ func turnPieces(t transcript.Turn) []piece {
 
 // skippedLine writes a record the parser read past as one dim line.
 func (p *convoPrinter) skippedLine(b *strings.Builder, key string) {
-	text := transcript.SkippedNote()
-	b.WriteString(p.paint(pal.dim, "  · "+text) + "\n")
+	text := p.skippedNote
+	b.WriteString(p.paint(p.palette.dim, "  · "+text) + "\n")
 	p.note(key, "skipped", text)
 	p.cut(b, key, "skipped", text)
 }
@@ -1164,7 +1165,7 @@ func (p *convoPrinter) said(b *strings.Builder, text string) {
 			line = truncate("  · "+firstLineWhole(text), 100)
 		}
 	}
-	b.WriteString(p.paint(pal.dim, line) + "\n")
+	b.WriteString(p.paint(p.palette.dim, line) + "\n")
 }
 
 // multiline reports whether s holds more than one line.
@@ -1183,10 +1184,14 @@ func firstLineWhole(s string) string {
 
 // clockLabel is the time of day a reply came, to the second.
 func clockLabel(t time.Time) string {
+	return clockLabelIn(t, time.Local)
+}
+
+func clockLabelIn(t time.Time, location *time.Location) string {
 	if t.IsZero() {
 		return "reply"
 	}
-	return t.Local().Format("15:04:05")
+	return t.In(location).Format("15:04:05")
 }
 
 func (p *convoPrinter) note(key, kind, text string) {
@@ -1219,7 +1224,7 @@ const sgrBand = "\x1b[48;5;236m"
 // stands apart from the agent's answers at a glance.
 func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 	if !p.color {
-		p.block(b, true, pal.you, head, sgrBold, body)
+		p.block(b, true, p.palette.you, head, sgrBold, body)
 		return
 	}
 	width := p.width
@@ -1232,13 +1237,13 @@ func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 	// One style per line, so the only reset is the last thing on it: the
 	// grey has no holes and never bleeds into what comes next.
 	line := func(sgr, text string) string {
-		return pal.band + sgr + text + strings.Repeat(" ", max(0, width-cells(text))) + sgrReset + "\n"
+		return p.palette.band + sgr + text + strings.Repeat(" ", max(0, width-cells(text))) + sgrReset + "\n"
 	}
 	b.WriteString("\n")
 	if p.marks {
 		b.WriteString(osc133Prompt)
 	}
-	b.WriteString(line(pal.you, truncate(sanitize(head), width)))
+	b.WriteString(line(p.palette.you, truncate(sanitize(head), width)))
 	for _, l := range wrap(sanitize(strings.TrimRight(body, "\n")), width) {
 		b.WriteString(line(sgrBold, l))
 	}
@@ -1261,7 +1266,7 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 	if width <= 0 {
 		width = 100
 	}
-	rendered, ok := safeRender(sanitize(strings.TrimRight(body, "\n")), width, base, p.markup)
+	rendered, ok := safeRender(p.renderer, sanitize(strings.TrimRight(body, "\n")), width, base, p.markup)
 	if !ok {
 		p.block(b, false, headSGR, head, base, body)
 		return
@@ -1281,24 +1286,25 @@ func (p *convoPrinter) agentHead(sgr, head string) string {
 	if width <= 0 {
 		width = 100
 	}
-	text := kitMarksFor(os.Getenv).live + strings.TrimPrefix(head, "▌")
-	return "\n" + kitLine([]kitSeg{{style: sgr, text: text}}, kitThemeFor(false).itemBand, max(width, 10)) + "\n"
+	text := p.liveMark + strings.TrimPrefix(head, "▌")
+	return "\n" + kitLine([]kitSeg{{style: sgr, text: text}}, p.itemBand, max(width, 10)) + "\n"
 }
 
 // safeRender renders Markdown that was cleaned before (the escapes the
 // renderer writes are its own), and reports false if the renderer panics,
 // so a bug in it costs one answer its styling, not the whole view.
-func safeRender(text string, width int, base string, markup bool) (out string, ok bool) {
+func safeRender(renderer convoMarkdownRenderer, text string, width int, base string, markup bool) (out string, ok bool) {
 	defer func() {
 		if recover() != nil {
 			out, ok = "", false
 		}
 	}()
-	return markdownRenderer(text, width, base, markup), true
+	return renderer(text, width, base, markup), true
 }
 
-// markdownRenderer is renderMarkdown; tests swap it.
-var markdownRenderer = renderMarkdown
+// markdownRenderer is an optional CLI override used by tests. Nil binds the
+// selected palette's Markdown renderer at printer construction.
+var markdownRenderer convoMarkdownRenderer
 
 // paint colours each line on its own, so a pager that starts mid-block
 // still shows it right. Everything it paints is cleaned of control
@@ -1388,11 +1394,15 @@ func idleNotice(t transcript.Turn) bool {
 // as. An Orchestra notice says nothing but how to read the inbox, so it
 // shows as where it came from and when.
 func promptLine(t transcript.Turn) string {
+	return promptLineWithClock(t, clockLabel)
+}
+
+func promptLineWithClock(t transcript.Turn, clock func(time.Time) string) string {
 	if t.Source == transcript.Notice && strings.HasPrefix(strings.TrimSpace(t.Prompt), transcript.OrchestraNotice) {
 		if t.Started.IsZero() {
 			return "orchestra inbox"
 		}
-		return "orchestra inbox · " + clockLabel(t.Started)
+		return "orchestra inbox · " + clock(t.Started)
 	}
 	return sourceLabel(t.Source) + ": " + firstLine(t.Prompt)
 }
