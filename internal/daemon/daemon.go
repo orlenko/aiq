@@ -310,7 +310,7 @@ func (s *Server) Run() error {
 	if navLn != nil {
 		go s.serveNavigator(s.slots.listener(navLn))
 	}
-	err = serveStatus(s.slots.server(localOnly(mux)), s.slots.listener(ln))
+	err = serveStatus(s.slots.server(localOnly(mux), localOnly(connectionUnavailable())), s.slots.listener(ln))
 	s.navigatorEnds(fmt.Errorf("the status page stopped: %w", err))
 	return err
 }

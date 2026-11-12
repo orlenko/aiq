@@ -117,7 +117,7 @@ func serveCapped(t *testing.T, s *connSlots) *capped {
 		<-c.gate(strings.TrimPrefix(r.URL.Path, "/hold/"))
 		io.WriteString(w, "held\n")
 	})
-	srv := s.server(mux)
+	srv := s.server(mux, nil)
 	srv.ReadHeaderTimeout, srv.ReadTimeout, srv.IdleTimeout = time.Minute, time.Minute, time.Minute
 	go srv.Serve(hookListener{c.ln, c.accepted})
 	t.Cleanup(func() {
@@ -557,7 +557,7 @@ func TestClosingOneListenerLeavesTheOtherWaiting(t *testing.T) {
 func TestAListenerClosedAgainAfterServeEndsIsSafe(t *testing.T) {
 	s, _ := testSlots(1)
 	l := s.listener(failingListener{errors.New("gone")})
-	if err := s.server(http.NotFoundHandler()).Serve(l); err == nil {
+	if err := s.server(http.NotFoundHandler(), nil).Serve(l); err == nil {
 		t.Fatal("Serve returned nil")
 	}
 	l.Close()

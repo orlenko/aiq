@@ -82,8 +82,8 @@ func (s *connSlots) victimLocked() *slotConn {
 }
 
 // server is statusServer around h, counting its connections in s.
-func (s *connSlots) server(h http.Handler) *http.Server {
-	srv := statusServer(s.handler(h))
+func (s *connSlots) server(h, refuse http.Handler) *http.Server {
+	srv := statusServer(s.handler(h, refuse))
 	srv.ConnContext = s.connContext
 	return srv
 }
@@ -101,7 +101,10 @@ func (s *connSlots) connContext(ctx context.Context, c net.Conn) context.Context
 
 // handler marks a connection as being answered while h runs. When h returns, even by
 // panicking, the connection's request counts as answered now.
-func (s *connSlots) handler(h http.Handler) http.Handler {
+func (s *connSlots) handler(h, refuse http.Handler) http.Handler {
+	if refuse == nil {
+		refuse = connectionUnavailable()
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sc, _ := r.Context().Value(slotKey{}).(*slotConn)
 		if sc == nil {
@@ -112,7 +115,7 @@ func (s *connSlots) handler(h http.Handler) http.Handler {
 		if sc.chosen {
 			s.mu.Unlock()
 			w.Header().Set("Connection", "close")
-			w.WriteHeader(http.StatusServiceUnavailable)
+			refuse.ServeHTTP(w, r)
 			return
 		}
 		sc.inHandler = true
@@ -127,6 +130,12 @@ func (s *connSlots) handler(h http.Handler) http.Handler {
 			s.mu.Unlock()
 		}()
 		h.ServeHTTP(w, r)
+	})
+}
+
+func connectionUnavailable() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 }
 
