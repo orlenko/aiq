@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
 // ErrBadID is an id FindByID refuses before it builds any path.
@@ -150,9 +152,23 @@ func FindByID(ctx context.Context, src Discovery, provider, id string, parse fun
 }
 
 type memoEntry struct {
-	hit Hit
-	gen uint64
-	at  time.Time
+	hit         Hit
+	gen         uint64 // legacy validity token, not the candidate-source generation
+	at          time.Time
+	observation scanObservation
+}
+
+// One synchronous FindByID call consumes ByID once. Capture that operation's
+// actual source observation, rather than the caller's accumulated diagnostics.
+type observedDiscovery struct {
+	*Index
+	observation scanObservation
+}
+
+func (d *observedDiscovery) ByID(ctx context.Context, provider, id string) ([]Candidate, error) {
+	out, observation, err := d.byIDObserved(ctx, provider, id)
+	d.observation = observation
+	return out, err
 }
 
 // memoMax is how many lookups the index remembers before it drops the
@@ -169,16 +185,21 @@ func (x *Index) Find(ctx context.Context, provider, id string, parse func(ctx co
 	}
 	k := provider + "\x00" + id
 	gen := x.generation(provider)
+	if x.beforeMemoLookup != nil {
+		x.beforeMemoLookup()
+	}
 	x.mu.Lock()
 	if e, ok := x.memo[k]; ok && e.gen == gen && x.now().Sub(e.at) < x.ttl {
 		x.mu.Unlock()
+		diagnostic.Note(ctx, e.observation.origin)
 		if err := ctx.Err(); err != nil {
 			return Hit{}, err
 		}
 		return e.hit, nil
 	}
 	x.mu.Unlock()
-	hit, err := FindByID(ctx, x, provider, id, parse)
+	source := &observedDiscovery{Index: x}
+	hit, err := FindByID(ctx, source, provider, id, parse)
 	if err != nil {
 		return hit, err
 	}
@@ -197,6 +218,6 @@ func (x *Index) Find(ctx context.Context, provider, id string, parse func(ctx co
 			clear(x.memo)
 		}
 	}
-	x.memo[k] = memoEntry{hit: hit, gen: gen, at: x.now()}
+	x.memo[k] = memoEntry{hit: hit, gen: gen, at: x.now(), observation: source.observation}
 	return hit, nil
 }

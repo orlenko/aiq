@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
 // DiscoveryTTL is how long one scan of the Codex rollouts or of
@@ -33,15 +35,34 @@ type Index struct {
 
 	mu   sync.Mutex
 	memo map[string]memoEntry
+	// Fixture seam after the legacy generation sample, outside memo/scan locks.
+	beforeMemoLookup func()
 }
+
+// scanObservation describes the completed attempt, not when every reused head
+// was read. dataGen identifies the non-aborted publication supplying the data.
+type scanObservation struct {
+	attemptGen, dataGen uint64
+	outcome             scanOutcome
+	origin              diagnostic.Origin
+}
+type scanOutcome uint8
+
+const (
+	scanHealthy scanOutcome = iota + 1
+	scanPartial
+	scanFallbackOld
+	scanFallbackEmpty
+)
 
 // scan is one provider's latest scan, and the one running.
 type scan struct {
-	mu      sync.Mutex
-	gen     uint64
-	at      time.Time
-	data    any           // *codexScan or *agyScan
-	running chan struct{} // closed when the running scan completes
+	mu          sync.Mutex
+	gen         uint64
+	at          time.Time
+	data        any             // *codexScan or *agyScan
+	running     chan struct{}   // closed when the running scan completes
+	observation scanObservation // completed tuple only; pending faults stay worker-local
 }
 
 type codexScan struct {
@@ -73,54 +94,106 @@ func (x *Index) Walks() int64 { return x.walks.Load() }
 // read is s's data: the last completed scan, starting a new one past the
 // TTL. With no scan completed yet it waits for the first, until ctx ends.
 func (x *Index) read(ctx context.Context, s *scan, run func(prev any) any) (any, error) {
+	d, _, err := x.readObserved(ctx, s, func(prev any, _ *diagnostic.Holder) any { return run(prev) })
+	return d, err
+}
+
+func notedScan(ctx context.Context, d any, observation scanObservation, err error) (any, scanObservation, error) {
+	diagnostic.Note(ctx, observation.origin)
+	return d, observation, err
+}
+
+func (x *Index) readObserved(ctx context.Context, s *scan, run func(any, *diagnostic.Holder) any) (any, scanObservation, error) {
 	s.mu.Lock()
 	if s.data != nil && x.now().Sub(s.at) < x.ttl {
-		d := s.data
+		d, observation := s.data, s.observation
 		s.mu.Unlock()
-		return d, nil
+		return notedScan(ctx, d, observation, nil)
 	}
 	if s.running == nil {
 		done := make(chan struct{})
 		s.running = done
-		prev := s.data
+		prev, prevDataGen := s.data, s.observation.dataGen
 		go func() {
 			d := prev
+			var faults diagnostic.Holder
+			aborted := false
 			func() {
-				// A scan that panics completes as the one before it.
-				defer func() { recover() }()
-				d = run(prev)
+				// The existing run guard retains old data on an aborted attempt.
+				defer func() {
+					if value := recover(); value != nil {
+						origin := capturePanic(value)
+						faults.Note(origin)
+						aborted = true
+					}
+				}()
+				d = run(prev, &faults)
 			}()
+			origin := faults.Origin()
+			outcome := scanHealthy
+			if aborted {
+				outcome = scanFallbackEmpty
+				if prev != nil {
+					outcome = scanFallbackOld
+				}
+			} else if origin.Present() {
+				outcome = scanPartial
+			}
 			s.mu.Lock()
+			// Preserve the existing unguarded publication clock and assignment.
 			s.data, s.at, s.running = d, x.now(), nil
 			s.gen++
+			dataGen := prevDataGen
+			if d == nil {
+				dataGen = 0
+			} else if !aborted {
+				dataGen = s.gen
+			}
+			s.observation = scanObservation{attemptGen: s.gen, dataGen: dataGen, outcome: outcome, origin: origin}
 			s.mu.Unlock()
 			close(done)
 		}()
 	}
-	d, running := s.data, s.running
+	d, observation, running := s.data, s.observation, s.running
 	s.mu.Unlock()
 	if d != nil {
-		return d, nil
+		return notedScan(ctx, d, observation, nil)
 	}
 	select {
 	case <-running:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		// Observe only an already completed tuple, never pending faults.
+		select {
+		case <-running:
+			s.mu.Lock()
+			observation = s.observation
+			s.mu.Unlock()
+		default:
+			observation = scanObservation{}
+		}
+		diagnostic.Note(ctx, observation.origin)
+		return nil, observation, ctx.Err()
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.data, nil
+	d, observation = s.data, s.observation
+	s.mu.Unlock()
+	return notedScan(ctx, d, observation, nil)
 }
 
 func (x *Index) codexScan(ctx context.Context) (*codexScan, error) {
-	d, err := x.read(ctx, &x.codex, x.scanCodex)
+	cs, _, err := x.codexScanObserved(ctx)
+	return cs, err
+}
+
+func (x *Index) codexScanObserved(ctx context.Context) (*codexScan, scanObservation, error) {
+	d, observation, err := x.readObserved(ctx, &x.codex, x.scanCodexObserved)
 	if err != nil {
-		return nil, err
+		return nil, observation, err
 	}
 	if cs, _ := d.(*codexScan); cs != nil {
-		return cs, nil
+		return cs, observation, nil
 	}
-	return &codexScan{}, nil
+	return &codexScan{}, observation, nil
 }
 
 func (x *Index) agyScan(ctx context.Context) (*agyScan, error) {
@@ -137,6 +210,14 @@ func (x *Index) agyScan(ctx context.Context) (*agyScan, error) {
 // scanCodex reuses successful regular-entry classifications; linked heads are
 // reread because the directory entry's identity does not identify its target.
 func (x *Index) scanCodex(prev any) any {
+	return x.scanCodexObserved(prev, &diagnostic.Holder{})
+}
+
+func (x *Index) scanCodexObserved(prev any, faults *diagnostic.Holder) any {
+	return x.scanCodexWithMeta(prev, faults, codexMeta)
+}
+
+func (x *Index) scanCodexWithMeta(prev any, faults *diagnostic.Holder, head func(string) (codexPayload, bool)) any {
 	x.walks.Add(1)
 	old, _ := prev.(*codexScan)
 	next := &codexScan{byCwd: map[string][]Candidate{}, seen: map[string]codexSeen{}, names: codexNames(x.r.CodexIndex)}
@@ -170,8 +251,13 @@ func (x *Index) scanCodex(prev any) any {
 		seen[i] = codexSeen{dev: f.dev, ino: f.ino}
 		// A head that makes the decoder panic leaves that rollout out, and
 		// the worker carries on.
-		defer func() { recover() }()
-		if meta, ok := codexMeta(f.c.Path); ok {
+		defer func() {
+			if value := recover(); value != nil {
+				origin := capturePanic(value)
+				faults.Note(origin)
+			}
+		}()
+		if meta, ok := head(f.c.Path); ok {
 			seen[i].cwd, seen[i].interactive = canonical(meta.Cwd), interactive(meta)
 			seen[i].classified = true
 		}
@@ -234,13 +320,18 @@ func (x *Index) CodexNames(ctx context.Context) map[string]string {
 }
 
 func (x *Index) ByID(ctx context.Context, provider, id string) ([]Candidate, error) {
+	out, _, err := x.byIDObserved(ctx, provider, id)
+	return out, err
+}
+
+func (x *Index) byIDObserved(ctx context.Context, provider, id string) ([]Candidate, scanObservation, error) {
 	switch provider {
 	case "claude":
-		return claudeByID(ctx, x.r, id), ctx.Err()
+		return claudeByID(ctx, x.r, id), scanObservation{}, ctx.Err()
 	case "codex":
-		cs, err := x.codexScan(ctx)
+		cs, observation, err := x.codexScanObserved(ctx)
 		if err != nil {
-			return nil, err
+			return nil, observation, err
 		}
 		var out []Candidate
 		name := "-" + id + ".jsonl"
@@ -249,11 +340,11 @@ func (x *Index) ByID(ctx context.Context, provider, id string) ([]Candidate, err
 				out = append(out, c)
 			}
 		}
-		return out, nil
+		return out, observation, nil
 	case "agy":
-		return agyByID(x.r, id), ctx.Err()
+		return agyByID(x.r, id), scanObservation{}, ctx.Err()
 	}
-	return nil, nil
+	return nil, scanObservation{}, nil
 }
 
 func (x *Index) Written(ctx context.Context, provider, dir string, since time.Time) []string {
