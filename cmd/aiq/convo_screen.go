@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"os"
 	"runtime/debug"
@@ -200,47 +199,25 @@ func convoExpandTabs(line string) string {
 // blank lines before a message are the space between messages; a later part of an answer and
 // a "(no reply)" go on the message before them.
 func (c *convoScreen) cut(part int, text string, cuts []convoCut, width int) {
-	first := len(c.msgs)
-	seen := map[string]int{}
-	prev := 0
-	for _, ct := range cuts {
-		raw := strings.TrimRight(sanitize(ct.text), "\n")
-		if ct.kind == "part" {
-			// A later part of a message shown as one line: no row, but y copies it.
-			if len(c.msgs) > first {
-				c.msgs[len(c.msgs)-1].raw += "\n\n" + raw
+	for _, folded := range foldConvoCuts(text, cuts) {
+		ct := folded.first
+		m := convoMsg{id: fmt.Sprintf("%d\x00%s\x00%s\x00%x\x00%d", part, ct.key, ct.kind, folded.firstHash, folded.occurrence), kind: ct.kind, raw: folded.raw}
+		for segment, paint := range folded.segments {
+			var lines []string
+			for _, l := range strings.Split(paint, "\n") {
+				lines = append(lines, convoWrap(convoExpandTabs(l), width)...)
 			}
-			prev = ct.end
-			continue
-		}
-		var lines []string
-		for _, l := range strings.Split(strings.TrimSuffix(text[prev:ct.end], "\n"), "\n") {
-			lines = append(lines, convoWrap(convoExpandTabs(l), width)...)
-		}
-		prev = ct.end
-		if (ct.kind == "more" || ct.kind == "none") && len(c.msgs) > first {
-			n := len(c.msgs) - 1
-			for _, l := range lines {
-				c.rows = append(c.rows, convoRow{text: l, msg: n})
+			start := 0
+			if segment == 0 {
+				for start < len(lines)-1 && lines[start] == "" {
+					c.rows = append(c.rows, convoRow{msg: -1})
+					start++
+				}
+				m.from = len(c.rows)
 			}
-			c.msgs[n].to = len(c.rows)
-			if ct.kind == "more" {
-				c.msgs[n].raw += "\n\n" + raw
+			for _, line := range lines[start:] {
+				c.rows = append(c.rows, convoRow{text: line, msg: len(c.msgs)})
 			}
-			continue
-		}
-		i := 0
-		for i < len(lines)-1 && lines[i] == "" {
-			c.rows = append(c.rows, convoRow{msg: -1})
-			i++
-		}
-		h := fnv.New64a()
-		h.Write([]byte(raw))
-		id := fmt.Sprintf("%d\x00%s\x00%s\x00%x", part, ct.key, ct.kind, h.Sum64())
-		seen[id]++
-		m := convoMsg{id: fmt.Sprintf("%s\x00%d", id, seen[id]), kind: ct.kind, raw: raw, from: len(c.rows)}
-		for _, l := range lines[i:] {
-			c.rows = append(c.rows, convoRow{text: l, msg: len(c.msgs)})
 		}
 		m.to = len(c.rows)
 		c.msgs = append(c.msgs, m)
