@@ -41,6 +41,45 @@ func TestNavDiagnosticsCandidatesReturnedBeforeCancellation(t *testing.T) {
 	}
 }
 
+func TestNavDiagnosticsSummaryReturnedBeforeReduction(t *testing.T) {
+	for _, origin := range []diagnostic.Origin{navHTTPDiagnosticsOrigin(), diagnostic.Capture(nil), {}} {
+		ctx, holder := diagnostic.WithHolder(context.Background())
+		h := navTestHandler(t, []transcript.Summary{{Provider: "claude", ID: navTestID}}, func(d *navSessionsDeps, _ *navSessionsLimits) {
+			d.summary = func(context.Context, string) (transcript.Summary, error) {
+				return transcript.Summary{}, diagnostic.Failure(diagnostic.Unreadable, origin)
+			}
+		})
+		w := navTestServe(h, navTestRequest("/fixture/work").WithContext(ctx))
+		out := navTestDecode(t, w)
+		if w.status != 200 || out["unreadable_count"] != float64(1) || holder.Origin() != origin || len(h.slots) != 0 {
+			t.Fatal("summary result reduction changed response, origin or slot cleanup")
+		}
+	}
+}
+
+func TestNavDiagnosticsDetailReturnedBeforeChildCancellation(t *testing.T) {
+	for _, origin := range []diagnostic.Origin{navHTTPDiagnosticsOrigin(), diagnostic.Capture(nil)} {
+		f := detailTestNew(t)
+		var stop context.CancelFunc
+		f.deps.requestContext = func(parent context.Context) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(parent)
+			stop = cancel
+			return ctx, cancel
+		}
+		f.deps.resolve = func(context.Context, string, string) (transcript.Hit, error) {
+			stop()
+			return transcript.Hit{}, diagnostic.Failure(diagnostic.Inspection, origin)
+		}
+		ctx, holder := diagnostic.WithHolder(context.Background())
+		h := f.handler(t)
+		w := detailTestServe(h, detailTestRequest().WithContext(ctx))
+		detailTestError(t, w, 503, "preparing")
+		if holder.Origin() != origin || len(h.slots) != 0 {
+			t.Fatal("child cancellation erased already returned origin or retained slot")
+		}
+	}
+}
+
 func TestNavDiagnosticsListExistingRecoveryGuards(t *testing.T) {
 	for _, where := range []string{"summary", "names", "prepare"} {
 		t.Run(where, func(t *testing.T) {
