@@ -5,12 +5,15 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/orlenko/aiq/internal/navauth"
+	"github.com/orlenko/aiq/internal/navlaunch"
+	"github.com/orlenko/aiq/internal/paths"
 )
 
 // Explicit, invented-only native-browser fixture. The private driver supplies a
@@ -24,6 +27,13 @@ func TestNavigatorBrowserAuthFixture(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"rows":[]}`))
 	}))
+	// Only the invented test directory: satisfy the private launch namespace
+	// policy without repairing any production directory or following its links.
+	privateData, err := filepath.EvalSymlinks(paths.DataDir())
+	if err != nil || os.Chmod(privateData, 0700) != nil {
+		t.Fatal("private fixture data setup")
+	}
+	t.Setenv("AIQ_DATA_DIR", privateData)
 	s.slots = newConnSlots(64, func(string, ...any) {})
 	s.MountNavigatorPages(NavigatorPages())
 	g, _ := lifeStart(t, s)
@@ -46,7 +56,7 @@ func TestNavigatorBrowserAuthFixture(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/issue":
+		case "/issue", "/file":
 			const body = `{"action":"issue"}`
 			now, e := g.auth.state.Now()
 			seed := serial.Add(1)
@@ -68,6 +78,28 @@ func TestNavigatorBrowserAuthFixture(t *testing.T) {
 			code, e := g.auth.state.Issue(facts)
 			if e != nil {
 				w.WriteHeader(503)
+				return
+			}
+			if r.URL.Path == "/file" {
+				file, err := navlaunch.Prepare(r.Context(), g.handle.scope.dataDir)
+				if err != nil {
+					w.WriteHeader(503)
+					return
+				}
+				retained := false
+				defer func() { file.Finish(retained) }()
+				body, err := navlaunch.Document(g.port, "/invented/project &é", code)
+				if err != nil {
+					w.WriteHeader(503)
+					return
+				}
+				name, err := file.Publish(r.Context(), body)
+				if err != nil {
+					w.WriteHeader(503)
+					return
+				}
+				retained = true
+				_ = json.NewEncoder(w).Encode(map[string]string{"file": name})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"code": code})

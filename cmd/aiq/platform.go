@@ -53,6 +53,16 @@ func windowsGate(args []string) (quiet bool, err error) {
 		return false, nil // bare aiq prints the command list on Windows; see main
 	}
 	cmd, rest := args[0], args[1:]
+	if cmd == "ui" {
+		o, err := parseUIArgs(rest)
+		if err != nil {
+			return false, err
+		}
+		if o.mode == uiHelp {
+			return false, nil
+		}
+		return false, errUIPlatform
+	}
 	if slices.Contains(windowsQuiet, cmd) {
 		return true, nil
 	}
