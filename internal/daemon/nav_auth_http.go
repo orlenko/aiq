@@ -17,8 +17,8 @@ import (
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
-// This adapter is unmounted. A later generation owner supplies the listener's
-// actual key/port/build, publication/retirement and registered outer envelope.
+// Each live generation supplies its actual key/port/build and owns retirement
+// and the registered outer envelope. Generic gate fixtures remain separate.
 type navAuthInfo struct {
 	Root     string `json:"root"`
 	DataDir  string `json:"data_dir"`
