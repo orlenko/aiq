@@ -302,16 +302,22 @@ func (b *asksScreen) workspaceName(ws string) string {
 // asksLinks finds [text](http...) in a quote, so a collapsed quote shows only the text.
 var asksLinks = regexp.MustCompile(`\[([^\]\n]+)\]\(https?://[^)\s]+\)`)
 
+// Shared paint preparation only; copying uses the original sanitized wording.
+func asksQuotePaintText(quote string, expanded bool) string {
+	text := strings.TrimSpace(sanitize(quote))
+	if text == "" || expanded {
+		return text
+	}
+	return asksLinks.ReplaceAllString(text, "$1")
+}
+
 // asksQuoteRows renders a quote as Markdown, wrapped in full. The text is cleaned first, so
 // the only escapes in the result are the renderer's own. base opens every row, which keeps a
 // band unbroken through the renderer's resets.
 func (b *asksScreen) asksQuoteRows(quote string, expanded bool, width int, base string) []string {
-	text := strings.TrimSpace(sanitize(quote))
+	text := asksQuotePaintText(quote, expanded)
 	if text == "" {
 		return nil
-	}
-	if !expanded {
-		text = asksLinks.ReplaceAllString(text, "$1")
 	}
 	saved := pal
 	if b.noColor {
