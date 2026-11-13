@@ -1,0 +1,28 @@
+.nav-md { min-width: 0; max-width: 100%; }
+.nav-md .nav-md-line {
+  min-height: 1.5em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nav-md .nav-md-quote { margin: .5em 0; }
+.nav-md .nav-md-scroll {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  font-family: ui-monospace, monospace;
+}
+.nav-md .nav-md-scroll .nav-md-line { white-space: pre; overflow-wrap: normal; }
+.nav-md .nav-md-scroll:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.nav-md .nav-md-rule { border-top: 1px solid currentColor; min-height: 0; margin: .5em 0; }
+.nav-md .nav-md-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.nav-md .nav-md-b { font-weight: bold; }
+.nav-md .nav-md-i { font-style: italic; }
+.nav-md .nav-md-u { text-decoration: underline; }
+.nav-md .nav-md-dim, .nav-md .nav-md-muted { color: var(--nav-muted, currentColor); }
+.nav-md .nav-md-code { font-family: ui-monospace, monospace; color: var(--nav-code, currentColor); }
+.nav-md .nav-md-accent { color: var(--nav-accent, currentColor); }
+.nav-md .nav-md-you { color: var(--nav-you, currentColor); }
+.nav-md .nav-md-agent { color: var(--nav-agent, currentColor); }
+.nav-md .nav-md-band { background-color: var(--nav-band, transparent); }
+.nav-md .nav-md-inverse { color: var(--nav-background, Canvas); background-color: var(--nav-foreground, CanvasText); }
