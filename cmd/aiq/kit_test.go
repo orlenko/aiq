@@ -157,7 +157,7 @@ func TestWrappedCodeKeepsItsSpaces(t *testing.T) {
 // Wrapping keeps a joined emoji whole, as the column widths count it.
 func TestWrapKeepsAGlyphWhole(t *testing.T) {
 	for _, w := range []int{1, 2, 3, 10} {
-		for _, row := range wrapSpans([]span{{"", "a 👩\u200d💻 b"}}, w) {
+		for _, row := range wrapSpans([]span{{"", "a 👩\u200d💻 b", false}}, w) {
 			for _, sp := range row {
 				if strings.HasPrefix(sp.text, "\u200d") || strings.HasPrefix(sp.text, "💻") || strings.HasSuffix(sp.text, "\u200d") {
 					t.Fatalf("width %d split the glyph: %q", w, sp.text)
