@@ -1,5 +1,5 @@
 :root { --fg: #ddd; --bg: #171717; --border: #777; --muted: #aaa; }
 body { background: var(--bg); color: var(--fg); margin: 1rem; font: 16px/1.5 sans-serif; }
 header > h1 { overflow-wrap: anywhere; }
-button { font: inherit; }
+#neighbor { font: inherit; }
 .nav-asks { margin-bottom: 2rem; }

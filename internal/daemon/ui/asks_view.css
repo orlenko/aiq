@@ -1,6 +1,6 @@
 .nav-asks { min-width: 0; color: var(--fg); }
 .nav-asks-heading, .nav-asks-group-heading, .nav-asks-item-heading { overflow-wrap: anywhere; }
-.nav-asks-button { box-sizing: border-box; max-width: calc(100% - .5rem); white-space: normal; overflow-wrap: anywhere; margin: .25rem; }
+.nav-asks-button { font: inherit; box-sizing: border-box; max-width: calc(100% - .5rem); white-space: normal; overflow-wrap: anywhere; margin: .25rem; }
 .nav-asks-region, .nav-asks-item, .nav-asks-body, .nav-asks-quote, .nav-asks-details { min-width: 0; }
 .nav-asks-item { border-top: 1px solid var(--border); padding: .75rem 0; }
 .nav-asks-source, .nav-asks-state, .nav-asks-scope, .nav-asks-report, .nav-asks-details { white-space: pre-wrap; overflow-wrap: anywhere; }

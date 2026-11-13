@@ -18,6 +18,7 @@ export function createAsksView(document, data, options) {
     throw new TypeError("could not configure Asks view");
   }
   let snapshot = captureAsks(data, options.expectedScope, options.limits);
+  data = null; options = null;
   const fragment = document.createDocumentFragment();
   let root = node("section", "nav-asks"); fragment.append(root);
   const title = node("h1", "nav-asks-heading", "Asks"); title.id = `${idPrefix}-heading`;
@@ -100,9 +101,11 @@ export function createAsksView(document, data, options) {
       const mounted = candidate.child.mount() === true;
       if (!current(row, candidate)) return false;
       if (!mounted) throw new Error("line activation failed");
-      candidate.mounted = true; candidate.root.hidden = false;
+      candidate.mounted = true;
       if (!protectedRefresh(row, candidate)) return false;
-      return publish(row, candidate, expanded);
+      if (!publish(row, candidate, expanded)) return false;
+      candidate.root.hidden = false;
+      return true;
     } finally {
       candidate.busy--;
       if (!current(row, candidate)) candidate.retired = true;
@@ -176,7 +179,7 @@ export function createAsksView(document, data, options) {
     }
     // Silence and detach ALL roots before the first child cleanup callout.
     for (const candidate of candidates) candidate.root?.remove();
-    if (dispose) root?.remove();
+    if (dispose) { root?.remove(); root?.replaceChildren(); }
     else {
       root.replaceChildren(title, node("p", "nav-asks-status", "Asks unavailable"));
       root.setAttribute("aria-busy", "false");
@@ -191,7 +194,7 @@ export function createAsksView(document, data, options) {
 
   root.append(node("p", "nav-asks-scope", snapshot.scope.mode === "all" ? "All directories" : snapshot.scope.dir));
   let report = snapshot.report;
-  const reportNode = node("aside", "nav-asks-report"); root.append(reportNode);
+  let reportNode = node("aside", "nav-asks-report"); root.append(reportNode);
   if (!report.known) reportNode.append(node("p", "", "Watcher report unavailable"));
   else {
     reportNode.append(node("p", "", "Last stored watcher report"));
@@ -200,7 +203,7 @@ export function createAsksView(document, data, options) {
     reportNode.append(node("p", "", report.last_error));
     for (const reason of report.not_watched) reportNode.append(node("p", "", reason));
   }
-  report = null;
+  report = null; reportNode = null;
   snapshot.sections.forEach((section, index) => {
     const group = {expanded:index < 2, rows:[], region:node("div", "nav-asks-region"),
       button:button(`${labels[index]} (${section.items.length})`)};

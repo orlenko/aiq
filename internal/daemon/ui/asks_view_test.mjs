@@ -194,3 +194,41 @@ test('unknown report is factual unavailable text and invalid input refuses befor
   assert.throws(()=>createAsksView(document,{},{window:document.defaultView,idPrefix:'invalid',expectedScope:scope(),limits:limits(),copyText(){},announce(){},onConversation(){}}),{name:'TypeError',message:'could not capture asks snapshot'});
   assert.equal(creates,0);
 });
+
+
+test('retained disposed handle severs title/status links to metadata DOM',()=>{
+  const f=fixture();f.mount();
+  const outer=find(f,'nav-asks')[0],title=find(f,'nav-asks-heading')[0],status=find(f,'nav-asks-status')[0];
+  assert.ok(outer.textContent.includes('stored <error> text'));
+  const neighbor=f.document.createElement('button');f.document.body.append(neighbor);neighbor.focus();
+  const retained=f.view;retained.teardown();
+  assert.equal(outer.children.length,0);assert.equal(outer.textContent,'');
+  assert.equal(title.parentNode,null);assert.equal(status.parentNode,null);
+  assert.equal(f.document.activeElement,neighbor);assert.equal(neighbor.isConnected,true);
+  retained.teardown();assert.equal(retained.mount(),false);f.clean();
+});
+
+test('text-only replacement stays hidden through scheduling until wording is committed',async()=>{
+  for(const outcome of ['commit','throw','dispose']){
+    const data=snapshot();data.sections[0].items[0].latest={
+      lines:[{kind:'text',table_rows:0,spans:[{c:[],d:false,t:'replacement text-only'}]}],
+      copy:'> replacement text-only\n\n'};
+    const f=fixture({},data);f.mount();f.flush();const observations=[];
+    f.schedule(()=>{
+      const article=find(f,'nav-asks-item')[0];
+      const latest=walk(article).find(n=>has(n,'nav-md-line')&&n.textContent==='replacement text-only');
+      observations.push({latestVisible:visible(latest),wording:find(f,'nav-asks-wording')[0].textContent,
+        detailsHidden:find(f,'nav-asks-details')[0].hidden,toggle:walk(article).find(n=>n.tagName==='button').textContent});
+      click(f,'Copy quote');click(f,'Open conversation');
+      if(outcome==='dispose')f.view.teardown();
+      if(outcome==='throw')throw Error('invented text-only schedule failure');
+    });
+    click(f,'Show details');
+    assert.deepEqual(observations,[{latestVisible:false,wording:'Original wording',detailsHidden:true,toggle:'Show details'}]);
+    assert.deepEqual(f.copies,[]);assert.deepEqual(f.navigations,[]);f.schedule(()=>{});
+    if(outcome==='commit'){assert.equal(find(f,'nav-asks-wording')[0].textContent,'Latest wording');click(f,'Copy quote');await tick();assert.deepEqual(f.copies,['> replacement text-only\n\n']);}
+    else if(outcome==='throw')assert.equal(f.document.body.textContent,'AsksAsks unavailable');
+    else assert.equal(find(f,'nav-asks').length,0);
+    f.clean();
+  }
+});
