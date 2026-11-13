@@ -100,8 +100,8 @@ func (s *connSlots) connContext(ctx context.Context, c net.Conn) context.Context
 	return ctx
 }
 
-// handler marks a connection as being answered while h runs. When h returns, even by
-// panicking, the connection's request counts as answered now.
+// handler marks a connection as being answered. Navigator completion transfers
+// its leave to the outer envelope; other handlers retain the local lifetime.
 func (s *connSlots) handler(h, refuse http.Handler) http.Handler {
 	if refuse == nil {
 		refuse = connectionUnavailable()
@@ -122,14 +122,25 @@ func (s *connSlots) handler(h, refuse http.Handler) http.Handler {
 		sc.inHandler = true
 		s.entered++
 		s.mu.Unlock()
+		var once sync.Once
+		leave := func() {
+			once.Do(func() {
+				s.mu.Lock()
+				sc.inHandler = false
+				s.seq++
+				sc.mark = s.seq
+				s.broadcastLocked()
+				s.mu.Unlock()
+			})
+		}
+		transferred := false
 		defer func() {
-			s.mu.Lock()
-			sc.inHandler = false
-			s.seq++
-			sc.mark = s.seq
-			s.broadcastLocked()
-			s.mu.Unlock()
+			if !transferred {
+				leave()
+			}
 		}()
+		completion, _ := r.Context().Value(navCompletionKey{}).(*navCompletion)
+		transferred = completion.adopt(leave)
 		h.ServeHTTP(w, r)
 	})
 }

@@ -177,8 +177,13 @@ func (w *startedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func navRecover(observer *navObserver, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, state := navroute.WithRequest(r.Context())
+		completion := &navCompletion{}
+		ctx = context.WithValue(ctx, navCompletionKey{}, completion)
 		r = r.WithContext(ctx)
 		sw := &startedWriter{ResponseWriter: w}
+		// Registered first, so slot protection ends after recovery/observation,
+		// including exact abort and secondary response failure.
+		defer completion.close()
 		defer func() {
 			value := recover()
 			if value != nil && value != http.ErrAbortHandler {
