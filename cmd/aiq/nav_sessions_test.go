@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -804,6 +805,13 @@ func TestNavSessionsConstructorAndRealCache(t *testing.T) {
 	if err := os.MkdirAll(work, 0700); err != nil {
 		t.Fatal(err)
 	}
+	projectDir, err := filepath.EvalSymlinks(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Claude projects encode each non-ASCII-alphanumeric character as '-'.
+	// Keep this fixture independent of platform-specific test helpers.
+	projectSlug := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(projectDir, "-")
 	// Small actual parser fixtures, independent of the injected Summary tests.
 	claudeRoot, codexRoot, agyRoot := filepath.Join(root, "claude"), filepath.Join(root, "codex"), filepath.Join(root, "agy")
 	write := func(path, text string) {
@@ -815,7 +823,7 @@ func TestNavSessionsConstructorAndRealCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(filepath.Join(claudeRoot, nonAlnumPath(work), navTestID+".jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":%q,\"cwd\":%q,\"timestamp\":\"2026-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"fixture question\"}}\n", navTestID, work))
+	write(filepath.Join(claudeRoot, projectSlug, navTestID+".jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":%q,\"cwd\":%q,\"timestamp\":\"2026-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"fixture question\"}}\n", navTestID, work))
 	const codexID = "23456789-1234-4234-8234-123456789abc"
 	write(filepath.Join(codexRoot, "rollout-"+codexID+".jsonl"), fmt.Sprintf("{\"type\":\"session_meta\",\"timestamp\":\"2026-01-02T00:00:00Z\",\"payload\":{\"id\":%q,\"cwd\":%q,\"source\":\"cli\"}}\n{\"type\":\"response_item\",\"timestamp\":\"2026-01-02T00:00:00Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"fixture codex\"}]}}\n", codexID, work))
 	const agyID = "3456789a-1234-4234-8234-123456789abc"
