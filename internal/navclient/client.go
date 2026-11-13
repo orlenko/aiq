@@ -221,7 +221,7 @@ func exchange(c *http.Client, req *http.Request, proofHeader string) (out wireRe
 			}
 		}()
 	}
-	if doErr != nil || resp == nil || resp.Body == nil || len(resp.Trailer) != 0 {
+	if doErr != nil || resp == nil || resp.Body == nil || len(resp.Trailer) != 0 || resp.StatusCode == http.StatusSwitchingProtocols {
 		return wireReply{}, ErrUnavailable
 	}
 	var proof string
