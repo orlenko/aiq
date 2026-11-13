@@ -26,7 +26,8 @@ export function createAsksView(document, data, options) {
   const status = node("p", "nav-asks-status", ""); status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite"); root.append(status);
   const rows = [], groups = [], removes = [];
-  let phase = "detached", flight = null;
+  let phase = "detached", flight = null, focusIntent = null, overview = null;
+  const overviewButtons = [];
   function node(tag, className, text) {
     const n = document.createElement(tag); n.className = className;
     if (text !== undefined) n.textContent = text;
@@ -36,7 +37,8 @@ export function createAsksView(document, data, options) {
     const n = node("button", "nav-asks-button", text); n.type = "button"; return n;
   }
   function listen(n, callback) {
-    n.addEventListener("click", callback); removes.push(() => n.removeEventListener("click", callback));
+    const handle = () => { endFocus(focusIntent); callback(); };
+    n.addEventListener("click", handle); removes.push(() => n.removeEventListener("click", handle));
   }
   function active() { return phase === "ready" || phase === "activating" || phase === "transitioning"; }
   function eligible(row, intent = row.ready) {
@@ -47,10 +49,63 @@ export function createAsksView(document, data, options) {
     row.ready = null;
   }
   function controls() {
+    for (const button of overviewButtons) button.setAttribute("aria-disabled", phase !== "ready" || !root?.isConnected ? "true" : "false");
     for (const row of rows) {
       row.copy.setAttribute("aria-disabled", !eligible(row) || flight ? "true" : "false");
       row.nav.setAttribute("aria-disabled", !eligible(row) || !row.data.selectable ? "true" : "false");
     }
+  }
+  function cleanFocus(intent) {
+    if (!intent || !intent.ended || intent.busy || intent.cleaning) return;
+    intent.cleaning = true;
+    const handles = intent.removes.splice(0);
+    for (const remove of handles) { try { remove(); } catch { /* Matching cleanup stays local. */ } }
+    intent.cleaning = false;
+    if (focusIntent === intent) focusIntent = null;
+  }
+  function endFocus(intent, revoke = true) {
+    if (!intent) return;
+    if (revoke) intent.revoked = true;
+    intent.ended = true; cleanFocus(intent);
+  }
+  function focusCurrent(intent, row) {
+    return phase === "ready" && root?.isConnected && focusIntent === intent && !intent.revoked &&
+      !intent.ended && row.group && row.heading?.isConnected;
+  }
+  function focusTarget(row, child, ready, heading) {
+    return phase === "ready" && root?.isConnected && row.group?.expanded && child &&
+      row.current === child && child.mounted && !child.retired && ready && row.ready === ready &&
+      row.heading === heading && root.contains(heading) && heading.isConnected && heading.getClientRects().length > 0;
+  }
+  function reveal(row, trigger) {
+    if (phase !== "ready" || !root.isConnected || !trigger.isConnected || !root.contains(trigger) || !trigger.getClientRects().length) return;
+    const intent = {initial:document.activeElement, revoked:false, ended:false, busy:1, cleaning:false, removes:[]};
+    focusIntent = intent;
+    let target = null;
+    try {
+      const leave = () => endFocus(intent);
+      try {
+        for (const name of ["focusin", "focusout", "blur"]) {
+          // Register ownership first: a setup call may fail/reenter after acquisition.
+          intent.removes.push(() => document.removeEventListener(name, leave, true));
+          document.addEventListener(name, leave, true);
+          if (!focusCurrent(intent, row)) return;
+        }
+      } finally { intent.busy--; cleanFocus(intent); }
+      if (!focusCurrent(intent, row)) return;
+      if (!row.group.expanded) toggleGroup(row.group); // VOID; inspect actual publication below.
+      if (!focusCurrent(intent, row)) return;
+      const child = row.current, ready = row.ready, heading = row.heading;
+      if (focusTarget(row, child, ready, heading)) target = {child, ready, heading};
+    } catch { if (focusCurrent(intent, row)) terminate(false); }
+    finally { endFocus(intent, false); }
+    let commit = false;
+    try {
+      commit = target && !intent.revoked && intent.initial?.isConnected && document.activeElement === intent.initial &&
+        focusTarget(row, target.child, target.ready, target.heading);
+    } catch { /* An unavailable target cannot acquire focus. */ }
+    // Tracking is gone before this terminal callout; no later old-operation DOM writes.
+    if (commit) { try { target.heading.focus(); } catch { /* Parent retains focus recovery. */ } }
   }
   function cleanup(candidate) {
     if (!candidate || !candidate.retired || candidate.busy || candidate.cleaned) return;
@@ -172,6 +227,7 @@ export function createAsksView(document, data, options) {
   function terminate(dispose) {
     if (phase === "disposed" || phase === "failed" && !dispose) return;
     phase = dispose ? "disposed" : "failed"; flight = null;
+    endFocus(focusIntent);
     const candidates = [];
     for (const row of rows) {
       revoke(row);
@@ -185,6 +241,7 @@ export function createAsksView(document, data, options) {
       root.setAttribute("aria-busy", "false");
     }
     for (const remove of removes) remove(); removes.length = 0;
+    overview?.replaceChildren(); overview = null; overviewButtons.length = 0;
     for (const row of rows) for (const key of Object.keys(row)) row[key] = null;
     rows.length = 0; groups.length = 0; snapshot = null;
     copyText = null; announce = null; onConversation = null;
@@ -208,6 +265,7 @@ export function createAsksView(document, data, options) {
     for (const reason of report.not_watched) reportNode.append(node("p", "", reason));
   }
   report = null; reportNode = null;
+  if (snapshot.moved_today) { overview = node("section", "nav-asks-moved"); root.append(overview); }
   snapshot.sections.forEach((section, index) => {
     const group = {expanded:index < 2, rows:[], region:node("div", "nav-asks-region"),
       button:button(`${labels[index]} (${section.items.length})`)};
@@ -223,10 +281,10 @@ export function createAsksView(document, data, options) {
       const quote = node("div", "nav-asks-body"), details = node("div", "nav-asks-details");
       quote.id = `${article.id}-quote`; details.id = `${article.id}-details`; details.hidden = true;
       const row = {group, data, article, quote, details, wording:node("p", "nav-asks-wording", "Original wording"),
-        expanded:false, generation:0n, ready:null,
+        expanded:false, generation:0n, ready:null, heading:node("h3", "nav-asks-item-heading", `Ask ${data.id}`),
         current:null, toggle:button("Show details"), copy:button("Copy quote"), nav:button("Open conversation")};
       rows.push(row); group.rows.push(row); group.region.append(article);
-      article.append(node("h3", "nav-asks-item-heading", `Ask ${data.id}`),
+      article.append(row.heading,
         node("p", "nav-asks-source", `${data.provider}: ${data.session_id}`));
       if (data.state !== "open") article.append(node("p", "nav-asks-state", `${data.state}: ${data.state_text} (${data.state_reason})`));
       article.append(row.wording, quote, row.toggle, row.copy, row.nav, details);
@@ -240,6 +298,24 @@ export function createAsksView(document, data, options) {
       listen(row.copy, () => copy(row)); listen(row.nav, () => navigate(row));
     });
   });
+  if (overview) {
+    const byID = new Map(rows.map(row => [row.data.id, row]));
+    const selected = snapshot.moved_today.ids.map(id => byID.get(id)); // Capture guarantees unique complete references.
+    const closed = selected.filter(row => row.data.state === "closed").length;
+    const heading = node("h2", "nav-asks-moved-heading", "Moved today"); heading.id = `${idPrefix}-moved-heading`;
+    overview.setAttribute("aria-labelledby", heading.id);
+    overview.append(heading, node("p", "nav-asks-moved-day", `Local day: ${snapshot.moved_today.local_day}`),
+      node("p", "nav-asks-moved-counts", `${closed} closed, ${selected.length - closed} probably done`));
+    const list = node("ul", "nav-asks-moved-list"); overview.append(list);
+    for (const row of selected) {
+      row.heading.id = `${row.article.id}-heading`; row.heading.setAttribute("tabindex", "-1");
+      row.heading.classList.add("nav-asks-moved-target");
+      const control = button(`Ask ${row.data.id}: ${row.data.state}: ${row.data.state_text}`);
+      control.classList.add("nav-asks-moved-button"); control.setAttribute("aria-controls", row.heading.id);
+      const entry = node("li", "nav-asks-moved-entry"); entry.append(control); list.append(entry);
+      overviewButtons.push(control); listen(control, () => reveal(row, control));
+    }
+  }
   snapshot = null; controls();
   function mount() {
     if (phase === "ready") return true;

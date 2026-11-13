@@ -6,3 +6,14 @@
 .nav-asks-source, .nav-asks-state, .nav-asks-scope, .nav-asks-report, .nav-asks-details, .nav-asks-totals { white-space: pre-wrap; overflow-wrap: anywhere; }
 .nav-asks-status { min-height: 1.5em; }
 .nav-asks [hidden] { display: none; }
+
+.nav-asks .nav-asks-moved-heading,
+.nav-asks .nav-asks-moved-day,
+.nav-asks .nav-asks-moved-counts,
+.nav-asks .nav-asks-moved-entry {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nav-asks .nav-asks-moved-list { padding-inline-start: 1.5em; }
+.nav-asks .nav-asks-moved-button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.nav-asks .nav-asks-moved-target:focus { outline: 2px solid currentColor; outline-offset: 2px; }
