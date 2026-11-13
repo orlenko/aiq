@@ -75,12 +75,21 @@ export function createSessionController(document, options) {
     try { candidate.child?.teardown(); } catch { /* Trusted cleanup failure stays local. */ }
     candidate.child = null;
   }
-  function retire(op) {
-    if (!op) return;
-    op.retired = true; cancelFocus(op); cleanCandidate(op.candidate);
-    const abort = op.abort; op.abort = null;
-    try { abort?.abort(); } catch { /* No stale operation may replace current state. */ }
+  function retireMany(...operations) {
+    const old = operations.filter(Boolean).map(op => {
+      op.retired = true;
+      if (op.candidate) op.candidate.retired = true;
+      const abort = op.abort; op.abort = null;
+      return {op, abort};
+    });
+    // Detach BOTH channels before any cleanup or abort can synchronously reenter.
+    for (const {op} of old) { op.candidate?.root.remove(); cancelFocus(op); }
+    for (const {op, abort} of old) {
+      cleanCandidate(op.candidate);
+      try { abort?.abort(); } catch { /* Only captured old resources are retired. */ }
+    }
   }
+  function retire(op) { retireMany(op); }
   function reserve(channel) {
     const previous = current[channel];
     const op = {channel, version:++serial[channel], scope:activeScope, retired:false, abort:null,
@@ -222,7 +231,7 @@ export function createSessionController(document, options) {
       }
       listQuery = {...op.query};
     } catch { failed(op, listPane); return; }
-    finally { retire(previous); retire(oldDetail); }
+    finally { retireMany(previous, oldDetail); }
     if (!alive(op)) return;
     status(op, listPane, listView ? "Refreshing sessions; showing previous results." : "Loading sessions.", true);
     if (alive(op)) read(op, readSessions, {dir:op.query.dir, workers:op.query.workers}, listPane, listCommit);
@@ -262,7 +271,7 @@ export function createSessionController(document, options) {
     current.list = current.detail = null; ++serial.list; ++serial.detail;
     selection = listQuery = activeScope = null;
     clearList(); for (const remove of removes) remove(); removes.length = 0;
-    retire(oldList); retire(oldDetail); root.remove();
+    retireMany(oldList, oldDetail); root.remove();
     readSessions = readConversation = copyText = announce = null;
   }
   function mount() {

@@ -206,3 +206,36 @@ test('refresh all cannot overwrite reader-reentrant selection of the identical p
   assert.equal(f.detailCalls[1].signal.aborted,false,'old refresh must not abort the reentrant selection');
   f.listCalls[1].resolve(sessions());f.detailCalls[1].resolve(detail());await tick();assert.deepEqual(painted(f),['paint A group 0']);f.clean();
 });
+
+
+test('cross-channel retirement detaches old detail before any abort callout',async()=>{
+  const observations=[];
+  for(const phase of ['ready','activating'])for(const mode of ['directory','workers','dispose']) {
+    let entered=false,oldRoot,oldCopy;
+    const trace=[];
+    const capture=label=>trace.push([label,oldRoot.isConnected,oldCopy.isConnected,painted(f).length,f.document.body.textContent.includes('detail title A')]);
+    const f=fixture({readConversation:(q,signal)=>{
+      if(entered)capture('reader');
+      const pending=deferred();f.detailCalls.push({q,signal,...pending});return pending.promise;
+    }});
+    f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(sessions());await tick();
+    f.controller.refresh('list');const list=f.listCalls[1];
+    list.signal.addEventListener('abort',()=>{capture('abort');entered=true;f.controller.selectConversation(scope('A'));},{once:true});
+    const change=()=>{oldRoot=find(f,n=>has(n,'nav-controller-conversation'))[0];oldCopy=byText(f,'Copy message');
+      if(mode==='dispose')f.controller.teardown();else f.controller.loadSessions(mode==='directory'?query('/fixture/B'):query('/fixture/A',true));};
+    let once=true;
+    if(phase==='activating')f.hook(point=>{if(once&&point==='constructor'){once=false;change();}});
+    f.controller.selectConversation(scope('A'));f.detailCalls[0].resolve(detail('A'));await tick();
+    if(phase==='ready')change();
+    if(mode!=='dispose') {
+      assert.equal(f.detailCalls.length,2);assert.equal(f.detailCalls[1].signal.aborted,false);
+      assert.equal(f.detailCalls[1].q.id,ids.A,'same UUID is a fresh operation');
+      const fresh=detail('A');fresh.session.title='fresh header';fresh.messages[0].raw='fresh raw';fresh.messages[0].groups[0].lines[0].spans[0].t='fresh paint';
+      f.detailCalls[1].resolve(fresh);await tick();assert.deepEqual(painted(f),['fresh paint']);assert.ok(f.document.body.textContent.includes('fresh header'));
+      byText(f,'Copy message').click();await tick();assert.deepEqual(f.copies,['fresh raw']);
+    } else assert.equal(f.detailCalls.length,1,'terminal API admits no reentrant reader');
+    observations.push({phase,mode,trace});f.finish();f.clean();
+  }
+  assert.deepEqual(observations, ['ready','activating'].flatMap(phase=>['directory','workers','dispose'].map(mode=>({phase,mode,
+    trace:mode==='dispose'?[['abort',false,false,0,false]]:[['abort',false,false,0,false],['reader',false,false,0,false]]}))));
+});

@@ -1,6 +1,6 @@
 .nav-controller { display: grid; grid-template-columns: minmax(12em, 1fr) minmax(0, 3fr); gap: 1em; min-width: 0; max-width: 100%; }
 .nav-controller .nav-controller-pane, .nav-controller .nav-controller-content { min-width: 0; max-width: 100%; }
-.nav-controller .nav-controller-heading { margin-block: 0 .5em; }
+.nav-controller .nav-controller-heading { margin-block: 0 .5em; overflow-wrap: anywhere; }
 .nav-controller .nav-controller-status, .nav-controller .nav-controller-facts,
 .nav-controller .nav-controller-unavailable { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; }
 .nav-controller .nav-controller-facts { margin-block: .25em; }
