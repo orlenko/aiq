@@ -101,14 +101,36 @@ func TestIndexPastTTLAnsweredFromLastScan(t *testing.T) {
 	x, clk := testIndex(Roots{})
 	var runs atomic.Int64
 	release := make(chan struct{})
+	entered := make(chan struct{})
+	var releaseOnce sync.Once
+	var s scan
+	var refreshDone <-chan struct{}
+	releaseRefresh := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		if refreshDone == nil {
+			s.mu.Lock()
+			refreshDone = s.running
+			s.mu.Unlock()
+		}
+		releaseRefresh()
+		if refreshDone != nil {
+			select {
+			case <-refreshDone:
+			case <-time.After(time.Second):
+				t.Error("the refresh worker did not stop after release")
+			}
+		}
+	})
 	run := func(prev any) any {
 		n := runs.Add(1)
+		if n == 2 {
+			close(entered)
+		}
 		if n > 1 {
 			<-release
 		}
 		return n
 	}
-	var s scan
 	if d, _ := x.read(context.Background(), &s, run); d != int64(1) {
 		t.Fatalf("first read: %v", d)
 	}
@@ -126,10 +148,18 @@ func TestIndexPastTTLAnsweredFromLastScan(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	s.mu.Lock()
+	refreshDone = s.running
+	s.mu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("the background refresh never entered")
+	}
 	if runs.Load() != 2 {
 		t.Errorf("%d scans for five readers past the TTL", runs.Load())
 	}
-	close(release)
+	releaseRefresh()
 	for i := 0; ; i++ {
 		if d, _ := x.read(context.Background(), &s, run); d == int64(2) {
 			break
