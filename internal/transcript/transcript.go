@@ -249,6 +249,10 @@ type Roots struct {
 	CodexIndex     []string // session_index.jsonl files (thread names)
 	AgyAppData     []string // Antigravity CLI app data dirs (brain/, history.jsonl)
 	CopilotAppData []string
+	// Labels names the account a root belongs to, by the root as listed
+	// above: a root in an overlay home exactly one account records. A root
+	// without a label is the real home's, or not known to be one account's.
+	Labels map[string]string
 }
 
 // DefaultRoots derives the search roots from the real homes (realAgy is the

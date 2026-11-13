@@ -50,7 +50,7 @@ func codexFiles(ctx context.Context, roots []string, dir string, since time.Time
 	var out []Candidate
 	for i, p := range all {
 		if match[i] {
-			out = append(out, Candidate{"codex", p})
+			out = append(out, Candidate{Provider: "codex", Path: p})
 		}
 	}
 	return out
@@ -134,6 +134,10 @@ func ParseCodex(path string) (*Session, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseCodexReader(path, f)
+}
+
+func parseCodexReader(path string, f io.ReadSeeker) (*Session, error) {
 	// Older CLIs log each prompt twice: as a response item and as a
 	// user_message event. The event is the typed text alone, so it wins
 	// when present.

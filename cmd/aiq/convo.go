@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -345,6 +346,9 @@ func convoHere() (dir, pane string, err error) {
 type convoResolver struct {
 	st    *state.Store // nil without a database
 	roots transcript.Roots
+	// src finds the transcripts of leases no hook reported; nil walks the
+	// roots each time, as the CLI does.
+	src transcript.Discovery
 	// What it reads of the machine: this host's name, the home directory, the Claude
 	// sessions running, a tmux pane, every process's parent, whether a process lives, and
 	// the clock. warn hears the transcripts a list could not read.
@@ -569,7 +573,7 @@ func (r *convoResolver) unreported(bare []state.Lease) map[int64]string {
 		if l.Mode == state.ModeWorker || l.Cwd == "" {
 			continue
 		}
-		for _, p := range transcript.Written(r.roots, leaseProvider(l), l.Cwd, time.Unix(l.StartedAt, 0)) {
+		for _, p := range r.discovery().Written(context.Background(), leaseProvider(l), l.Cwd, time.Unix(l.StartedAt, 0)) {
 			if !held[canonicalPath(p)] {
 				held[canonicalPath(p)] = true
 				out[l.ID] = p
@@ -578,6 +582,13 @@ func (r *convoResolver) unreported(bare []state.Lease) map[int64]string {
 		}
 	}
 	return out
+}
+
+func (r *convoResolver) discovery() transcript.Discovery {
+	if r.src != nil {
+		return r.src
+	}
+	return transcript.DirectWalk(r.roots)
 }
 
 // ambiguousErr is resolveDir finding more than one live session.

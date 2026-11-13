@@ -57,9 +57,28 @@ func claudeFiles(ctx context.Context, roots []string, dir string) []Candidate {
 				for _, f := range files {
 					if !seen[f] {
 						seen[f] = true
-						out = append(out, Candidate{"claude", f})
+						out = append(out, Candidate{Provider: "claude", Path: f})
 					}
 				}
+			}
+		}
+	}
+	return out
+}
+
+// claudeByID is <id>.jsonl in each project directory of each root, until
+// ctx ends.
+func claudeByID(ctx context.Context, r Roots, id string) []Candidate {
+	var out []Candidate
+	for _, root := range r.ClaudeProjects {
+		entries, _ := os.ReadDir(root)
+		for _, e := range entries {
+			if ctx.Err() != nil {
+				return out
+			}
+			p := filepath.Join(root, e.Name(), id+".jsonl")
+			if _, err := os.Stat(p); err == nil {
+				out = append(out, Candidate{Provider: "claude", Path: p, Root: root, Account: r.Labels[root]})
 			}
 		}
 	}
@@ -140,6 +159,10 @@ func ParseClaude(path string) (*Session, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseClaudeReader(path, f, func() time.Time { return descriptorMtime(f.Stat) })
+}
+
+func parseClaudeReader(path string, f io.Reader, fallback func() time.Time) (*Session, error) {
 	s := &Session{Provider: "claude", ID: strings.TrimSuffix(filepath.Base(path), ".jsonl"), Path: path}
 
 	var cur *Turn
@@ -417,9 +440,7 @@ func ParseClaude(path string) (*Session, error) {
 	}
 	flush(true)
 	if s.Updated.IsZero() {
-		if info, err := f.Stat(); err == nil {
-			s.Updated = info.ModTime()
-		}
+		s.Updated = fallback()
 	}
 	return s, nil
 }
