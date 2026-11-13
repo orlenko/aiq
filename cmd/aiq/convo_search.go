@@ -126,28 +126,38 @@ func (c *convoScreen) searchInput(e asksInput) bool {
 func (c *convoScreen) searchRow(msg int, query string) int {
 	m, query := c.msgs[msg], strings.ToLower(query)
 	first := max(m.from, m.body)
-	best := -1
-	for _, separator := range []string{"", " "} {
-		var text strings.Builder
-		starts := make([]int, 0, m.to-first)
-		for row := first; row < m.to; row++ {
-			if row > first {
-				text.WriteString(separator)
-			}
-			starts = append(starts, text.Len())
-			text.WriteString(strings.ToLower(kitPlain(c.rows[row].text)))
+	var text strings.Builder
+	var starts, rows []int
+	find := func() int {
+		at := strings.Index(text.String(), query)
+		if at < 0 {
+			return -1
 		}
-		if at := strings.Index(text.String(), query); at >= 0 {
-			row := 0
-			for row+1 < len(starts) && starts[row+1] <= at {
-				row++
-			}
-			if best < 0 || first+row < best {
-				best = first + row
-			}
+		i := 0
+		for i+1 < len(starts) && starts[i+1] <= at {
+			i++
 		}
+		return rows[i]
 	}
-	return best
+	for row := first; row < m.to; row++ {
+		r := c.rows[row]
+		if !r.wrap && len(rows) > 0 {
+			if hit := find(); hit >= 0 {
+				return hit
+			}
+			text.Reset()
+			starts, rows = starts[:0], rows[:0]
+		}
+		if r.wrap {
+			text.WriteString(r.gap)
+		}
+		starts, rows = append(starts, text.Len()), append(rows, row)
+		text.WriteString(strings.ToLower(kitPlain(r.text)))
+	}
+	if len(rows) > 0 {
+		return find()
+	}
+	return -1
 }
 
 // convoSearchSnippet uses rune offsets because Unicode lowercasing can change byte

@@ -38,7 +38,9 @@ type convoPart struct {
 // convoRow is one row of the conversation: rendered text, and the message it belongs to.
 type convoRow struct {
 	text string
-	msg  int // -1: the space between messages
+	msg  int    // -1: the space between messages
+	wrap bool   // continues the preceding row's rendered line, rather than a hard newline
+	gap  string // text removed at that display wrap (a space, or nothing for a glyph split)
 }
 
 // convoMsg is one message: its rows, from inclusive to to exclusive, and the Markdown y copies.
@@ -102,8 +104,19 @@ func (c *convoScreen) layout() {
 // wrapping to the terminal. It breaks at the last space that fits, else between glyphs. Each
 // row ends its styles, and the next row opens again with those still in force.
 func convoWrap(line string, w int) []string {
+	parts := convoWrapParts(line, w)
+	rows := make([]string, len(parts))
+	for i, row := range parts {
+		rows[i] = row.text
+	}
+	return rows
+}
+
+// convoWrapParts retains the boundary that the terminal display adds. Searching can
+// put these rows back together without inventing matches across actual line breaks.
+func convoWrapParts(line string, w int) []convoRow {
 	if w < 1 || cells(kitPlain(line)) <= w {
-		return []string{line}
+		return []convoRow{{text: line}}
 	}
 	type token struct {
 		text  string
@@ -124,8 +137,9 @@ func convoWrap(line string, w int) []string {
 		at = m[1]
 	}
 	glyphs(line[at:])
-	var rows []string
+	var rows []convoRow
 	open := "" // the styles in force where the row starts
+	gap := ""
 	for start := 0; start < len(toks); {
 		used, end, space := 0, start, -1
 		for ; end < len(toks); end++ {
@@ -157,7 +171,11 @@ func convoWrap(line string, w int) []string {
 				}
 			}
 		}
-		rows = append(rows, b.String()+sgrReset)
+		rows = append(rows, convoRow{text: b.String() + sgrReset, wrap: start > 0, gap: gap})
+		gap = ""
+		if next > cut {
+			gap = " "
+		}
 		start = next
 	}
 	return rows
@@ -205,10 +223,10 @@ func (c *convoScreen) cut(part int, text string, cuts []convoCut, width int) {
 		ct := folded.first
 		m := convoMsg{id: fmt.Sprintf("%d\x00%s\x00%s\x00%x\x00%d", part, ct.key, ct.kind, folded.firstHash, folded.occurrence), kind: ct.kind, raw: folded.raw}
 		for segment, paint := range folded.segments {
-			var lines []string
+			var lines []convoRow
 			headerRows := 0
 			for _, l := range strings.Split(paint, "\n") {
-				wrapped := convoWrap(convoExpandTabs(l), width)
+				wrapped := convoWrapParts(convoExpandTabs(l), width)
 				if segment == 0 && headerRows == 0 && kitPlain(l) != "" && (ct.kind == "you" || ct.kind == "steer" || ct.kind == "answer") {
 					headerRows = len(wrapped)
 				}
@@ -216,7 +234,7 @@ func (c *convoScreen) cut(part int, text string, cuts []convoCut, width int) {
 			}
 			start := 0
 			if segment == 0 {
-				for start < len(lines)-1 && lines[start] == "" {
+				for start < len(lines)-1 && lines[start].text == "" {
 					c.rows = append(c.rows, convoRow{msg: -1})
 					start++
 				}
@@ -224,7 +242,8 @@ func (c *convoScreen) cut(part int, text string, cuts []convoCut, width int) {
 				m.body = m.from + headerRows
 			}
 			for _, line := range lines[start:] {
-				c.rows = append(c.rows, convoRow{text: line, msg: len(c.msgs)})
+				line.msg = len(c.msgs)
+				c.rows = append(c.rows, line)
 			}
 		}
 		m.to = len(c.rows)

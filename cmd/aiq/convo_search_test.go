@@ -130,6 +130,74 @@ func TestConvoSearchFocusSkipsTrustedHeader(t *testing.T) {
 	}
 }
 
+// A real later hit must win over fragments separated by any hard boundary.
+// Display wrapping remains joinable at the precise glyph/space break it added.
+func TestConvoSearchFocusPreservesHardBreaks(t *testing.T) {
+	for _, tc := range []struct {
+		name, prefix, query string
+		width               int
+		folded              bool
+	}{
+		{"hard glyph boundary", "need\nle", "needle", 78, false},
+		{"hard space boundary", "matching\nwords", "matching words", 78, false},
+		{"blank line boundary", "need\n\nle", "needle", 78, false},
+		{"styled hard boundary", "\x1b[31mneed\x1b[0m\nle", "needle", 78, false},
+		{"Unicode hard boundary", "東\n京", "東京", 78, false},
+		{"hard boundary beside glyph wraps", "need\nle", "needle", 4, false},
+		{"hard boundary beside word wraps", "matching\nwords", "matching words", 9, false},
+		{"folded continuation boundary", "need\nle", "needle", 78, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			padding := strings.Repeat("filler\n", 80)
+			body := tc.prefix + "\n" + padding + tc.query
+			c := newConvoScreen(false)
+			var text string
+			var cuts []convoCut
+			if tc.folded {
+				first, rest, _ := strings.Cut(body, "\n")
+				text = first + "\n" + rest + "\n"
+				cuts = []convoCut{{end: len(first) + 1, kind: "line", text: first}, {end: len(text), kind: "more", text: rest}}
+			} else {
+				text = body + "\n"
+				cuts = []convoCut{{end: len(text), kind: "line", text: sanitize(body)}}
+			}
+			c.cut(0, text, cuts, tc.width)
+			if row := c.searchRow(0, tc.query); row < 80 {
+				t.Fatalf("focused manufactured early hit at row %d", row)
+			}
+			searchType(c, "/"+tc.query)
+			press(c, keypress{code: keyEnter})
+			if c.top < 60 || c.message != "" {
+				t.Fatalf("did not focus real rendered match: top %d, %q", c.top, c.message)
+			}
+		})
+	}
+}
+
+func TestConvoWrapMetadataRestoresOnlyDisplayBreaks(t *testing.T) {
+	for _, text := range []string{"", "a\nb", "need\nle\nneedle", "one two   three four", "abcdefghijklmnop", "日本語の長い文章", "\x1b[31mstyled long words\x1b[0m", "need\n\nle"} {
+		for _, width := range []int{2, 4, 9, 78} {
+			var got strings.Builder
+			for i, line := range strings.Split(text, "\n") {
+				if i > 0 {
+					got.WriteByte('\n')
+				}
+				for _, row := range convoWrapParts(line, width) {
+					if row.wrap {
+						got.WriteString(row.gap)
+					} else if row.gap != "" {
+						t.Fatal("hard boundary carries a wrap gap")
+					}
+					got.WriteString(kitPlain(row.text))
+				}
+			}
+			if got.String() != kitPlain(text) {
+				t.Fatalf("width %d restored %q as %q", width, text, got.String())
+			}
+		}
+	}
+}
+
 func TestConvoSearchIncludesFoldedHiddenContinuations(t *testing.T) {
 	for _, query := range []string{"tail", "invisible"} {
 		text, cuts := foldFixture(0)
