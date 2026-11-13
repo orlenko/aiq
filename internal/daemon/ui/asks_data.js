@@ -42,6 +42,7 @@ const report = {pass_at:time, ok_at:time, error_at:time, next_try_at:time,
   watched:"uint", waiting:"uint", skipped:"uint", calls_today:"uint",
   last_error:"str", not_watched:["str"]};
 const totals = {utc_day:"str", skipped:"uint", calls_today:"uint"};
+const moved = {local_day:"str", start_at:time, ids:["str"]};
 
 function capture(value, schema, budget, rows = false) {
   if (Array.isArray(schema)) {
@@ -125,6 +126,30 @@ export function captureAsks(data, expectedScope, limits) {
       require(out.totals.utc_day !== "");
       if (out.report.known) require(out.totals.skipped === out.report.skipped &&
         out.totals.calls_today === out.report.calls_today);
+    }
+    const m = Object.getOwnPropertyDescriptor(data, "moved_today");
+    if (m) {
+      require(Object.hasOwn(m, "value"));
+      out.moved_today = capture(m.value, moved, budget);
+      const overview = out.moved_today;
+      require(overview.local_day !== "" && overview.start_at.known && overview.start_at.ms % 1000 === 0);
+      // Consistency of the complete supplied snapshot, not proof of local-zone provenance.
+      const counts = new Map(), eligible = [];
+      for (const group of out.sections) for (const row of group.items) {
+        counts.set(row.id, (counts.get(row.id) || 0) + 1);
+        if ((row.state === "closed" || row.state === "probably-done") && row.state_reason !== "person") {
+          require(row.state_at.known); // Unknown cannot establish absence or zero.
+          if (row.state_at.ms >= overview.start_at.ms) eligible.push(row);
+        }
+      }
+      for (const row of eligible) require(counts.get(row.id) === 1);
+      eligible.sort((a, b) => {
+        if (a.state_at.ms !== b.state_at.ms) return a.state_at.ms > b.state_at.ms ? -1 : 1;
+        if (a.id.length !== b.id.length) return a.id.length > b.id.length ? -1 : 1;
+        return a.id === b.id ? 0 : a.id > b.id ? -1 : 1;
+      });
+      require(overview.ids.length === eligible.length);
+      eligible.forEach((row, i) => require(overview.ids[i] === row.id));
     }
     return out;
   } catch { fail(); }

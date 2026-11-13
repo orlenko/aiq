@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,11 @@ type navAsksTotals struct {
 	Day     string `json:"utc_day"`
 	Skipped int64  `json:"skipped"`
 	Calls   int64  `json:"calls_today"`
+}
+type navAsksMoved struct {
+	Day   string      `json:"local_day"`
+	Start navWireTime `json:"start_at"`
+	IDs   []string    `json:"ids"`
 }
 type navAsksItem struct {
 	ID        string         `json:"id"`
@@ -71,12 +77,14 @@ type navAsksUnknownBody struct {
 	Sections []navAsksSection     `json:"sections"`
 	Report   navAsksUnknownReport `json:"report"`
 	Totals   navAsksTotals        `json:"totals"`
+	Moved    navAsksMoved         `json:"moved_today"`
 }
 type navAsksKnownBody struct {
 	Scope    navAsksScope       `json:"scope"`
 	Sections []navAsksSection   `json:"sections"`
 	Report   navAsksKnownReport `json:"report"`
 	Totals   navAsksTotals      `json:"totals"`
+	Moved    navAsksMoved       `json:"moved_today"`
 }
 type navAsksResponseOptions struct {
 	scope                                                    navAsksScope
@@ -163,6 +171,7 @@ type navAsksResponseCapture struct {
 	report   navAsksKnownReport
 	known    bool
 	totals   navAsksTotals
+	moved    navAsksMoved
 	seeds    []navAsksResponseSeed
 }
 
@@ -257,14 +266,15 @@ func (f *navAsksFaultState) external(err error) {
 }
 
 type navAsksRun struct {
-	o       navAsksResponseOptions
-	c       *navAsksCredits
-	raw     state.AsksSnapshot
-	faults  *navAsksFaultState
-	aliases map[string]string
-	allowed map[string]bool
-	pending string
-	used    bool
+	o        navAsksResponseOptions
+	c        *navAsksCredits
+	raw      state.AsksSnapshot
+	faults   *navAsksFaultState
+	aliases  map[string]string
+	allowed  map[string]bool
+	pending  string
+	used     bool
+	dayStart int64
 }
 
 func newNavAsksRun(ctx context.Context, s state.AsksSnapshot, o navAsksResponseOptions, f *navAsksFaultState) (*navAsksRun, error) {
@@ -279,6 +289,10 @@ func newNavAsksRun(ctx context.Context, s state.AsksSnapshot, o navAsksResponseO
 	if o.now.Before(time.Unix(-seconds, 0)) || !o.now.Before(time.Unix(seconds, 0).Add(time.Second)) {
 		return nil, diagnostic.Base(diagnostic.Unshowable)
 	}
+	start := asksDayStart(o.now) // Same producer-local boundary as the CLI.
+	if !navAsksSafeSeconds(start) {
+		return nil, diagnostic.Base(diagnostic.Unshowable)
+	}
 	c := &navAsksCredits{ctx: ctx, input: o.inputBytes, work: o.renderCells, entries: o.arrayEntries, units: o.stringUnits}
 	raw, err := prepareNavAsksRaw(s, o, c)
 	if err != nil {
@@ -286,7 +300,7 @@ func newNavAsksRun(ctx context.Context, s state.AsksSnapshot, o navAsksResponseO
 	}
 	o.scope = navAsksScope{strings.Clone(o.scope.Mode), strings.Clone(o.scope.Dir)}
 	o.aliases = nil
-	r := &navAsksRun{o: o, c: c, raw: raw, faults: f, aliases: make(map[string]string), allowed: map[string]bool{o.scope.Dir: true}}
+	r := &navAsksRun{o: o, c: c, raw: raw, faults: f, dayStart: start, aliases: make(map[string]string), allowed: map[string]bool{o.scope.Dir: true}}
 	for _, a := range raw.Items {
 		if a.Workspace != "" {
 			r.allowed[a.Workspace] = true
@@ -320,7 +334,13 @@ func (r *navAsksRun) commitAlias(key, value string) error {
 func (r *navAsksRun) captureSelected() (*navAsksResponseCapture, error) {
 	s, o, c, aliases := r.raw, r.o, r.c, r.aliases
 	out := &navAsksResponseCapture{scope: navAsksScope{c.text(o.scope.Mode), c.text(o.scope.Dir)},
-		sections: make([]navAsksSection, 5), known: s.ReportPresent, totals: navAsksTotals{c.text(s.UTCDay), s.Skipped, s.CallsToday}}
+		sections: make([]navAsksSection, 5), known: s.ReportPresent, totals: navAsksTotals{c.text(s.UTCDay), s.Skipped, s.CallsToday},
+		moved: navAsksMoved{Day: c.text(o.now.Format("2006-01-02")), Start: navAsksSecond(r.dayStart, false), IDs: make([]string, 0)}}
+	type moveRef struct {
+		at, id int64
+		text   string
+	}
+	var moved []moveRef
 	c.array(5)
 	for i, key := range []string{"asks", "warnings", "other_open", "probably_done", "closed_dismissed"} {
 		out.sections[i] = navAsksSection{Key: c.text(key), Items: make([]navAsksItem, 0)}
@@ -368,11 +388,28 @@ func (r *navAsksRun) captureSelected() (*navAsksResponseCapture, error) {
 		if c.err != nil {
 			return nil, c.err
 		}
+		if (a.State == state.AskClosed || a.State == state.AskProbablyDone) && a.StateReason != state.AskPerson && a.StateAt >= r.dayStart {
+			c.array(1)
+			text := c.text(item.ID) // A second wire occurrence, on the same ledger.
+			if c.err != nil {
+				return nil, c.err
+			}
+			moved = append(moved, moveRef{a.StateAt, a.ID, text})
+		}
 		out.seeds = append(out.seeds, navAsksResponseSeed{group: group, index: len(out.sections[group].Items), raw: [2]string{a.FirstQuote, a.LastQuote}})
 		out.sections[group].Items = append(out.sections[group].Items, item)
 	}
 	if c.err != nil {
 		return nil, c.err
+	}
+	sort.Slice(moved, func(i, j int) bool {
+		if moved[i].at != moved[j].at {
+			return moved[i].at > moved[j].at
+		}
+		return moved[i].id > moved[j].id
+	})
+	for _, m := range moved {
+		out.moved.IDs = append(out.moved.IDs, m.text)
 	}
 	// Every selected quote is frozen and admitted before any renderer callout.
 	for i := range out.seeds {
@@ -458,9 +495,9 @@ func (r *navAsksRun) finish(render navAsksWordingRender, marshal func(any) ([]by
 	}
 	var payload any // Always one of these two concrete, closed values.
 	if data.known {
-		payload = navAsksKnownBody{data.scope, data.sections, data.report, data.totals}
+		payload = navAsksKnownBody{data.scope, data.sections, data.report, data.totals, data.moved}
 	} else {
-		payload = navAsksUnknownBody{data.scope, data.sections, navAsksUnknownReport{Known: false}, data.totals}
+		payload = navAsksUnknownBody{data.scope, data.sections, navAsksUnknownReport{Known: false}, data.totals, data.moved}
 	}
 	size, fits := navJSONSize(payload, math.MaxInt64)
 	if !fits {
