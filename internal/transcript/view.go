@@ -6,12 +6,14 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
 // ErrUnshowable is a view that could not be built or published. Renderer
 // failures suppress the same snapshot/window/markup until change or LRU eviction;
 // internal publication failures are retryable and do not suppress the renderer.
-var ErrUnshowable = errors.New("transcript: could not be shown")
+var ErrUnshowable = diagnostic.Base(diagnostic.Unshowable)
 
 // ViewKey is everything a built view depends on: snapshot, window, markup,
 // lease identity supplied by the caller, held-back output and stale state.

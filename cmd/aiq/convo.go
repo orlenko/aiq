@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
@@ -916,6 +917,8 @@ type convoPrinter struct {
 	facts convoFacts
 	// Sticky for one emit, including failures followed by successful renders.
 	renderFailed bool
+	faults       *diagnostic.Latch
+	sharedFaults bool // projection owns the outer invocation's latch
 }
 
 // convoCut is one thing emit printed: where it ends in emit's output, the turn it belongs to,
@@ -982,6 +985,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 	p.pending = false
 	p.cuts = nil
 	p.renderFailed = false
+	if !p.sharedFaults {
+		p.faults = &diagnostic.Latch{}
+	}
 	if p.capture != nil {
 		p.capture.reset()
 	}
@@ -1363,7 +1369,10 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 	if width <= 0 {
 		width = 100
 	}
-	rendered, ok := safeRender(p.renderer, sanitize(strings.TrimRight(body, "\n")), width, base, p.markup)
+	rendered, ok, origin := safeRenderOrigin(p.renderer, sanitize(strings.TrimRight(body, "\n")), width, base, p.markup)
+	if p.faults != nil {
+		p.faults.Note(origin)
+	}
 	if !ok {
 		p.renderFailed = true
 		p.block(b, false, headSGR, head, base, body)
@@ -1391,13 +1400,19 @@ func (p *convoPrinter) agentHead(sgr, head string) string {
 // safeRender renders Markdown that was cleaned before (the escapes the
 // renderer writes are its own), and reports false if the renderer panics,
 // so a bug in it costs one answer its styling, not the whole view.
-func safeRender(renderer convoMarkdownRenderer, text string, width int, base string, markup bool) (out string, ok bool) {
+func safeRender(renderer convoMarkdownRenderer, text string, width int, base string, markup bool) (string, bool) {
+	out, ok, _ := safeRenderOrigin(renderer, text, width, base, markup)
+	return out, ok
+}
+
+func safeRenderOrigin(renderer convoMarkdownRenderer, text string, width int, base string, markup bool) (out string, ok bool, origin diagnostic.Origin) {
 	defer func() {
-		if recover() != nil {
+		if value := recover(); value != nil {
+			origin = diagnostic.Capture(value)
 			out, ok = "", false
 		}
 	}()
-	return renderer(text, width, base, markup), true
+	return renderer(text, width, base, markup), true, diagnostic.Origin{}
 }
 
 // markdownRenderer is an optional CLI override used by tests. Nil binds the

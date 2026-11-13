@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -314,8 +315,17 @@ func TestConvoStyledProducerCoverageAndFailures(t *testing.T) {
 			render = nil
 		}
 		out, err := renderConvoStyledWith(input, styledTestOptions(), palette, render)
-		if out != nil || err != transcript.ErrUnshowable || strings.Contains(err.Error(), "private") {
+		if out != nil || !errors.Is(err, transcript.ErrUnshowable) || strings.Contains(err.Error(), "private") {
 			t.Fatalf("presentation fault %s escaped nil/ErrUnshowable", fault)
+		}
+		if fault == "panic" || fault == "nil renderer" {
+			file := "cmd/aiq/convo_styled_test.go"
+			if fault == "nil renderer" {
+				file = "cmd/aiq/convo_styled.go"
+			}
+			assertPanicDiagnostic(t, err, transcript.ErrUnshowable, file)
+		} else if err != transcript.ErrUnshowable {
+			t.Fatal("ordinary sentinel identity changed")
 		}
 	}
 	for _, tc := range []struct {
@@ -432,8 +442,10 @@ func TestConvoStyledImmutableInputsAndConcurrentContexts(t *testing.T) {
 	}
 	for i, opts := range options {
 		bad := func(string, int, bool) ([]webMarkdownLine, bool) { panic("fixture failure") }
-		if out, err := renderConvoStyledWith(s, opts, webMarkdownPalette(), bad); out != nil || err != transcript.ErrUnshowable {
+		if out, err := renderConvoStyledWith(s, opts, webMarkdownPalette(), bad); out != nil || !errors.Is(err, transcript.ErrUnshowable) {
 			t.Fatalf("failure context %d classification", i)
+		} else {
+			assertPanicDiagnostic(t, err, transcript.ErrUnshowable, "cmd/aiq/convo_styled_test.go")
 		}
 	}
 	if !reflect.DeepEqual(projectionSnapshot(s, accounts), snapshot) {

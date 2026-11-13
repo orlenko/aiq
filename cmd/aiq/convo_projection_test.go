@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -373,28 +375,29 @@ func TestConvoProjectionRenderFailure(t *testing.T) {
 		return s
 	}
 	got, err := renderConvoProjection(s, convoProjectionOptions{context: ctx})
-	if got != nil || err != errConvoProjectionRender || strings.Contains(err.Error(), "payload") || !reflect.DeepEqual(seen, []string{"one", "bad", "three"}) {
+	if got != nil || !errors.Is(err, errConvoProjectionRender) || strings.Contains(err.Error(), "payload") || !reflect.DeepEqual(seen, []string{"one", "bad", "three"}) {
 		t.Fatalf("sticky failure: %+v %v %v", got, err, seen)
 	}
+	assertPanicDiagnostic(t, err, errConvoProjectionRender, "cmd/aiq/convo_projection_test.go")
 	p := newConvoPrinterWithContext("fixture", true, false, ctx)
 	out := p.emit(s)
 	if !p.renderFailed || !strings.Contains(out, "one") || !strings.Contains(out, "bad") || !strings.Contains(out, "three") {
 		t.Fatal("CLI lost fallback/continuation")
 	}
-	if p.emit(s) != "" || p.renderFailed {
+	if p.emit(s) != "" || p.renderFailed || p.faults.Origin().Present() {
 		t.Fatal("failure did not reset on next emit")
 	}
 	more := &transcript.Session{Turns: []transcript.Turn{{Prompt: "ask", Open: true, Items: []transcript.TurnItem{
 		{Kind: transcript.ItemSaid, Text: "one", MsgID: "m"}, {Kind: transcript.ItemSaid, Text: "bad", MsgID: "m"},
 	}}}}
-	if m, e := renderConvoProjection(more, convoProjectionOptions{context: ctx}); m != nil || e != errConvoProjectionRender {
+	if m, e := renderConvoProjection(more, convoProjectionOptions{context: ctx}); m != nil || !errors.Is(e, errConvoProjectionRender) {
 		t.Fatalf("failed more: %+v %v", m, e)
 	}
 	if m, e := renderConvoProjection(s, convoProjectionOptions{context: projectionTestContext()}); e != nil || len(m) != 4 {
 		t.Fatalf("healthy retry: %+v %v", m, e)
 	}
 	ctx.renderer = nil
-	if m, e := renderConvoProjection(s, convoProjectionOptions{context: ctx}); m != nil || e != errConvoProjectionRender {
+	if m, e := renderConvoProjection(s, convoProjectionOptions{context: ctx}); m != nil || !errors.Is(e, errConvoProjectionRender) {
 		t.Fatalf("nil attempted: %+v %v", m, e)
 	}
 	for _, turn := range []transcript.Turn{{Prompt: "open", Open: true}, {Prompt: "closed"}, {Source: transcript.Peer, Prompt: "peer", Open: true, Items: []transcript.TurnItem{{Kind: transcript.ItemSaid, Text: "line"}}}} {
@@ -504,8 +507,11 @@ func TestConvoProjectionOwnershipAndConcurrentContexts(t *testing.T) {
 	baseline := make([]result, len(options))
 	for i, opts := range options {
 		messages, err := renderConvoProjection(s, opts)
-		if i < 2 && err != nil || i >= 2 && (err != errConvoProjectionRender || messages != nil) {
+		if i < 2 && err != nil || i >= 2 && (!errors.Is(err, errConvoProjectionRender) || messages != nil) {
 			t.Fatalf("baseline %d: %+v %v", i, messages, err)
+		}
+		if i >= 2 {
+			assertPanicDiagnostic(t, err, errConvoProjectionRender, "cmd/aiq/convo_projection_test.go")
 		}
 		baseline[i] = result{i, messages, err}
 		if i == 1 {
@@ -554,7 +560,7 @@ func TestConvoProjectionOwnershipAndConcurrentContexts(t *testing.T) {
 	close(start)
 	for job := 0; job < cap(results); job++ {
 		r := <-results
-		if r.err != baseline[r.index].err || !reflect.DeepEqual(r.messages, baseline[r.index].messages) {
+		if !sameDiagnosticError(r.err, baseline[r.index].err) || !reflect.DeepEqual(r.messages, baseline[r.index].messages) {
 			t.Errorf("concurrent context %d diverged", r.index)
 		}
 	}
@@ -573,4 +579,11 @@ func TestConvoProjectionOwnershipAndConcurrentContexts(t *testing.T) {
 			t.Fatal("display context changed identity")
 		}
 	}
+}
+
+func sameDiagnosticError(a, b error) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Error() == b.Error() && errors.Is(a, errConvoProjectionRender) == errors.Is(b, errConvoProjectionRender) && diagnostic.FromError(a) == diagnostic.FromError(b)
 }
