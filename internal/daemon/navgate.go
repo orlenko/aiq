@@ -176,14 +176,23 @@ func (w *startedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 // data enters the observer. Secondary recovery failures abort without logging.
 func navRecover(observer *navObserver, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		input, creator := ownNavInput(r)
+		var completion *navCompletion
+		defer func() {
+			if creator {
+				input.close()
+			}
+			if completion != nil {
+				completion.close()
+			}
+		}()
 		ctx, state := navroute.WithRequest(r.Context())
-		completion := &navCompletion{}
+		completion = &navCompletion{}
 		ctx = context.WithValue(ctx, navCompletionKey{}, completion)
 		r = r.WithContext(ctx)
 		sw := &startedWriter{ResponseWriter: w}
-		// Registered first, so slot protection ends after recovery/observation,
-		// including exact abort and secondary response failure.
-		defer completion.close()
+		// The first defer clears input before ending slot protection, after
+		// recovery/observation, exact abort and secondary response failure.
 		defer func() {
 			value := recover()
 			if value != nil && value != http.ErrAbortHandler {
