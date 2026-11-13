@@ -286,6 +286,82 @@ func TestAutomaticBackendRespectsUncertainNativeOwner(t *testing.T) {
 	}
 }
 
+func TestAutomaticNativeReservesUndiscoverableTmuxLease(t *testing.T) {
+	for _, fixture := range []string{"missing server", "missing executable", "foreign host", "unknown host", "unknown PID", "negative PID", "proven dead"} {
+		t.Run(fixture, func(t *testing.T) {
+			clearLongContext(t)
+			t.Setenv("AIQ_DATA_DIR", t.TempDir())
+			owner, calls := autoCoreEndpoint(t, "protocol")
+			t.Setenv("HC_TERMINAL_ID", "t1")
+			t.Setenv("HC_TERMINAL_SOCKET", owner)
+			log := autoTmuxFixture(t, "")
+			host, pid := pool.Hostname(), os.Getpid()
+			switch fixture {
+			case "foreign host":
+				host = "fixture-other-host"
+			case "unknown host":
+				host = ""
+			case "unknown PID":
+				pid = 0
+			case "negative PID":
+				pid = -1
+			case "proven dead":
+				pid = 2147483647
+			}
+			if fixture == "missing executable" {
+				t.Setenv("PATH", t.TempDir())
+			}
+			st, err := state.Open(paths.StateDB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			ws := t.TempDir()
+			if err := st.AddAccount(state.Account{ID: "codex/fiction", Provider: "codex", Name: "fiction", Enabled: true, Native: true, Home: t.TempDir()}); err != nil {
+				t.Fatal(err)
+			}
+			id, err := st.AddLease(state.Lease{AccountID: "codex/fiction", Mode: state.ModeLong, Workspace: ws, Pane: "%7", PID: pid, Hostname: host, StartedAt: time.Now().Unix()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := st.GetLease(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &app{cfg: config.Default(), st: st}
+			target, attached, err := a.longExisting(ws)
+			target.unlock()
+			if err == nil || attached || target.native {
+				t.Fatalf("lease admitted a second target: %v %v", attached, err)
+			}
+			if fixture == "proven dead" {
+				if strings.Contains(err.Error(), "tmux ownership is uncertain") || calls.Load() != 1 {
+					t.Fatal("proven-dead lease blocked native verification")
+				}
+			} else if !strings.Contains(err.Error(), "tmux ownership is uncertain") || calls.Load() != 0 {
+				t.Fatal("uncertain lease reached native admission")
+			}
+			after, err := st.GetLease(id)
+			if err != nil || before != after {
+				t.Fatal("lease changed during refusal", err)
+			}
+			launches, err := st.ListLaunches("", nil, nil)
+			if err != nil || len(launches) != 0 {
+				t.Fatal("refusal started a provider", err)
+			}
+			if _, owned, err := herdr.Workspace(ws); owned || err != nil {
+				t.Fatal("refusal published native ownership", err)
+			}
+			b, _ := os.ReadFile(log)
+			for _, call := range strings.Fields(string(b)) {
+				if call != "has-session" {
+					t.Fatal("refusal mutated tmux")
+				}
+			}
+		})
+	}
+}
+
 func TestAutomaticNativeInvalidContextPreservesTmuxRecovery(t *testing.T) {
 	for _, user := range []bool{false, true} {
 		t.Run(map[bool]string{false: "dead only", true: "dead and user"}[user], func(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/paths"
+	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/testenv"
 )
@@ -26,7 +27,7 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 	if _, err := exec.LookPath("hc"); err != nil {
 		t.Skip("hc unavailable; private native PTY check not run")
 	}
-	for _, fixture := range []string{"new", "dead only", "dead and user"} {
+	for _, fixture := range []string{"new", "dead only", "dead and user", "owned elsewhere"} {
 		t.Run(fixture, func(t *testing.T) {
 			clearLongContext(t)
 			root, err := os.MkdirTemp("/tmp", "aiqh-auto-")
@@ -44,7 +45,7 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 			t.Setenv("HC_SESSION", "aiq-auto-fixture")
 			t.Cleanup(func() { stopFixtureCore(t) })
 			panes := ""
-			if fixture != "new" {
+			if fixture == "dead only" || fixture == "dead and user" {
 				panes = "%7:123:1:fixture:/invented/aiq run codex --long"
 			}
 			if fixture == "dead and user" {
@@ -54,6 +55,12 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 			bin := filepath.Join(root, "aiq")
 			if out, err := testenv.GoCommand("build", "-o", bin, ".").CombinedOutput(); err != nil {
 				t.Fatalf("fixture build: %v %s", err, out)
+			}
+			if fixture == "new" {
+				help, err := exec.Command(bin, "help").CombinedOutput()
+				if err != nil || !strings.Contains(string(help), "default follows the terminal") || !strings.Contains(string(help), "--backend tmux ") || !strings.Contains(string(help), "--backend herdr ") || strings.Contains(string(help), "tmux remains the default") {
+					t.Fatal("CLI help misstates backend selection", err)
+				}
 			}
 			provider := filepath.Join(root, "fiction-provider")
 			if err := os.WriteFile(provider, []byte("#!/bin/sh\nprintf 'AUTO_NATIVE_READY\\n'\nwhile IFS= read -r line; do [ \"$line\" = quit ] && exit 0; done\n"), 0700); err != nil {
@@ -80,6 +87,17 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 				t.Fatal(err)
 			}
 			setFakeUsage(t, st, "codex/fiction", 10)
+			var existing state.Lease
+			if fixture == "owned elsewhere" {
+				id, err := st.AddLease(state.Lease{AccountID: "codex/fiction", Mode: state.ModeLong, Workspace: root, Pane: "%7", PID: os.Getpid(), Hostname: pool.Hostname(), StartedAt: time.Now().Unix()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				existing, err = st.GetLease(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			cmd := fixtureHC(ctx, "run", "--bg", "--json", "--no-parent", "--cwd", root, "--", bin, "long", "auto")
@@ -92,6 +110,30 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 			}
 			if json.Unmarshal(out, &started) != nil || started.Address == "" {
 				t.Fatal("invalid private terminal reply")
+			}
+			if fixture == "owned elsewhere" {
+				text := waitFakeText(t, started.Address, "tmux ownership is uncertain")
+				if strings.Contains(text, "AUTO_NATIVE_READY") {
+					t.Fatal("second provider entered")
+				}
+				after, err := st.GetLease(existing.ID)
+				if err != nil || after != existing {
+					t.Fatal("existing lease changed", err)
+				}
+				launches, err := st.ListLaunches("", nil, nil)
+				if err != nil || len(launches) != 0 {
+					t.Fatal("second provider registered", err)
+				}
+				if _, owned, err := herdr.Workspace(root); owned || err != nil {
+					t.Fatal("duplicate native descriptor", err)
+				}
+				b, _ := os.ReadFile(log)
+				for _, call := range strings.Fields(string(b)) {
+					if call != "has-session" {
+						t.Fatal("tmux owner mutated")
+					}
+				}
+				return
 			}
 			waitFakeText(t, started.Address, "AUTO_NATIVE_READY")
 			lease := nativeLease(t, st)

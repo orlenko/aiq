@@ -98,8 +98,8 @@ Launchers (a named program that starts the CLI in an environment of its own):
 
 Long-running sessions (supervised, moved between accounts before they run dry):
   aiq long claude|codex|agy|<launcher> [--account <name>] [--model-tier 0..3] [--effort 1..6] [--] [args...]
-                                    start in a tmux session named after
-                                    the workspace, or attach
+                                    start in the direct Herdr terminal, otherwise
+                                    tmux; attach if a live long session exists
   aiq long auto [--model-tier 0..3] [--effort 1..6] [--providers claude,codex]
                                     the same on the account auto picks from every
                                     pool, with YOLO; no prompt, type it in the session
@@ -110,8 +110,11 @@ Long-running sessions (supervised, moved between accounts before they run dry):
                                     --account starts it on that account
   aiq long resume [same flags]      the same, as the session ran (the long
                                     twin of aiq resume): no forced YOLO or tier
+  aiq long --backend tmux <provider|auto|resume> [args...]
   aiq long --backend herdr <provider|auto|resume> [args...]
-                                    start in this direct Herdr-core terminal; tmux remains the default
+                                    explicitly choose the backend for a new session;
+                                    the default follows the terminal, including menu starts
+                                    (native sessions end if their terminal is killed)
   aiq long list | attach | drain <lease|.> | stop <lease|.>
   aiq long attach <lease-id> [--started <unix-seconds>]
                                     attach the recorded local lease; optional copied-start guard

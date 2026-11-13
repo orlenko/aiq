@@ -9,6 +9,8 @@ import (
 
 	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
+	"github.com/orlenko/aiq/internal/pool"
+	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/tmux"
@@ -107,7 +109,21 @@ func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
 	}
 	name := longrun.SessionName(a.cfg.Long.TmuxPrefix, ws)
 	backend := longBackendForContext(a.longBackend)
-	if backend != "herdr" || (tmux.Available() && tmux.HasSession(name)) {
+	hasTmux := backend == "herdr" && tmux.Available() && tmux.HasSession(name)
+	// An automatic switch must not treat an unreachable tmux owner as absent.
+	if backend == "herdr" && a.longBackend == "" && !hasTmux {
+		for _, l := range leases {
+			if l.Workspace != ws || herdr.IsRef(l.Pane) {
+				continue
+			}
+			if l.Hostname != "" && l.Hostname == pool.Hostname() && l.PID > 0 && !proc.Alive(l.PID) {
+				continue
+			}
+			t.unlock()
+			return t, false, fmt.Errorf("tmux ownership is uncertain for long lease %d; no second session started (use the original tmux context to attach)", l.ID)
+		}
+	}
+	if backend != "herdr" || hasTmux {
 		t, attached, err = a.longExistingTmux(ws, release)
 		if attached || err != nil || backend != "herdr" {
 			if err != nil {

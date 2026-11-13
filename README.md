@@ -309,9 +309,9 @@ aiq long drain .
 aiq long stop .
 ```
 
-Existing live long sessions keep their backend: another start attaches rather
-than converting them. Backend flags are creation preferences and do not bypass
-live or uncertain workspace ownership. Existing native sessions are discovered
+Automatic native selection attaches to existing live long sessions rather than
+converting them; uncertain ownership blocks a new native session. Backend flags
+select a creation preference, not a conversion of a running terminal. Native sessions are discovered
 by the menu and both resume paths. Native startup
 requires a direct Herdr-core terminal (tested with `hc 0.1.20`, protocol
 generation 1), with terminal stdin and stdout. The older Herdr TUI uses a
