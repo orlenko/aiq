@@ -881,6 +881,7 @@ const (
 type convoPrinter struct {
 	palette                         convoPalette
 	renderer                        convoMarkdownRenderer
+	capture                         *convoPaintCapture // nil for ordinary printers
 	liveMark, itemBand, skippedNote string
 	promptHead                      func(time.Time) string
 	clock                           func(time.Time) string
@@ -931,7 +932,11 @@ type convoCut struct {
 
 func (p *convoPrinter) cut(b *strings.Builder, key, kind, text string) {
 	if p.track {
-		p.cuts = append(p.cuts, convoCut{end: b.Len(), key: key, kind: kind, text: text, facts: p.facts})
+		cut := convoCut{end: b.Len(), key: key, kind: kind, text: text, facts: p.facts}
+		if p.capture != nil {
+			p.capture.cut(b, cut, len(p.cuts))
+		}
+		p.cuts = append(p.cuts, cut)
 	}
 }
 
@@ -977,6 +982,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 	p.pending = false
 	p.cuts = nil
 	p.renderFailed = false
+	if p.capture != nil {
+		p.capture.reset()
+	}
 	p.facts = convoFacts{turn: -1, sub: "skipped"}
 	if len(s.Turns) == 0 || p.seen[turnKey(0, s.Turns[0])] == nil || !p.seen[turnKey(0, s.Turns[0])].hidden {
 		for ; p.skipped < s.Skipped; p.skipped++ {
@@ -1019,6 +1027,9 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			default:
 				line, head := promptPresentation(t, p.clock)
 				p.facts.head = head
+				if p.capture != nil {
+					p.capture.literal(p.palette.dim, "· "+line)
+				}
 				b.WriteString("\n" + p.paint(p.palette.dim, "· "+line) + "\n")
 				kind = "notice"
 			}
@@ -1222,6 +1233,9 @@ func turnPieces(t transcript.Turn) []piece {
 // skippedLine writes a record the parser read past as one dim line.
 func (p *convoPrinter) skippedLine(b *strings.Builder, key string) {
 	text := p.skippedNote
+	if p.capture != nil {
+		p.capture.literal(p.palette.dim, "  · "+text)
+	}
 	b.WriteString(p.paint(p.palette.dim, "  · "+text) + "\n")
 	p.note(key, "skipped", text)
 	p.cut(b, key, "skipped", text)
@@ -1237,6 +1251,9 @@ func (p *convoPrinter) said(b *strings.Builder, text string) {
 		if p.width <= 0 {
 			line = truncate("  · "+firstLineWhole(text), 100)
 		}
+	}
+	if p.capture != nil {
+		p.capture.literal(p.palette.dim, line)
 	}
 	b.WriteString(p.paint(p.palette.dim, line) + "\n")
 }
@@ -1276,6 +1293,9 @@ func (p *convoPrinter) note(key, kind, text string) {
 // block writes a header line and its text after a blank line. A human
 // block carries the prompt mark.
 func (p *convoPrinter) block(b *strings.Builder, human bool, headSGR, head, bodySGR, body string) {
+	if p.capture != nil {
+		p.capture.literal(bodySGR, strings.TrimRight(body, "\n"))
+	}
 	if p.color && !human {
 		b.WriteString(p.agentHead(headSGR, head))
 		b.WriteString(p.paint(bodySGR, strings.TrimRight(body, "\n")) + "\n")
@@ -1309,18 +1329,22 @@ func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 	width = max(width, 10)
 	// One style per line, so the only reset is the last thing on it: the
 	// grey has no holes and never bleeds into what comes next.
-	line := func(sgr, text string) string {
-		return p.palette.band + sgr + text + strings.Repeat(" ", max(0, width-cells(text))) + sgrReset + "\n"
+	line := func(sgr, text string, body bool) string {
+		padding := strings.Repeat(" ", max(0, width-cells(text)))
+		if body && p.capture != nil {
+			p.capture.literal(p.palette.band+sgr, text+padding)
+		}
+		return p.palette.band + sgr + text + padding + sgrReset + "\n"
 	}
 	b.WriteString("\n")
 	if p.marks {
 		b.WriteString(osc133Prompt)
 	}
-	b.WriteString(line(p.palette.you, truncate(sanitize(head), width)))
+	b.WriteString(line(p.palette.you, truncate(sanitize(head), width), false))
 	for _, l := range wrap(sanitize(strings.TrimRight(body, "\n")), width) {
-		b.WriteString(line(sgrBold, l))
+		b.WriteString(line(sgrBold, l, true))
 	}
-	b.WriteString(line("", ""))
+	b.WriteString(line("", "", true))
 }
 
 // answer writes an agent's answer under its header. With colour it renders

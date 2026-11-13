@@ -56,6 +56,8 @@ type convoProjectionOptions struct {
 	start      int
 	live, hold bool
 	accounts   []convoAccountFact // original turn indices, including hidden turns
+	// Used only by the styled adapter; never shared between invocations.
+	paintCapture *convoPaintCapture
 }
 
 type convoProjectionPart struct {
@@ -104,6 +106,7 @@ func renderConvoProjection(s *transcript.Session, opts convoProjectionOptions) (
 		holdLastTurn(&owned)
 	}
 	p := newConvoPrinterWithContext(owned.Provider, true, false, opts.context)
+	p.capture = opts.paintCapture
 	p.live, p.hold, p.track = opts.live, opts.hold, true
 	p.skip(owned.Turns[:opts.start])
 	text := p.emit(&owned)

@@ -25,10 +25,22 @@ type webMarkdownLine struct {
 // paint adapter. Do not concatenate folded copy text to erase cut visibility
 // or parse boundaries. Its actual consumer must use its approved render guard.
 func webMarkdownLines(raw string, width int, markup bool) []webMarkdownLine {
+	lines, _ := webMarkdownLinesChecked(raw, width, markup)
+	return lines
+}
+
+// The compatibility wrapper keeps its fallback output. Strict consumers also
+// need coverage: class names cannot reveal a component discarded in conversion.
+func webMarkdownLinesChecked(raw string, width int, markup bool) ([]webMarkdownLine, bool) {
 	lines := (markdownContext{palette: webMarkdownPalette()}).markdownLines(sanitize(raw), width, markup)
+	return webMarkdownConvert(lines)
+}
+
+func webMarkdownConvert(lines []markdownLine) ([]webMarkdownLine, bool) {
 	if lines == nil {
-		return nil
+		return nil, true
 	}
+	covered := true
 	out := make([]webMarkdownLine, len(lines))
 	for i, line := range lines {
 		out[i] = webMarkdownLine{kind: line.kind, tableRows: line.tableRows}
@@ -37,11 +49,14 @@ func webMarkdownLines(raw string, width int, markup bool) []webMarkdownLine {
 		}
 		out[i].spans = make([]webMarkdownSpan, len(line.spans))
 		for j, span := range line.spans {
-			classes, _ := webStyleClasses(span.sgr)
+			classes, ok := webStyleClasses(span.sgr)
+			if !ok {
+				covered = false
+			}
 			out[i].spans[j] = webMarkdownSpan{text: span.text, classes: classes, decorative: span.decorative}
 		}
 	}
-	return out
+	return out, covered
 }
 
 // webStyleClasses consumes trusted style components only, never body text.
