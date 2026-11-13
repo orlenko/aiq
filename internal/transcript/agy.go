@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // The Antigravity CLI keeps one directory per conversation under
@@ -37,7 +38,7 @@ func agyFiles(ctx context.Context, roots []string, dir string) []Candidate {
 				continue
 			}
 			seen[p] = true
-			out = append(out, Candidate{"agy", p})
+			out = append(out, Candidate{Provider: "agy", Path: p})
 		}
 	}
 	return out
@@ -50,14 +51,27 @@ func AgyTranscript(appData, id string) string {
 
 // agyConversations reads the ids of the conversations recorded for dir.
 func agyConversations(ctx context.Context, appData, dir string) []string {
-	var ids []string
+	return agyWorkspaces(ctx, appData)[dir]
+}
+
+// agyWorkspaces maps each workspace recorded under an app data dir
+// (canonical) to the ids of its conversations: those its typed prompts name,
+// in order, then its latest conversation.
+func agyWorkspaces(ctx context.Context, appData string) map[string][]string {
+	ids := map[string][]string{}
 	seen := map[string]bool{}
+	canon := map[string]string{}
 	// An id names a folder under brain/, so only a well-formed one counts: a
 	// path or a pattern would name some other file.
-	add := func(id string) {
-		if ValidID(id) && !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
+	add := func(ws, id string) {
+		dir, ok := canon[ws]
+		if !ok {
+			dir = canonical(ws)
+			canon[ws] = dir
+		}
+		if ValidID(id) && !seen[dir+"\x00"+id] {
+			seen[dir+"\x00"+id] = true
+			ids[dir] = append(ids[dir], id)
 		}
 	}
 	if f, err := OpenRegular(filepath.Join(appData, "history.jsonl")); err == nil {
@@ -68,8 +82,8 @@ func agyConversations(ctx context.Context, appData, dir string) []string {
 				ConversationID string `json:"conversationId"`
 				Workspace      string `json:"workspace"`
 			}
-			if json.Unmarshal(sc.Bytes(), &e) == nil && e.Workspace != "" && canonical(e.Workspace) == dir {
-				add(e.ConversationID)
+			if json.Unmarshal(sc.Bytes(), &e) == nil && e.Workspace != "" {
+				add(e.Workspace, e.ConversationID)
 			}
 		}
 		f.Close()
@@ -78,13 +92,24 @@ func agyConversations(ctx context.Context, appData, dir string) []string {
 		var last map[string]string
 		if json.Unmarshal(data, &last) == nil {
 			for ws, id := range last {
-				if canonical(ws) == dir {
-					add(id)
-				}
+				add(ws, id)
 			}
 		}
 	}
 	return ids
+}
+
+// agyByID is the transcript of conversation id under each app data dir
+// that has one.
+func agyByID(r Roots, id string) []Candidate {
+	var out []Candidate
+	for _, root := range r.AgyAppData {
+		p := AgyTranscript(root, id)
+		if _, err := os.Stat(p); err == nil {
+			out = append(out, Candidate{Provider: "agy", Path: p, Root: root, Account: r.Labels[root]})
+		}
+	}
+	return out
 }
 
 type agyStep struct {
@@ -105,6 +130,10 @@ func ParseAgy(path string) (*Session, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseAgyReader(path, f, func() time.Time { return descriptorMtime(f.Stat) })
+}
+
+func parseAgyReader(path string, f io.Reader, fallback func() time.Time) (*Session, error) {
 	// brain/<id>/.system_generated/logs/transcript.jsonl
 	id := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(path))))
 	s := &Session{Provider: "agy", ID: id, Path: path}
@@ -177,9 +206,7 @@ func ParseAgy(path string) (*Session, error) {
 	}
 	flush()
 	if s.Updated.IsZero() {
-		if info, err := f.Stat(); err == nil {
-			s.Updated = info.ModTime()
-		}
+		s.Updated = fallback()
 	}
 	return s, nil
 }

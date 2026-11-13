@@ -3,6 +3,7 @@
 package transcript
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -41,6 +42,11 @@ func TestListSkipsFIFOs(t *testing.T) {
 		Written(r, "agy", work, time.Time{})
 		ClaudeOpen(claudeHome)
 		ClaudeTitle(fifos[0])
+		// The navigator's index and cache open the same files.
+		x, c := NewIndex(r), NewCache()
+		ListWith(context.Background(), x, work, c.Summary)
+		x.Written(context.Background(), "agy", work, time.Time{})
+		c.Session(context.Background(), fifos[0])
 		done <- list
 	}()
 	select {

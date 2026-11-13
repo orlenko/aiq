@@ -3,6 +3,7 @@ package transcript
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -29,6 +30,9 @@ var errNoSession = errors.New("transcript: no session")
 type Candidate struct {
 	Provider string // "claude", "codex" or "agy"
 	Path     string
+	// Root and Account are set by ByID: the root the file was found under,
+	// and that root's label in Roots.Labels.
+	Root, Account string
 }
 
 // Discovery finds the transcripts of a directory: Claude by project directory,
@@ -39,6 +43,13 @@ type Discovery interface {
 	Candidates(ctx context.Context, dir string) ([]Candidate, error)
 	// CodexNames maps Codex thread ids to the names given with /rename.
 	CodexNames(ctx context.Context) map[string]string
+	// ByID lists the files that may hold the session id of provider, under
+	// every root in Roots order: Claude's <id>.jsonl in each project
+	// directory, Codex's rollouts named for it, Antigravity's brain/<id>.
+	// id has been checked by FindByID.
+	ByID(ctx context.Context, provider, id string) ([]Candidate, error)
+	// Written is the package's Written, from this source.
+	Written(ctx context.Context, provider, dir string, since time.Time) []string
 }
 
 // DirectWalk is the Discovery that reads the roots each time it is asked.
@@ -56,6 +67,31 @@ func (w directWalk) Candidates(ctx context.Context, dir string) ([]Candidate, er
 
 func (w directWalk) CodexNames(ctx context.Context) map[string]string {
 	return codexNames(w.r.CodexIndex)
+}
+
+func (w directWalk) ByID(ctx context.Context, provider, id string) ([]Candidate, error) {
+	switch provider {
+	case "claude":
+		return claudeByID(ctx, w.r, id), ctx.Err()
+	case "codex":
+		var out []Candidate
+		name := "-" + id + ".jsonl"
+		for _, root := range w.r.CodexSessions {
+			filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+				if ctx.Err() != nil {
+					return filepath.SkipAll
+				}
+				if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), "rollout-") && strings.HasSuffix(d.Name(), name) {
+					out = append(out, Candidate{Provider: "codex", Path: p, Root: root, Account: w.r.Labels[root]})
+				}
+				return nil
+			})
+		}
+		return out, ctx.Err()
+	case "agy":
+		return agyByID(w.r, id), ctx.Err()
+	}
+	return nil, nil
 }
 
 // Summary is what a list row shows of a session, without its turns.
@@ -167,6 +203,41 @@ func ListWith(ctx context.Context, src Discovery, dir string, parse func(ctx con
 		}
 		return a.ID < b.ID
 	})
+	return res, nil
+}
+
+// A navigator list's bounds: its time, and the rows it returns.
+const (
+	ListBudget = 3 * time.Second
+	ListRows   = 500
+)
+
+// ListDirs lists dirs one after another, as ListWith does, within
+// ListBudget and ListRows: the rows newest first, and Partial when time ran
+// out, a directory was not reached or rows were left out.
+func ListDirs(ctx context.Context, src Discovery, dirs []string, parse func(ctx context.Context, path string) (Summary, error)) (ListResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, ListBudget)
+	defer cancel()
+	var res ListResult
+	for _, dir := range dirs {
+		if ctx.Err() != nil || len(res.Rows) >= ListRows {
+			res.Partial = true
+			break
+		}
+		r, err := ListWith(ctx, src, dir, parse)
+		if err != nil {
+			return res, err
+		}
+		res.Rows = append(res.Rows, r.Rows...)
+		res.Scanned += r.Scanned
+		res.Of += r.Of
+		res.Partial = res.Partial || r.Partial
+		res.Unreadable = append(res.Unreadable, r.Unreadable...)
+	}
+	sort.SliceStable(res.Rows, func(i, j int) bool { return res.Rows[i].Updated.After(res.Rows[j].Updated) })
+	if len(res.Rows) > ListRows {
+		res.Rows, res.Partial = res.Rows[:ListRows], true
+	}
 	return res, nil
 }
 

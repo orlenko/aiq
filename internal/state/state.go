@@ -1140,6 +1140,38 @@ func (s *Store) LongLaunches(hostname string, leaseID int64) ([]Launch, error) {
 	return out, rows.Err()
 }
 
+// Directory is a directory aiq launched sessions in: when it last launched
+// one that was not a worker (zero if all were), and how many it launched.
+type Directory struct {
+	Path       string
+	LastActive time.Time
+	Launches   int
+}
+
+// Directories lists the directories of hostname's launches, most recently
+// active first. Worker launches count but do not make a directory recent.
+func (s *Store) Directories(hostname string) ([]Directory, error) {
+	rows, err := s.db.Query(`SELECT cwd, COALESCE(MAX(CASE WHEN COALESCE(mode,'') != ? THEN started_at_ms END), 0), COUNT(*)
+		FROM launches WHERE hostname = ? AND COALESCE(cwd,'') != '' GROUP BY cwd ORDER BY 2 DESC, cwd`, ModeWorker, hostname)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Directory
+	for rows.Next() {
+		var d Directory
+		var ms int64
+		if err := rows.Scan(&d.Path, &ms, &d.Launches); err != nil {
+			return nil, err
+		}
+		if ms != 0 {
+			d.LastActive = time.UnixMilli(ms)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // TrimLaunches keeps only the newest keep launches.
 func (s *Store) TrimLaunches(keep int) {
 	s.db.Exec(`DELETE FROM launches WHERE id NOT IN (SELECT id FROM launches ORDER BY id DESC LIMIT ?)`, keep)
