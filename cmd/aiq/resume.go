@@ -288,7 +288,11 @@ func (a *app) resumeSession(s transcript.Session, origins map[string]origin, liv
 // whenLabel is a compact local timestamp: the time today, the weekday this
 // week, the date before that.
 func whenLabel(t, now time.Time) string {
-	t, now = t.Local(), now.Local()
+	return whenLabelIn(t, now, time.Local)
+}
+
+func whenLabelIn(t, now time.Time, location *time.Location) string {
+	t, now = t.In(location), now.In(location)
 	y1, m1, d1 := t.Date()
 	y2, m2, d2 := now.Date()
 	switch {
