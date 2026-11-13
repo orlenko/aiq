@@ -218,9 +218,10 @@ func TestNavConversationStaleHoldAndConcurrentOwnership(t *testing.T) {
 	wg.Wait()
 	o := options[0]
 	_, _, _, err := buildNavConversationWith(s, o, func(*transcript.Session, convoStyledOptions) ([]convoStyledMessage, error) { panic("fixture failure") }, json.Marshal)
-	if err != transcript.ErrUnshowable {
+	if !errors.Is(err, transcript.ErrUnshowable) {
 		t.Fatal("failure classification")
 	}
+	assertPanicDiagnostic(t, err, transcript.ErrUnshowable, "cmd/aiq/nav_conversation_ownership_test.go")
 	if !reflect.DeepEqual(projectionSnapshot(s, accounts), before) {
 		t.Fatal("source or spare-capacity storage mutated across success/hold/stale/failure")
 	}

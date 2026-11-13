@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -34,6 +35,7 @@ type navConversationOptions struct {
 	accounts              []convoAccountFact
 	skippedNote, liveMark string
 	bodyBytes             int64
+	faults                *diagnostic.Latch
 }
 
 type navConversationRender func(*transcript.Session, convoStyledOptions) ([]convoStyledMessage, error)
@@ -46,9 +48,15 @@ func buildNavConversation(s *transcript.Session, o navConversationOptions) (*nav
 }
 
 func buildNavConversationWith(s *transcript.Session, o navConversationOptions, render navConversationRender, marshal func(any) ([]byte, error)) (window *navConversationWindow, body []byte, fingerprint string, err error) {
+	faults := o.faults
+	if faults == nil {
+		faults = &diagnostic.Latch{}
+	}
+	o.faults = faults
 	defer func() {
-		if recover() != nil {
-			window, body, fingerprint, err = nil, nil, "", transcript.ErrUnshowable
+		if value := recover(); value != nil {
+			faults.Note(diagnostic.Capture(value))
+			window, body, fingerprint, err = nil, nil, "", diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 		}
 	}()
 	if marshal == nil {
@@ -81,9 +89,14 @@ func projectNavConversation(s *transcript.Session, o navConversationOptions) (*n
 // Projection is shared with the HTTP envelope, so that each consumer encodes
 // its complete representation once. The established wire wrapper stays intact.
 func projectNavConversationWith(s *transcript.Session, o navConversationOptions, render navConversationRender) (window *navConversationWindow, err error) {
+	faults := o.faults
+	if faults == nil {
+		faults = &diagnostic.Latch{}
+	}
 	defer func() {
-		if recover() != nil {
-			window, err = nil, transcript.ErrUnshowable
+		if value := recover(); value != nil {
+			faults.Note(diagnostic.Capture(value))
+			window, err = nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 		}
 	}()
 	if s == nil || !transcript.IsFullID(o.provider, o.id) || s.Provider != o.provider || s.ID != o.id ||
@@ -120,9 +133,10 @@ func projectNavConversationWith(s *transcript.Session, o navConversationOptions,
 		live, hold = false, false
 	}
 	styled, err := render(&owned, convoStyledOptions{width: 100, markup: o.markup, now: o.now, location: o.location,
-		liveMark: o.liveMark, skippedNote: o.skippedNote, start: start, live: live, hold: hold, accounts: o.accounts})
+		liveMark: o.liveMark, skippedNote: o.skippedNote, start: start, live: live, hold: hold, accounts: o.accounts, faults: faults})
 	if err != nil {
-		return nil, transcript.ErrUnshowable
+		faults.Note(diagnostic.FromError(err))
+		return nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 	}
 	messages, err := navConversationMessages(styled, o, start, end)
 	if err != nil {

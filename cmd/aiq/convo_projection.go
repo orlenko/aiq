@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -58,6 +59,7 @@ type convoProjectionOptions struct {
 	accounts   []convoAccountFact // original turn indices, including hidden turns
 	// Used only by the styled adapter; never shared between invocations.
 	paintCapture *convoPaintCapture
+	faults       *diagnostic.Latch
 }
 
 type convoProjectionPart struct {
@@ -77,13 +79,23 @@ type convoProjectionMessage struct {
 var (
 	errConvoProjectionSession = errors.New("missing conversation session")
 	errConvoProjectionStart   = errors.New("invalid conversation start")
-	errConvoProjectionRender  = errors.New("conversation rendering failed")
+	errConvoProjectionRender  = diagnostic.Base(diagnostic.Projection)
 )
 
 // renderConvoProjection owns its working session, printer and returned slices.
 // It performs no discovery, clock reads, parser work or CLI default resolution.
 // Trusted callbacks in context must obey convoRenderContext's purity contract.
-func renderConvoProjection(s *transcript.Session, opts convoProjectionOptions) ([]convoProjectionMessage, error) {
+func renderConvoProjection(s *transcript.Session, opts convoProjectionOptions) (out []convoProjectionMessage, err error) {
+	faults := opts.faults
+	if faults == nil {
+		faults = &diagnostic.Latch{}
+	}
+	defer func() {
+		if value := recover(); value != nil {
+			faults.Note(diagnostic.Capture(value))
+			out, err = nil, diagnostic.Failure(diagnostic.Projection, faults.Origin())
+		}
+	}()
 	if s == nil {
 		return nil, errConvoProjectionSession
 	}
@@ -107,11 +119,12 @@ func renderConvoProjection(s *transcript.Session, opts convoProjectionOptions) (
 	}
 	p := newConvoPrinterWithContext(owned.Provider, true, false, opts.context)
 	p.capture = opts.paintCapture
+	p.faults, p.sharedFaults = faults, true
 	p.live, p.hold, p.track = opts.live, opts.hold, true
 	p.skip(owned.Turns[:opts.start])
 	text := p.emit(&owned)
 	if p.renderFailed {
-		return nil, errConvoProjectionRender
+		return nil, diagnostic.Failure(diagnostic.Projection, faults.Origin())
 	}
 	return projectConvoCuts(text, p.cuts, accounts), nil
 }

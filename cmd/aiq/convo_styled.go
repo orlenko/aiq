@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -17,6 +18,7 @@ type convoStyledOptions struct {
 	start                 int
 	live, hold            bool
 	accounts              []convoAccountFact
+	faults                *diagnostic.Latch
 }
 
 // Private presentation, not a transport. Never serialize message.rawKey.
@@ -44,9 +46,14 @@ func renderConvoStyled(s *transcript.Session, opts convoStyledOptions) ([]convoS
 // Explicit trusted dependencies permit fault/ownership tests. The ordinary
 // entry always binds the fixed web palette and checked metadata producer.
 func renderConvoStyledWith(s *transcript.Session, opts convoStyledOptions, palette convoPalette, render webLineRenderer) (out []convoStyledMessage, err error) {
+	faults := opts.faults
+	if faults == nil {
+		faults = &diagnostic.Latch{}
+	}
 	defer func() {
-		if recover() != nil {
-			out, err = nil, transcript.ErrUnshowable
+		if value := recover(); value != nil {
+			faults.Note(diagnostic.Capture(value))
+			out, err = nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 		}
 	}()
 	capture := &convoPaintCapture{}
@@ -61,11 +68,12 @@ func renderConvoStyledWith(s *transcript.Session, opts convoStyledOptions, palet
 	}
 	messages, err := renderConvoProjection(s, convoProjectionOptions{
 		context: ctx, start: opts.start, live: opts.live, hold: opts.hold,
-		accounts: opts.accounts, paintCapture: capture,
+		accounts: opts.accounts, paintCapture: capture, faults: faults,
 	})
 	if err != nil {
+		faults.Note(diagnostic.FromError(err))
 		if errors.Is(err, errConvoProjectionRender) {
-			return nil, transcript.ErrUnshowable
+			return nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 		}
 		return nil, err
 	}
