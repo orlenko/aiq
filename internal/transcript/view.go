@@ -117,8 +117,9 @@ func newViewState(width int) viewState {
 }
 
 // View is ViewContext with no caller deadline. Builders must be independent:
-// they must not synchronously call this Cache's View/ViewContext. Compose
-// dependent formatting using pure helpers inside one admitted builder.
+// they must not synchronously call this Cache's View, ViewContext or
+// ViewContextWithDiagnostics. Compose dependent formatting using pure helpers
+// inside one admitted builder.
 func (c *Cache) View(k ViewKey, build func() (*View, error)) (*View, error) {
 	return c.ViewContext(context.Background(), k, build)
 }
@@ -128,6 +129,18 @@ func (c *Cache) View(k ViewKey, build func() (*View, error)) (*View, error) {
 // process cache's builder slots. Waiting callers create no queue or owner.
 // Admitted work holds its slot through publication even if all callers leave.
 func (c *Cache) ViewContext(ctx context.Context, k ViewKey, build func() (*View, error)) (*View, error) {
+	return c.ViewContextWithDiagnostics(ctx, k, func(_ *diagnostic.Holder) (*View, error) {
+		return build()
+	})
+}
+
+// ViewContextWithDiagnostics is ViewContext with an operation-owned diagnostic
+// holder supplied only to the admitted detached builder. The holder has no
+// caller context; it is borrowed for the callback's joined work and must not be
+// retained or used asynchronously after return. Hits and waiting callers create
+// no operation holder. The builder must not synchronously call this Cache's
+// View, ViewContext or ViewContextWithDiagnostics.
+func (c *Cache) ViewContextWithDiagnostics(ctx context.Context, k ViewKey, build func(*diagnostic.Holder) (*View, error)) (*View, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -172,7 +185,7 @@ func (c *Cache) ViewContext(ctx context.Context, k ViewKey, build func() (*View,
 
 // viewRole rechecks under the authoritative lock after borrowing a slot.
 // The panic guard is for injected clocks before admission, not renderer blame.
-func (c *Cache) viewRole(ctx context.Context, k ViewKey, build func() (*View, error), slot bool) (v *View, err error, f *viewFlight, changed <-chan struct{}, found, launched bool) {
+func (c *Cache) viewRole(ctx context.Context, k ViewKey, build func(*diagnostic.Holder) (*View, error), slot bool) (v *View, err error, f *viewFlight, changed <-chan struct{}, found, launched bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer func() {
@@ -313,11 +326,11 @@ func (c *Cache) currentViewOwnerLocked(path string, o *viewOwner) bool {
 // Cleanup is registered before the first clock read. Renderer classification
 // is separate from internal faults, and an ordinary partial/error pair survives
 // a later timing fault unchanged.
-func (c *Cache) flyView(bk viewBuildKey, f *viewFlight, build func() (*View, error)) {
+func (c *Cache) flyView(bk viewBuildKey, f *viewFlight, build func(*diagnostic.Holder) (*View, error)) {
 	var v *View
 	var err error
 	var rendererFailure, ordinary bool
-	var faults diagnostic.Latch
+	var faults diagnostic.Holder
 	defer func() {
 		if value := recover(); value != nil {
 			faults.Note(capturePanic(value))
@@ -329,20 +342,21 @@ func (c *Cache) flyView(bk viewBuildKey, f *viewFlight, build func() (*View, err
 		c.finishView(bk, f, v, err, rendererFailure, ordinary, faults.Origin())
 	}()
 	start := c.now()
-	v, err = buildView(build)
+	v, err = buildView(build, &faults)
 	faults.Note(PanicOrigin(err))
 	rendererFailure = errors.Is(err, ErrUnshowable)
 	ordinary = err != nil && !rendererFailure
 	c.stats.viewBuilds.Add(1)
 	c.stats.viewNanos.Add(int64(c.now().Sub(start)))
 }
-func buildView(build func() (*View, error)) (v *View, err error) {
+func buildView(build func(*diagnostic.Holder) (*View, error), faults *diagnostic.Holder) (v *View, err error) {
 	defer func() {
 		if value := recover(); value != nil {
-			v, err = nil, diagnostic.Failure(diagnostic.Unshowable, capturePanic(value))
+			faults.Note(capturePanic(value))
+			v, err = nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 		}
 	}()
-	v, err = build()
+	v, err = build(faults)
 	if err == nil && v == nil {
 		err = ErrUnshowable
 	}

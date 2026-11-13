@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -169,7 +170,11 @@ func navListDecode(req *http.Request) (navListQuery, navListResponse, bool) {
 
 func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out navListResponse) {
 	defer func() {
-		if recover() != nil {
+		if value := recover(); value != nil {
+			origin := transcript.CapturePanic(value)
+			if req != nil {
+				diagnostic.Note(req.Context(), origin)
+			}
 			out = navListError(http.StatusInternalServerError, "internal_error")
 		}
 	}()
@@ -208,6 +213,7 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 		}
 	}
 	result, err := transcript.ListWith(child, run, q.dir, run.summary)
+	diagnostic.Note(child, transcript.PanicOrigin(err))
 	// Dependency seams latched actual interruption, including empty discovery
 	// and names. Later child expiry must not rewrite completed collection.
 	flags := run.flags()
