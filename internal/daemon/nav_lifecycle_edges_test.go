@@ -143,6 +143,7 @@ func TestNavigatorAutomaticServeCloseRetiresBeforeBlockedRawClose(t *testing.T) 
 	if first.closes.Load() != 1 || string(before) != string(after) || s.navigatorPort() != b.port {
 		t.Fatal("automatic Close completion retired replacement")
 	}
+	lifeHealthyInfo(t, b, 1)
 }
 
 func TestNavigatorStaleEmptyCallbacksNeverWriteIdenticalTerminalState(t *testing.T) {
@@ -351,6 +352,20 @@ func TestNavigatorParkedPreparationHasZeroWritesAfterLiveReplacement(t *testing.
 			if obsolete != nil || first.closes.Load() != 1 || writes.Load() != count || string(before) != string(after) || string(history) != string(historyAfter) || s.navigatorPort() != b.port {
 				t.Fatal("stale acquisition/preparation performed a later write or touched replacement")
 			}
+			lifeHealthyInfo(t, b, 2)
 		})
 	}
+}
+
+func lifeHealthyInfo(t *testing.T, g *navGeneration, seed byte) {
+	t.Helper()
+	p := lifeProof(t, g, "GET", "/api/nav/info", "", seed)
+	r := lifeRequest("GET", "/api/nav/info", "")
+	r.Header.Set("X-Aiq-Proof", p.String())
+	w := httptest.NewRecorder()
+	g.server.Handler.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatal("replacement lost authentication after obsolete completion")
+	}
+	lifeSigned(t, w, p)
 }
