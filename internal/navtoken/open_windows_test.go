@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestNativeWindowsPrivateRegularAndCleanup(t *testing.T) {
+func TestNativeWindowsCandidatePrivateRegularAndCleanup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invented-state")
 	if err := os.WriteFile(path, []byte(literalOn), 0600); err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestNativeWindowsPrivateRegularAndCleanup(t *testing.T) {
 	}
 }
 
-func TestNativeWindowsReplacementMismatchBeforeRead(t *testing.T) {
+func TestNativeWindowsCandidateReplacementMismatchBeforeRead(t *testing.T) {
 	dir := t.TempDir()
 	path, next := filepath.Join(dir, "state"), filepath.Join(dir, "next")
 	if os.WriteFile(path, []byte(literalOn), 0600) != nil || os.WriteFile(next, []byte("off 999 0\n"), 0600) != nil {
@@ -50,25 +50,25 @@ func TestNativeWindowsReplacementMismatchBeforeRead(t *testing.T) {
 	if !replaced || err != ErrUnsafe {
 		t.Error("native mismatch was not distinguished from acquisition failure")
 	}
-	r, err := Read(path)
+	r, err := readWindowsCandidate(path)
 	if err != nil || r.Status() != Off || r.PID() != 999 {
 		t.Error("replacement positive control failed")
 	}
 }
 
-func TestNativeWindowsRejectsFinalLinkAndDirectory(t *testing.T) {
+func TestNativeWindowsCandidateRejectsFinalLinkAndDirectory(t *testing.T) {
 	dir := t.TempDir()
 	path, link := filepath.Join(dir, "state"), filepath.Join(dir, "link")
 	if e := os.WriteFile(path, []byte(literalOn), 0600); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := Read(dir); e != ErrUnsafe {
+	if _, e := readWindowsCandidate(dir); e != ErrUnsafe {
 		t.Error("directory admitted")
 	}
 	if e := os.Symlink(path, link); e != nil {
 		t.Skip("native symlink fixture privilege unavailable")
 	}
-	if _, e := Read(link); e != ErrUnsafe {
+	if _, e := readWindowsCandidate(link); e != ErrUnsafe {
 		t.Error("final reparse point followed")
 	}
 }
