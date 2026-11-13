@@ -38,7 +38,7 @@ func (denyAll) Proof(*http.Request) bool { return false }
 
 // navBuildAssets are the navigator's embedded files, which the build string covers so a
 // page can tell when it is served by another build.
-var navBuildAssets [][]byte
+var navBuildAssets = [][]byte{navShellTemplate, navBootstrapJS, navSessionJS, navCodecJS, navAuthCSS}
 
 // navBuild is "<version>+<hash of the navigator's files>".
 func navBuild() string {
@@ -279,6 +279,10 @@ func navLoginClosed() http.Handler {
 // it before Run.
 func (s *Server) MountNavigator(h http.Handler) { s.navAPI = h }
 
+// MountNavigatorPages configures the static page dependency before Run. APIs
+// retain their own credential gate; refused connections never invoke pages.
+func (s *Server) MountNavigatorPages(h http.Handler) { s.navPages = h }
+
 // navigatorHandler is what the navigator's port serves.
 func (s *Server) navigatorHandler() http.Handler {
 	return navRecover(s.navigatorObserver(), s.navigatorCore())
@@ -290,6 +294,7 @@ func (s *Server) navigatorCore() http.Handler {
 		hello:    navHello(build),
 		login:    navLoginClosed(),
 		api:      s.navAPI,
+		pages:    s.navPages,
 	}, build)
 }
 

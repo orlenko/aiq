@@ -1,0 +1,23 @@
+[
+ {"route":"/sessions","ok":true},
+ {"route":"/sessions?dir=%2Finvented","ok":true},
+ {"route":"/sessions?dir=%2Finvented%2Fa+b%2B%25%27%28%29","ok":true},
+ {"route":"/sessions?dir=%2F%C3%A9","ok":true},
+ {"route":"/asks?all=true","ok":true},
+ {"route":"/asks?all=false&dir=%2Finvented","ok":true},
+ {"route":"/sessions/agy/00000000-0000-4000-8000-000000000001","ok":true},
+ {"route":"/sessions?dir=%2finvented","ok":false},
+ {"route":"/sessions?%64ir=%2Finvented","ok":false},
+ {"route":"/sessions?dir=%2Fa%01b","ok":false},
+ {"route":"/sessions?dir=%2Fa%7Fb","ok":false},
+ {"route":"/sessions?dir=%FF","ok":false},
+ {"route":"/sessions?dir=%2Finvented&dir=%2Fother","ok":false},
+ {"route":"/sessions?dir=%2Fa%2F..%2Fb","ok":false},
+ {"route":"/sessions?dir=%2Fa%2F","ok":false},
+ {"route":"/asks?all=true&dir=%2Finvented","ok":false},
+ {"route":"/sessions?all=true","ok":false},
+ {"route":"/sessions?","ok":false},
+ {"route":"//foreign.invalid/","ok":false},
+ {"route":"/sessions/../asks","ok":false},
+ {"route":"/s%65ssions","ok":false}
+]

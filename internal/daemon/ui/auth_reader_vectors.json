@@ -1,0 +1,10 @@
+[
+  {"query":{"provider":"codex","id":"00000000-0000-4000-8000-000000000001","last":50,"markup":false,"anchor":0},"path":"/api/nav/sessions/codex/00000000-0000-4000-8000-000000000001?last=50&markup=0"},
+  {"query":{"provider":"claude","id":"00000000-0000-4000-8000-000000000001","last":1,"markup":true,"anchor":1},"path":"/api/nav/sessions/claude/00000000-0000-4000-8000-000000000001?at=1&last=1&markup=1"},
+  {"query":{"provider":"agy","id":"AAAAAAAA-0000-4000-8000-000000000001","last":10000,"markup":true,"anchor":9999999999999},"path":"/api/nav/sessions/agy/AAAAAAAA-0000-4000-8000-000000000001?at=9999999999999&last=10000&markup=1"},
+  {"query":{"provider":"codex","id":"00000000-0000-4000-8000-000000000001","last":50,"markup":false,"anchor":-1},"path":""},
+  {"query":{"provider":"codex","id":"00000000-0000-4000-8000-000000000001","last":50,"markup":false,"anchor":10000000000000},"path":""},
+  {"query":{"provider":"codex","id":"00000000-0000-4000-8000-000000000001","last":50,"markup":false,"anchor":1.5},"path":""},
+  {"query":{"provider":"codex","id":"00000000-0000-4000-8000-000000000001","last":50,"markup":false,"anchor":"0"},"path":""},
+  {"query":{"provider":"codex","id":"00000000-0000-4000-8000-000000000001","last":50,"markup":false,"at":"0"},"path":""}
+]
