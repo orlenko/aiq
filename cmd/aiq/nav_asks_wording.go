@@ -96,15 +96,19 @@ func projectNavAsksWordingWith(ctx context.Context, ask state.Ask, o navAsksWord
 	if err != nil {
 		return nil, err
 	}
-	return navAsksRenderAdmitted(ctx, admitted, &o.arrayEntries, &o.stringUnits, faults, render, convert)
+	return navAsksRenderAdmitted(ctx, admitted, &o.arrayEntries, &o.stringUnits, faults, nil, render, convert)
 }
 
 // Internal zero remaining credits mean exhaustion, not invalid configuration.
 func navAsksRenderAdmitted(ctx context.Context, admitted navAsksAdmittedWording, entries, units *uint64,
-	faults *diagnostic.Latch, render navAsksWordingRender, convert navAsksWordingConvert) (pair *navAsksWordingPair, err error) {
+	faults *diagnostic.Latch, observed *bool, render navAsksWordingRender, convert navAsksWordingConvert) (pair *navAsksWordingPair, err error) {
 	defer func() {
 		if value := recover(); value != nil {
-			faults.Note(diagnostic.Capture(value))
+			origin := diagnostic.Capture(value)
+			if observed != nil {
+				*observed = true
+			}
+			faults.Note(origin)
 			pair, err = nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 		}
 	}()
