@@ -6,6 +6,7 @@ const UNAVAILABLE = "Navigator request unavailable";
 const UNKNOWN = "This page uses memory only. A previously saved tab session could not be cleared or checked and may return on reload. Use your browser’s clear site data controls before restoring this tab.";
 const MEMORY = "Memory-only tab session; reload requires aiq ui.";
 const owners = new WeakMap(); // DOM ownership only; no credential or fragment.
+const apply = Reflect.apply;
 const bad = () => { throw new TypeError(UNAVAILABLE); };
 function own(value, key) {
   if (!value || typeof value !== "object" || Array.isArray(value)) bad();
@@ -29,9 +30,9 @@ function requestPath(kind, query) {
   if (kind !== "conversation") bad();
   const provider = own(query,"provider"), id = own(query,"id");
   if (!["claude","codex","agy"].includes(provider) || typeof id !== "string" || !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)) bad();
-  const last = integer(own(query,"last"),1,10000), markup = own(query,"markup"), at = own(query,"at");
-  if (typeof markup !== "boolean" || typeof at !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(at) || BigInt(at)>9223372036854775807n) bad();
-  return "/api/nav/sessions/"+provider+"/"+id+"?at="+at+"&last="+last+"&markup="+(markup?"1":"0");
+  const last = integer(own(query,"last"),1,10000), markup = own(query,"markup"), anchor = integer(own(query,"anchor"),0,9999999999999);
+  if (typeof markup !== "boolean") bad();
+  return "/api/nav/sessions/"+provider+"/"+id+"?"+(anchor===0?"":"at="+anchor+"&")+"last="+last+"&markup="+(markup?"1":"0");
 }
 
 // No global session and no exposed bearer. The host must supply finite immutable
@@ -51,30 +52,43 @@ export function createTabSession(options) {
     for (const kind of ["sessions","conversation","asks"]) limits[kind] = integer(own(options.limits,kind),1,Number.MAX_SAFE_INTEGER);
   }
   let input = options.fragment, epoch = {}, token = null, disposed = false, kind = "locked", message = LOCKED, notice = "", selected = null;
+  let clearing = false, deferredDispose = false;
   const pending = new Set();
-  const live = e => !disposed && epoch === e && isCurrent() && !signal?.aborted;
+  const owned = e => {
+    if (epoch !== e || signal?.aborted) return false;
+    try { return isCurrent() && epoch === e && !signal?.aborted; }
+    catch { return false; }
+  };
+  const live = e => !disposed && owned(e) && !disposed && epoch === e;
   const snapshot = () => Object.freeze({kind,message,notice});
-  function emit() { const value=snapshot(); try { onState(value); } catch { /* A host failure cannot regain authority. */ } }
+  function emit() { if (!owned(epoch)) return; const value=snapshot(); try { onState(value); } catch { /* A host failure cannot regain authority. */ } }
   function retire(text, final = false) {
     const next = {}; epoch = next; token = null; selected = null; kind = final ? "disposed" : "locked"; message = text; notice = "";
     if (final) disposed = true;
     const old = [...pending]; pending.clear();
     for (const op of old) { try { op.abort(); } catch { /* Continue independent cleanup. */ } }
-    emit();
     return next;
   }
-  function storageCall(e, action) {
+  function storageCall(e, method, ...args) {
     if (!live(e)) return {ok:false,stale:true};
-    try { const value=action(getStorage()); return live(e)?{ok:true,value}:{ok:false,stale:true}; }
+    try {
+      const storage=getStorage();
+      if (!live(e)) return {ok:false,stale:true};
+      const action=storage[method];
+      if (!live(e)) return {ok:false,stale:true};
+      if (typeof action !== "function") throw new TypeError(UNAVAILABLE);
+      const value=apply(action,storage,args);
+      return live(e)?{ok:true,value}:{ok:false,stale:true};
+    }
     catch { return {ok:false,stale:!live(e)}; }
   }
   function clearStored(e) {
-    storageCall(e, s => s.removeItem(key));
-    let read = storageCall(e, s => s.getItem(key));
+    storageCall(e,"removeItem",key);
+    let read = storageCall(e,"getItem",key);
     if (read.stale) return false;
     if (read.ok && (read.value === null || read.value === "")) return true;
-    storageCall(e, s => s.setItem(key,""));
-    read = storageCall(e, s => s.getItem(key));
+    storageCall(e,"setItem",key,"");
+    read = storageCall(e,"getItem",key);
     return !read.stale && read.ok && (read.value === null || read.value === "");
   }
   async function send(e,path,method,body,byteLimit,bearer,parent,decode) {
@@ -93,9 +107,7 @@ export function createTabSession(options) {
       response=await fetcher(base+path,{method,headers,body,signal:controller.signal,redirect:"error",credentials:"omit",cache:"no-store"});
       if (!valid()) bad();
       if (response.status === 401) {
-        const locked = retire(LOCKED); // BEFORE error body or build interpretation.
-        const cleared = clearStored(locked);
-        if (live(locked)) { notice = cleared ? "" : UNKNOWN; emit(); }
+        lockAndClear(false); // BEFORE error body or build interpretation.
         bad();
       }
       if (response.status !== 200 || response.headers.get("X-Aiq-Build") !== build ||
@@ -130,23 +142,33 @@ export function createTabSession(options) {
   }
   function dispose() {
     if (disposed) return;
+    if (clearing) { deferredDispose=true;return; }
     signal?.removeEventListener("abort",dispose);
-    input=null; retire(LOCKED,true);
+    input=null;const outcome=notice;retire(LOCKED,true);notice=outcome;emit();
   }
-  function forget() {
-    if (disposed || !isCurrent() || signal?.aborted) return;
-    const e=retire(LOCKED), cleared=clearStored(e);
-    if (!live(e)) return;
-    notice=cleared?"Saved session removed from this tab.":"This page is locked, but saved tab state could not be cleared; it may return on reload. Use your browser’s clear site data controls.";
-    emit();
+  function lockAndClear(explicit) {
+    if (clearing || disposed) return;
+    clearing=true;
+    try {
+      if (!live(epoch)) return;
+      const e=retire(LOCKED), cleared=clearStored(e);
+      if (!live(e)) return;
+      notice=explicit?(cleared?"Saved session removed from this tab.":"This page is locked, but saved tab state could not be cleared; it may return on reload. Use your browser’s clear site data controls."):(cleared?"":UNKNOWN);
+      emit(); // Storage outcome is complete; reentrant Forget is now a no-op.
+    } finally {
+      clearing=false;
+      if (deferredDispose) { deferredDispose=false;dispose(); }
+    }
   }
+  function forget() { lockAndClear(true); }
   async function begin() {
     const e=epoch;
     try {
       if (!live(e)) return false;
       let parsed=fragment(input);input=null;selected=parsed.next;
       if (parsed.code === null) {
-        const stored=storageCall(e,s=>s.getItem(key));
+        const stored=storageCall(e,"getItem",key);
+        if (stored.stale) bad();
         if (!live(e)) return false;
         if (!stored.ok || !canonical32(stored.value)) {
           notice=stored.ok?"":UNKNOWN;
@@ -164,8 +186,10 @@ export function createTabSession(options) {
       try { value=await send(e,"/api/nav/login","POST",body,65536,null,null,credential); }
       finally { body=null; }
       if (!live(e)) return false;
-      storageCall(e,s=>s.setItem(key,value));
-      const saved=storageCall(e,s=>s.getItem(key));
+      const written=storageCall(e,"setItem",key,value);
+      if (written.stale) bad();
+      const saved=storageCall(e,"getItem",key);
+      if (saved.stale) bad();
       if (!live(e)) return false;
       const persisted=saved.ok&&saved.value===value;
       notice=persisted?"":saved.ok&&(saved.value===null||saved.value==="")?MEMORY:UNKNOWN;
@@ -189,7 +213,7 @@ export function createTabSession(options) {
     } catch { throw new TypeError(UNAVAILABLE); }
   }
   signal?.addEventListener("abort",dispose,{once:true});
-  if (signal?.aborted || !isCurrent()) dispose();
+  if (!live(epoch)) dispose();
   const ready=disposed?Promise.resolve(false):begin();
   return Object.freeze({ready,snapshot,forget,dispose,
     selection:()=>["unlocked","restoring"].includes(kind)&&live(epoch)?selected:null,

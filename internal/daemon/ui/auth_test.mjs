@@ -161,3 +161,68 @@ test("classic import positive and history failure are real execution controls",a
     assert.equal(entry,failure?0:1);assert.equal(imported,failure?0:1);assert.equal(events.size,failure?0:2);
   }
 });
+
+test("conversation controller inputs emit shared actual-decoder wire literals",async()=>{
+  const rows=JSON.parse(readFileSync(new URL("./auth_reader_vectors.json",import.meta.url),"utf8"));assert.equal(rows.length,8);
+  for(const fresh of [false,true])for(const row of rows){
+    const urls=[],saved=storage(fresh?undefined:bearer);
+    const x=setup({fragment:fresh?"code="+code:"",getStorage:()=>saved,fetcher:async(url,o)=>{
+      if(o.method==="POST")return reply('{"credential":"'+bearer+'"}');urls.push(url);return reply('{}');
+    }});assert.equal(await x.session.ready,true);
+    if(row.path){await x.session.conversation(row.query);assert.deepEqual(urls,[base+row.path]);assert.equal(x.session.snapshot().kind,"unlocked");}
+    else{await assert.rejects(x.session.conversation(row.query));assert.deepEqual(urls,[]);}
+    x.session.dispose();
+  }
+});
+test("storage acquisition and resolved method cannot repersist after retirement",async()=>{
+  for(const phase of ["acquisition","method"])for(const action of ["forget","dispose"]){
+    const saved=storage(),held=deferred();let armed=false,x,writes=0;
+    const original=saved.setItem;
+    Object.defineProperty(saved,"setItem",{get(){if(armed&&phase==="method"){armed=false;x.session[action]();}return(k,v)=>{writes++;original.call(saved,k,v);};}});
+    x=setup({fetcher:()=>held.promise,getStorage:()=>{if(armed&&phase==="acquisition"){armed=false;x.session[action]();}return saved;}});
+    armed=true;held.resolve(reply('{"credential":"'+bearer+'"}'));
+    assert.equal(await x.session.ready,false);assert.equal(writes,0);assert.equal(saved.values.has(key),false);
+    assert.equal(x.session.snapshot().kind,action==="forget"?"locked":"disposed");
+    const later=setup({fragment:"",getStorage:()=>saved});assert.equal(await later.session.ready,false);later.session.dispose();x.session.dispose();
+  }
+});
+test("liveness callout retirement or failure refuses before a storage effect",async()=>{
+  const unavailable=setup({isCurrent:()=>{throw Error("invented initial witness failure")}});
+  assert.equal(await unavailable.session.ready,false);assert.equal(unavailable.requests.length,0);assert.equal(unavailable.saved.calls.length,0);unavailable.session.dispose();
+  for(const action of ["dispose","throw"]){
+    const saved=storage(),held=deferred();let arm=false,inCurrent=false,x;
+    x=setup({fetcher:()=>held.promise,isCurrent:()=>{if(inCurrent){inCurrent=false;if(action==="throw")throw Error("invented witness failure");x.session.dispose();}return true;},
+      getStorage:()=>{if(arm){arm=false;inCurrent=true;}return saved;}});
+    arm=true;held.resolve(reply('{"credential":"'+bearer+'"}'));
+    assert.equal(await x.session.ready,false);assert.equal(saved.values.has(key),false);assert(!x.states.some(s=>s.kind==="unlocked"));x.session.dispose();
+  }
+});
+test("Forget and active401 finish clearing before reentrant notification or abort",async()=>{
+  for(const denied of [false,true])for(const action of ["dispose","forget","401","abort"]){
+    const saved=storage();let armed=false,notified=0,calls=0,x,request;
+    x=setup({getStorage:()=>saved,onState:s=>{if(armed&&s.kind==="locked"){notified++;assert(notified<3,"bounded reentrant publication");x.session[action==="forget"?"forget":"dispose"]();}},
+      fetcher:async(_url,o)=>{
+        if(calls++===0)return reply('{"credential":"'+bearer+'"}');
+        if(action==="abort")return new Promise((_resolve,reject)=>o.signal.addEventListener("abort",()=>{x.session.dispose();reject(Error("invented abort"));},{once:true}));
+        return reply("",401);
+      }});
+    assert.equal(await x.session.ready,true);armed=true;
+    if(denied){saved.removeItem=()=>{throw Error("invented removal denial")};saved.setItem=()=>{throw Error("invented overwrite denial")};}
+    if(action==="401")await assert.rejects(x.session.asks({mode:"all"}));
+    else{if(action==="abort")request=x.session.asks({mode:"all"});x.session.forget();if(request)await assert.rejects(request);}
+    assert.equal(saved.values.has(key),denied);assert.equal(notified,1);
+    if(denied)assert.match(x.session.snapshot().notice,/may return on reload/);
+    else if(action!=="401")assert.match(x.session.snapshot().notice,/removed/);
+    x.session.dispose();
+  }
+});
+test("replacement owner keeps its storage and publication during old cleanup",async()=>{
+  const saved=storage();let current=true,replace=false,published="",x;
+  const replacement="AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
+  x=setup({isCurrent:()=>current,onState:s=>{published="A:"+s.kind;},getStorage:()=>{
+    if(replace){replace=false;current=false;saved.values.set(key,replacement);published="B";}return saved;
+  }});await x.session.ready;replace=true;x.session.forget();
+  assert.equal(saved.values.get(key),replacement);assert.equal(published,"B");
+  const later=setup({fragment:"",getStorage:()=>saved});assert.equal(await later.session.ready,true);assert.equal(later.session.snapshot().kind,"restoring");
+  x.session.dispose();assert.equal(published,"B");assert.equal(saved.values.get(key),replacement);later.session.dispose();
+});

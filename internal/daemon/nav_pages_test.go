@@ -148,7 +148,7 @@ func TestNavigatorAuthNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth fixtures failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "# pass 20") || !strings.Contains(string(out), "# fail 0") || !strings.Contains(string(out), "# skipped 0") {
+	if !strings.Contains(string(out), "# pass 25") || !strings.Contains(string(out), "# fail 0") || !strings.Contains(string(out), "# skipped 0") {
 		t.Fatalf("auth fixtures incomplete:\n%s", out)
 	}
 }
