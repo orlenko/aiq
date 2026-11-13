@@ -11,6 +11,11 @@ func PanicOrigin(err error) diagnostic.Origin {
 	return diagnostic.FromError(err)
 }
 
+// CapturePanic preserves either closed diagnostic carrier before inspecting a
+// raw panic's stack. Call it immediately from the recovering defer. It never
+// calls a caller's error methods or retains its error or panic value.
+func CapturePanic(value any) diagnostic.Origin { return capturePanic(value) }
+
 func capturePanic(value any) diagnostic.Origin {
 	if e, ok := value.(*unreadableError); ok && e != nil && e.origin.Present() {
 		return e.origin

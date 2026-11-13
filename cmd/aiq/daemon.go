@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -71,7 +72,16 @@ func daemonState(listen string) string {
 // installing a service or starting a daemon.
 var (
 	installDaemonService = daemon.Install
-	runDaemonServer      = func(a *app, logger *log.Logger) error { return daemon.New(a.cfg, a.pool, logger).Run() }
+	runDaemonServer      = func(a *app, logger *log.Logger) error {
+		// Final production invocation only. Signal stop even when a sink cannot
+		// be joined; this deliberately claims neither join nor summary flush.
+		defer func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			daemon.CloseNavigatorDiagnostics(ctx)
+		}()
+		return daemon.New(a.cfg, a.pool, logger).Run()
+	}
 )
 
 func cmdDaemon(args []string) error {
