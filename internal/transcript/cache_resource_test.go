@@ -227,7 +227,7 @@ func resourceQuarantine(t *testing.T, c *Cache, count int) {
 	}
 	for el := c.quarantineLRU.Front(); el != nil; el = el.Next() {
 		snap := el.Value.(Snapshot)
-		if c.quarantineNodes[snap.Path] != el || c.quarantine[snap.Path] != snap {
+		if c.quarantineNodes[snap.Path] != el || c.quarantine[snap.Path].Snapshot != snap {
 			t.Fatal("quarantine node not indexed by original snapshot")
 		}
 	}
@@ -317,7 +317,7 @@ func TestCacheResourceQuarantineOwnsKeysAndBoundsChurn(t *testing.T) {
 			want := min(i+1, 3)
 			resourceQuarantine(t, c, want)
 			stored := c.quarantine[path]
-			if stored != snap || unsafe.StringData(stored.Path) == unsafe.StringData(path) {
+			if stored.Snapshot != snap || unsafe.StringData(stored.Path) == unsafe.StringData(path) {
 				t.Fatal("failure marker lost original attributes or retained borrowed path")
 			}
 			for key := range c.quarantine {
