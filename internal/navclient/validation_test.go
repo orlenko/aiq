@@ -162,7 +162,7 @@ type countedReader struct{ calls int }
 func (r *countedReader) Read(b []byte) (int, error) { r.calls++; clear(b); return len(b), nil }
 
 func TestInheritedTraceAndCanceledParentRefuseBeforeIO(t *testing.T) {
-	c := newClient(fixtureKey, navauth.Binding{54321, fixtureBuild})
+	c := newClient(fixtureKey, navauth.Binding{Port: 54321, Build: fixtureBuild})
 	var entropy countedReader
 	network, hook := 0, 0
 	d := dependencies{random: &entropy, rt: roundTrip(func(*http.Request) (*http.Response, error) { network++; return nil, errors.New("invented") })}

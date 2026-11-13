@@ -56,7 +56,7 @@ func TestReadCloseAndOriginalTrailerFailures(t *testing.T) {
 		for _, failure := range []string{"read", "close", "late-trailer", "proof-alias", "unsigned"} {
 			t.Run(phase+"-"+failure, func(t *testing.T) {
 				requests, closed := 0, 0
-				c := newClient(fixtureKey, navauth.Binding{54321, fixtureBuild})
+				c := newClient(fixtureKey, navauth.Binding{Port: 54321, Build: fixtureBuild})
 				rt := roundTrip(func(r *http.Request) (*http.Response, error) {
 					requests++
 					body := goodInfo
@@ -121,7 +121,7 @@ func TestSharedDeadlineAndCancellationAfterEntropy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reads, requests := 0, 0
-	c := newClient(fixtureKey, navauth.Binding{54321, fixtureBuild})
+	c := newClient(fixtureKey, navauth.Binding{Port: 54321, Build: fixtureBuild})
 	r, err := c.run(ctx, issue, dependencies{
 		random: readerFunc(func(p []byte) (int, error) {
 			reads++
