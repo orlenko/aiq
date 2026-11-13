@@ -92,6 +92,8 @@ func cmdTop(args []string) error {
 			if !identified {
 				alive += " may be an older daemon or a tunnel (see aiq daemon status)"
 			}
+		} else if held, err := daemon.LockHeld(); err == nil && held {
+			alive = "not serving, but polling and supervising (see aiq daemon status)"
 		}
 		fmt.Printf("\n  daemon %s · %s · ctrl-c to quit\n", alive, time.Now().Format("15:04:05"))
 		select {
