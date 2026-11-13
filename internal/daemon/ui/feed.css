@@ -13,3 +13,14 @@
 .nav-feed .nav-feed-copy:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 .nav-feed .nav-feed-copy[aria-disabled="true"] { cursor: progress; }
 .nav-feed .nav-feed-account { overflow-wrap: anywhere; color: var(--nav-muted, currentColor); }
+.nav-feed-navigation { display: flex; flex-wrap: wrap; gap: .5em; grid-column: 1 / -1; }
+.nav-feed-navigation button, .nav-feed-outline button { font: inherit; min-height: 2.5em; white-space: normal; overflow-wrap: anywhere; }
+.nav-feed-outline { min-width: 0; margin-block: .5em; }
+.nav-feed-outline summary { cursor: pointer; min-height: 2.5em; }
+.nav-feed-outline-list { margin: 0; padding-inline-start: 1.5em; }
+.nav-feed-outline-item { margin-block: .5em; }
+.nav-feed-outline-facts { display: block; color: var(--nav-muted, currentColor); overflow-wrap: anywhere; }
+.nav-feed-prompt:focus { outline: 2px solid currentColor; outline-offset: 2px; }
+@media (min-width: 64rem) {
+  .nav-feed:has(.nav-feed-outline) { display: grid; grid-template-columns: minmax(10rem, 16rem) minmax(0, 1fr); gap: 1em; }
+}

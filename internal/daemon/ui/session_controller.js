@@ -29,6 +29,11 @@ export function createSessionController(document, options) {
   const selectedCallback=Object.getOwnPropertyDescriptor(options ?? {},"onSelection");
   let onSelection=selectedCallback?.value ?? (()=>{});
   if (selectedCallback && (!Object.hasOwn(selectedCallback,"value") || typeof selectedCallback.value!=="function")) fail();
+  const readingOption=Object.getOwnPropertyDescriptor(options ?? {},"readingControls"), shortcutOption=Object.getOwnPropertyDescriptor(options ?? {},"shortcutsEnabled");
+  const readingControls=readingOption ? readingOption.value : false;
+  let shortcutsEnabled=shortcutOption ? shortcutOption.value : ()=>true;
+  if (readingOption && (!Object.hasOwn(readingOption,"value") || typeof readingControls!=="boolean") ||
+      shortcutOption && (!Object.hasOwn(shortcutOption,"value") || typeof shortcutsEnabled!=="function")) fail();
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
       !/^[A-Za-z][A-Za-z0-9_-]*$/.test(idPrefix) ||
       ![readSessions, readConversation, copyText, announce].every(f => typeof f === "function")) fail();
@@ -199,6 +204,7 @@ export function createSessionController(document, options) {
         node("p", "nav-controller-facts", `Earlier hidden: ${data.earlier_hidden} · Later hidden: ${data.later_hidden} · Window start: ${data.window_start}`));
       candidate.child = createConversationFeed(document, data, {window,
         idPrefix:`${idPrefix}-feed-${op.version}`, expectedScope:op.query,
+        readingControls, shortcutsEnabled:()=>alive(op)&&!candidate.retired&&shortcutsEnabled(),
         copyText:raw => { if (alive(op) && !candidate.retired) return copyText(raw); },
         announce:value => { if (alive(op) && !candidate.retired) announce(value); }});
       candidate.root.append(candidate.child.fragment);
@@ -278,7 +284,7 @@ export function createSessionController(document, options) {
     selection = listQuery = activeScope = null;
     clearList(); for (const remove of removes) remove(); removes.length = 0;
     retireMany(oldList, oldDetail); root.remove();
-    readSessions = readConversation = copyText = announce = onSelection = null;
+    readSessions = readConversation = copyText = announce = onSelection = shortcutsEnabled = null;
   }
   function mount() {
     if (disposed) return false;

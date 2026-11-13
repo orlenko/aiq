@@ -44,7 +44,7 @@ export function createAppHost(document,options) {
   const placement=node("aside","nav-placement");placement.hidden=true;
   const copyFallback=node("aside","nav-copy-fallback");copyFallback.hidden=true;
   const content=node("div","nav-app-content");
-  const helpDialog=node("dialog","nav-key-dialog"),closeHelp=button("Close keyboard help"),keyText=node("p","","Tab stays with your browser. In a list: j/k or arrows move, Home/End move to an edge, Enter opens. / searches loaded results; Esc clears search or goes back. Conversation keys are scoped to its focused feed.");
+  const helpDialog=node("dialog","nav-key-dialog"),closeHelp=button("Close keyboard help"),keyText=node("p","","Tab stays with your browser. In a list: j/k or arrows move, Home/End move to an edge, Enter opens. / searches loaded results; Esc clears search or goes back. In a focused conversation: n/p move between prompt headings.");
   const shortcutLabel=node("label","nav-toggle"),shortcutInput=node("input");shortcutInput.type="checkbox";shortcutInput.checked=true;shortcutLabel.append(shortcutInput,document.createTextNode(" Enable single-key shortcuts"));helpDialog.append(node("h2","","Keyboard help"),keyText,shortcutLabel,closeHelp);
   const helpButton=button("? Keyboard help","nav-key-help");header.append(helpButton);
   shell.append(header,title,toolbar,controls,note,status,placement,copyFallback,content,helpDialog);
@@ -147,6 +147,7 @@ export function createAppHost(document,options) {
         onPlacement:v=>{void place(op,v);}});
     }else{
       op.controller=createSessionController(document,{window,idPrefix:"nav-app-session-"+(++generation),limits,
+        readingControls:true,shortcutsEnabled:()=>shortcuts,
         detailQuery:{last:50,markup:marks.checked,anchor:parsed.anchor},
         readSessions:(q,s)=>op.lease.read("sessions",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),
         copyText:t=>copy(t,op),announce:announceCurrent,onSelection:v=>selectionChanged(op,v)});
