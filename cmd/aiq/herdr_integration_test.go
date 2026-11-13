@@ -32,8 +32,8 @@ const fakeHerdrProviderScript = `#!/bin/sh
 case "$AIQ_PROVIDER" in claude) payload=$GO_HERDR_CLAUDE_PAYLOAD;; codex) payload=$GO_HERDR_CODEX_PAYLOAD;; *) exit 3;; esac
 hook() { printf '%s' "$payload" | "$GO_HERDR_AIQ" "$AIQ_PROVIDER-hook" "$1"; }
 hook sessionstart
-printf 'FAKE READY %s/%s\n' "$AIQ_PROVIDER" "$AIQ_ACCOUNT"
 printf 'FAKE ARGS'; printf ' <%s>' "$@"; printf '\n'
+printf 'FAKE READY %s/%s\n' "$AIQ_PROVIDER" "$AIQ_ACCOUNT"
 while IFS= read -r line; do
  case "$line" in
   quit) exit 0;;
