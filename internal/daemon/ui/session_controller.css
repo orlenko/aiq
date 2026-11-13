@@ -1,0 +1,12 @@
+.nav-controller { display: grid; grid-template-columns: minmax(12em, 1fr) minmax(0, 3fr); gap: 1em; min-width: 0; max-width: 100%; }
+.nav-controller .nav-controller-pane, .nav-controller .nav-controller-content { min-width: 0; max-width: 100%; }
+.nav-controller .nav-controller-heading { margin-block: 0 .5em; }
+.nav-controller .nav-controller-status, .nav-controller .nav-controller-facts,
+.nav-controller .nav-controller-unavailable { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; }
+.nav-controller .nav-controller-facts { margin-block: .25em; }
+.nav-controller .nav-controller-rows { list-style: none; padding: 0; margin: .5em 0; }
+.nav-controller .nav-controller-row { margin-block: .75em; padding-block: .5em; border-block-end: 1px solid currentColor; }
+.nav-controller .nav-controller-select, .nav-controller .nav-controller-refresh { font: inherit; min-height: 2.5em; max-width: 100%; padding: .25em .5em; white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
+.nav-controller .nav-controller-select[aria-current="true"] { font-weight: bold; outline: 1px solid currentColor; }
+.nav-controller button:focus-visible, .nav-controller .nav-controller-heading:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+@media (max-width: 48em) { .nav-controller { grid-template-columns: minmax(0, 1fr); } }
