@@ -875,6 +875,9 @@ type convoPrinter struct {
 	// track has emit record where each thing it prints ends, in cuts, for the screen.
 	track bool
 	cuts  []convoCut
+	facts convoFacts
+	// Sticky for one emit, including failures followed by successful renders.
+	renderFailed bool
 }
 
 // convoCut is one thing emit printed: where it ends in emit's output, the turn it belongs to,
@@ -886,11 +889,12 @@ type convoPrinter struct {
 type convoCut struct {
 	end             int
 	key, kind, text string
+	facts           convoFacts
 }
 
 func (p *convoPrinter) cut(b *strings.Builder, key, kind, text string) {
 	if p.track {
-		p.cuts = append(p.cuts, convoCut{end: b.Len(), key: key, kind: kind, text: text})
+		p.cuts = append(p.cuts, convoCut{end: b.Len(), key: key, kind: kind, text: text, facts: p.facts})
 	}
 }
 
@@ -935,6 +939,8 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	p.pending = false
 	p.cuts = nil
+	p.renderFailed = false
+	p.facts = convoFacts{turn: -1, sub: "skipped"}
 	if len(s.Turns) == 0 || p.seen[turnKey(0, s.Turns[0])] == nil || !p.seen[turnKey(0, s.Turns[0])].hidden {
 		for ; p.skipped < s.Skipped; p.skipped++ {
 			p.skippedLine(&b, "")
@@ -950,6 +956,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		if seen.hidden || idleNotice(t) {
 			continue
 		}
+		p.facts = turnConvoFacts(i, t)
 		pieces := turnPieces(t)
 		human := t.Source == transcript.Human
 		if !seen.head {
@@ -957,17 +964,25 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				continue // a local command: the parser drops it if nothing comes of it
 			}
 			kind, text := "you", t.Prompt
+			p.facts.sub, p.facts.at = "prompt", t.Started
+			p.facts.head = convoHead{mode: "prompt", who: "you"}
+			if !t.Started.IsZero() {
+				p.facts.head.clockMode, p.facts.head.at = "relative", t.Started
+			}
 			switch {
 			case t.PromptSkipped:
 				// The prompt was a record too long to read: the line saying so
 				// stands in its place, and is that record's one line.
 				text = p.skippedNote
+				p.facts.sub, p.facts.at = "skipped_prompt", time.Time{}
 				p.block(&b, true, p.palette.you, p.promptHead(t.Started), p.palette.dim, "  · "+text)
 				seen.skipped = 1
 			case human:
 				p.human(&b, p.promptHead(t.Started), t.Prompt)
 			default:
-				b.WriteString("\n" + p.paint(p.palette.dim, "· "+promptLineWithClock(t, p.clock)) + "\n")
+				line, head := promptPresentation(t, p.clock)
+				p.facts.head = head
+				b.WriteString("\n" + p.paint(p.palette.dim, "· "+line) + "\n")
 				kind = "notice"
 			}
 			p.note(k, "prompt", text)
@@ -997,6 +1012,8 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		for _, pc := range pieces {
 			if pc.kind == transcript.ItemSteer {
 				if steers++; steers > seen.steers {
+					p.facts.sub, p.facts.at = "steer", pc.at
+					p.facts.head = convoHead{mode: "steer", who: "you, while it worked"}
 					p.human(&b, "▌ you, while it worked", pc.text)
 					p.note(k, "steer", pc.text)
 					p.cut(&b, k, "steer", pc.text)
@@ -1021,6 +1038,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				// reply it belongs to, and adds nothing to a one-liner.
 				if !printed {
 					seen.done[id] = true
+					p.facts.sub, p.facts.at, p.facts.head = "continuation", pc.at, convoHead{}
 					switch seen.msgMode[pc.msg] {
 					case "reply":
 						p.answer(&b, "", "", "", pc.text)
@@ -1050,15 +1068,20 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			}
 			seen.done[id] = true
 			shown := "answer"
+			p.facts.at = pc.at
 			switch {
 			case pc.final:
+				p.facts.sub, p.facts.head = "final", finalConvoHead(p.provider, t)
 				p.answer(&b, p.palette.agent, head, "", pc.text)
 			case pc.kind == transcript.ItemAnswer:
+				p.facts.sub, p.facts.head = "earlier", convoHead{mode: "earlier", who: p.provider}
 				p.answer(&b, p.palette.dim, "▌ "+p.provider+" · earlier", p.palette.dim, pc.text)
 			case reply:
+				p.facts.sub, p.facts.head = "reply", convoHead{mode: "reply", who: p.provider, clockMode: "reply", at: pc.at}
 				p.answer(&b, p.palette.agent, "▌ "+p.provider+" · "+p.clock(pc.at), "", pc.text)
 				seen.msgMode[pc.msg] = "reply"
 			default:
+				p.facts.sub, p.facts.head = "said", convoHead{}
 				p.said(&b, pc.text)
 				seen.msgMode[pc.msg] = "line"
 				shown = "line"
@@ -1067,9 +1090,11 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			p.cut(&b, k, shown, pc.text)
 		}
 		for ; seen.skipped < t.Skipped; seen.skipped++ {
+			p.facts.sub, p.facts.at, p.facts.head = "skipped", time.Time{}, convoHead{}
 			p.skippedLine(&b, k)
 		}
 		if human && !t.Open && len(seen.done) == 0 && !seen.noReply && !(p.live && last) {
+			p.facts.sub, p.facts.at, p.facts.head = "none", time.Time{}, finalConvoHead(p.provider, t)
 			p.block(&b, false, p.palette.agent, head, p.palette.dim, "(no reply)")
 			p.note(k, "none", "")
 			p.cut(&b, k, "none", "")
@@ -1154,7 +1179,7 @@ func turnPieces(t transcript.Turn) []piece {
 			return out
 		}
 	}
-	return append(out, piece{kind: transcript.ItemAnswer, text: t.Reply, final: true})
+	return append(out, piece{kind: transcript.ItemAnswer, text: t.Reply, at: t.ReplyAt, final: true})
 }
 
 // skippedLine writes a record the parser read past as one dim line.
@@ -1279,6 +1304,7 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 	}
 	rendered, ok := safeRender(p.renderer, sanitize(strings.TrimRight(body, "\n")), width, base, p.markup)
 	if !ok {
+		p.renderFailed = true
 		p.block(b, false, headSGR, head, base, body)
 		return
 	}
@@ -1409,13 +1435,22 @@ func promptLine(t transcript.Turn) string {
 }
 
 func promptLineWithClock(t transcript.Turn, clock func(time.Time) string) string {
+	line, _ := promptPresentation(t, clock)
+	return line
+}
+
+// Capture the presentation at the same branch that chooses its text.
+func promptPresentation(t transcript.Turn, clock func(time.Time) string) (string, convoHead) {
+	head := convoHead{mode: "notice", who: sourceLabel(t.Source)}
 	if t.Source == transcript.Notice && strings.HasPrefix(strings.TrimSpace(t.Prompt), transcript.OrchestraNotice) {
+		head.who = "orchestra inbox"
 		if t.Started.IsZero() {
-			return "orchestra inbox"
+			return "orchestra inbox", head
 		}
-		return "orchestra inbox · " + clock(t.Started)
+		head.clockMode, head.at = "reply", t.Started
+		return "orchestra inbox · " + clock(t.Started), head
 	}
-	return sourceLabel(t.Source) + ": " + firstLine(t.Prompt)
+	return sourceLabel(t.Source) + ": " + firstLine(t.Prompt), head
 }
 
 func sourceLabel(s transcript.Source) string {
