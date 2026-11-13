@@ -115,10 +115,19 @@ func (c Core) verify() error {
 
 var terminalID = regexp.MustCompile(`^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$`)
 
+// currentSocket selects this terminal's injected owner. HC_SOCKET is a client
+// selector and may point elsewhere; only an absent owner permits fallback.
+func currentSocket() string {
+	if socket, present := os.LookupEnv("HC_TERMINAL_SOCKET"); present {
+		return socket
+	}
+	return os.Getenv("HC_SOCKET")
+}
+
 // CurrentCore verifies direct terminal ownership, including the controlling
 // TTY. An inherited HC_TERMINAL_ID inside tmux/screen is not sufficient.
 func CurrentCore() (Core, error) {
-	c := Core{Socket: os.Getenv("HC_SOCKET"), Terminal: os.Getenv("HC_TERMINAL_ID")}
+	c := Core{Socket: currentSocket(), Terminal: os.Getenv("HC_TERMINAL_ID")}
 	if !filepath.IsAbs(c.Socket) || !terminalID.MatchString(c.Terminal) || os.Getenv("TMUX") != "" || os.Getenv("TMUX_PANE") != "" || os.Getenv("STY") != "" {
 		return c, errors.New("native Herdr sessions need a direct Herdr-core terminal; open one, or use hc run --cwd <workspace> -- aiq long --backend herdr <provider>")
 	}
@@ -190,12 +199,16 @@ func (c Core) attach() error {
 	if err := c.verify(); err != nil {
 		return err
 	}
-	if os.Getenv("HC_SOCKET") == c.Socket && os.Getenv("HC_TERMINAL_ID") == c.Terminal {
+	if os.Getenv("HC_TERMINAL_ID") == c.Terminal {
 		current, err := CurrentCore()
-		if err == nil && current == c {
+		if err != nil {
+			return fmt.Errorf("cannot verify the current Herdr terminal for attachment: %w", err)
+		}
+		if current == c {
 			return nil
 		}
-		return errors.New("cannot attach from a nested view of this Herdr terminal")
+		// A verified different core may use the same local ID. External attach
+		// below remains pinned to the saved target rather than caller selectors.
 	}
 	cmd := exec.Command("hc", "attach", c.Terminal)
 	cmd.Env = append(without(os.Environ(), func(k string) bool { return strings.HasPrefix(k, "HC_") }), "HC_SOCKET="+c.Socket)

@@ -33,17 +33,23 @@ func TestHerdrFixture(t *testing.T) {
 	}
 	role := os.Args[len(os.Args)-1]
 	switch role {
-	case "runner":
-		core, err := CurrentCore()
+	case "runner", "runner-default":
+		var core Core
+		var err error
+		if role == "runner-default" {
+			core, err = defaultContextProbe(os.Getenv("GO_HERDR_WORKSPACE"))
+		} else {
+			core, err = CurrentCore()
+		}
 		if err != nil {
 			fmt.Println("FIXTURE ERROR", err)
 			os.Exit(1)
 		}
 		if fakeSocket := os.Getenv("GO_HERDR_WRONG_TTY_SOCKET"); fakeSocket != "" {
-			originalSocket := os.Getenv("HC_SOCKET")
-			os.Setenv("HC_SOCKET", fakeSocket)
+			originalSocket := os.Getenv("HC_TERMINAL_SOCKET")
+			os.Setenv("HC_TERMINAL_SOCKET", fakeSocket)
 			_, wrongErr := CurrentCore()
-			os.Setenv("HC_SOCKET", originalSocket)
+			os.Setenv("HC_TERMINAL_SOCKET", originalSocket)
 			if wrongErr == nil || !strings.Contains(wrongErr.Error(), "this TTY") {
 				fmt.Println("FIXTURE ERROR wrong TTY was not rejected at its guard")
 				os.Exit(2)
