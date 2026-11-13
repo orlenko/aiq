@@ -40,6 +40,26 @@ type navAsksWordingDraft struct {
 type navAsksWordingRender func(string, int, bool) ([]webMarkdownLine, bool)
 type navAsksWordingConvert func([2]navAsksWordingDraft) *navAsksWordingPair
 
+// Private proof of selected-pair work admission; raw input is charged by the
+// standalone wrapper or the whole-response capture before creating these.
+type navAsksAdmittedWording struct {
+	raw   [2]string
+	width int
+}
+
+func navAsksAdmitWording(raw [2]string, width int, work *uint64) (navAsksAdmittedWording, error) {
+	if width < 10 || work == nil {
+		return navAsksAdmittedWording{}, errNavAsksWordingInvalid
+	}
+	for _, text := range raw {
+		c := uint64(len(text)) + 1
+		if c == 0 || !navAsksProduct(work, c, c) || !navAsksProduct(work, c, uint64(width)) {
+			return navAsksAdmittedWording{}, errNavAsksWordingTooLarge
+		}
+	}
+	return navAsksAdmittedWording{raw: raw, width: width}, nil
+}
+
 // Pure paired projection. Callers supply limits and a coherent Ask value;
 // readers, production policy and registered route diagnostics are separate.
 func projectNavAsksWording(ctx context.Context, ask state.Ask, o navAsksWordingOptions) (*navAsksWordingPair, error) {
@@ -66,19 +86,33 @@ func projectNavAsksWordingWith(ctx context.Context, ask state.Ask, o navAsksWord
 		return nil, err
 	}
 	raw := [2]string{ask.FirstQuote, ask.LastQuote}
-	width := max(o.width, 10)
 	bytes, work := o.inputBytes, o.renderCells
 	for _, text := range raw {
-		n := uint64(len(text))
-		// Go string lengths fit int; converting before +1 avoids signed overflow.
-		c := n + 1
-		if c == 0 || !navAsksTake(&bytes, n) || !navAsksProduct(&work, c, c) ||
-			!navAsksProduct(&work, c, uint64(width)) {
+		if !navAsksTake(&bytes, uint64(len(text))) {
 			return nil, errNavAsksWordingTooLarge
 		}
 	}
+	admitted, err := navAsksAdmitWording(raw, max(o.width, 10), &work)
+	if err != nil {
+		return nil, err
+	}
+	return navAsksRenderAdmitted(ctx, admitted, &o.arrayEntries, &o.stringUnits, faults, render, convert)
+}
+
+// Internal zero remaining credits mean exhaustion, not invalid configuration.
+func navAsksRenderAdmitted(ctx context.Context, admitted navAsksAdmittedWording, entries, units *uint64,
+	faults *diagnostic.Latch, render navAsksWordingRender, convert navAsksWordingConvert) (pair *navAsksWordingPair, err error) {
+	defer func() {
+		if value := recover(); value != nil {
+			faults.Note(diagnostic.Capture(value))
+			pair, err = nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
+		}
+	}()
+	if ctx == nil || admitted.width < 10 || entries == nil || units == nil || faults == nil || render == nil || convert == nil {
+		return nil, errNavAsksWordingInvalid
+	}
 	var draft [2]navAsksWordingDraft
-	for i, text := range raw {
+	for i, text := range admitted.raw {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -86,7 +120,7 @@ func projectNavAsksWordingWith(ctx context.Context, ask state.Ask, o navAsksWord
 		draft[i].copy = quoteForReply(sanitize(text))
 		covered := true
 		if paint != "" {
-			draft[i].lines, covered = render(paint, width, false)
+			draft[i].lines, covered = render(paint, admitted.width, false)
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -95,9 +129,8 @@ func projectNavAsksWordingWith(ctx context.Context, ask state.Ask, o navAsksWord
 			return nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 		}
 	}
-	entries, units := o.arrayEntries, o.stringUnits
 	for _, value := range draft {
-		if err := navAsksWordingCharge(value, &entries, &units); err != nil {
+		if err := navAsksWordingCharge(value, entries, units); err != nil {
 			if err == diagnostic.Base(diagnostic.Unshowable) {
 				return nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 			}

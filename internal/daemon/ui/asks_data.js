@@ -41,6 +41,7 @@ const scope = {mode:"str", dir:"str"};
 const report = {pass_at:time, ok_at:time, error_at:time, next_try_at:time,
   watched:"uint", waiting:"uint", skipped:"uint", calls_today:"uint",
   last_error:"str", not_watched:["str"]};
+const totals = {utc_day:"str", skipped:"uint", calls_today:"uint"};
 
 function capture(value, schema, budget, rows = false) {
   if (Array.isArray(schema)) {
@@ -116,6 +117,14 @@ export function captureAsks(data, expectedScope, limits) {
         out.report = {known:true, ...capture(d.value, report, budget)};
         for (const key of ["pass_at", "ok_at", "error_at", "next_try_at"]) validTime(out.report[key]);
       }
+    }
+    const t = Object.getOwnPropertyDescriptor(data, "totals");
+    if (t) {
+      require(Object.hasOwn(t, "value"));
+      out.totals = capture(t.value, totals, budget);
+      require(out.totals.utc_day !== "");
+      if (out.report.known) require(out.totals.skipped === out.report.skipped &&
+        out.totals.calls_today === out.report.calls_today);
     }
     return out;
   } catch { fail(); }
