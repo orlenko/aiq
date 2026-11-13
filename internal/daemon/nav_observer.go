@@ -149,6 +149,9 @@ func (o *navObserver) Observe(key string, origin diagnostic.Origin) {
 		return
 	}
 	at = o.clampLocked(at)
+	if o.pending != 0 && !o.pendingAt.valid {
+		o.pendingAt = navObservationStamp{at, true}
+	}
 	n := 0
 	for _, previous := range o.normalAt[:o.normalCount] {
 		if at.Sub(previous) < navObservationPeriod {
@@ -202,12 +205,15 @@ func (o *navObserver) emit(record navEmission) {
 func (o *navObserver) summaryPlan(at time.Time, shutdown bool) (record navEmission, emit bool, delay time.Duration, arm bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.closed && !shutdown || o.pending == 0 || o.busy {
+	if o.closed && !shutdown || o.pending == 0 {
 		return
 	}
 	at = o.clampLocked(at)
 	if !o.pendingAt.valid {
 		o.pendingAt = navObservationStamp{at, true}
+	}
+	if o.busy {
+		return
 	}
 	due := o.pendingAt.at.Add(navObservationPeriod)
 	if o.summaryAt.valid && o.summaryAt.at.Add(navObservationPeriod).After(due) {
