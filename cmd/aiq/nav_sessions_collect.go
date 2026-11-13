@@ -99,7 +99,7 @@ func (r *navListRun) Candidates(ctx context.Context, dir string) ([]transcript.C
 func (r *navListRun) summary(ctx context.Context, path string) (out transcript.Summary, err error) {
 	defer func() {
 		if value := recover(); value != nil {
-			origin := diagnostic.Capture(value)
+			origin := transcript.CapturePanic(value)
 			diagnostic.Note(ctx, origin)
 			r.internalFailure()
 			out, err = transcript.Summary{}, errNavListFatal
@@ -129,7 +129,7 @@ func (r *navListRun) summary(ctx context.Context, path string) (out transcript.S
 func (r *navListRun) CodexNames(ctx context.Context) (out map[string]string) {
 	defer func() {
 		if value := recover(); value != nil {
-			origin := diagnostic.Capture(value)
+			origin := transcript.CapturePanic(value)
 			diagnostic.Note(ctx, origin)
 			r.internalFailure()
 			out = nil

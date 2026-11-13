@@ -11,6 +11,7 @@ import (
 
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/navroute"
+	"github.com/orlenko/aiq/internal/transcript"
 	"github.com/orlenko/aiq/internal/version"
 )
 
@@ -181,7 +182,7 @@ func navRecover(observer *navObserver, next http.Handler) http.Handler {
 		defer func() {
 			value := recover()
 			if value != nil && value != http.ErrAbortHandler {
-				origin := diagnostic.Capture(value)
+				origin := transcript.CapturePanic(value)
 				diagnostic.Note(ctx, origin)
 			}
 			key, origin := state.Snapshot()

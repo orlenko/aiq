@@ -171,7 +171,7 @@ func navListDecode(req *http.Request) (navListQuery, navListResponse, bool) {
 func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out navListResponse) {
 	defer func() {
 		if value := recover(); value != nil {
-			origin := diagnostic.Capture(value)
+			origin := transcript.CapturePanic(value)
 			if req != nil {
 				diagnostic.Note(req.Context(), origin)
 			}

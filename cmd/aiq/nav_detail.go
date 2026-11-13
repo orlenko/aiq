@@ -125,7 +125,7 @@ func (h *navDetailHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *context.Context, cancel, release *func()) (p navDetailResponse) {
 	defer func() {
 		if value := recover(); value != nil {
-			origin := diagnostic.Capture(value)
+			origin := transcript.CapturePanic(value)
 			if req != nil {
 				diagnostic.Note(req.Context(), origin)
 			}
