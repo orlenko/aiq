@@ -396,6 +396,7 @@ func TestAsksSnapshotCanceledReaderDoesNotCancelAnother(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("reader did not pin")
 	}
+	affectedID := p.lastOpen.Load()
 	if other := snapshotRead(t, s); other.CallsToday != 7 {
 		t.Fatal("independent reader changed")
 	}
@@ -413,5 +414,16 @@ func TestAsksSnapshotCanceledReaderDoesNotCancelAnother(t *testing.T) {
 	defer done()
 	if _, err := r.ReadAsksSnapshot(healthy, snapshotNow, snapshotLimits()); err != nil || r.db.Stats().InUse != 0 || p.opened.Load()-p.closed.Load() != 1 {
 		t.Fatal("affected single connection was neither reused nor replaced cleanly:", err)
+	}
+	if p.lastOpen.Load() == affectedID {
+		if p.resets.Load() == 0 || p.validations.Load() == 0 || p.lastReset.Load() != affectedID || p.lastValid.Load() != affectedID {
+			t.Fatal("reuse bypassed production reset/validation")
+		}
+		t.Logf("retained affected connection %d; resets=%d validations=%d", affectedID, p.resets.Load(), p.validations.Load())
+	} else {
+		if p.lastInvalid.Load() != affectedID || p.lastClose.Load() != affectedID || p.badResets.Load()+p.invalid.Load() == 0 {
+			t.Fatal("replacement lacked an actual driver invalidation of the affected connection")
+		}
+		t.Logf("replaced affected connection %d with %d after reset failures=%d invalid validations=%d", affectedID, p.lastOpen.Load(), p.badResets.Load(), p.invalid.Load())
 	}
 }

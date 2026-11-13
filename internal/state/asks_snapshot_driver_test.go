@@ -15,6 +15,11 @@ import (
 // Test-only forwarding wrapper: actual SQLite supplies all data/transactions.
 type asksSnapshotProbe struct {
 	full, opened, closed atomic.Int64
+	resets, validations  atomic.Int64
+	badResets, invalid   atomic.Int64
+	lastOpen, lastClose  atomic.Int64
+	lastReset, lastValid atomic.Int64
+	lastInvalid          atomic.Int64
 	pinned, resume       chan struct{}
 	fault                string
 	cancel               context.CancelFunc
@@ -30,16 +35,42 @@ func (c asksSnapshotConnector) Connect(context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.p.opened.Add(1)
-	return &asksSnapshotConn{Conn: conn, p: c.p}, nil
+	id := c.p.opened.Add(1)
+	c.p.lastOpen.Store(id)
+	return &asksSnapshotConn{Conn: conn, p: c.p, id: id}, nil
 }
 
 type asksSnapshotConn struct {
 	driver.Conn
-	p *asksSnapshotProbe
+	p  *asksSnapshotProbe
+	id int64
 }
 
-func (c *asksSnapshotConn) Close() error { c.p.closed.Add(1); return c.Conn.Close() }
+func (c *asksSnapshotConn) Close() error {
+	c.p.closed.Add(1)
+	c.p.lastClose.Store(c.id)
+	return c.Conn.Close()
+}
+func (c *asksSnapshotConn) ResetSession(ctx context.Context) error {
+	c.p.resets.Add(1)
+	c.p.lastReset.Store(c.id)
+	err := c.Conn.(driver.SessionResetter).ResetSession(ctx)
+	if err == driver.ErrBadConn {
+		c.p.badResets.Add(1)
+		c.p.lastInvalid.Store(c.id)
+	}
+	return err
+}
+func (c *asksSnapshotConn) IsValid() bool {
+	c.p.validations.Add(1)
+	c.p.lastValid.Store(c.id)
+	valid := c.Conn.(driver.Validator).IsValid()
+	if !valid {
+		c.p.invalid.Add(1)
+		c.p.lastInvalid.Store(c.id)
+	}
+	return valid
+}
 func (c *asksSnapshotConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	tx, err := c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
 	if err != nil {
@@ -121,3 +152,5 @@ func asksSnapshotWrapped(t *testing.T, path string, p *asksSnapshotProbe) *Store
 
 var _ driver.QueryerContext = (*asksSnapshotConn)(nil)
 var _ driver.ConnBeginTx = (*asksSnapshotConn)(nil)
+var _ driver.SessionResetter = (*asksSnapshotConn)(nil)
+var _ driver.Validator = (*asksSnapshotConn)(nil)
