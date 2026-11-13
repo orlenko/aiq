@@ -67,6 +67,7 @@ type Server struct {
 	// there. Both are set before Run.
 	navVerifier NavVerifier
 	navAPI      http.Handler
+	navPages    http.Handler
 	// Optional instance dependency, configured before serving; production uses
 	// the stable process owner when absent.
 	navObservations *navObserver
