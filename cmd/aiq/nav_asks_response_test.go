@@ -35,7 +35,9 @@ func responseRows() state.AsksSnapshot {
 	return s
 }
 
-const responseEmptyJSON = `{"scope":{"mode":"all","dir":""},"sections":[{"key":"asks","items":[]},{"key":"warnings","items":[]},{"key":"other_open","items":[]},{"key":"probably_done","items":[]},{"key":"closed_dismissed","items":[]}],"report":{"known":false},"totals":{"utc_day":"2031-04-06","skipped":0,"calls_today":0}}`
+// Frozen old root remains an independent historical projection oracle.
+const responseLegacyEmptyJSON = `{"scope":{"mode":"all","dir":""},"sections":[{"key":"asks","items":[]},{"key":"warnings","items":[]},{"key":"other_open","items":[]},{"key":"probably_done","items":[]},{"key":"closed_dismissed","items":[]}],"report":{"known":false},"totals":{"utc_day":"2031-04-06","skipped":0,"calls_today":0}}`
+const responseEmptyJSON = `{"scope":{"mode":"all","dir":""},"sections":[{"key":"asks","items":[]},{"key":"warnings","items":[]},{"key":"other_open","items":[]},{"key":"probably_done","items":[]},{"key":"closed_dismissed","items":[]}],"report":{"known":false},"totals":{"utc_day":"2031-04-06","skipped":0,"calls_today":0},"moved_today":{"local_day":"2031-04-06","start_at":{"ms":1933200000000,"known":true},"ids":[]}}`
 
 func responseJSON(t *testing.T, body []byte) map[string]any {
 	t.Helper()
@@ -51,7 +53,7 @@ func responseItems(v map[string]any, group int) []any {
 
 func TestNavAsksResponseLiteralQuotasAndRoots(t *testing.T) {
 	o := responseOptions()
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits, o.bodyBytes = 1, 13, 1, 5, 64, int64(len(responseEmptyJSON))
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits, o.bodyBytes = 1, 13, 1, 5, 74, int64(len(responseEmptyJSON))
 	for _, present := range []bool{false, true} {
 		s := responseSnapshot()
 		s.ReportPresent = present
@@ -82,7 +84,7 @@ func TestNavAsksResponseLiteralQuotasAndRoots(t *testing.T) {
 	}
 	s := responseRows()
 	o = responseOptions()
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 100
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 110
 	body, err := buildNavAsksResponse(context.Background(), s, o)
 	if err != nil {
 		t.Fatal(err)
@@ -109,11 +111,11 @@ func TestNavAsksResponseLiteralQuotasAndRoots(t *testing.T) {
 	tail := func(string, int, bool) ([]webMarkdownLine, bool) {
 		return []webMarkdownLine{{kind: "text", spans: []webMarkdownSpan{{text: "z"}}}, {kind: "code", spans: []webMarkdownSpan{{text: "   ", classes: []string{"code"}}}}}, true
 	}
-	o.arrayEntries, o.stringUnits = 17, 122
+	o.arrayEntries, o.stringUnits = 17, 132
 	if _, e := buildNavAsksResponseWith(context.Background(), s, o, tail, json.Marshal); e != nil {
 		t.Fatal(e)
 	}
-	for _, mutate := range []func(*navAsksResponseOptions){func(o *navAsksResponseOptions) { o.arrayEntries = 16 }, func(o *navAsksResponseOptions) { o.stringUnits = 121 }} {
+	for _, mutate := range []func(*navAsksResponseOptions){func(o *navAsksResponseOptions) { o.arrayEntries = 16 }, func(o *navAsksResponseOptions) { o.stringUnits = 131 }} {
 		bad := o
 		mutate(&bad)
 		if b, e := buildNavAsksResponseWith(context.Background(), s, bad, tail, json.Marshal); b != nil || e != errNavAsksResponseTooLarge {
@@ -268,7 +270,7 @@ func TestNavAsksResponseOwnedCaptureAndConcurrency(t *testing.T) {
 	}
 	s = responseRows()
 	o = responseOptions()
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 100
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 110
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
