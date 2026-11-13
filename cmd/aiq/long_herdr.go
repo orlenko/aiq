@@ -109,20 +109,23 @@ func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
 	}
 	name := longrun.SessionName(a.cfg.Long.TmuxPrefix, ws)
 	backend := longBackendForContext(a.longBackend)
-	hasTmux := backend == "herdr" && tmux.Available() && tmux.HasSession(name)
-	// An automatic switch must not treat an unreachable tmux owner as absent.
-	if backend == "herdr" && a.longBackend == "" && !hasTmux {
-		for _, l := range leases {
+	var tmuxOwner *state.Lease
+	if backend == "herdr" && a.longBackend == "" {
+		for i := range leases {
+			l := &leases[i]
 			if l.Workspace != ws || herdr.IsRef(l.Pane) {
 				continue
 			}
-			if l.Hostname != "" && l.Hostname == pool.Hostname() && l.PID > 0 && !proc.Alive(l.PID) {
-				continue
+			if l.Hostname == "" || l.Hostname != pool.Hostname() || l.PID <= 0 {
+				t.unlock()
+				return t, false, uncertainLongTmux(l.ID)
 			}
-			t.unlock()
-			return t, false, fmt.Errorf("tmux ownership is uncertain for long lease %d; no second session started (use the original tmux context to attach)", l.ID)
+			if proc.Alive(l.PID) {
+				tmuxOwner = l
+			}
 		}
 	}
+	hasTmux := backend == "herdr" && tmux.Available() && tmux.HasSession(name)
 	if backend != "herdr" || hasTmux {
 		t, attached, err = a.longExistingTmux(ws, release)
 		if attached || err != nil || backend != "herdr" {
@@ -131,6 +134,12 @@ func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
 			}
 			return t, attached, err
 		}
+	}
+	// Discovery can change during the tmux attach attempt. Its failure cannot
+	// erase the reservation made by an already-running long lease.
+	if tmuxOwner != nil {
+		t.unlock()
+		return t, false, uncertainLongTmux(tmuxOwner.ID)
 	}
 	core, err := herdr.CurrentCore()
 	if err != nil {
@@ -142,6 +151,10 @@ func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
 	}
 	t.native, t.core, t.name = true, core, name
 	return t, false, nil
+}
+
+func uncertainLongTmux(id int64) error {
+	return fmt.Errorf("tmux ownership is uncertain for long lease %d; no second session started (use the original tmux context to attach)", id)
 }
 
 func (a *app) longLaunchHerdr(t longTarget, ws, dir, what string, args []string) error {

@@ -129,7 +129,13 @@ func autoTmuxFixture(t *testing.T, panes string) string {
 	script := `#!/bin/sh
 printf '%s\n' "$1" >> "$AIQ_TEST_AUTO_TMUX_LOG"
 case "$1" in
-  has-session) test -n "$AIQ_TEST_AUTO_PANES" ;;
+  has-session)
+    if [ -n "$AIQ_TEST_AUTO_HAS_ONCE" ]; then
+      [ -e "$AIQ_TEST_AUTO_HAS_ONCE" ] && exit 1
+      : > "$AIQ_TEST_AUTO_HAS_ONCE"
+      exit 0
+    fi
+    test -n "$AIQ_TEST_AUTO_PANES" ;;
   list-panes) printf '%s\n' "$AIQ_TEST_AUTO_PANES" ;;
   attach-session|switch-client|kill-session) exit 0 ;;
   *) exit 93 ;;
@@ -140,6 +146,7 @@ esac
 	}
 	t.Setenv("AIQ_TEST_AUTO_TMUX_LOG", log)
 	t.Setenv("AIQ_TEST_AUTO_PANES", panes)
+	t.Setenv("AIQ_TEST_AUTO_HAS_ONCE", "")
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return log
 }
@@ -287,21 +294,28 @@ func TestAutomaticBackendRespectsUncertainNativeOwner(t *testing.T) {
 }
 
 func TestAutomaticNativeReservesUndiscoverableTmuxLease(t *testing.T) {
-	for _, fixture := range []string{"missing server", "missing executable", "foreign host", "unknown host", "unknown PID", "negative PID", "proven dead"} {
+	for _, fixture := range []string{"missing server", "missing executable", "server changes", "foreign host", "foreign host with server", "unknown host", "unknown PID", "unknown PID with server", "negative PID", "proven dead"} {
 		t.Run(fixture, func(t *testing.T) {
 			clearLongContext(t)
 			t.Setenv("AIQ_DATA_DIR", t.TempDir())
 			owner, calls := autoCoreEndpoint(t, "protocol")
 			t.Setenv("HC_TERMINAL_ID", "t1")
 			t.Setenv("HC_TERMINAL_SOCKET", owner)
-			log := autoTmuxFixture(t, "")
+			panes := ""
+			if fixture == "foreign host with server" || fixture == "unknown PID with server" {
+				panes = "%7:123:0:fixture:/invented/aiq run codex --long"
+			}
+			log := autoTmuxFixture(t, panes)
+			if fixture == "server changes" {
+				t.Setenv("AIQ_TEST_AUTO_HAS_ONCE", log+"-once")
+			}
 			host, pid := pool.Hostname(), os.Getpid()
 			switch fixture {
-			case "foreign host":
+			case "foreign host", "foreign host with server":
 				host = "fixture-other-host"
 			case "unknown host":
 				host = ""
-			case "unknown PID":
+			case "unknown PID", "unknown PID with server":
 				pid = 0
 			case "negative PID":
 				pid = -1

@@ -27,7 +27,7 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 	if _, err := exec.LookPath("hc"); err != nil {
 		t.Skip("hc unavailable; private native PTY check not run")
 	}
-	for _, fixture := range []string{"new", "dead only", "dead and user", "owned elsewhere"} {
+	for _, fixture := range []string{"new", "dead only", "dead and user", "owned elsewhere", "server changes"} {
 		t.Run(fixture, func(t *testing.T) {
 			clearLongContext(t)
 			root, err := os.MkdirTemp("/tmp", "aiqh-auto-")
@@ -52,6 +52,9 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 				panes += "\n%8:456:0:fixture:sleep 30"
 			}
 			log := autoTmuxFixture(t, panes)
+			if fixture == "server changes" {
+				t.Setenv("AIQ_TEST_AUTO_HAS_ONCE", log+"-once")
+			}
 			bin := filepath.Join(root, "aiq")
 			if out, err := testenv.GoCommand("build", "-o", bin, ".").CombinedOutput(); err != nil {
 				t.Fatalf("fixture build: %v %s", err, out)
@@ -88,7 +91,7 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 			}
 			setFakeUsage(t, st, "codex/fiction", 10)
 			var existing state.Lease
-			if fixture == "owned elsewhere" {
+			if fixture == "owned elsewhere" || fixture == "server changes" {
 				id, err := st.AddLease(state.Lease{AccountID: "codex/fiction", Mode: state.ModeLong, Workspace: root, Pane: "%7", PID: os.Getpid(), Hostname: pool.Hostname(), StartedAt: time.Now().Unix()})
 				if err != nil {
 					t.Fatal(err)
@@ -111,7 +114,7 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 			if json.Unmarshal(out, &started) != nil || started.Address == "" {
 				t.Fatal("invalid private terminal reply")
 			}
-			if fixture == "owned elsewhere" {
+			if fixture == "owned elsewhere" || fixture == "server changes" {
 				text := waitFakeText(t, started.Address, "tmux ownership is uncertain")
 				if strings.Contains(text, "AUTO_NATIVE_READY") {
 					t.Fatal("second provider entered")
