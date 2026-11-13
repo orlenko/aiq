@@ -15,7 +15,7 @@ import (
 )
 
 func longBackendArgs(args []string) (string, []string, error) {
-	backend := "tmux"
+	backend := ""
 	if len(args) > 0 && (args[0] == "--backend" || strings.HasPrefix(args[0], "--backend=")) {
 		value, eq := strings.CutPrefix(args[0], "--backend=")
 		if eq {
@@ -32,6 +32,22 @@ func longBackendArgs(args []string) (string, []string, error) {
 		backend = value
 	}
 	return backend, args, nil
+}
+
+// Environment markers are only a creation preference. CurrentCore still has
+// to verify native terminal ownership before a new Herdr session can start.
+func longBackendForContext(requested string) string {
+	if requested != "" {
+		return requested
+	}
+	if os.Getenv("TMUX") != "" || os.Getenv("TMUX_PANE") != "" || os.Getenv("STY") != "" {
+		return "tmux"
+	}
+	_, ownerPresent := os.LookupEnv("HC_TERMINAL_SOCKET")
+	if os.Getenv("HC_TERMINAL_ID") != "" || ownerPresent {
+		return "herdr"
+	}
+	return "tmux"
 }
 
 func (t longTarget) unlock() {
@@ -90,9 +106,10 @@ func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
 		}
 	}
 	name := longrun.SessionName(a.cfg.Long.TmuxPrefix, ws)
-	if a.longBackend != "herdr" || (tmux.Available() && tmux.HasSession(name)) {
+	backend := longBackendForContext(a.longBackend)
+	if backend != "herdr" || (tmux.Available() && tmux.HasSession(name)) {
 		t, attached, err = a.longExistingTmux(ws, release)
-		if attached || err != nil || a.longBackend != "herdr" {
+		if attached || err != nil || backend != "herdr" {
 			if err != nil {
 				t.unlock()
 			}
@@ -102,6 +119,9 @@ func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
 	core, err := herdr.CurrentCore()
 	if err != nil {
 		t.unlock()
+		if a.longBackend == "" {
+			err = fmt.Errorf("cannot use the detected Herdr terminal: %w (put --backend tmux before the subcommand, e.g. aiq long --backend tmux auto)", err)
+		}
 		return t, false, err
 	}
 	t.native, t.core, t.name = true, core, name

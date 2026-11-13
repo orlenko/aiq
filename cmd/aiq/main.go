@@ -168,7 +168,7 @@ func configErr(token, format string, v ...any) error {
 
 // app bundles everything a subcommand needs.
 type app struct {
-	longBackend string
+	longBackend string // empty selects from the terminal context for new long sessions
 	cfg         *config.Config
 	st          *state.Store
 	pool        *pool.Pool

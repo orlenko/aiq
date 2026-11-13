@@ -232,6 +232,9 @@ func TestNativeListingHasAggregateControlBudget(t *testing.T) {
 }
 
 func TestNativeTmuxRespawnKeepsStartupLock(t *testing.T) {
+	clearLongContext(t)
+	t.Setenv("HC_TERMINAL_ID", "t1")
+	t.Setenv("HC_TERMINAL_SOCKET", "/invented/owner")
 	t.Setenv("AIQ_DATA_DIR", t.TempDir())
 	ws := t.TempDir()
 	root := t.TempDir()
@@ -272,7 +275,7 @@ func TestNativeTmuxRespawnKeepsStartupLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, backend := range []string{"tmux", "herdr"} {
+	for _, backend := range []string{"tmux", "herdr", ""} {
 		a.longBackend = backend
 		_, _, err := a.longExisting(ws)
 		if err == nil || !strings.Contains(err.Error(), "start is in progress") {
