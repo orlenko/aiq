@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -212,72 +211,3 @@ const (
 	navRefused = "refused" // daemon.listen was refused, so nothing is served
 	navFailed  = "failed"  // not served: the navigator or the status page could not start or stopped
 )
-
-// writeNavState writes a state with no port or token.
-func (s *Server) writeNavState(state string) error {
-	return fsutil.WriteFileAtomic(navTokenPath(), []byte(fmt.Sprintf("%s %d %d\n", state, os.Getpid(), s.started.Unix())))
-}
-
-// failNavigator records that the navigator is not served. The file write is best effort,
-// so the reason goes to the log either way.
-func (s *Server) failNavigator(reason error) {
-	s.log.Printf("navigator not served: %v", reason)
-	if err := s.writeNavState(navFailed); err != nil {
-		s.log.Printf("navigator: could not record that it is not served in %s: %v", navTokenPath(), err)
-	}
-}
-
-// navigatorEnds records, as Run is about to return an error, that the navigator is not
-// served. Only a navigator that was turned on says so in the log, so a daemon restarting
-// over a taken status port does not point at a feature nobody turned on.
-func (s *Server) navigatorEnds(reason error) {
-	if s.cfg.UI.Navigator {
-		s.failNavigator(reason)
-		return
-	}
-	if err := s.writeNavState(navFailed); err != nil {
-		s.log.Printf("navigator: could not record that it is not served in %s: %v", navTokenPath(), err)
-	}
-}
-
-// startNavigator binds the navigator and writes its token file, or writes why it is not
-// served. It returns nil when nothing is to be served.
-func (s *Server) startNavigator() net.Listener {
-	if !s.cfg.UI.Navigator {
-		if err := s.writeNavState(navOff); err != nil {
-			s.log.Printf("navigator: could not record that it is off in %s: %v", navTokenPath(), err)
-		}
-		return nil
-	}
-	ln, port, err := bindNavigator()
-	if err != nil {
-		s.failNavigator(err)
-		return nil
-	}
-	token, err := newNavToken()
-	if err == nil {
-		err = fsutil.WriteFileAtomic(navTokenPath(), []byte(fmt.Sprintf("%s %d %d %d %s\n", navOn, os.Getpid(), s.started.Unix(), port, token)))
-	}
-	if err != nil {
-		ln.Close()
-		s.failNavigator(fmt.Errorf("writing %s: %w", navTokenPath(), err))
-		return nil
-	}
-	s.mu.Lock()
-	s.navPort, s.navToken = port, token
-	s.mu.Unlock()
-	s.log.Printf("aiq navigator listening on http://127.0.0.1:%d/", port)
-	return ln
-}
-
-// serveNavigator serves the navigator until its listener fails. Then the navigator is
-// gone, in the file and in /api/state at once, and the daemon goes on without it.
-// Its server has the status page's deadlines and limits.
-func (s *Server) serveNavigator(ln net.Listener) {
-	err := serveNav(s.navigatorServer(), ln)
-	ln.Close()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.navPort, s.navToken = 0, ""
-	s.failNavigator(fmt.Errorf("serving it: %w", err))
-}

@@ -622,9 +622,13 @@ func TestBothListenersShareTheDaemonsConnectionLimit(t *testing.T) {
 	statusLn, navLn, statusSrv, navSrv := d.statusLn, d.navLn, d.statusSrv, d.navSrv
 	d.mu.Unlock()
 	sl, ok1 := statusLn.(*capListener)
-	nl, ok2 := navLn.(*capListener)
+	generation, ok2 := navLn.(*navGeneration)
 	if !ok1 || !ok2 {
 		t.Fatalf("the listeners are %T and %T", statusLn, navLn)
+	}
+	nl := generation.capped
+	if nl == nil || generation.server != navSrv {
+		t.Fatal("the served generation does not own its captured capped listener/server")
 	}
 	if sl.slots != nl.slots || sl.slots != d.s.slots {
 		t.Fatal("the two listeners count connections separately")

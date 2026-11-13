@@ -104,6 +104,7 @@ func startDaemon(t *testing.T, navigator bool) *testDaemon {
 	t.Cleanup(func() { st.Close() })
 	d := &testDaemon{t: t, listen: cfg.Daemon.Listen, log: &lockedBuffer{}, stop: make(chan struct{}), done: make(chan error, 1)}
 	d.s = New(cfg, &pool.Pool{Cfg: cfg, St: st}, log.New(d.log, "", 0))
+	d.s.navLifecycle = &navLifecycleDeps{hostname: func() (string, error) { return "invented-host", nil }}
 
 	loops, status, nav := startLoops, serveStatus, serveNav
 	ready, navReady := make(chan struct{}), make(chan struct{})
@@ -163,9 +164,9 @@ func (d *testDaemon) stopNavigator() {
 	}
 	srv.Close()
 	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(d.log.String(), "navigator not served: serving it") {
+	for d.s.navigatorPort() != 0 {
 		if time.Now().After(deadline) {
-			d.t.Fatal("the navigator's end was not logged")
+			d.t.Fatal("the navigator's retirement was not published")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -423,16 +424,17 @@ func TestANavigatorFailureLeavesTheDaemonServing(t *testing.T) {
 func TestTheStatusPageStoppingMarksTheNavigatorFailed(t *testing.T) {
 	useDataDir(t)
 	d := startDaemon(t, true)
-	d.stopNavigator() // so only the status page's end writes the file below
-	if err := os.WriteFile(navTokenPath(), []byte("on 1 2 3 x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// Stop status while its captured navigator is live. An obsolete callback
+	// cannot repair arbitrary later file edits by impersonating a newer owner.
 	close(d.stop)
 	if err := <-d.done; err == nil {
 		t.Error("Run returned no error")
 	}
 	releaseInstanceLock()
 	wantNavState(t, d.s, navFailed)
+	if d.s.navigatorPort() != 0 {
+		t.Error("status termination retained navigator exposure")
+	}
 }
 
 func TestACorruptPortListFailsClosed(t *testing.T) {
@@ -445,7 +447,7 @@ func TestACorruptPortListFailsClosed(t *testing.T) {
 	if _, ok := d.daemonObject()["navigator_port"]; ok {
 		t.Error("/api/state names a navigator port")
 	}
-	if l := d.log.String(); !strings.Contains(l, "remove or fix "+navPortsPath()) {
+	if l := d.log.String(); !strings.Contains(l, "remove or fix ui-ports") || strings.Contains(l, navPortsPath()) {
 		t.Errorf("the log does not say what to do: %s", l)
 	}
 	checkIdentity(t, d)
