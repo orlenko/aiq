@@ -195,7 +195,11 @@ func (c Core) keys(keys []string) error {
 	return exchange(c.Socket, "terminal.keys", map[string]any{"terminal": c.Terminal, "keys": keys}, nil, 12*time.Second)
 }
 
-func (c Core) attach() error {
+func (c Core) attach() error { return c.attachWithDiagnostics(os.Stderr) }
+
+// Exact-lease callers suppress control diagnostics; legacy viewers retain
+// their existing stderr and all viewers keep interactive stdin/stdout.
+func (c Core) attachWithDiagnostics(diagnostics io.Writer) error {
 	if err := c.verify(); err != nil {
 		return err
 	}
@@ -214,7 +218,7 @@ func (c Core) attach() error {
 	}
 	cmd := exec.Command("hc", "attach", c.Terminal)
 	cmd.Env = append(without(os.Environ(), func(k string) bool { return strings.HasPrefix(k, "HC_") }), "HC_SOCKET="+c.Socket)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, diagnostics
 	return cmd.Run()
 }
 

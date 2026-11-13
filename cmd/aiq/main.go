@@ -113,6 +113,8 @@ Long-running sessions (supervised, moved between accounts before they run dry):
   aiq long --backend herdr <provider|auto|resume> [args...]
                                     start in this direct Herdr-core terminal; tmux remains the default
   aiq long list | attach | drain <lease|.> | stop <lease|.>
+  aiq long attach <lease-id> [--started <unix-seconds>]
+                                    attach the recorded local lease; optional copied-start guard
 
 Sessions in this directory (Claude, Codex and Antigravity transcripts):
   aiq handoff redact [--apply]      list secrets matching known formats in saved handoff
