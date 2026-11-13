@@ -174,6 +174,51 @@ func TestConvoSearchFocusPreservesHardBreaks(t *testing.T) {
 	}
 }
 
+func TestConvoSearchFocusesRendererWrappedPrompts(t *testing.T) {
+	for _, tc := range []struct {
+		name, query, indent, falsePrefix string
+		width                            int
+	}{
+		{"words", "needle phrase crossing several rows", "", "needle\nphrase", 24},
+		{"indentation", "needle phrase crossing several rows", "    ", "needle\nphrase", 26},
+		{"glyph splits", "supercalifragilisticexpialidociousabcdef", "", "supercalifragilistic\nexpialidociousabcdef", 22},
+		{"Unicode", "東京大阪京都神戸札幌横浜福岡", "", "東京大阪京都\n神戸札幌横浜福岡", 16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := screenTurns(1, nil)
+			s.Turns[0].Prompt = tc.falsePrefix + "\n" + tc.indent + strings.Repeat("filler ", 90) + tc.query + " after"
+			c := screenOf(false, tc.width, 16, s)
+			if row := c.searchRow(0, tc.query); row < 20 {
+				t.Fatalf("did not locate the real wrapped prompt passage: row %d", row)
+			}
+			searchType(c, "/"+tc.query)
+			press(c, keypress{code: keyEnter})
+			if c.sel != 0 || c.top < 10 || c.message != "" {
+				t.Fatalf("wrapped prompt used hidden-text fallback: sel %d top %d message %q", c.sel, c.top, c.message)
+			}
+		})
+	}
+}
+
+func TestConvoSearchPromptMetadataPreservesPaint(t *testing.T) {
+	s := screenTurns(2, nil)
+	s.Turns[0].Prompt = "    " + strings.Repeat("word ", 40) + "abcdefghijklmnopqrstuvwxyz\nsecond source line"
+	plain := newConvoPrinter("claude", true, false)
+	plain.width, plain.track = 22, true
+	withMetadata := newConvoPrinter("claude", true, false)
+	withMetadata.width, withMetadata.track, withMetadata.searchRows = 22, true, true
+	if want, got := plain.emit(s), withMetadata.emit(s); got != want {
+		t.Fatal("search metadata changed printer paint")
+	}
+	if len(withMetadata.cuts[0].inputRows) < 3 || len(plain.cuts[0].inputRows) != 0 {
+		t.Fatal("prompt metadata was not opt-in")
+	}
+	c := screenOf(false, 24, 16, s)
+	if c.searchRow(0, strings.Repeat(" ", 20)) >= 0 {
+		t.Fatal("prompt band padding became searchable source text")
+	}
+}
+
 func TestConvoWrapMetadataRestoresOnlyDisplayBreaks(t *testing.T) {
 	for _, text := range []string{"", "a\nb", "need\nle\nneedle", "one two   three four", "abcdefghijklmnop", "日本語の長い文章", "\x1b[31mstyled long words\x1b[0m", "need\n\nle"} {
 		for _, width := range []int{2, 4, 9, 78} {
@@ -250,6 +295,55 @@ func TestConvoSearchFollowResizeAndRewrite(t *testing.T) {
 	press(c, keypress{code: keyEnter})
 	if c.sel != 1 {
 		t.Fatal("rewritten result no longer navigable")
+	}
+}
+
+func TestConvoSearchKeepsFollowPausedUntilEnd(t *testing.T) {
+	for _, mode := range []string{"focus newest", "cancel", "empty Enter", "no match", "literal G"} {
+		t.Run(mode, func(t *testing.T) {
+			full := screenTurns(5, nil)
+			upTo := func(n int) *transcript.Session {
+				s := *full
+				s.Turns = full.Turns[:n]
+				return &s
+			}
+			c := screenOf(true, 80, 16, upTo(3))
+			switch mode {
+			case "focus newest":
+				searchType(c, "/answer 2")
+			case "cancel":
+				searchType(c, "/answer")
+			case "empty Enter":
+				searchType(c, "/")
+			case "no match":
+				searchType(c, "/no such answer")
+			case "literal G":
+				searchType(c, "/G")
+				if !c.paused || c.search.query != "G" {
+					t.Fatal("typed G resumed follow inside query")
+				}
+			}
+			if mode == "cancel" {
+				press(c, keypress{code: keyBack})
+			} else {
+				press(c, keypress{code: keyEnter})
+			}
+			id := c.msgs[c.sel].id
+			c.resize(60, 16)
+			c.apply(convoUpdate{status: "working"})
+			c.apply(convoUpdate{s: upTo(4)})
+			if c.following() || !c.paused || c.msgs[c.sel].id != id || c.newBelow() != 2 {
+				t.Fatalf("search exit resumed follow: paused %v sel %d new %d", c.paused, c.sel, c.newBelow())
+			}
+			press(c, kLast)
+			if !c.following() || c.paused || c.newBelow() != 0 {
+				t.Fatal("G/End did not explicitly resume follow")
+			}
+			c.apply(convoUpdate{s: upTo(5)})
+			if c.sel != 9 || !c.following() {
+				t.Fatal("explicitly resumed follow did not track new messages")
+			}
+		})
 	}
 }
 

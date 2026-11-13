@@ -152,7 +152,11 @@ func (c *convoScreen) searchRow(msg int, query string) int {
 			text.WriteString(r.gap)
 		}
 		starts, rows = append(starts, text.Len()), append(rows, row)
-		text.WriteString(strings.ToLower(kitPlain(r.text)))
+		plain := r.plain
+		if !r.plainSet {
+			plain = kitPlain(r.text)
+		}
+		text.WriteString(strings.ToLower(plain))
 	}
 	if len(rows) > 0 {
 		return find()

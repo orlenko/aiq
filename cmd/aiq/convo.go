@@ -919,6 +919,10 @@ type convoPrinter struct {
 	track bool
 	cuts  []convoCut
 	facts convoFacts
+	// Only the terminal viewer asks for prompt wrap locations; stream and web
+	// projection consumers retain their existing paint/capture paths.
+	searchRows bool
+	inputRows  []convoInputRow
 	// Sticky for one emit, including failures followed by successful renders.
 	renderFailed bool
 	faults       *diagnostic.Latch
@@ -935,11 +939,18 @@ type convoCut struct {
 	end             int
 	key, kind, text string
 	facts           convoFacts
+	inputRows       []convoInputRow
+}
+
+type convoInputRow struct {
+	at  int // byte offset of this painted row in the current emission
+	row wrappedTextRow
 }
 
 func (p *convoPrinter) cut(b *strings.Builder, key, kind, text string) {
 	if p.track {
-		cut := convoCut{end: b.Len(), key: key, kind: kind, text: text, facts: p.facts}
+		cut := convoCut{end: b.Len(), key: key, kind: kind, text: text, facts: p.facts, inputRows: p.inputRows}
+		p.inputRows = nil
 		if p.capture != nil {
 			p.capture.cut(b, cut, len(p.cuts))
 		}
@@ -1351,8 +1362,14 @@ func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 		b.WriteString(osc133Prompt)
 	}
 	b.WriteString(line(p.palette.you, truncate(sanitize(head), width), false))
-	for _, l := range wrap(sanitize(strings.TrimRight(body, "\n")), width) {
-		b.WriteString(line(sgrBold, l, true))
+	wrapEach(sanitize(strings.TrimRight(body, "\n")), width, func(row wrappedTextRow) {
+		if p.searchRows {
+			p.inputRows = append(p.inputRows, convoInputRow{at: b.Len(), row: row})
+		}
+		b.WriteString(line(sgrBold, row.text, true))
+	})
+	if p.searchRows {
+		p.inputRows = append(p.inputRows, convoInputRow{at: b.Len()})
 	}
 	b.WriteString(line("", "", true))
 }

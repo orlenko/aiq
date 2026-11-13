@@ -37,10 +37,12 @@ type convoPart struct {
 
 // convoRow is one row of the conversation: rendered text, and the message it belongs to.
 type convoRow struct {
-	text string
-	msg  int    // -1: the space between messages
-	wrap bool   // continues the preceding row's rendered line, rather than a hard newline
-	gap  string // text removed at that display wrap (a space, or nothing for a glyph split)
+	text     string
+	msg      int    // -1: the space between messages
+	wrap     bool   // continues the preceding row's rendered line, rather than a hard newline
+	gap      string // text removed at that display wrap (a space, or nothing for a glyph split)
+	plain    string // prompt body before its band padding and repeated wrap indentation
+	plainSet bool   // even an empty prompt row must not search its painted padding
 }
 
 // convoMsg is one message: its rows, from inclusive to to exclusive, and the Markdown y copies.
@@ -70,6 +72,7 @@ type convoScreen struct {
 	status  string // what --follow says: the turn working, or what went wrong
 	message string // what the last key did, such as a copy
 	search  *convoSearch
+	paused  bool // search pauses --follow until G/End explicitly resumes it
 }
 
 func newConvoScreen(live bool) *convoScreen {
@@ -86,6 +89,7 @@ func (c *convoScreen) layout() {
 	for i, pt := range c.parts {
 		p := newConvoPrinter(pt.s.Provider, true, false)
 		p.width, p.live, p.hold, p.track = width, c.live, pt.hold, true
+		p.searchRows = true
 		if !pt.moved.IsZero() {
 			c.rows = append(c.rows, convoRow{msg: -1})
 			for _, l := range strings.Split(convoMovedLine(p, pt.t, pt.s, pt.moved, pt.from, width), "\n") {
@@ -219,18 +223,39 @@ func convoExpandTabs(line string) string {
 // blank lines before a message are the space between messages; a later part of an answer and
 // a "(no reply)" go on the message before them.
 func (c *convoScreen) cut(part int, text string, cuts []convoCut, width int) {
+	inputRows := map[int]wrappedTextRow{}
+	for _, cut := range cuts {
+		for _, input := range cut.inputRows {
+			inputRows[input.at] = input.row
+		}
+	}
 	for _, folded := range foldConvoCuts(text, cuts) {
 		ct := folded.first
 		m := convoMsg{id: fmt.Sprintf("%d\x00%s\x00%s\x00%x\x00%d", part, ct.key, ct.kind, folded.firstHash, folded.occurrence), kind: ct.kind, raw: folded.raw}
+		paintCut := folded.firstCut
 		for segment, paint := range folded.segments {
+			if segment > 0 {
+				for paintCut++; paintCut < folded.lastCut && cuts[paintCut].kind == "part"; paintCut++ {
+				}
+			}
+			offset := 0
+			if paintCut > 0 {
+				offset = cuts[paintCut-1].end
+			}
 			var lines []convoRow
 			headerRows := 0
 			for _, l := range strings.Split(paint, "\n") {
 				wrapped := convoWrapParts(convoExpandTabs(l), width)
+				if input, ok := inputRows[offset]; ok && len(wrapped) == 1 {
+					wrapped[0].wrap, wrapped[0].gap = input.soft, input.gap
+					wrapped[0].plain = input.text[input.skip:]
+					wrapped[0].plainSet = true
+				}
 				if segment == 0 && headerRows == 0 && kitPlain(l) != "" && (ct.kind == "you" || ct.kind == "steer" || ct.kind == "answer") {
 					headerRows = len(wrapped)
 				}
 				lines = append(lines, wrapped...)
+				offset += len(l) + 1
 			}
 			start := 0
 			if segment == 0 {
@@ -259,7 +284,7 @@ func (c *convoScreen) clampTop() { c.top = clamp(c.top, 0, max(len(c.rows)-c.hei
 
 // following says the newest message is selected, so the next one will be.
 func (c *convoScreen) following() bool {
-	return c.search == nil && (len(c.msgs) == 0 || c.sel == len(c.msgs)-1)
+	return !c.paused && c.search == nil && (len(c.msgs) == 0 || c.sel == len(c.msgs)-1)
 }
 
 // visible says some row of message i is on screen.
@@ -476,6 +501,7 @@ func (c *convoScreen) input(e asksInput) bool {
 			return true
 		case k.r == '/':
 			c.search = &convoSearch{}
+			c.paused = c.live
 		case k.code == keyDown:
 			c.down()
 		case k.code == keyUp:
@@ -487,6 +513,7 @@ func (c *convoScreen) input(e asksInput) bool {
 		case k.code == keyHome || k.r == 'g':
 			c.sel, c.top = 0, 0
 		case k.code == keyEnd:
+			c.paused = false
 			c.sel = max(len(c.msgs)-1, 0)
 			c.show()
 		case k.code == keyPgDn:
