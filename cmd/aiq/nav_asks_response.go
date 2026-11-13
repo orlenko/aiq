@@ -182,7 +182,7 @@ func captureNavAsksResponse(s state.AsksSnapshot, o navAsksResponseOptions, c *n
 			navAsksSafeCount(int64(a.Repeats)) && navAsksSafeSeconds(a.RaisedAt) && navAsksSafeSeconds(a.StateAt) &&
 			!math.IsNaN(a.Risk) && !math.IsInf(a.Risk, 0) && !math.IsNaN(a.AsksReader) && !math.IsInf(a.AsksReader, 0))
 		seen[a.ID] = true
-		for _, text := range []string{a.Provider, a.SessionID, a.Workspace, string(a.State), a.StateReason, a.StateText} {
+		for _, text := range []string{a.Chain, a.Provider, a.SessionID, a.Workspace, string(a.State), a.StateReason, a.StateText} {
 			c.raw(text, true)
 		}
 		for _, text := range a.Refs {
