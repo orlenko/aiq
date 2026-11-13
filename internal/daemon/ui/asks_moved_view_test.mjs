@@ -120,6 +120,21 @@ test('partial capture-listener setup failure removes attempted and acquired regi
 test('setup reentry with a handle acquired after cancellation cleans exactly the old registrations',()=>{
   const f=fixture();f.mount();const add=f.document.addEventListener.bind(f.document);let once=false;f.document.addEventListener=(...args)=>{if(!once){once=true;f.control('4').focus();f.control('4').click();}add(...args);};activate(f);assert.ok(once);assert.equal(targetFocus(f,'5'),0);assert.equal(targetFocus(f,'4'),1);assert.equal(f.document.activeElement,f.heading('4'));assert.equal(f.document.count(),0);
 });
+for(const acquired of [false,true])test(`superseded setup failure preserves the newer selection (${acquired?'after':'before'} acquisition)`,async()=>{
+    const f=fixture();f.mount();const add=f.document.addEventListener.bind(f.document);let once=false;
+    f.document.addEventListener=(...args)=>{
+      if(once){add(...args);return;}once=true;f.control('4').focus();f.control('4').click();
+      if(acquired)add(...args);throw Error('invented superseded setup');
+    };
+    activate(f);assert.ok(once);assert.equal(f.document.count(),0);assert.equal(targetFocus(f,'5'),0);
+    assert.equal(f.heading('4')?.isConnected,true);assert.equal(f.document.activeElement,f.heading('4'));assert.equal(targetFocus(f,'4'),1);
+    assert.equal(f.document.body.textContent.includes('Asks unavailable'),false);const article=f.heading('4').parentNode;
+    const control=text=>walk(article).find(n=>n.tagName==='button'&&n.textContent===text);
+    control('Copy quote').click();await tick();assert.deepEqual(f.copies,[firstCopy]);
+    control('Show details').click();control('Copy quote').click();await tick();assert.deepEqual(f.copies,[firstCopy,latestCopy]);
+    control('Open conversation').click();assert.deepEqual(f.navigations,[{provider:'agy',id:sourceID}]);
+    activate(f,'4');assert.equal(f.document.activeElement,f.heading('4'));assert.equal(targetFocus(f,'4'),2);assert.equal(f.document.count(),0);f.clean();
+});
 test('repeated expanded/collapsed reveals return document resources to baseline',()=>{
   const f=fixture();f.mount();for(let i=0;i<8;i++){activate(f);assert.equal(f.document.count(),0);assert.equal(f.document.activeElement,f.heading('5'));f.click('Closed and dismissed (1)');assert.equal(f.group(4).hidden,true);}assert.equal(targetFocus(f,'5'),8);
 });

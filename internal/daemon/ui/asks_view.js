@@ -97,7 +97,7 @@ export function createAsksView(document, data, options) {
       if (!focusCurrent(intent, row)) return;
       const child = row.current, ready = row.ready, heading = row.heading;
       if (focusTarget(row, child, ready, heading)) target = {child, ready, heading};
-    } catch { if (active()) terminate(false); }
+    } catch { if (focusCurrent(intent, row)) terminate(false); }
     finally { endFocus(intent, false); }
     let commit = false;
     try {
