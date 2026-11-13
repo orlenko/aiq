@@ -578,45 +578,93 @@ func TestConvoFullIDFatalScreenHandoff(t *testing.T) {
 }
 
 func TestConvoFullIDLegacyReloadContinues(t *testing.T) {
-	roots := fullIDRoots(t)
-	path := fullIDWrite(t, roots, "claude", fullIDFixtureID, "/invented/work")
-	stop := make(chan struct{})
-	var once sync.Once
-	finish := func() { once.Do(func() { close(stop) }) }
-	defer finish()
-	events := make(chan convoUpdate, 8)
-	done := make(chan error, 1)
-	f := &convoFollow{tgt: convoTarget{provider: "claude", path: path}, statEvery: time.Millisecond, parseGap: time.Millisecond, quiet: time.Millisecond, status: "fixture existing status"}
-	f.send = func(u convoUpdate) {
-		if u.begin {
-			os.Remove(path)
-		}
-		events <- u
-	}
-	go func() { done <- f.loop(stop) }()
-	select {
-	case <-events:
-	case <-time.After(3 * time.Second):
-		t.Fatal("no initial legacy data")
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("legacy reload unexpectedly fatal: %v", err)
-	case u := <-events:
-		if u.s != nil || u.status != "" {
-			t.Fatal("legacy failed reload published a graph")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("legacy loop did not pass failed reload")
-	}
-	finish()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("legacy loop did not stop")
+	for _, held := range []bool{false, true} {
+		t.Run(fmt.Sprintf("held=%v", held), func(t *testing.T) {
+			roots := fullIDRoots(t)
+			path := fullIDWrite(t, roots, "claude", fullIDFixtureID, "/invented/work")
+			stamp := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+			if held {
+				stamp = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+			}
+			if err := os.Chtimes(path, stamp, stamp); err != nil {
+				t.Fatal(err)
+			}
+			stop := make(chan struct{})
+			var once sync.Once
+			finish := func() { once.Do(func() { close(stop) }) }
+			events := make(chan convoUpdate, 8)
+			callbackErr, done := make(chan error, 1), make(chan error, 1)
+			exited := make(chan struct{})
+			f := &convoFollow{tgt: convoTarget{provider: "claude", path: path}, statEvery: time.Millisecond, parseGap: time.Millisecond, quiet: time.Millisecond, status: "fixture existing status"}
+			f.send = func(u convoUpdate) {
+				if u.begin {
+					wantReply := "fixture answer"
+					if held {
+						wantReply = ""
+					}
+					if u.s == nil || len(u.s.Turns) != 1 || u.hold != held || u.s.Turns[0].Open != held || u.s.Turns[0].Prompt != "fixture prompt" || u.s.Turns[0].Reply != wantReply {
+						callbackErr <- errors.New("initial legacy handoff did not match the controlled hold state")
+						finish()
+						return
+					}
+					// Remove before the loop can publish any status. The next
+					// tick must attempt its dirty reload of this missing file.
+					if err := os.Remove(path); err != nil {
+						callbackErr <- err
+						finish()
+						return
+					}
+				}
+				select {
+				case events <- u:
+				case <-stop:
+				}
+			}
+			go func() {
+				defer close(exited)
+				done <- f.loop(stop)
+			}()
+			defer func() {
+				finish()
+				select {
+				case <-exited:
+				case <-time.After(3 * time.Second):
+					t.Error("legacy worker did not join")
+				}
+			}()
+			select {
+			case err := <-callbackErr:
+				t.Fatal(err)
+			case u := <-events:
+				if !u.begin {
+					t.Fatal("first legacy update was not its initial handoff")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("no initial legacy data")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("legacy reload unexpectedly fatal: %v", err)
+			case u := <-events:
+				if u.s != nil {
+					t.Fatal("legacy failed reload published a graph")
+				}
+				if !held && u.status != "" || held && (!strings.HasPrefix(u.status, "working · ") || !strings.HasSuffix(u.status, " · 0 tools")) {
+					t.Fatalf("legacy retained-state status for held=%v: %q", held, u.status)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("legacy loop did not pass failed reload")
+			}
+			finish()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("legacy loop did not stop")
+			}
+		})
 	}
 }
 
