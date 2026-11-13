@@ -73,7 +73,7 @@ type capped struct {
 	gates map[string]chan struct{}
 }
 
-// gate is what /hold/name waits on; a send lets one such request finish.
+// gate is what /hold/name and /page wait on; a send lets one such request finish.
 func (c *capped) gate(name string) chan struct{} {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -110,7 +110,7 @@ func serveCapped(t *testing.T, s *connSlots) *capped {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ok", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(20 * time.Millisecond)
+		<-c.gate("page")
 		w.Write(testPage)
 	})
 	mux.HandleFunc("/hold/", func(w http.ResponseWriter, r *http.Request) {
@@ -337,6 +337,8 @@ func TestAnAnswerIsSentBeforeItsConnectionIsClosedToMakeRoom(t *testing.T) {
 		waitFor(t, s, "inside a handler", func(st slotStats) bool { return st.busy == 1 })
 		b := dialRaw(t, srv.addr)
 		b.send(t, "/ok", true)
+		waitFor(t, s, "waiting", func(st slotStats) bool { return st.waiting == 1 })
+		srv.gate("page") <- struct{}{}
 		if body, err := a.answer(10 * time.Second); body != string(testPage) || err != nil {
 			t.Fatalf("try %d: the first answer had %d of %d bytes: %v", i, len(body), len(testPage), err)
 		}

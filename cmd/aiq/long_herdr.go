@@ -9,13 +9,15 @@ import (
 
 	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
+	"github.com/orlenko/aiq/internal/pool"
+	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/tmux"
 )
 
 func longBackendArgs(args []string) (string, []string, error) {
-	backend := "tmux"
+	backend := ""
 	if len(args) > 0 && (args[0] == "--backend" || strings.HasPrefix(args[0], "--backend=")) {
 		value, eq := strings.CutPrefix(args[0], "--backend=")
 		if eq {
@@ -32,6 +34,22 @@ func longBackendArgs(args []string) (string, []string, error) {
 		backend = value
 	}
 	return backend, args, nil
+}
+
+// Environment markers are only a creation preference. CurrentCore still has
+// to verify native terminal ownership before a new Herdr session can start.
+func longBackendForContext(requested string) string {
+	if requested != "" {
+		return requested
+	}
+	if os.Getenv("TMUX") != "" || os.Getenv("TMUX_PANE") != "" || os.Getenv("STY") != "" {
+		return "tmux"
+	}
+	_, ownerPresent := os.LookupEnv("HC_TERMINAL_SOCKET")
+	if os.Getenv("HC_TERMINAL_ID") != "" || ownerPresent {
+		return "herdr"
+	}
+	return "tmux"
 }
 
 func (t longTarget) unlock() {
@@ -90,22 +108,53 @@ func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
 		}
 	}
 	name := longrun.SessionName(a.cfg.Long.TmuxPrefix, ws)
-	if a.longBackend != "herdr" || (tmux.Available() && tmux.HasSession(name)) {
+	backend := longBackendForContext(a.longBackend)
+	var tmuxOwner *state.Lease
+	if backend == "herdr" && a.longBackend == "" {
+		for i := range leases {
+			l := &leases[i]
+			if l.Workspace != ws || herdr.IsRef(l.Pane) {
+				continue
+			}
+			if l.Hostname == "" || l.Hostname != pool.Hostname() || l.PID <= 0 {
+				t.unlock()
+				return t, false, uncertainLongTmux(l.ID)
+			}
+			if proc.Alive(l.PID) {
+				tmuxOwner = l
+			}
+		}
+	}
+	hasTmux := backend == "herdr" && tmux.Available() && tmux.HasSession(name)
+	if backend != "herdr" || hasTmux {
 		t, attached, err = a.longExistingTmux(ws, release)
-		if attached || err != nil || a.longBackend != "herdr" {
+		if attached || err != nil || backend != "herdr" {
 			if err != nil {
 				t.unlock()
 			}
 			return t, attached, err
 		}
 	}
+	// Discovery can change during the tmux attach attempt. Its failure cannot
+	// erase the reservation made by an already-running long lease.
+	if tmuxOwner != nil {
+		t.unlock()
+		return t, false, uncertainLongTmux(tmuxOwner.ID)
+	}
 	core, err := herdr.CurrentCore()
 	if err != nil {
 		t.unlock()
+		if a.longBackend == "" {
+			err = fmt.Errorf("cannot use the detected Herdr terminal: %w (put --backend tmux before the subcommand, e.g. aiq long --backend tmux auto)", err)
+		}
 		return t, false, err
 	}
 	t.native, t.core, t.name = true, core, name
 	return t, false, nil
+}
+
+func uncertainLongTmux(id int64) error {
+	return fmt.Errorf("tmux ownership is uncertain for long lease %d; no second session started (use the original tmux context to attach)", id)
 }
 
 func (a *app) longLaunchHerdr(t longTarget, ws, dir, what string, args []string) error {

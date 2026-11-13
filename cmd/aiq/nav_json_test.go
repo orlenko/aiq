@@ -21,7 +21,7 @@ func TestNavJSONSizeIndependentEncoding(t *testing.T) {
 		Nil   []string `json:"nil"`
 	}
 	values := []any{nil, true, false, int(0), int(-12), int64(math.MinInt64), int64(math.MaxInt64), "", "日本語", "\ufffd", string([]byte{0xff}), string([]byte{0xc0, 0xaf}), "\u2028\u2029<>&\"\\\n\r\t\b\f", []string(nil), []string{}, []string{"x", "y"}, envelope{Rows: []row{{Label: "<title>\xff", Count: math.MinInt64, Flags: []bool{true, false}}}, Empty: []string{}}}
-	for b := 0; b < 128; b++ {
+	for b := 0; b < 256; b++ {
 		values = append(values, string([]byte{byte(b)}))
 	}
 	for _, v := range values {
@@ -39,13 +39,24 @@ func TestNavJSONSizeIndependentEncoding(t *testing.T) {
 			t.Fatalf("%T accepted one byte below encoded size", v)
 		}
 	}
-	// Invalid bytes are individually replaced by six ASCII bytes; a valid
-	// replacement rune remains three UTF-8 bytes. This catches conflation.
+	// Keep independent literals for both supported invalid-byte encodings. A
+	// valid replacement rune remains three UTF-8 bytes under either codec.
+	invalid := string([]byte{0xff, 0xfe})
+	b, err := json.Marshal(invalid)
+	if err != nil || (string(b) != `"\ufffd\ufffd"` && string(b) != "\"\ufffd\ufffd\"") {
+		t.Fatalf("unexpected invalid-byte encoding %q: %v", b, err)
+	}
+	want := int64(len(b))
+	if n, ok := navJSONSize(invalid, want); !ok || n != want {
+		t.Fatalf("invalid-byte size %d/%v, want %d", n, ok, want)
+	}
+	if _, ok := navJSONSize(invalid, want-1); ok {
+		t.Fatal("invalid bytes accepted one byte below encoded size")
+	}
 	for _, tc := range []struct {
 		text, encoded string
 		size          int64
 	}{
-		{string([]byte{0xff, 0xfe}), `"\ufffd\ufffd"`, 14},
 		{"\ufffd", "\"\ufffd\"", 5},
 		{"<>&", `"\u003c\u003e\u0026"`, 20},
 		{"\u2028\u2029", `"\u2028\u2029"`, 14},

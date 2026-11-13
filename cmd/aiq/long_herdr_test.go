@@ -10,7 +10,7 @@ import (
 	"github.com/orlenko/aiq/internal/state"
 )
 
-func TestNativeBackendIsExplicitAndDoesNotConsumeProviderArgs(t *testing.T) {
+func TestLongBackendChoiceDoesNotConsumeProviderArgs(t *testing.T) {
 	for _, args := range [][]string{{"--backend", "herdr", "codex", "--", "--backend", "literal"}, {"--backend=herdr", "auto", "resume"}} {
 		backend, rest, err := longBackendArgs(args)
 		if err != nil || backend != "herdr" || len(rest) == 0 {
@@ -20,8 +20,13 @@ func TestNativeBackendIsExplicitAndDoesNotConsumeProviderArgs(t *testing.T) {
 			t.Fatal("provider arguments consumed")
 		}
 	}
-	if backend, _, err := longBackendArgs([]string{"codex"}); err != nil || backend != "tmux" {
-		t.Fatal("tmux default changed")
+	if backend, _, err := longBackendArgs([]string{"codex"}); err != nil || backend != "" {
+		t.Fatal("omitted backend was made explicit")
+	}
+	for _, args := range [][]string{{"--backend", "tmux", "auto"}, {"--backend=tmux", "auto"}} {
+		if backend, _, err := longBackendArgs(args); err != nil || backend != "tmux" {
+			t.Fatal("explicit tmux choice lost")
+		}
 	}
 	if _, _, err := longBackendArgs([]string{"--backend=unknown", "codex"}); err == nil {
 		t.Fatal("unknown backend accepted")
