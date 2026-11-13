@@ -9,6 +9,13 @@ import (
 	"unicode/utf8"
 )
 
+// The active JSON codec can escape an invalid UTF-8 byte or emit the replacement
+// rune directly. Probe only a fixed built-in string, once, outside request work.
+var navJSONInvalidUTF8Width = func() int64 {
+	b, _ := json.Marshal("\xff")
+	return int64(len(b) - 2) // exclude quotes
+}()
+
 // navJSONSize preflights our closed transport DTOs without allocating escaped
 // strings. Unsupported representations fail closed; this is not a general JSON
 // encoder. In particular, dependencies cannot supply custom marshal methods.
@@ -57,7 +64,9 @@ func (m *navJSONMeter) text(s string) bool {
 		}
 		r, width := utf8.DecodeRuneInString(s[i:])
 		n := int64(width)
-		if r == utf8.RuneError && width == 1 || r == '\u2028' || r == '\u2029' {
+		if r == utf8.RuneError && width == 1 {
+			n = navJSONInvalidUTF8Width
+		} else if r == '\u2028' || r == '\u2029' {
 			n = 6
 		}
 		if !m.add(n) {

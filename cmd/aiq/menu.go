@@ -374,7 +374,7 @@ func (m *menu) hint(r menuRow) string {
 		if e.longHere != "" && c.Session == "new" {
 			return "A long session already runs here, on " + e.longHere + ". Enter attaches to it."
 		}
-		return "Runs in tmux and outlives this terminal. Before an account runs dry, aiq moves the session to another one."
+		return "Runs in Herdr when started directly there, otherwise tmux. Killing a native terminal ends its session. Before an account runs dry, aiq moves it to another one."
 	case "more":
 		return "m or → shows them."
 	case "tier":

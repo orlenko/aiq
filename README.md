@@ -85,8 +85,9 @@ with the daemon down they route on the last poll.
 ## Long-running sessions
 
 A QC loop or an orchestration overseer can run for days and burn a week of
-quota. `aiq long claude` / `aiq long codex` starts such a session in a tmux
-session named after the workspace and supervises it:
+quota. `aiq long claude` / `aiq long codex` supervises such a session in
+the direct Herdr terminal it starts in, or otherwise in a tmux session named
+after the workspace:
 
 - **Hooks, not a startup instruction.** The session is launched with aiq's
   `SessionStart`, `UserPromptSubmit` and `Stop` hooks (per launch, via
@@ -238,12 +239,12 @@ finds the transcript.
 
 `aiq run auto resume` is the same command for this terminal: the same
 browser, flags and defaults (bypass on, tier 1, `--account` on the session's
-provider), but the session reopens here instead of in tmux. `aiq long resume`
+provider), but the session reopens here without long supervision. `aiq long resume`
 is the other way round, the long twin of `aiq resume`: the session reopens in
-tmux as it ran, with the bypass only if it had one and the CLI's own model
+a supervised terminal as it ran, with the bypass only if it had one and the CLI's own model
 unless `--model-tier` or `--effort` say otherwise. Each start has both forms:
 
-| | this terminal | tmux, supervised |
+| | this terminal | supervised (Herdr or tmux) |
 | --- | --- | --- |
 | new, on any pool | `aiq run auto` | `aiq long auto` |
 | resume, as auto starts | `aiq run auto resume` | `aiq long auto resume` |
@@ -291,11 +292,15 @@ updates itself and is left alone. `[updates] enabled = false` turns this off.
 
 ### Native Herdr terminals
 
-To keep a long session in a Herdr desktop terminal instead of tmux, start
-it there with the explicit backend flag **before** the provider or subcommand:
+Start a long session directly in a Herdr-core terminal and aiq automatically
+uses that terminal. Elsewhere, including nested tmux or screen panes, it uses
+tmux. Menu starts and both long-resume forms use the same default. Explicit
+backend flags go **before** the provider or subcommand:
 
 ```sh
-aiq long --backend herdr auto
+aiq long auto                    # native inside Herdr, tmux elsewhere
+aiq long --backend tmux auto     # explicitly request tmux for a new session
+aiq long --backend herdr auto    # explicitly require a direct Herdr terminal
 aiq long --backend herdr codex --account example
 aiq long --backend herdr resume <session-id>
 aiq long attach                  # finds the workspace's existing backend
@@ -304,12 +309,19 @@ aiq long drain .
 aiq long stop .
 ```
 
-Tmux remains the default, including starts from the menu. Existing native
-sessions are discovered by the menu and both resume paths. Native startup
+Automatic native selection attaches to existing live long sessions rather than
+converting them; uncertain ownership blocks a new native session. Backend flags
+select a creation preference, not a conversion of a running terminal. Native sessions are discovered
+by the menu and both resume paths. Native startup
 requires a direct Herdr-core terminal (tested with `hc 0.1.20`, protocol
 generation 1), with terminal stdin and stdout. The older Herdr TUI uses a
-different API and is not supported by this backend. Nested tmux/screen panes
-are rejected rather than addressing the wrong terminal. From outside Herdr,
+different API and is not supported by this backend. An explicit native start in
+a nested tmux/screen pane is rejected rather than addressing the wrong terminal.
+Stale or incomplete native terminal markers cause a validation error, not a
+silent tmux start. To request tmux explicitly, use
+`aiq long --backend tmux auto` (or `aiq long --backend tmux auto resume`).
+An exported `HC_SOCKET` client selector alone does not select the native default.
+From outside Herdr,
 open a Herdr terminal first, or use `hc run --cwd /path/to/workspace -- aiq
 long --backend herdr codex` and attach to the returned terminal with `hc attach`.
 
@@ -726,7 +738,8 @@ command list:
 
 Three rows cover most starts: a new session or one of this directory's to
 resume, any agent or a named one (your launchers included), and short (this
-terminal) or long (supervised in tmux). `m` opens the rest: model tier,
+terminal) or long (supervised in Herdr when started directly there, otherwise
+tmux). `m` opens the rest: model tier,
 effort, a specific account, and the permission bypass. Rows that do not
 apply to the current choice dim and say why, and the line under the rows
 explains the focused choice, including which account a routed start would
@@ -762,11 +775,12 @@ sent.
 ### Leave a long job running
 
 ```bash
-aiq long auto
+aiq long --backend tmux auto
 ```
 
 For work that will outlast one account's quota (an overnight refactor, a QC
-loop, an overseer that babysits PRs), start it as a long session instead. aiq
+loop, an overseer that babysits PRs), this recipe explicitly requests tmux so
+its detach and disconnection behavior applies even when started from Herdr. aiq
 picks the account as `aiq run auto` does and opens the CLI in a tmux session
 named after the repository. Type the task there, then detach (tmux prefix,
 then `d`; `Ctrl-b d` by default). The session keeps running after you close
@@ -781,8 +795,8 @@ aiq long drain .   # move it to another account now
 aiq long stop .    # end it
 ```
 
-`aiq long auto --model-tier 0` keeps the strongest model, on whichever
-provider it moves to; providers with no tier-0 model are passed over. Run `aiq long auto` again in the same repository and it
+`aiq long --backend tmux auto --model-tier 0` keeps the strongest model, on whichever
+provider it moves to; providers with no tier-0 model are passed over. Run `aiq long --backend tmux auto` again in the same repository and it
 attaches to the running session rather than starting a second one.
 
 ### Turn a session into a long one
@@ -791,14 +805,15 @@ A session started with `aiq run auto` sometimes turns into hours of work.
 Exit it (`/exit`), then:
 
 ```bash
-aiq long auto resume
+aiq long --backend tmux auto resume
 ```
 
 The browser from `aiq resume` opens on this directory's sessions. Pick the
 one you left and press `r`: the same conversation reopens in a supervised
 tmux session, on an account aiq picks. It continues on other accounts, as in
 the previous recipe. If you already know the id, skip the browser:
-`aiq long auto resume 3f2a`.
+`aiq long --backend tmux auto resume 3f2a`. Omit `--backend tmux` to use the
+current terminal's default, including native supervision directly inside Herdr.
 
 ### `aip`: ask from the shell prompt
 
