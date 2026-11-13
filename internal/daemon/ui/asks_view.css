@@ -3,6 +3,6 @@
 .nav-asks-button { font: inherit; box-sizing: border-box; max-width: calc(100% - .5rem); white-space: normal; overflow-wrap: anywhere; margin: .25rem; }
 .nav-asks-region, .nav-asks-item, .nav-asks-body, .nav-asks-quote, .nav-asks-details { min-width: 0; }
 .nav-asks-item { border-top: 1px solid var(--border); padding: .75rem 0; }
-.nav-asks-source, .nav-asks-state, .nav-asks-scope, .nav-asks-report, .nav-asks-details { white-space: pre-wrap; overflow-wrap: anywhere; }
+.nav-asks-source, .nav-asks-state, .nav-asks-scope, .nav-asks-report, .nav-asks-details, .nav-asks-totals { white-space: pre-wrap; overflow-wrap: anywhere; }
 .nav-asks-status { min-height: 1.5em; }
 .nav-asks [hidden] { display: none; }

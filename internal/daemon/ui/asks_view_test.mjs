@@ -232,3 +232,33 @@ test('text-only replacement stays hidden through scheduling until wording is com
     f.clean();
   }
 });
+
+
+test('independent totals remain visible apart from stored watcher facts',()=>{
+  for (const facts of [{known:false,skipped:3,calls:7},{known:true,skipped:3,calls:7},
+    {known:true,skipped:0,calls:0},{known:true,missing:true}]) {
+    const data=snapshot();
+    if (!facts.known) data.report={known:false};
+    if (!facts.missing) {
+      if (facts.known) Object.assign(data.report,{skipped:facts.skipped,calls_today:facts.calls});
+      data.totals={utc_day:'1970-01-12',skipped:facts.skipped,calls_today:facts.calls};
+    }
+    const f=fixture({},data);
+    if (data.totals) Object.assign(data.totals,{utc_day:'changed',skipped:99,calls_today:99});
+    f.mount();
+    const root=find(f,'nav-asks')[0],paragraphs=find(f,'nav-asks-totals'),report=find(f,'nav-asks-report')[0];
+    assert.equal(paragraphs.length,facts.missing?0:1);
+    if (!facts.missing) {
+      assert.equal(paragraphs[0].textContent,`Skipped: ${facts.skipped}; calls today: ${facts.calls}; UTC day: 1970-01-12`);
+      assert.equal(paragraphs[0].parentNode,root);
+      assert.equal(report.contains(paragraphs[0]),false);
+      assert.equal(visible(paragraphs[0]),true);
+    }
+    assert.equal(report.textContent.includes('Last stored watcher report'),facts.known);
+    assert.equal(report.textContent.includes('Watcher report unavailable'),!facts.known);
+    if (facts.known) assert.ok(report.textContent.includes(`skipped: ${facts.missing?3:facts.skipped}; calls today: ${facts.missing?4:facts.calls}`));
+    const neighbor=f.document.createElement('button');f.document.body.append(neighbor);neighbor.focus();
+    f.view.teardown();assert.equal(root.textContent,'');assert.equal(f.document.activeElement,neighbor);
+    f.clean();
+  }
+});
