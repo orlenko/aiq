@@ -166,17 +166,25 @@ type navAsksResponseCapture struct {
 	seeds    []navAsksResponseSeed
 }
 
-func captureNavAsksResponse(s state.AsksSnapshot, o navAsksResponseOptions, c *navAsksCredits) (*navAsksResponseCapture, error) {
+func prepareNavAsksRaw(s state.AsksSnapshot, o navAsksResponseOptions, c *navAsksCredits) (state.AsksSnapshot, error) {
 	c.require(navAsksSafeCount(s.Skipped) && navAsksSafeCount(s.CallsToday) &&
 		int64(s.Status.Skipped) == s.Skipped && int64(s.Status.CallsToday) == s.CallsToday && s.UTCDay == state.AsksDay(o.now))
 	if uint64(len(s.Items)) > o.rows {
-		return nil, errNavAsksResponseTooLarge
+		return state.AsksSnapshot{}, errNavAsksResponseTooLarge
+	}
+	structural := o.arrayEntries
+	for _, a := range s.Items {
+		if !navAsksTake(&structural, uint64(len(a.Refs))) {
+			return state.AsksSnapshot{}, errNavAsksResponseTooLarge
+		}
+	}
+	if s.ReportPresent && !navAsksTake(&structural, uint64(len(s.Status.NotWatched))) {
+		return state.AsksSnapshot{}, errNavAsksResponseTooLarge
 	}
 	c.raw(o.scope.Mode, true)
 	c.raw(o.scope.Dir, true)
 	c.raw(s.UTCDay, true)
-	seen, allowed := make(map[int64]bool), make(map[string]bool)
-	allowed[o.scope.Dir] = true
+	seen := make(map[int64]bool)
 	for _, a := range s.Items {
 		c.require(a.ID > 0 && !seen[a.ID] && navConversationWord(string(a.State), "open", "probably-done", "closed", "dismissed") &&
 			navAsksSafeCount(int64(a.Repeats)) && navAsksSafeSeconds(a.RaisedAt) && navAsksSafeSeconds(a.StateAt) &&
@@ -191,10 +199,7 @@ func captureNavAsksResponse(s state.AsksSnapshot, o navAsksResponseOptions, c *n
 		c.raw(a.FirstQuote, false)
 		c.raw(a.LastQuote, false)
 		if c.err != nil {
-			return nil, c.err
-		}
-		if a.Workspace != "" {
-			allowed[a.Workspace] = true
+			return state.AsksSnapshot{}, c.err
 		}
 	}
 	if s.ReportPresent {
@@ -208,19 +213,112 @@ func captureNavAsksResponse(s state.AsksSnapshot, o navAsksResponseOptions, c *n
 			c.raw(text, true)
 		}
 	}
-	c.require(uint64(len(o.aliases)) <= uint64(len(s.Items))+1 && (o.scope.Mode != "all" || len(o.aliases) == 0))
-	for key, value := range o.aliases {
-		c.require(key != "" && value != "" && allowed[key])
-		c.raw(key, true)
-		c.raw(value, true)
-	}
 	if c.err != nil {
-		return nil, c.err
+		return state.AsksSnapshot{}, c.err
 	}
-	aliases := make(map[string]string, len(o.aliases))
-	for key, value := range o.aliases {
-		aliases[strings.Clone(key)] = strings.Clone(value)
+	owned := state.AsksSnapshot{Items: make([]state.Ask, len(s.Items)), ReportPresent: s.ReportPresent,
+		Skipped: s.Skipped, CallsToday: s.CallsToday, UTCDay: strings.Clone(s.UTCDay)}
+	owned.Status.Skipped, owned.Status.CallsToday = s.Status.Skipped, s.Status.CallsToday
+	cloneList := func(in []string) []string {
+		out := make([]string, len(in))
+		for i, v := range in {
+			out[i] = strings.Clone(v)
+		}
+		return out
 	}
+	if s.ReportPresent {
+		owned.Status = s.Status
+		owned.Status.LastError = strings.Clone(s.Status.LastError)
+		owned.Status.NotWatched = cloneList(s.Status.NotWatched)
+	}
+	for i, a := range s.Items {
+		a.Chain, a.Workspace, a.Provider, a.SessionID = strings.Clone(a.Chain), strings.Clone(a.Workspace), strings.Clone(a.Provider), strings.Clone(a.SessionID)
+		a.State = state.AskState(strings.Clone(string(a.State)))
+		a.StateReason, a.StateText = strings.Clone(a.StateReason), strings.Clone(a.StateText)
+		a.FirstQuote, a.LastQuote = strings.Clone(a.FirstQuote), strings.Clone(a.LastQuote)
+		a.Refs = cloneList(a.Refs)
+		owned.Items[i] = a
+	}
+	return owned, nil
+}
+
+// First-origin provenance and a new fault in this run are independent facts.
+type navAsksFaultState struct {
+	latch   *diagnostic.Latch
+	current bool
+}
+
+func (f *navAsksFaultState) external(err error) {
+	origin := diagnostic.FromError(err)
+	f.latch.Note(origin)
+	if origin.Present() {
+		f.current = true
+	}
+}
+
+type navAsksRun struct {
+	o       navAsksResponseOptions
+	c       *navAsksCredits
+	raw     state.AsksSnapshot
+	faults  *navAsksFaultState
+	aliases map[string]string
+	allowed map[string]bool
+	pending string
+	used    bool
+}
+
+func newNavAsksRun(ctx context.Context, s state.AsksSnapshot, o navAsksResponseOptions, f *navAsksFaultState) (*navAsksRun, error) {
+	if ctx == nil || f == nil || f.latch == nil || o.width < 1 || o.rows == 0 || o.inputBytes == 0 || o.renderCells == 0 || o.arrayEntries == 0 || o.stringUnits == 0 || o.bodyBytes <= 0 ||
+		!(o.scope.Mode == "all" && o.scope.Dir == "" || o.scope.Mode == "directory" && o.scope.Dir != "" && filepath.IsAbs(o.scope.Dir)) {
+		return nil, errNavAsksResponseInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	const seconds = navConversationSafeInteger / 1000
+	if o.now.Before(time.Unix(-seconds, 0)) || !o.now.Before(time.Unix(seconds, 0).Add(time.Second)) {
+		return nil, diagnostic.Base(diagnostic.Unshowable)
+	}
+	c := &navAsksCredits{ctx: ctx, input: o.inputBytes, work: o.renderCells, entries: o.arrayEntries, units: o.stringUnits}
+	raw, err := prepareNavAsksRaw(s, o, c)
+	if err != nil {
+		return nil, err
+	}
+	o.scope = navAsksScope{strings.Clone(o.scope.Mode), strings.Clone(o.scope.Dir)}
+	o.aliases = nil
+	r := &navAsksRun{o: o, c: c, raw: raw, faults: f, aliases: make(map[string]string), allowed: map[string]bool{o.scope.Dir: true}}
+	for _, a := range raw.Items {
+		if a.Workspace != "" {
+			r.allowed[a.Workspace] = true
+		}
+	}
+	return r, nil
+}
+func (r *navAsksRun) reserveAlias(key string) error {
+	if r.used || r.pending != "" || r.o.scope.Mode == "all" || key == "" || !r.allowed[key] || r.aliases[key] != "" || uint64(len(r.aliases)) >= uint64(len(r.raw.Items))+1 {
+		return diagnostic.Base(diagnostic.Unshowable)
+	}
+	r.c.raw(key, true)
+	if r.c.err != nil {
+		return r.c.err
+	}
+	r.pending = key
+	return nil
+}
+func (r *navAsksRun) commitAlias(key, value string) error {
+	if r.used || r.pending != key || value == "" {
+		return diagnostic.Base(diagnostic.Unshowable)
+	}
+	r.c.raw(value, true)
+	if r.c.err != nil {
+		return r.c.err
+	}
+	r.aliases[strings.Clone(key)] = strings.Clone(value)
+	r.pending = ""
+	return nil
+}
+func (r *navAsksRun) captureSelected() (*navAsksResponseCapture, error) {
+	s, o, c, aliases := r.raw, r.o, r.c, r.aliases
 	out := &navAsksResponseCapture{scope: navAsksScope{c.text(o.scope.Mode), c.text(o.scope.Dir)},
 		sections: make([]navAsksSection, 5), known: s.ReportPresent, totals: navAsksTotals{c.text(s.UTCDay), s.Skipped, s.CallsToday}}
 	c.array(5)
@@ -293,36 +391,62 @@ func buildNavAsksResponse(ctx context.Context, s state.AsksSnapshot, o navAsksRe
 }
 func buildNavAsksResponseWith(ctx context.Context, s state.AsksSnapshot, o navAsksResponseOptions,
 	render navAsksWordingRender, marshal func(any) ([]byte, error)) (body []byte, err error) {
-	faults := o.faults
-	if faults == nil {
-		faults = &diagnostic.Latch{}
+	latch := o.faults
+	if latch == nil {
+		latch = &diagnostic.Latch{}
 	}
+	f := &navAsksFaultState{latch: latch}
 	defer func() {
 		if value := recover(); value != nil {
-			faults.Note(diagnostic.Capture(value))
+			origin := diagnostic.Capture(value)
+			f.current = true
+			latch.Note(origin)
+			body, err = nil, diagnostic.Failure(diagnostic.Unshowable, latch.Origin())
+		}
+	}()
+	if render == nil || marshal == nil {
+		return nil, errNavAsksResponseInvalid
+	}
+	r, err := newNavAsksRun(ctx, s, o, f)
+	if err != nil {
+		if err == errNavAsksResponseInvalid {
+			return nil, err
+		}
+		return nil, navAsksResponseError(err, latch)
+	}
+	for key, value := range o.aliases {
+		if err = r.reserveAlias(key); err != nil {
+			return nil, navAsksResponseError(err, latch)
+		}
+		if err = r.commitAlias(key, value); err != nil {
+			return nil, navAsksResponseError(err, latch)
+		}
+	}
+	return r.finish(render, marshal)
+}
+func (r *navAsksRun) finish(render navAsksWordingRender, marshal func(any) ([]byte, error)) (body []byte, err error) {
+	ctx, o, c, faults := r.c.ctx, r.o, r.c, r.faults.latch
+	defer func() {
+		if value := recover(); value != nil {
+			origin := diagnostic.Capture(value)
+			r.faults.current = true
+			faults.Note(origin)
 			body, err = nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
 		}
 	}()
-	if ctx == nil || render == nil || marshal == nil || o.width < 1 || o.rows == 0 || o.inputBytes == 0 || o.renderCells == 0 || o.arrayEntries == 0 || o.stringUnits == 0 || o.bodyBytes <= 0 ||
-		!(o.scope.Mode == "all" && o.scope.Dir == "" || o.scope.Mode == "directory" && o.scope.Dir != "" && filepath.IsAbs(o.scope.Dir)) {
+	if r.used {
 		return nil, errNavAsksResponseInvalid
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	r.used = true
+	if r.pending != "" || render == nil || marshal == nil {
+		return nil, errNavAsksResponseInvalid
 	}
-	const seconds = navConversationSafeInteger / 1000
-	if o.now.Before(time.Unix(-seconds, 0)) || !o.now.Before(time.Unix(seconds, 0).Add(time.Second)) {
-		return nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
-	}
-	c := &navAsksCredits{ctx: ctx, input: o.inputBytes, work: o.renderCells, entries: o.arrayEntries, units: o.stringUnits}
-	data, err := captureNavAsksResponse(s, o, c)
+	data, err := r.captureSelected()
 	if err != nil {
 		return nil, navAsksResponseError(err, faults)
 	}
-	s = state.AsksSnapshot{}
-	o.aliases = nil // No caller graph is consulted after capture.
 	for _, seed := range data.seeds {
-		pair, err := navAsksRenderAdmitted(ctx, seed.admitted, &c.entries, &c.units, faults, render, navAsksWordingValue)
+		pair, err := navAsksRenderAdmitted(ctx, seed.admitted, &c.entries, &c.units, faults, &r.faults.current, render, navAsksWordingValue)
 		if err != nil {
 			return nil, navAsksResponseError(err, faults)
 		} // Note closed origins BEFORE context/rebasing.
@@ -350,6 +474,7 @@ func buildNavAsksResponseWith(ctx context.Context, s state.AsksSnapshot, o navAs
 	}
 	body, err = marshal(payload)
 	if err != nil {
+		r.faults.external(err)
 		return nil, navAsksResponseError(err, faults)
 	}
 	if int64(len(body)) != size {
