@@ -119,6 +119,24 @@ test('pending copy and delayed helper callbacks have no effect after teardown',a
   assert.equal(announced,0);assert.equal(f.frames.size,0);assert.equal(f.document.body.children.length,0);assert.equal(feed.mount(),false);
 });
 
+async function announcerReentryCase(failure) {
+  const f=fixture();let button,copies=0,announced=0,reentry=1;
+  const feed=mounted(f,fixtureWindow(),{copyText:()=>{copies++;if(failure)throw new Error('invented failure');return Promise.resolve();},
+    announce:()=>{announced++;if(reentry-->0)button.emit('click');}});
+  button=buttons(f.document.body)[0];button.emit('click');await tick();await tick();
+  assert.equal(copies,1,'announcer reentry must not admit a second copy');assert.equal(announced,1,'one action announces once');
+  assert.equal(button.getAttribute('aria-disabled'),null);
+  button.emit('click');await tick();await tick();assert.equal(copies,2,'later explicit retry must work');feed.teardown();
+}
+test('announcer reentry remains blocked through successful settlement',async()=>{await announcerReentryCase(false);});
+test('announcer reentry remains blocked through synchronous failure and teardown',async()=>{
+  await announcerReentryCase(true);
+  const f=fixture();let feed,button,announced=0;feed=mounted(f,fixtureWindow(),{announce:()=>{announced++;feed.teardown();}});
+  button=buttons(f.document.body)[0];let afterDispose=0;const remove=button.removeAttribute.bind(button);
+  button.removeAttribute=name=>{if(!button.isConnected)afterDispose++;remove(name);};
+  button.emit('click');await tick();assert.equal(announced,1);assert.equal(afterDispose,0);assert.equal(feed.mount(),false);assert.equal(f.document.body.children.length,0);
+});
+
 test('two feeds, disconnected retry, refresh and repeated teardown isolate resources and focus',()=>{
   const f=fixture(),g=fixtureWindow([fixtureMessage(1,[fixtureGroup(0,fixtureHead(),[fixtureLine('code','code')])])]);
   const a=f.feed(g),b=f.feed(g,{idPrefix:'neighbor'});assert.equal(a.mount(),false);f.document.body.append(a.fragment,b.fragment);

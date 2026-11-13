@@ -55,8 +55,8 @@ export function createConversationFeed(document, data, options) {
   }
   function settle(ok) {
     if (disposed || !mounted) return;
-    setBusy(false);
-    status(ok ? "copied" : "Could not copy message.");
+    try { status(ok ? "copied" : "Could not copy message."); }
+    finally { if (!disposed && mounted) setBusy(false); }
   }
   function teardown() {
     if (disposed) return;
