@@ -23,7 +23,17 @@ type navAuthHTTPFixture struct {
 	key     [32]byte
 	binding navauth.Binding
 	nonce   byte
-	gate    *navGate
+	gate    *navAuthHTTPFixtureGate
+}
+
+type navAuthHTTPFixtureGate struct{ *navGate }
+
+func (g *navAuthHTTPFixtureGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	input, creator := ownNavInput(r)
+	if creator {
+		defer input.close()
+	}
+	g.navGate.ServeHTTP(w, r)
 }
 
 func newNavAuthHTTPFixture(t *testing.T) *navAuthHTTPFixture {
@@ -35,7 +45,7 @@ func newNavAuthHTTPFixture(t *testing.T) *navAuthHTTPFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(f.a.Close)
-	f.gate = &navGate{verifier: f.a, hello: http.HandlerFunc(f.a.Hello), login: http.HandlerFunc(f.a.Login), revoke: http.HandlerFunc(f.a.Revoke), info: http.HandlerFunc(f.a.Info), api: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }), pages: http.NotFoundHandler()}
+	f.gate = &navAuthHTTPFixtureGate{&navGate{verifier: f.a, hello: http.HandlerFunc(f.a.Hello), login: http.HandlerFunc(f.a.Login), revoke: http.HandlerFunc(f.a.Revoke), info: http.HandlerFunc(f.a.Info), api: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }), pages: http.NotFoundHandler()}}
 	return f
 }
 

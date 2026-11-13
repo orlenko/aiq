@@ -90,9 +90,16 @@ type navAuthBody struct {
 	owner                      *navAuthAdapter
 	busy, valid                bool
 	invalid, proofBusy         bool
+	chunked                    bool
+	input                      *navInput
 	method, path, action, code string
 	raw                        []byte
 }
+
+func (b *navAuthBody) parserReady(r *http.Request) bool {
+	return !b.chunked || b.input.trailersEmpty(r)
+}
+
 type navAuthVerified struct {
 	owner *navAuthAdapter
 	facts *navauth.Facts
@@ -192,12 +199,21 @@ func (a *navAuthAdapter) ownedBody(r *http.Request) (*navAuthBody, bool) {
 		if cached != nil && cached.busy {
 			cached.invalid = true
 		}
-		return cached, cached != nil && cached.owner == a && !cached.busy && !cached.invalid && cached.valid
+		return cached, cached != nil && cached.owner == a && !cached.busy && !cached.invalid && cached.valid && cached.parserReady(r)
 	}
 	if !navAuthFraming(r) {
 		return nil, false
 	}
-	b := &navAuthBody{owner: a, busy: true, method: r.Method, path: r.URL.Path}
+	marker := r.Context().Value(navInputKey{})
+	input, _ := marker.(*navInput)
+	// Ingress provenance survives mutable transfer fields and request copies.
+	chunked := len(r.TransferEncoding) != 0 || marker != nil
+	if chunked {
+		if !input.open(r) {
+			return nil, false
+		}
+	}
+	b := &navAuthBody{owner: a, busy: true, method: r.Method, path: r.URL.Path, chunked: chunked, input: input}
 	*r = *r.WithContext(context.WithValue(r.Context(), navAuthBodyKey{}, b))
 	defer func() { b.busy = false }()
 	length := r.ContentLength
@@ -209,7 +225,7 @@ func (a *navAuthAdapter) ownedBody(r *http.Request) (*navAuthBody, bool) {
 	if r.Body != nil {
 		b.raw, err = io.ReadAll(io.LimitReader(r.Body, limit))
 	}
-	if err != nil || b.invalid || len(r.Trailer) != 0 || len(b.raw) > navauth.MaxRequest || length >= 0 && int64(len(b.raw)) != length || !utf8.Valid(b.raw) {
+	if err != nil || b.invalid || !b.parserReady(r) || len(r.Trailer) != 0 || len(b.raw) > navauth.MaxRequest || length >= 0 && int64(len(b.raw)) != length || !utf8.Valid(b.raw) {
 		return b, false
 	}
 	if b.method == "GET" {
@@ -270,7 +286,7 @@ func (a *navAuthAdapter) verified(r *http.Request, path string) (*navAuthVerifie
 		return nil, false
 	}
 	v, ok := r.Context().Value(navAuthFactsKey{}).(*navAuthVerified)
-	return v, ok && v != nil && v.owner == a && v.facts != nil && v.body != nil && v.body.owner == a && v.body.valid && v.body.path == path
+	return v, ok && v != nil && v.owner == a && v.facts != nil && v.body != nil && v.body.owner == a && v.body.valid && v.body.path == path && v.body.parserReady(r)
 }
 
 func (a *navAuthAdapter) encodeResult(v navAuthResult) ([]byte, error) {
