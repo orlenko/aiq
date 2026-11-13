@@ -51,21 +51,56 @@ func buildNavConversationWith(s *transcript.Session, o navConversationOptions, r
 			window, body, fingerprint, err = nil, nil, "", transcript.ErrUnshowable
 		}
 	}()
-	if s == nil || !transcript.IsFullID(o.provider, o.id) || s.Provider != o.provider || s.ID != o.id ||
-		o.bodyBytes <= 0 || o.location == nil || o.skippedNote == "" || o.stale && (o.live || o.hold) || render == nil || marshal == nil {
+	if marshal == nil {
 		return nil, nil, "", errNavConversationInvalid
+	}
+	window, err = projectNavConversationWith(s, o, render)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	// Closed DTO compatibility is distinct from the caller's encoded limit.
+	size, fits := navJSONSize(*window, math.MaxInt64)
+	if !fits {
+		return nil, nil, "", transcript.ErrUnshowable
+	}
+	if size > o.bodyBytes {
+		return nil, nil, "", errNavConversationTooLarge
+	}
+	body, err = marshal(*window)
+	if err != nil || int64(len(body)) != size {
+		return nil, nil, "", transcript.ErrUnshowable
+	}
+	digest := sha256.Sum256(body)
+	return window, body, hex.EncodeToString(digest[:]), nil
+}
+
+func projectNavConversation(s *transcript.Session, o navConversationOptions) (*navConversationWindow, error) {
+	return projectNavConversationWith(s, o, renderConvoStyled)
+}
+
+// Projection is shared with the HTTP envelope, so that each consumer encodes
+// its complete representation once. The established wire wrapper stays intact.
+func projectNavConversationWith(s *transcript.Session, o navConversationOptions, render navConversationRender) (window *navConversationWindow, err error) {
+	defer func() {
+		if recover() != nil {
+			window, err = nil, transcript.ErrUnshowable
+		}
+	}()
+	if s == nil || !transcript.IsFullID(o.provider, o.id) || s.Provider != o.provider || s.ID != o.id ||
+		o.bodyBytes <= 0 || o.location == nil || o.skippedNote == "" || o.stale && (o.live || o.hold) || render == nil {
+		return nil, errNavConversationInvalid
 	}
 	start, end, err := navConversationBounds(s.Turns, o.last, o.anchor)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, err
 	}
 	started, err := navConversationTime(s.Started)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, err
 	}
 	updated, err := navConversationTime(s.Updated)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, err
 	}
 	owned := *s
 	if n := len(s.Turns); o.stale && n > 0 && s.Turns[n-1].Open {
@@ -87,31 +122,17 @@ func buildNavConversationWith(s *transcript.Session, o navConversationOptions, r
 	styled, err := render(&owned, convoStyledOptions{width: 100, markup: o.markup, now: o.now, location: o.location,
 		liveMark: o.liveMark, skippedNote: o.skippedNote, start: start, live: live, hold: hold, accounts: o.accounts})
 	if err != nil {
-		return nil, nil, "", transcript.ErrUnshowable
+		return nil, transcript.ErrUnshowable
 	}
 	messages, err := navConversationMessages(styled, o, start, end)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, err
 	}
 	window = &navConversationWindow{Session: navConversationSession{
 		Provider: strings.Clone(s.Provider), ID: strings.Clone(s.ID), Cwd: strings.Clone(s.Cwd), Title: strings.Clone(s.Title),
 		Model: strings.Clone(s.Model), Branch: strings.Clone(s.Branch), Started: started, Updated: updated, Worker: s.Worker, Bypass: s.Bypass,
 	}, EarlierHidden: start, LaterHidden: len(s.Turns) - end, WindowStart: start, Reset: true, Markup: o.markup, Messages: messages}
-	// Closed DTO compatibility is distinct from the caller's encoded limit.
-	// This pass traverses all fields but allocates no escaped JSON strings.
-	size, fits := navJSONSize(*window, math.MaxInt64)
-	if !fits {
-		return nil, nil, "", transcript.ErrUnshowable
-	}
-	if size > o.bodyBytes {
-		return nil, nil, "", errNavConversationTooLarge
-	}
-	body, err = marshal(*window)
-	if err != nil || int64(len(body)) != size {
-		return nil, nil, "", transcript.ErrUnshowable
-	}
-	digest := sha256.Sum256(body)
-	return window, body, hex.EncodeToString(digest[:]), nil
+	return window, nil
 }
 
 func navConversationBounds(turns []transcript.Turn, last int, anchor int64) (int, int, error) {
