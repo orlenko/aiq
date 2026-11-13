@@ -174,6 +174,13 @@ func TestNavigatorOldGenerationCannotTouchReplacementOrEmptyState(t *testing.T) 
 		}
 	}
 	newCredential := lifeCredential(t, b, 2)
+	oldRequest := lifeRequest("GET", "/api/nav/invented", "")
+	oldRequest.Header.Set("Authorization", "Bearer "+newCredential)
+	oldReply := httptest.NewRecorder()
+	oldHandler.ServeHTTP(oldReply, oldRequest)
+	if oldReply.Code != 401 {
+		t.Fatal("retained handler borrowed replacement credential")
+	}
 	r := lifeRequest("GET", "/api/nav/invented", "")
 	r.Header.Set("Authorization", "Bearer "+newCredential)
 	w := httptest.NewRecorder()
