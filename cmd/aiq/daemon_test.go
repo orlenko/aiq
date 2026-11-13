@@ -183,6 +183,9 @@ func TestDaemonStateSaysWhatIsRunning(t *testing.T) {
 	check("this version with a navigator, locked", strings.TrimPrefix(navigator.URL, "http://"), "running at http://")
 	check("older beside a lock", older, "does not identify")
 	check("silent, locked", silent, "none answers")
+	check("silent, locked", silent, "one is polling and supervising")
+	check("silent, locked", silent, "lsof -nP -iTCP:")
+	check("older beside a lock", older, "one is polling and supervising")
 
 	if os.Geteuid() != 0 {
 		f.Close()
@@ -192,5 +195,63 @@ func TestDaemonStateSaysWhatIsRunning(t *testing.T) {
 		check("refused, unreadable", "0.0.0.0:7379", "does not know")
 		check("silent, unreadable", silent, "does not know")
 		check("this version, unreadable", current, "running at http://")
+	}
+}
+
+// A daemon that holds the lock but cannot bind its port polls and supervises (#38).
+// Doctor says so, offers to free the port instead of a restart that would meet the
+// same port.
+func TestDoctorReportsADaemonThatCannotServe(t *testing.T) {
+	root := t.TempDir()
+	data := filepath.Join(root, "data")
+	t.Setenv("HOME", root)
+	t.Setenv("AIQ_DATA_DIR", data)
+	cfg := filepath.Join(root, "config.toml")
+	t.Setenv("AIQ_CONFIG", cfg)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, ".claude"))
+	closed := httptest.NewServer(http.NotFoundHandler())
+	silent := strings.TrimPrefix(closed.URL, "http://")
+	closed.Close()
+	body := "[daemon]\nlisten = \"" + silent + "\"\n[telemetry]\nclaude_statusline = false\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(data, "daemon.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := filelock.TryExclusive(f); err != nil {
+		t.Fatal(err)
+	}
+	a, err := openApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.close()
+	r := a.doctorChecks()
+	said := false
+	for _, c := range r.checks {
+		if c.ok && strings.Contains(c.text, "polling and supervising without its status page") {
+			said = true
+		}
+		// The service is not installed here, so installing it stays a fix of its own.
+		if strings.HasPrefix(c.text, "daemon answering on") && (c.fix == nil || c.fix.key != "daemon:port") {
+			t.Errorf("%q has fix %+v, want daemon:port", c.text, c.fix)
+		}
+	}
+	if !said {
+		t.Error("doctor did not say a daemon polls and supervises without its status page")
+	}
+
+	// The install fix, when it finds the same, says why nothing answers.
+	defer func(saved func(string) (string, error)) { installDaemonService = saved }(installDaemonService)
+	installDaemonService = func(string) (string, error) { return "", nil }
+	err = a.doctorDaemonInstall()
+	if err == nil || !strings.Contains(err.Error(), "polling and supervising") || !strings.Contains(err.Error(), "lsof -nP -iTCP:") {
+		t.Errorf("the install wait said %v", err)
 	}
 }
