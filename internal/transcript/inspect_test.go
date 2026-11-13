@@ -101,7 +101,7 @@ func inspectionRaw(c *Cache) map[string]any {
 	for k, v := range c.rows {
 		rows[k] = []any{v, inspectionValue(v.Value)}
 	}
-	q, qnodes, flights := map[string]Snapshot{}, map[string]*list.Element{}, map[string]any{}
+	q, qnodes, flights := map[string]quarantineRecord{}, map[string]*list.Element{}, map[string]any{}
 	for k, v := range c.quarantine {
 		q[k] = v
 	}
@@ -158,7 +158,7 @@ func inspectionBackground(c *Cache, p *parsed) {
 	c.rows[r.snap.Path] = c.rowLRU.PushFront(r)
 	c.rowBytes = r.bytes
 	q := Snapshot{Path: "quarantine-only", Size: 91}
-	c.quarantine[q.Path] = q
+	c.quarantine[q.Path] = quarantineRecord{Snapshot: q}
 	c.quarantineNodes[q.Path] = c.quarantineLRU.PushFront(q)
 	o := &viewOwner{snap: p.snap, parsed: p}
 	c.viewOwners[p.snap.Path] = o
@@ -276,7 +276,7 @@ func TestInspectConversationSelectionAndQuarantine(t *testing.T) {
 				if tc.quarantine {
 					q := a.snap
 					q.Size++
-					c.quarantine[a.snap.Path] = q
+					c.quarantine[a.snap.Path] = quarantineRecord{Snapshot: q}
 					c.quarantineNodes[a.snap.Path] = c.quarantineLRU.PushFront(q)
 				}
 				want := CachedConversation{}
@@ -308,7 +308,7 @@ func TestInspectConversationNoScopeFromOtherTables(t *testing.T) {
 				k := ViewKey{Snap: p.snap}
 				c.views[k] = c.viewLRU.PushFront(&viewEntry{key: k, view: &View{Value: p.sess}, owner: o})
 			case "quarantine":
-				c.quarantine[p.snap.Path] = p.snap
+				c.quarantine[p.snap.Path] = quarantineRecord{Snapshot: p.snap}
 				c.quarantineNodes[p.snap.Path] = c.quarantineLRU.PushFront(p.snap)
 			case "flight":
 				c.flights[p.snap.Path] = &flight{snap: p.snap, sess: p.sess, done: make(chan struct{}), row: true}
@@ -499,8 +499,16 @@ func TestInspectConversationFaultRecovery(t *testing.T) {
 				c.full["wrong"] = el
 			}
 			v, s, e := c.InspectConversation(context.Background(), "claude", inspectionID)
-			if e != ErrInspection || e.Error() != "transcript: cached inspection failed" || v != (CachedConversation{}) || s != InspectionMissing {
+			if !errors.Is(e, ErrInspection) || e.Error() != "transcript: cached inspection failed" || v != (CachedConversation{}) || s != InspectionMissing {
 				t.Fatal("internal fault did not return fixed zero error")
+			}
+			if fault == "clock-panic" {
+				file, line, known := PanicOrigin(e).Location()
+				if !known || file != "internal/transcript/inspect_test.go" || line == 0 {
+					t.Fatal("clock panic did not carry its original leaf")
+				}
+			} else if e != ErrInspection || PanicOrigin(e).Present() {
+				t.Fatal("nonpanic invariant changed bare sentinel/origin contract")
 			}
 			// A follow-up lock and healthy inspection must work; faults must not
 			// leave quarantine, poison, registry mutations or a locked mutex.

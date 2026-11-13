@@ -8,11 +8,15 @@ type FailureKind uint8
 const (
 	Projection FailureKind = iota + 1
 	Unshowable
+	Unreadable
+	Inspection
 )
 
 var (
 	projectionBase = errors.New("conversation rendering failed")
 	unshowableBase = errors.New("transcript: could not be shown")
+	unreadableBase = errors.New("transcript could not be read")
+	inspectionBase = errors.New("transcript: cached inspection failed")
 	invalidBase    = errors.New("diagnostic failure")
 )
 
@@ -22,6 +26,10 @@ func Base(kind FailureKind) error {
 		return projectionBase
 	case Unshowable:
 		return unshowableBase
+	case Unreadable:
+		return unreadableBase
+	case Inspection:
+		return inspectionBase
 	default:
 		return invalidBase
 	}

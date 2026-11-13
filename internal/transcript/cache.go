@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
 // ErrTooLarge is a transcript over the cache's ceiling: it is never parsed
@@ -101,7 +103,7 @@ type Cache struct {
 	fullLRU         *list.List
 	fullBytes       int64
 	held            *parsed // an oversized parse not admitted, for the floor
-	quarantine      map[string]Snapshot
+	quarantine      map[string]quarantineRecord
 	quarantineLRU   *list.List // Snapshot, newest first
 	quarantineNodes map[string]*list.Element
 	flights         map[string]*flight
@@ -144,6 +146,12 @@ type flight struct {
 	full, row bool
 	sum       Summary
 	rowErr    error
+	origin    diagnostic.Origin // immutable after done; never a caller's holder
+}
+
+type quarantineRecord struct {
+	Snapshot
+	origin diagnostic.Origin
 }
 
 type cacheStats struct {
@@ -180,7 +188,7 @@ func newCache(cfg cacheConfig) *Cache {
 		now:             time.Now,
 		full:            map[string]*list.Element{},
 		fullLRU:         list.New(),
-		quarantine:      map[string]Snapshot{},
+		quarantine:      map[string]quarantineRecord{},
 		quarantineLRU:   list.New(),
 		quarantineNodes: map[string]*list.Element{},
 		flights:         map[string]*flight{},
@@ -247,6 +255,7 @@ func (c *Cache) Session(ctx context.Context, path string) (*Session, Snapshot, e
 		p, running, err := c.findLocked(snap)
 		if p != nil || err != nil {
 			c.mu.Unlock()
+			diagnostic.Note(ctx, PanicOrigin(err))
 			return sessionOf(p, snap, err)
 		}
 		if err := stopped(); err != nil {
@@ -279,6 +288,7 @@ func (c *Cache) Session(ctx context.Context, path string) (*Session, Snapshot, e
 		if p != nil || err != nil {
 			c.mu.Unlock()
 			<-c.sem
+			diagnostic.Note(ctx, PanicOrigin(err))
 			return sessionOf(p, snap, err)
 		}
 		if err := stopped(); err != nil {
@@ -301,11 +311,24 @@ func (c *Cache) Session(ctx context.Context, path string) (*Session, Snapshot, e
 	}
 	select {
 	case <-f.done:
+		diagnostic.Note(ctx, f.origin)
 		return f.sess, f.snap, f.err
 	case <-timer.C:
+		noteParseFlight(ctx, f)
 		return nil, Snapshot{}, preparing()
 	case <-ctx.Done():
+		noteParseFlight(ctx, f)
 		return nil, Snapshot{}, ctx.Err()
+	}
+}
+
+// Cancellation may observe already completed work, never pending fields or a
+// future failure. The worker neither stores nor receives this caller's context.
+func noteParseFlight(ctx context.Context, f *flight) {
+	select {
+	case <-f.done:
+		diagnostic.Note(ctx, f.origin)
+	default:
 	}
 }
 
@@ -326,7 +349,7 @@ func sessionOf(p *parsed, snap Snapshot, err error) (*Session, Snapshot, error) 
 // flight.
 func (c *Cache) findLocked(snap Snapshot) (*parsed, *flight, error) {
 	if c.quarantinedLocked(snap) {
-		return nil, nil, &unreadableError{snap.Path}
+		return nil, nil, &unreadableError{path: strings.Clone(snap.Path), origin: c.quarantine[snap.Path].origin}
 	}
 	if el := c.full[snap.Path]; el != nil {
 		p := el.Value.(*parsed)
@@ -346,13 +369,16 @@ func (c *Cache) findLocked(snap Snapshot) (*parsed, *flight, error) {
 func (c *Cache) fly(f *flight) {
 	var s *Session
 	var err error
+	var faults diagnostic.Latch
 	defer func() {
-		if recover() != nil {
-			s, err = nil, &unreadableError{f.snap.Path}
+		if value := recover(); value != nil {
+			faults.Note(capturePanic(value))
+			s, err = nil, &unreadableError{path: strings.Clone(f.snap.Path), origin: faults.Origin()}
 		}
-		c.finishFlight(f, s, err)
+		c.finishFlight(f, s, err, faults.Origin())
 	}()
 	s, err = c.runParse(f.snap)
+	faults.Note(PanicOrigin(err))
 	if err == nil && s != nil {
 		s = ownedCachedSession(s)
 	}
@@ -401,9 +427,13 @@ func ownedCachedStrings(in []string) []string {
 
 // finishFlight owns terminal publication. Roles cannot join between capturing
 // them and retiring the record; cleanup runs even if cache publication panics.
-func (c *Cache) finishFlight(f *flight, s *Session, err error) {
+func (c *Cache) finishFlight(f *flight, s *Session, err error, origin diagnostic.Origin) {
+	var faults diagnostic.Latch
+	faults.Note(origin)
+	faults.Note(PanicOrigin(err))
 	c.mu.Lock()
 	defer func() {
+		f.origin = faults.Origin()
 		delete(c.flights, f.snap.Path)
 		close(f.done)
 		c.flightChangedLocked()
@@ -412,8 +442,9 @@ func (c *Cache) finishFlight(f *flight, s *Session, err error) {
 	}()
 	rowDone := false
 	defer func() {
-		if recover() != nil {
-			f.sess, f.err = nil, &unreadableError{f.snap.Path}
+		if value := recover(); value != nil {
+			faults.Note(capturePanic(value))
+			f.sess, f.err = nil, &unreadableError{path: strings.Clone(f.snap.Path), origin: faults.Origin()}
 			if !rowDone {
 				f.sum, f.rowErr = Summary{}, f.err
 			}
@@ -425,6 +456,7 @@ func (c *Cache) finishFlight(f *flight, s *Session, err error) {
 	}
 	if f.row {
 		f.sum, f.rowErr = c.cacheSummaryLocked(f.snap, s, err)
+		faults.Note(PanicOrigin(f.rowErr))
 		rowDone = true
 	}
 	if f.full && err == nil {
@@ -438,10 +470,12 @@ func (c *Cache) finishFlight(f *flight, s *Session, err error) {
 // runParse parses the file of snap on a slot the caller holds. A parse that
 // panics quarantines the snapshot.
 func (c *Cache) runParse(snap Snapshot) (s *Session, err error) {
+	var faults diagnostic.Latch
 	c.stats.parses.Add(1)
 	defer func() {
-		if recover() != nil {
-			s, err = nil, c.quarantined(snap)
+		if value := recover(); value != nil {
+			faults.Note(capturePanic(value))
+			s, err = nil, c.quarantinedOrigin(snap, faults.Origin())
 		}
 	}()
 	if c.parse != nil {
@@ -449,9 +483,10 @@ func (c *Cache) runParse(snap Snapshot) (s *Session, err error) {
 	} else {
 		s, err = boundedParse(snap, c.cfg.ceiling)
 	}
+	faults.Note(PanicOrigin(err))
 	switch {
 	case errors.Is(err, ErrUnreadable):
-		return nil, c.quarantined(snap)
+		return nil, c.quarantinedOrigin(snap, PanicOrigin(err))
 	case err == nil && s == nil:
 		return nil, errNoSession
 	}
@@ -459,17 +494,28 @@ func (c *Cache) runParse(snap Snapshot) (s *Session, err error) {
 }
 
 func (c *Cache) quarantined(snap Snapshot) error {
+	return c.quarantinedOrigin(snap, diagnostic.Origin{})
+}
+
+func (c *Cache) quarantinedOrigin(snap Snapshot, origin diagnostic.Origin) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.quarantinedLocked(snap) && c.cfg.quarantineCount > 0 {
 		snap.Path = strings.Clone(snap.Path)
-		c.quarantine[snap.Path] = snap
+		c.quarantine[snap.Path] = quarantineRecord{Snapshot: snap, origin: origin}
 		c.quarantineNodes[snap.Path] = c.quarantineLRU.PushFront(snap)
+	}
+	if q, ok := c.quarantine[snap.Path]; ok {
+		if !q.origin.Present() && origin.Present() {
+			q.origin = origin
+			c.quarantine[q.Path] = q // retain the already owned map-key storage
+		}
+		origin = q.origin
 	}
 	for c.quarantineLRU.Len() > c.cfg.quarantineCount && c.quarantineLRU.Len() > 0 {
 		c.removeQuarantineLocked(c.quarantineLRU.Back().Value.(Snapshot).Path)
 	}
-	return &unreadableError{snap.Path}
+	return &unreadableError{path: strings.Clone(snap.Path), origin: origin}
 }
 
 // quarantinedLocked touches an exact failure, retiring a changed snapshot.
@@ -479,7 +525,7 @@ func (c *Cache) quarantinedLocked(snap Snapshot) bool {
 	if !ok {
 		return false
 	}
-	if q != snap {
+	if q.Snapshot != snap {
 		c.removeQuarantineLocked(snap.Path)
 		return false
 	}
@@ -606,10 +652,12 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 		sum, err, ok := c.rowLocked(snap)
 		if ctx.Err() != nil {
 			c.mu.Unlock()
+			diagnostic.Note(ctx, PanicOrigin(err))
 			return Summary{}, ErrBudget
 		}
 		if ok {
 			c.mu.Unlock()
+			diagnostic.Note(ctx, PanicOrigin(err))
 			return sum, err
 		}
 		if running := c.flights[path]; running != nil {
@@ -635,11 +683,13 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 		if ctx.Err() != nil {
 			c.mu.Unlock()
 			<-c.sem
+			diagnostic.Note(ctx, PanicOrigin(err))
 			return Summary{}, ErrBudget
 		}
 		if ok {
 			c.mu.Unlock()
 			<-c.sem
+			diagnostic.Note(ctx, PanicOrigin(err))
 			return sum, err
 		}
 		if running := c.flights[path]; running != nil {
@@ -657,8 +707,10 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 	}
 	select {
 	case <-ctx.Done():
+		noteParseFlight(ctx, f)
 		return Summary{}, ErrBudget
 	case <-f.done:
+		diagnostic.Note(ctx, f.origin)
 		if ctx.Err() != nil {
 			return Summary{}, ErrBudget
 		}
@@ -670,9 +722,12 @@ func (c *Cache) Summary(ctx context.Context, path string) (Summary, error) {
 // A row-publication failure must not quarantine a healthy parse or poison a
 // detail waiter sharing that parse. The caller holds mu throughout publication.
 func (c *Cache) cacheSummaryLocked(snap Snapshot, s *Session, err error) (sum Summary, rowErr error) {
+	var faults diagnostic.Latch
+	faults.Note(PanicOrigin(err))
 	defer func() {
-		if recover() != nil {
-			sum, rowErr = Summary{}, &unreadableError{snap.Path}
+		if value := recover(); value != nil {
+			faults.Note(capturePanic(value))
+			sum, rowErr = Summary{}, &unreadableError{path: strings.Clone(snap.Path), origin: faults.Origin()}
 		}
 	}()
 	if err != nil && !errors.Is(err, errNoSession) {
@@ -689,7 +744,7 @@ func (c *Cache) cacheSummaryLocked(snap Snapshot, s *Session, err error) (sum Su
 // rowLocked answers snap's row without a parse, if it can.
 func (c *Cache) rowLocked(snap Snapshot) (Summary, error, bool) {
 	if c.quarantinedLocked(snap) {
-		return Summary{}, &unreadableError{snap.Path}, true
+		return Summary{}, &unreadableError{path: strings.Clone(snap.Path), origin: c.quarantine[snap.Path].origin}, true
 	}
 	if el := c.rows[snap.Path]; el != nil {
 		if r := el.Value.(*row); r.snap == snap {

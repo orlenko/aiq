@@ -514,7 +514,7 @@ func TestBoundedParseCacheRecoveryClosesBeforeQuarantine(t *testing.T) {
 	c.mu.Lock()
 	quarantined := c.quarantine[snap.Path]
 	c.mu.Unlock()
-	if quarantined != snap {
+	if quarantined.Snapshot != snap {
 		t.Fatalf("quarantined snapshot = %+v, want original", quarantined)
 	}
 	if _, _, err := c.Session(context.Background(), snap.Path); !errors.Is(err, ErrUnreadable) || d.closes != 1 {
@@ -594,7 +594,7 @@ func TestBoundedParseCanceledWaiterKeepsDescriptorAndSlot(t *testing.T) {
 				t.Fatalf("abandoned flight retained: %d", len(c.flights))
 			}
 			q, quarantined := c.quarantine[snap.Path]
-			if quarantined != (outcome == "panic") || quarantined && q != snap {
+			if quarantined != (outcome == "panic") || quarantined && q.Snapshot != snap {
 				t.Fatalf("quarantine = %t, snapshot = %+v", quarantined, q)
 			}
 			el := c.full[snap.Path]

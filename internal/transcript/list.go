@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
 // ErrBudget is what a list's parse returns when the list's time ran out
@@ -20,7 +22,7 @@ var ErrBudget = errors.New("transcript: out of time for the list")
 // ErrUnreadable marks a transcript whose parse panicked. ParseFile returns
 // it wrapped with the path, so a caller can leave the file out, say so, and
 // not try it again until it changes.
-var ErrUnreadable = errors.New("transcript could not be read")
+var ErrUnreadable = diagnostic.Base(diagnostic.Unreadable)
 
 // errNoSession is a parse that found no session of its own: a Codex
 // subagent's rollout, or a file with no id.
@@ -246,9 +248,12 @@ func ListDirs(ctx context.Context, src Discovery, dirs []string, parse func(ctx 
 // list down.
 func recovered(ctx context.Context, parse func(ctx context.Context, path string) (Summary, error), path string) (s Summary, err error) {
 	defer func() {
-		if recover() != nil {
-			s, err = Summary{}, &unreadableError{path}
+		if value := recover(); value != nil {
+			origin := capturePanic(value)
+			s, err = Summary{}, &unreadableError{path: strings.Clone(path), origin: origin}
 		}
+		// Both ListWith and FindByID reduce this result after it returns.
+		diagnostic.Note(ctx, PanicOrigin(err))
 	}()
 	return parse(ctx, path)
 }
@@ -316,14 +321,18 @@ func ParseSummary(ctx context.Context, path string) (Summary, error) {
 // daemon's existing readers still call the parsers directly. Nothing is cached.
 func ParseFile(path string) (s *Session, err error) {
 	defer func() {
-		if recover() != nil {
-			s, err = nil, &unreadableError{path}
+		if value := recover(); value != nil {
+			origin := capturePanic(value)
+			s, err = nil, &unreadableError{path: strings.Clone(path), origin: origin}
 		}
 	}()
 	return (*parser.Load())(path)
 }
 
-type unreadableError struct{ path string }
+type unreadableError struct {
+	path   string
+	origin diagnostic.Origin
+}
 
 // Error quotes the path, which is a file's name and may hold any byte.
 func (e *unreadableError) Error() string        { return ErrUnreadable.Error() + ": " + strconv.Quote(e.path) }

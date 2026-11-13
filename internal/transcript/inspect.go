@@ -5,11 +5,13 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
 // ErrInspection is an internal failure to inspect retained cache metadata.
 // It says nothing about whether a transcript could be parsed or rendered.
-var ErrInspection = errors.New("transcript: cached inspection failed")
+var ErrInspection = diagnostic.Base(diagnostic.Inspection)
 
 // CacheInspection describes retained observations, not filesystem existence,
 // process liveness or the copy a later discovery request would select.
@@ -43,8 +45,8 @@ type CachedConversation struct {
 // trusted clock are not interruptible; cancellation is checked around them.
 func (c *Cache) InspectConversation(ctx context.Context, provider, id string) (out CachedConversation, status CacheInspection, err error) {
 	defer func() {
-		if recover() != nil {
-			out, status, err = CachedConversation{}, InspectionMissing, ErrInspection
+		if value := recover(); value != nil {
+			out, status, err = CachedConversation{}, InspectionMissing, diagnostic.Failure(diagnostic.Inspection, capturePanic(value))
 		}
 	}()
 	valid := IsFullID(provider, id)
@@ -55,7 +57,7 @@ func (c *Cache) InspectConversation(ctx context.Context, provider, id string) (o
 		return CachedConversation{}, InspectionMissing, ErrBadID
 	}
 	out, status, err = c.inspectConversationLocked(ctx, provider, id)
-	if err == ErrInspection {
+	if errors.Is(err, ErrInspection) {
 		return CachedConversation{}, InspectionMissing, err
 	}
 	if stopped := ctx.Err(); stopped != nil {
