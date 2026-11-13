@@ -62,6 +62,9 @@ type Server struct {
 	// there. Both are set before Run.
 	navVerifier NavVerifier
 	navAPI      http.Handler
+	// Optional instance dependency, configured before serving; production uses
+	// the stable process owner when absent.
+	navObservations *navObserver
 
 	// slots counts the connections of the status page and the navigator together.
 	slots *connSlots

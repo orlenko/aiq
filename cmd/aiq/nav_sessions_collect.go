@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -81,6 +82,7 @@ func (r *navListRun) reserve(overhead int64, fields ...string) bool {
 
 func (r *navListRun) Candidates(ctx context.Context, dir string) ([]transcript.Candidate, error) {
 	rows, err := r.Discovery.Candidates(ctx, dir)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		// ListWith may otherwise suppress this failure when child expiry races
 		// discovery. Retain classification only, never its potentially private text.
@@ -96,12 +98,15 @@ func (r *navListRun) Candidates(ctx context.Context, dir string) ([]transcript.C
 
 func (r *navListRun) summary(ctx context.Context, path string) (out transcript.Summary, err error) {
 	defer func() {
-		if recover() != nil {
+		if value := recover(); value != nil {
+			origin := diagnostic.Capture(value)
+			diagnostic.Note(ctx, origin)
 			r.internalFailure()
 			out, err = transcript.Summary{}, errNavListFatal
 		}
 	}()
 	s, err := r.parse(ctx, path)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if err != nil {
 		if errors.Is(err, transcript.ErrBudget) {
 			r.interrupted()
@@ -123,7 +128,9 @@ func (r *navListRun) summary(ctx context.Context, path string) (out transcript.S
 
 func (r *navListRun) CodexNames(ctx context.Context) (out map[string]string) {
 	defer func() {
-		if recover() != nil {
+		if value := recover(); value != nil {
+			origin := diagnostic.Capture(value)
+			diagnostic.Note(ctx, origin)
 			r.internalFailure()
 			out = nil
 		}

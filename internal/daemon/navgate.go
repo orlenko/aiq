@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,10 +9,13 @@ import (
 	"path"
 	"strings"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
+	"github.com/orlenko/aiq/internal/navroute"
 	"github.com/orlenko/aiq/internal/version"
 )
 
-// The navigator's port answers through one chain: a recover, localOnly, the navigator's headers, a
+// The navigator port has one outer diagnostic/recovery envelope around
+// connection selection, then localOnly, the navigator headers, a
 // refusal of any path that is not canonical, then the gate. The gate answers its few
 // exempt routes itself and lets nothing else under /api/ through without a credential
 // the verifier accepts. Paths outside /api/ go to the page handler, which never reaches
@@ -135,9 +139,6 @@ func (g *navGate) proven(h http.Handler, w http.ResponseWriter, r *http.Request)
 	h.ServeHTTP(w, r)
 }
 
-// navPanicPathMax caps the path in the log line for a panic.
-const navPanicPathMax = 128
-
 // navEntityHeaders describe a body, so a 500 in place of that body must not carry them.
 var navEntityHeaders = []string{
 	"Content-Length", "Content-Type", "Content-Encoding", "Content-Disposition",
@@ -169,42 +170,60 @@ func (w *startedWriter) Flush() {
 
 func (w *startedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// navRecover answers 500 when a handler panics before it has written anything. Left to
-// the server, a panic drops the connection, which a page cannot tell from a daemon that
-// has gone. A panic after the response has begun aborts the connection, so the client
-// sees a failed read and not a whole-looking answer cut short. The log names the
-// panic's type and not its value, which could carry what a handler was serving.
-func navRecover(logf func(string, ...any), next http.Handler) http.Handler {
+// navRecover owns the request state and one completion, even when an inner
+// handler reduces its failure to an ordinary response. No raw request or panic
+// data enters the observer. Secondary recovery failures abort without logging.
+func navRecover(observer *navObserver, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, state := navroute.WithRequest(r.Context())
+		r = r.WithContext(ctx)
 		sw := &startedWriter{ResponseWriter: w}
 		defer func() {
-			v := recover()
-			if v == nil {
+			value := recover()
+			if value != nil && value != http.ErrAbortHandler {
+				origin := diagnostic.Capture(value)
+				diagnostic.Note(ctx, origin)
+			}
+			key, origin := state.Snapshot()
+			observeNavOrigin(observer, key, origin)
+			if value == nil {
 				return
 			}
-			if v == http.ErrAbortHandler {
-				panic(v)
-			}
-			p := r.URL.Path
-			if len(p) > navPanicPathMax {
-				p = p[:navPanicPathMax]
-			}
-			logf("navigator: a handler panicked on %q: %T", p, v)
-			if sw.started {
+			if value == http.ErrAbortHandler || sw.started {
 				panic(http.ErrAbortHandler)
 			}
-			for _, k := range navEntityHeaders {
-				w.Header().Del(k)
-			}
-			w.WriteHeader(http.StatusInternalServerError)
+			navRecoveryResponse(w)
 		}()
 		next.ServeHTTP(sw, r)
 	})
 }
 
+func observeNavOrigin(observer *navObserver, key string, origin diagnostic.Origin) {
+	defer func() { recover() }()
+	observer.Observe(key, origin)
+}
+
+func navRecoveryResponse(w http.ResponseWriter) {
+	defer func() {
+		if recover() != nil {
+			panic(http.ErrAbortHandler)
+		}
+	}()
+	headers := w.Header()
+	for _, key := range navEntityHeaders {
+		headers.Del(key)
+	}
+	w.WriteHeader(http.StatusInternalServerError)
+}
+
 // newNavHandler is the navigator port's whole handler. A nil verifier denies everything,
 // so a wiring slip cannot skip the check; a nil handler answers 404.
-func newNavHandler(g navGate, build string, logf func(string, ...any)) http.Handler {
+func newNavHandler(g navGate, build string, observer *navObserver) http.Handler {
+	return navRecover(observer, navHandlerCore(g, build))
+}
+
+// Production composes these cores inside connSlots before adding ONE envelope.
+func navHandlerCore(g navGate, build string) http.Handler {
 	if g.verifier == nil {
 		g.verifier = denyAll{}
 	}
@@ -213,7 +232,17 @@ func newNavHandler(g navGate, build string, logf func(string, ...any)) http.Hand
 			*h = http.NotFoundHandler()
 		}
 	}
-	return navRecover(logf, localOnly(navHeaders(build, canonicalPath(&g))))
+	for _, entry := range []struct {
+		route   navroute.Route
+		handler *http.Handler
+	}{{navroute.Hello, &g.hello}, {navroute.Login, &g.login}, {navroute.Revoke, &g.revoke}, {navroute.Info, &g.info}} {
+		mux := navroute.NewMux()
+		if err := mux.Handle(entry.route, *entry.handler); err != nil {
+			panic(err) // code-owned descriptors; never request input
+		}
+		*entry.handler = mux
+	}
+	return localOnly(navHeaders(build, canonicalPath(&g)))
 }
 
 // navHello tells aiq which navigator protocol and build answer on this port.
@@ -237,22 +266,48 @@ func (s *Server) MountNavigator(h http.Handler) { s.navAPI = h }
 
 // navigatorHandler is what the navigator's port serves.
 func (s *Server) navigatorHandler() http.Handler {
+	return navRecover(s.navigatorObserver(), s.navigatorCore())
+}
+func (s *Server) navigatorCore() http.Handler {
 	build := navBuild()
-	return newNavHandler(navGate{
+	return navHandlerCore(navGate{
 		verifier: s.navVerifier,
 		hello:    navHello(build),
 		login:    navLoginClosed(),
 		api:      s.navAPI,
-	}, build, s.log.Printf)
+	}, build)
 }
 
-// navigatorRefusal keeps the navigator's guards and response envelope while
+// navigatorRefusalCore keeps the navigator guards while
 // refusing retired connections without invoking an application route.
-func (s *Server) navigatorRefusal() http.Handler {
+func (s *Server) navigatorRefusalCore() http.Handler {
 	refuse := connectionUnavailable()
-	return newNavHandler(navGate{
+	return navHandlerCore(navGate{
 		verifier: s.navVerifier,
 		hello:    refuse, login: refuse, revoke: refuse, info: refuse,
 		api: refuse, pages: refuse,
-	}, navBuild(), s.log.Printf)
+	}, navBuild())
+}
+
+// The one process owner survives server reconstruction and listener retirement.
+var processNavObservations navObserverOwner
+
+func (s *Server) navigatorObserver() *navObserver {
+	if s.navObservations != nil {
+		return s.navObservations
+	}
+	return processNavObservations.acquire(navroute.Catalog(), s.log.Printf, nil, nil)
+}
+
+// CloseNavigatorDiagnostics is for final CLI process shutdown, never a Run or
+// listener lifetime. False means cancellation prevented proving join/flush.
+func CloseNavigatorDiagnostics(ctx context.Context) bool {
+	return processNavObservations.Close(ctx)
+}
+
+func (s *Server) navigatorServer() *http.Server {
+	observer := s.navigatorObserver()
+	server := s.slots.server(s.navigatorCore(), s.navigatorRefusalCore())
+	server.Handler = navRecover(observer, server.Handler)
+	return server
 }

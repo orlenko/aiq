@@ -102,7 +102,8 @@ func TestRetiredNavigatorKeepsItsGuardsAndHeaders(t *testing.T) {
 	called := false
 	s := &Server{log: log.New(io.Discard, "", 0), navVerifier: testVerifier{},
 		navAPI: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })}
-	h := slots.server(s.navigatorHandler(), s.navigatorRefusal()).Handler
+	s.slots = slots
+	h := s.navigatorServer().Handler
 	for _, tc := range []struct {
 		name, method, path, auth, proof, origin, site, host string
 		status                                              int
@@ -162,7 +163,7 @@ func TestRetiredNavigatorKeepsItsGuardsAndHeaders(t *testing.T) {
 	}
 	// The production nil verifier remains fail-closed on the refusal path too.
 	s.navVerifier = nil
-	h = slots.server(s.navigatorHandler(), s.navigatorRefusal()).Handler
+	h = s.navigatorServer().Handler
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/nav/session", nil)
 	r.RemoteAddr = "127.0.0.1:12345"
 	r.Header.Set("Authorization", "Bearer "+rightCredential)

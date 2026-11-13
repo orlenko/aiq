@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -123,7 +124,11 @@ func (h *navDetailHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *context.Context, cancel, release *func()) (p navDetailResponse) {
 	defer func() {
-		if recover() != nil {
+		if value := recover(); value != nil {
+			origin := diagnostic.Capture(value)
+			if req != nil {
+				diagnostic.Note(req.Context(), origin)
+			}
 			p = h.failure(navDetailInternal, started)
 		}
 	}()
@@ -165,6 +170,7 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		return failure
 	}
 	hit, err := h.deps.resolve(ctx, q.provider, q.id)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if failure, stopped := check(); stopped {
 		return failure
 	}
@@ -172,6 +178,7 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		return h.failure(navDetailErrorCode(err), started)
 	}
 	s, snap, err := h.deps.load(ctx, hit.Path)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if failure, stopped := check(); stopped {
 		return failure
 	}
@@ -185,6 +192,7 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		return h.failure(navDetailSelectionChanged, started)
 	}
 	_, _, err = navConversationBounds(s.Turns, q.last, q.anchor)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if failure, stopped := check(); stopped {
 		return failure
 	}
@@ -192,6 +200,7 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		return h.failure(navDetailErrorCode(err), started)
 	}
 	facts, err := h.deps.facts(ctx, hit, s)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if failure, stopped := check(); stopped {
 		return failure
 	}
@@ -205,6 +214,7 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		return h.failure(code, started)
 	}
 	facts, err = navDetailOwnFacts(facts, len(s.Turns))
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if failure, stopped := check(); stopped {
 		return failure
 	}
@@ -218,15 +228,17 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		return failure
 	}
 	key, err := navDetailContextKey(parent, ctx, s, snap, q, facts, o, h.deps.build)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if failure, stopped := check(); stopped {
 		return failure
 	}
 	if err != nil {
 		return h.failure(navDetailErrorCode(err), started)
 	}
-	view, err := h.deps.cache.ViewContext(ctx, key, func() (*transcript.View, error) {
-		return h.buildView(s, snap, facts, o)
+	view, err := h.deps.cache.ViewContextWithDiagnostics(ctx, key, func(holder *diagnostic.Holder) (*transcript.View, error) {
+		return h.buildViewWithDiagnostics(holder, s, snap, facts, o)
 	})
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if failure, stopped := check(); stopped {
 		return failure
 	}
@@ -267,11 +279,24 @@ func navDetailErrorCode(err error) navDetailCode {
 }
 
 func (h *navDetailHandler) buildView(s *transcript.Session, snap transcript.Snapshot, facts navDetailFacts, o navConversationOptions) (*transcript.View, error) {
+	return h.buildViewWithDiagnostics(nil, s, snap, facts, o)
+}
+
+func (h *navDetailHandler) buildViewWithDiagnostics(worker *diagnostic.Holder, s *transcript.Session, snap transcript.Snapshot, facts navDetailFacts, o navConversationOptions) (*transcript.View, error) {
 	// This check runs AFTER view admission. Snapshot equality alone cannot
 	// prove that a closure captured the current parse incarnation.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx, local := diagnostic.WithHolder(ctx)
+	// This defer does not recover. It publishes the first value before the
+	// cache's existing guard captures a later panic, including during unwind.
+	defer func() {
+		if worker != nil {
+			worker.Note(local.Origin())
+		}
+	}()
 	current, currentSnap, err := h.deps.cache.Session(ctx, snap.Path)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if err == nil {
 		err = ctx.Err()
 	}
@@ -282,6 +307,7 @@ func (h *navDetailHandler) buildView(s *transcript.Session, snap transcript.Snap
 		return nil, errNavDetailChanged
 	}
 	window, err := h.deps.project(s, o)
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +324,11 @@ func (h *navDetailHandler) buildView(s *transcript.Session, snap transcript.Snap
 		return nil, errNavConversationTooLarge
 	}
 	body, err := h.deps.marshal(e)
-	if err != nil || int64(len(body)) != size {
+	diagnostic.Note(ctx, transcript.PanicOrigin(err))
+	if err != nil {
+		return nil, diagnostic.Failure(diagnostic.Unshowable, transcript.PanicOrigin(err))
+	}
+	if int64(len(body)) != size {
 		return nil, transcript.ErrUnshowable
 	}
 	digest := sha256.Sum256(body)

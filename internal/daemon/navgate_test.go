@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/orlenko/aiq/internal/config"
+	"github.com/orlenko/aiq/internal/navroute"
 )
 
 const (
@@ -50,7 +52,7 @@ func gateUnderTest(v NavVerifier) (h http.Handler, api, proven *atomic.Int32) {
 		revoke:   markerHandler(proven),
 		info:     markerHandler(proven),
 		api:      markerHandler(api),
-	}, "test-build", func(string, ...any) {}), api, proven
+	}, "test-build", nil), api, proven
 }
 
 // navRequest is a request as the navigator's port would see it from a loopback peer.
@@ -77,10 +79,13 @@ func (c navRequest) serve(h http.Handler) *httptest.ResponseRecorder {
 
 // navSocket serves s's navigator on a loopback port with the daemon's server settings.
 // errorLog is the server's own log; nil is the standard logger, as in the daemon.
-func navSocket(s *Server, errorLog *log.Logger) *httptest.Server {
-	h := s.navigatorHandler()
-	srv := httptest.NewUnstartedServer(h)
-	srv.Config = statusServer(h)
+func navSocket(t *testing.T, s *Server, errorLog *log.Logger) *httptest.Server {
+	t.Helper()
+	s.navObservations = newNavObserver(navroute.Catalog(), s.log.Printf, nil, nil)
+	t.Cleanup(func() { s.navObservations.Close(context.Background()) })
+	s.slots = newConnSlots(64, s.log.Printf)
+	srv := httptest.NewUnstartedServer(nil)
+	srv.Config = s.navigatorServer()
 	srv.Config.ErrorLog = errorLog
 	srv.Start()
 	return srv
@@ -323,7 +328,7 @@ func TestNonCanonicalPathsAreRefused(t *testing.T) {
 
 func TestANilVerifierDeniesEverything(t *testing.T) {
 	api := &atomic.Int32{}
-	h := newNavHandler(navGate{api: markerHandler(api), revoke: markerHandler(api)}, "b", func(string, ...any) {})
+	h := newNavHandler(navGate{api: markerHandler(api), revoke: markerHandler(api)}, "b", nil)
 	for _, c := range []navRequest{
 		{target: "/api/nav/ping", header: bearer(rightCredential)},
 		{method: http.MethodPost, target: "/api/nav/revoke", header: map[string]string{"X-Test-Proof": "yes"}},
@@ -370,7 +375,7 @@ func TestTheMountedHandlerIsReachedOnlyThroughTheGate(t *testing.T) {
 		s := New(config.Default(), nil, log.New(io.Discard, "", 0))
 		s.navVerifier = v
 		s.MountNavigator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(marker)) }))
-		srv := navSocket(s, nil)
+		srv := navSocket(t, s, nil)
 		addr := strings.TrimPrefix(srv.URL, "http://")
 		for _, target := range []string{"/api/na%76/sessions", "/%61pi/nav/ping", "/api%2Fnav/ping", "/API/nav/ping", "/api/nav/./ping", "/api/nav//ping", "/api/nav/hello%3F", "/api/nav/a%20b", "/api/nav/%25"} {
 			for _, credential := range []string{"", rightCredential} {
@@ -599,13 +604,13 @@ func panicking() http.Handler {
 
 // A handler that panics before writing answers a whole 500 with the navigator's headers,
 // so the page sees an answer from a live daemon and not a dropped connection, and the
-// port keeps serving. The log names the panic's type, never its value.
+// port keeps serving. Repeated opaque routes share one bounded fallback key.
 func TestAPanicBeforeWritingIsAnAnswer(t *testing.T) {
 	logged := &lockedBuffer{}
 	s := New(config.Default(), nil, log.New(logged, "", 0))
 	s.navVerifier = testVerifier{}
 	s.MountNavigator(panicking())
-	srv := navSocket(s, nil)
+	srv := navSocket(t, s, nil)
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	for _, target := range []string{"/api/nav/before", "/api/nav/before", "/api/nav/length"} {
@@ -622,33 +627,39 @@ func TestAPanicBeforeWritingIsAnAnswer(t *testing.T) {
 		t.Errorf("after a panic: %v %v %q", err, resp, body)
 	}
 	got := logged.String()
-	for _, want := range []string{`navigator: a handler panicked on "/api/nav/before": string`, `navigator: a handler panicked on "/api/nav/length": *errors.errorString`} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the log has no %q: %s", want, got)
+	if strings.Count(got, `navigator: panic report on "unregistered" at internal/daemon/navgate_test.go:`) != 1 || strings.Count(got, "\n") != 1 {
+		t.Errorf("expected one bounded opaque-route report: %q", got)
+	}
+	for _, forbidden := range []string{"a test", rightCredential, "/api/nav/before", "/api/nav/length", "errors.errorString"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("private input/type leaked: %q", got)
 		}
 	}
-	if strings.Contains(got, "a test") || strings.Contains(got, rightCredential) {
-		t.Errorf("the log carries a panic's value: %s", got)
-	}
-
 	long := "/api/nav/long/" + strings.Repeat("x", 4000)
-	rawResponse(t, addr, long, rightCredential)
-	_, line, _ := strings.Cut(logged.String(), "/api/nav/long/")
-	line, _, _ = strings.Cut(line, "\n")
-	if want := strconv.Quote(long[:navPanicPathMax])[len(`"/api/nav/long/`):] + ": string"; line != want {
-		t.Errorf("a long path is logged as %d bytes: %.300s", len(line), line)
+	resp, body, err := rawResponse(t, addr, long, rightCredential)
+	if err != nil || resp.StatusCode != 500 || body != "" {
+		t.Fatalf("long opaque path: %v %v %q", err, resp, body)
+	}
+	if logged.String() != got {
+		t.Error("raw long path bypassed shared fallback limit")
+	}
+	s.navObservations.mu.Lock()
+	pending := s.navObservations.pending
+	s.navObservations.mu.Unlock()
+	if pending != 3 {
+		t.Errorf("suppressed reports=%d want3", pending)
 	}
 }
 
 // A handler that panics after its response has begun has its connection aborted, so the
-// client cannot take a cut-short answer for a whole one. ErrAbortHandler aborts without
+// client cannot take a cut-short answer for a whole one. ErrAbortHandler alone aborts without
 // a log line, in the daemon's log and in the server's.
 func TestAPanicAfterWritingAborts(t *testing.T) {
 	logged, serverLog := &lockedBuffer{}, &lockedBuffer{}
 	s := New(config.Default(), nil, log.New(logged, "", 0))
 	s.navVerifier = testVerifier{}
 	s.MountNavigator(panicking())
-	srv := navSocket(s, log.New(serverLog, "", 0))
+	srv := navSocket(t, s, log.New(serverLog, "", 0))
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	for _, target := range []string{"/api/nav/header", "/api/nav/written", "/api/nav/flushed", "/api/nav/flush", "/api/nav/abort"} {
@@ -657,10 +668,14 @@ func TestAPanicAfterWritingAborts(t *testing.T) {
 		}
 	}
 	got := logged.String()
-	for _, target := range []string{"header", "written", "flushed", "flush"} {
-		if !strings.Contains(got, `panicked on "/api/nav/`+target+`": string`) {
-			t.Errorf("no log line for %s: %s", target, got)
-		}
+	if strings.Count(got, `navigator: panic report on "unregistered" at internal/daemon/navgate_test.go:`) != 1 || strings.Count(got, "\n") != 1 {
+		t.Errorf("expected one bounded fallback report: %q", got)
+	}
+	s.navObservations.mu.Lock()
+	pending := s.navObservations.pending
+	s.navObservations.mu.Unlock()
+	if pending != 3 {
+		t.Errorf("suppressed non-abort reports=%d want3", pending)
 	}
 	if strings.Contains(got, "abort") {
 		t.Errorf("ErrAbortHandler was logged: %s", got)
