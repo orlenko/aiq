@@ -7,11 +7,6 @@ package main
 // driven in process, with no HTTP. Both are off unless asked for:
 //
 //	AIQ_TEST_NAV_FIGURES=fixture   figures on generated transcripts
-//	AIQ_TEST_NAV_FIGURES=real      figures on a real workload, read only:
-//	    AIQ_TEST_NAV_HOME=<home whose .claude, .codex and .gemini to read>
-//	    AIQ_TEST_NAV_DATA=<directory holding a copy of state.db, made with
-//	        sqlite3 state.db ".backup <dir>/state.db" or VACUUM INTO, never a
-//	        plain file copy of a WAL database; opened read only>
 //	AIQ_TEST_NAV_SOAK=10m          the soak, on generated transcripts
 //	AIQ_TEST_NAV_BIG_MB=40         the size of the largest generated transcript
 //
@@ -30,6 +25,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -42,7 +38,6 @@ import (
 	"time"
 
 	"github.com/orlenko/aiq/internal/provider/agy"
-	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -234,44 +229,21 @@ func procUsage() (rssMB float64, cpu time.Duration) {
 }
 
 // TestNavFigures records the figures the caches' bounds are to be set from.
-// It is library-level (no HTTP) and gated by AIQ_TEST_NAV_FIGURES: "fixture"
-// runs it on generated transcripts, "real" on a workload the owner names.
+// It is library-level (no HTTP), and uses generated transcripts only.
 func TestNavFigures(t *testing.T) {
 	mode := os.Getenv("AIQ_TEST_NAV_FIGURES")
 	var roots transcript.Roots
 	var dirs []string
 	switch mode {
 	case "":
-		t.Skip("set AIQ_TEST_NAV_FIGURES=fixture, or real with AIQ_TEST_NAV_HOME and AIQ_TEST_NAV_DATA")
+		t.Skip("set AIQ_TEST_NAV_FIGURES=fixture")
 	case "fixture":
 		var work string
 		roots, work = navFixture(t, t.TempDir(), bigMB())
 		dirs = []string{work}
 		t.Log("figures: library-level, generated fixture data")
-	case "real":
-		home, data := os.Getenv("AIQ_TEST_NAV_HOME"), os.Getenv("AIQ_TEST_NAV_DATA")
-		if home == "" || data == "" {
-			t.Fatal("real figures need AIQ_TEST_NAV_HOME and AIQ_TEST_NAV_DATA")
-		}
-		roots = transcript.DefaultRoots(filepath.Join(home, ".claude"), filepath.Join(home, ".codex"),
-			agy.AppDataDir(filepath.Join(home, ".gemini")), "", filepath.Join(data, "claude"), filepath.Join(data, "codex"))
-		st, err := state.OpenReadOnly(filepath.Join(data, "state.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		start := time.Now()
-		ds, err := st.Directories(hostname())
-		st.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("directories from state.db: %d in %s", len(ds), time.Since(start).Round(time.Millisecond))
-		for _, d := range ds {
-			dirs = append(dirs, d.Path)
-		}
-		t.Log("figures: library-level, the owner's workload")
 	default:
-		t.Fatalf("AIQ_TEST_NAV_FIGURES=%q: want fixture or real", mode)
+		t.Fatal("AIQ_TEST_NAV_FIGURES: want fixture")
 	}
 
 	files, total, largest, largestSize := transcriptFiles(roots)
@@ -321,6 +293,33 @@ func TestNavFigures(t *testing.T) {
 		t.Logf("view build of the largest, last=%d: %s, %.1f MB estimated", last, time.Since(start).Round(time.Millisecond), float64(v.Bytes)/(1<<20))
 	}
 	runtime.KeepAlive(s)
+}
+
+func TestNavFiguresRejectsExternalInputs(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, self, "-test.run=^TestNavFigures$", "-test.count=1")
+	cmd.WaitDelay = 2 * time.Second
+	// Inherit the testenv guard, redirect every legacy selector to invented
+	// empty directories, and invoke the actual test rather than a copied guard.
+	cmd.Env = append(os.Environ(), "AIQ_TEST_NAV_FIGURES=real", "AIQ_TEST_NAV_HOME="+t.TempDir(),
+		"AIQ_TEST_NAV_DATA="+t.TempDir(), "AIQ_DATA_DIR="+t.TempDir())
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if ctx.Err() != nil || !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("expected fixture-only test rejection: %v\n%s", err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		_, payload, ok := strings.Cut(strings.TrimSpace(line), ": ")
+		if ok && payload == "AIQ_TEST_NAV_FIGURES: want fixture" {
+			return
+		}
+	}
+	t.Fatalf("missing exact fixture-only rejection diagnostic:\n%s", out)
 }
 
 // transcriptFiles counts the transcripts under roots and finds the largest.

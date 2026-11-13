@@ -19,8 +19,8 @@ const DiscoveryTTL = 15 * time.Second
 // as the direct walk finds it. The Codex rollouts and Antigravity's history
 // are scanned on a shared TTL: a read past it starts one scan, shared by
 // concurrent readers, and is answered from the last completed scan while it
-// runs; nothing else starts one. A successfully classified rollout is opened
-// once per (path, inode); unsuccessful heads are retried on the next scan,
+// runs; nothing else starts one. A successfully classified regular entry is
+// opened once per (path, inode); linked and unsuccessful heads are reread on each scan,
 // and a path the latest scan did not see is dropped. The completion of a
 // provider's scan is its generation.
 type Index struct {
@@ -55,7 +55,7 @@ type codexSeen struct {
 	dev, ino    uint64
 	cwd         string // canonical; "" when the head names none
 	interactive bool
-	classified  bool // only successful heads are immutable at their inode
+	classified  bool // success; only nonzero regular-entry identities permit reuse
 }
 
 type agyScan struct {
@@ -134,8 +134,8 @@ func (x *Index) agyScan(ctx context.Context) (*agyScan, error) {
 	return &agyScan{}, nil
 }
 
-// scanCodex walks the rollouts and reads each head prev has not successfully
-// classified at its inode.
+// scanCodex reuses successful regular-entry classifications; linked heads are
+// reread because the directory entry's identity does not identify its target.
 func (x *Index) scanCodex(prev any) any {
 	x.walks.Add(1)
 	old, _ := prev.(*codexScan)
@@ -151,7 +151,7 @@ func (x *Index) scanCodex(prev any) any {
 				return nil
 			}
 			f := found{c: Candidate{Provider: "codex", Path: p, Root: root, Account: x.r.Labels[root]}}
-			if info, err := d.Info(); err == nil {
+			if info, err := d.Info(); err == nil && info.Mode()&os.ModeSymlink == 0 {
 				f.dev, f.ino = fileID(info)
 			}
 			all = append(all, f)
