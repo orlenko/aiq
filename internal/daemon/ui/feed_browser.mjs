@@ -15,9 +15,13 @@ try {
   const notice=fixtureGroup(2,fixtureHead('notice'),[fixtureLine('· peer agent: notice '+hostile)]);
   const human=fixtureGroup(3,fixtureHead('prompt'),[fixtureLine('prompt')]);
   const final=fixtureGroup(4,{...fixtureHead('final'),duration_known:true,duration_ms:0,tools:1},[fixtureLine('(no reply)')]);
-  const data=fixtureWindow([fixtureMessage(1,[earlier,code,notice]),fixtureMessage(2,[human,final])]);
-  let resolveCopy,announced=0,copied='';data.messages[0].raw='aside\n\nhidden\ncopy';
-  const feed=createConversationFeed(document,data,options('native',raw=>{copied=raw;return new Promise(r=>resolveCopy=r);},()=>announced++));
+  const decoration=fixtureGroup(5,fixtureHead(),[
+    {kind:'text',table_rows:0,spans:[{t:'DECORATIVE_SENTINEL',c:[],d:true},{t:'literal **marks**',c:[],d:false}]},
+    {kind:'rule',table_rows:0,spans:[{t:'RULE_SENTINEL',c:[],d:true}]},
+    {kind:'table',table_rows:2,spans:[{t:'TABLE_BODY',c:[],d:false}]}]);
+  const data=fixtureWindow([fixtureMessage(1,[earlier,code,notice]),fixtureMessage(2,[human,final,decoration])]);
+  let resolveCopy,announced=0,copied='',copyCalls=0;data.messages[0].raw='aside\n\nhidden\ncopy';
+  const feed=createConversationFeed(document,data,options('native',raw=>{copyCalls++;copied=raw;return new Promise(r=>resolveCopy=r);},()=>{announced++;if(announced===1)first.querySelector('.nav-feed-copy').click();}));
   const second=createConversationFeed(document,fixtureWindow(),options('second'));
   neighbor.focus();check(document.activeElement===neighbor,'initial focus');
   mount.append(feed.fragment,second.fragment);check(feed.mount()&&second.mount(),'two connected feeds mount');
@@ -38,7 +42,8 @@ try {
   const button=first.querySelector('.nav-feed-copy');button.focus();button.click();button.click();await Promise.resolve();
   check(document.activeElement===button&&button.getAttribute('aria-disabled')==='true'&&copied==='aside\n\nhidden\ncopy','copy busy retains focus and exact raw');
   resolveCopy();await Promise.resolve();await Promise.resolve();
-  check(announced===1&&button.getAttribute('aria-disabled')===null&&document.activeElement===button,'copy settlement retains focus');
+  check(announced===1&&copyCalls===1&&button.getAttribute('aria-disabled')===null&&document.activeElement===button,'copy settlement blocks announcer reentry and retains focus');
+  check(first.querySelector('.nav-md-rule').getAttribute('aria-hidden')==='true'&&first.querySelector('.nav-md-sr').textContent==='table, 2 rows','native rule and table semantics');
   check(getComputedStyle(neighbor).color==='rgb(71, 72, 73)','neighbor style sentinel');
   let trustedTypesBlocked=false;try {document.createElement('div').innerHTML='<b>fixture</b>';}catch(error){trustedTypesBlocked=error instanceof TypeError;}
   check(trustedTypesBlocked,'actual CSP Trusted Types enforcement');
