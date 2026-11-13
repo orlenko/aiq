@@ -192,3 +192,43 @@ test('owned snapshots isolate caller/result mutation and leave limits unchanged'
   }
   reject(()=>capture(snapshot(),Object.create(limits())));
 });
+
+
+test('optional totals preserve absent-report facts with literal shared credits',()=>{
+  const d=snapshot();d.totals={utc_day:'2031-04-06',skipped:3,calls_today:7};
+  const out=capture(d,limits(5,64,1));
+  assert.deepEqual(out.report,{known:false});
+  assert.deepEqual(out.totals,{utc_day:'2031-04-06',skipped:3,calls_today:7});
+  reject(()=>capture(d,limits(5,63,1)));
+  d.totals.utc_day='changed';assert.equal(out.totals.utc_day,'2031-04-06');
+  out.totals.calls_today=99;assert.equal(d.totals.calls_today,7);
+  assert.equal(Object.hasOwn(capture(snapshot()),'totals'),false);
+});
+
+test('totals are own data and agree with known report counters',()=>{
+  let calls=0;const inherited=snapshot();
+  Object.setPrototypeOf(inherited,Object.defineProperty({},'totals',{get(){calls++;throw Error('inherited');}}));
+  assert.equal(Object.hasOwn(capture(inherited),'totals'),false);assert.equal(calls,0);
+  const own=snapshot();Object.defineProperty(own,'totals',{get(){calls++;throw Error('accessor');}});
+  reject(()=>capture(own));assert.equal(calls,0);
+  for(const key of ['utc_day','skipped','calls_today']) {
+    const d=snapshot();d.totals={utc_day:'2031-04-06',skipped:3,calls_today:7};
+    Object.defineProperty(d.totals,key,{get(){calls++;throw Error('field');}});
+    reject(()=>capture(d));assert.equal(calls,0);
+  }
+  const d=snapshot();d.report=report();d.totals={utc_day:'2031-04-06',skipped:3,calls_today:4};
+  assert.equal(capture(d,limits(6,72,1)).totals.calls_today,4);
+  reject(()=>capture(d,limits(6,71,1)));
+  d.totals.calls_today=7;reject(()=>capture(d));d.totals.calls_today=4;d.totals.skipped=2;reject(()=>capture(d));
+});
+
+test('malformed optional totals fail whole without string or numeric repair',()=>{
+  for(const value of [null,undefined,[],{}, {utc_day:'',skipped:0,calls_today:0}]) {
+    const d=snapshot();d.totals=value;reject(()=>capture(d));
+  }
+  for(const value of [-1,.5,Infinity,Number.MAX_SAFE_INTEGER+1,'3',null,undefined]) {
+    for(const key of ['skipped','calls_today']) {
+      const d=snapshot();d.totals={utc_day:'2031-04-06',skipped:0,calls_today:0,[key]:value};reject(()=>capture(d));
+    }
+  }
+});
