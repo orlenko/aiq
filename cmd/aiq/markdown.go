@@ -23,6 +23,27 @@ type span struct {
 	text string
 }
 
+// markdownContext holds trusted styles by value. Its methods use only these
+// styles, including when the palette is zero. Text must already be free of
+// control characters, just as for the terminal wrappers below. Separate calls
+// may share a context without sharing any mutable rendering state.
+type markdownContext struct {
+	palette convoPalette
+}
+
+// The terminal compatibility entry points snapshot the chosen palette once.
+func renderMarkdown(text string, width int, base string, markup bool) string {
+	return (markdownContext{palette: pal}).renderMarkdown(text, width, base, markup)
+}
+
+func renderMarkdownRows(text string, width int, base string) []string {
+	return (markdownContext{palette: pal}).renderMarkdownRows(text, width, base)
+}
+
+func markdownSpans(text string, width int, markup bool) [][]span {
+	return (markdownContext{palette: pal}).markdownSpans(text, width, markup)
+}
+
 // renderMarkdown renders an agent's Markdown for a terminal width columns
 // wide. base is the SGR the surrounding block uses ("" or dim); every line
 // opens with it and every reset re-applies it. text must already be free of
@@ -30,8 +51,8 @@ type span struct {
 // With markup the Markdown stays in the text, styled as well: a copy from
 // the terminal keeps its **, backticks, list marks and fences, and tables
 // stay pipe tables.
-func renderMarkdown(text string, width int, base string, markup bool) string {
-	out := markdownSpans(text, width, markup)
+func (mdctx markdownContext) renderMarkdown(text string, width int, base string, markup bool) string {
+	out := mdctx.markdownSpans(text, width, markup)
 	rendered := make([]string, len(out))
 	for i, l := range out {
 		rendered[i] = spanLine(l, base)
@@ -41,10 +62,10 @@ func renderMarkdown(text string, width int, base string, markup bool) string {
 
 // renderMarkdownRows is renderMarkdown with markup off, for a screen that draws its own rows
 // and so cannot leave wrapping to the terminal: every row fits width.
-func renderMarkdownRows(text string, width int, base string) []string {
+func (mdctx markdownContext) renderMarkdownRows(text string, width int, base string) []string {
 	width = max(width, 1)
 	var rows []string
-	for _, l := range markdownSpans(text, width, false) {
+	for _, l := range mdctx.markdownSpans(text, width, false) {
 		// A line that fits keeps its spacing, which is what holds code and tables together.
 		n := 0
 		for _, sp := range l {
@@ -55,9 +76,9 @@ func renderMarkdownRows(text string, width int, base string) []string {
 			continue
 		}
 		// A code line keeps every space: it is cut at the width, never wrapped at its words.
-		if len(l) == 1 && l[0].sgr == pal.code {
+		if len(l) == 1 && l[0].sgr == mdctx.palette.code {
 			for _, part := range cutCells(l[0].text, width) {
-				rows = append(rows, spanLine([]span{{pal.code, part}}, base))
+				rows = append(rows, spanLine([]span{{mdctx.palette.code, part}}, base))
 			}
 			continue
 		}
@@ -69,7 +90,7 @@ func renderMarkdownRows(text string, width int, base string) []string {
 }
 
 // markdownSpans parses text into styled lines, with tables and rules fitted to width.
-func markdownSpans(text string, width int, markup bool) [][]span {
+func (mdctx markdownContext) markdownSpans(text string, width int, markup bool) [][]span {
 	width = max(width, 1)
 	lines := strings.Split(text, "\n")
 	for i, l := range lines {
@@ -81,18 +102,18 @@ func markdownSpans(text string, width int, markup bool) [][]span {
 		trimmed := strings.TrimSpace(line)
 		if fence := codeFence(trimmed); fence != "" {
 			if markup {
-				out = append(out, []span{{pal.dim, line}})
+				out = append(out, []span{{mdctx.palette.dim, line}})
 			} else if lang := strings.TrimSpace(strings.TrimLeft(trimmed, fence[:1])); lang != "" {
-				out = append(out, []span{{pal.dim, lang}})
+				out = append(out, []span{{mdctx.palette.dim, lang}})
 			}
 			for i++; i < len(lines); i++ {
 				if t := strings.TrimSpace(lines[i]); strings.HasPrefix(t, fence) && strings.Trim(t, fence[:1]) == "" {
 					if markup {
-						out = append(out, []span{{pal.dim, lines[i]}})
+						out = append(out, []span{{mdctx.palette.dim, lines[i]}})
 					}
 					break
 				}
-				out = append(out, []span{{pal.code, lines[i]}})
+				out = append(out, []span{{mdctx.palette.code, lines[i]}})
 			}
 			continue
 		}
@@ -104,33 +125,33 @@ func markdownSpans(text string, width int, markup bool) [][]span {
 				}
 				i--
 				if markup {
-					out = append(out, pipeTable(rows, aligns, width)...)
+					out = append(out, mdctx.pipeTable(rows, aligns, width)...)
 				} else {
-					out = append(out, renderTable(rows, aligns, width)...)
+					out = append(out, mdctx.renderTable(rows, aligns, width)...)
 				}
 				continue
 			}
 		}
 		switch {
 		case markup:
-			out = append(out, markupLine(line))
+			out = append(out, mdctx.markupLine(line))
 		case horizontalRule.MatchString(line):
-			out = append(out, []span{{pal.dim, strings.Repeat("─", width)}})
+			out = append(out, []span{{mdctx.palette.dim, strings.Repeat("─", width)}})
 		case heading.MatchString(line):
 			m := heading.FindStringSubmatch(line)
 			style := sgrBold
 			if len(m[1]) <= 2 {
 				style += sgrUnderline
 			}
-			out = append(out, inlineMarkdown(m[2], style, false))
+			out = append(out, mdctx.inlineMarkdown(m[2], style, false))
 		case bullet.MatchString(line):
 			m := bullet.FindStringSubmatch(line)
-			out = append(out, append([]span{{"", m[1] + "• "}}, inlineMarkdown(m[3], "", false)...))
+			out = append(out, append([]span{{"", m[1] + "• "}}, mdctx.inlineMarkdown(m[3], "", false)...))
 		case quote.MatchString(line):
 			m := quote.FindStringSubmatch(line)
-			out = append(out, append([]span{{pal.dim, m[1] + "│ "}}, inlineMarkdown(m[2], "", false)...))
+			out = append(out, append([]span{{mdctx.palette.dim, m[1] + "│ "}}, mdctx.inlineMarkdown(m[2], "", false)...))
 		default:
-			out = append(out, inlineMarkdown(line, "", false))
+			out = append(out, mdctx.inlineMarkdown(line, "", false))
 		}
 	}
 	return out
@@ -146,22 +167,22 @@ var (
 
 // markupLine styles one line and keeps its Markdown: a heading bold with its
 // #s, a list or quote mark as written, a rule dim.
-func markupLine(line string) []span {
+func (mdctx markdownContext) markupLine(line string) []span {
 	switch {
 	case horizontalRule.MatchString(line):
-		return []span{{pal.dim, line}}
+		return []span{{mdctx.palette.dim, line}}
 	case heading.MatchString(line):
-		return inlineMarkdown(line, sgrBold, true)
+		return mdctx.inlineMarkdown(line, sgrBold, true)
 	case bullet.MatchString(line):
 		m := bullet.FindStringSubmatch(line)
 		mark := line[:len(line)-len(m[3])]
-		return append([]span{{"", mark}}, inlineMarkdown(m[3], "", true)...)
+		return append([]span{{"", mark}}, mdctx.inlineMarkdown(m[3], "", true)...)
 	case quote.MatchString(line):
 		m := quote.FindStringSubmatch(line)
 		mark := line[:len(line)-len(m[2])]
-		return append([]span{{pal.dim, mark}}, inlineMarkdown(m[2], "", true)...)
+		return append([]span{{mdctx.palette.dim, mark}}, mdctx.inlineMarkdown(m[2], "", true)...)
 	}
-	return inlineMarkdown(line, "", true)
+	return mdctx.inlineMarkdown(line, "", true)
 }
 
 // expandTabs turns tabs into spaces to the next stop of 4 cells: a tab
@@ -265,7 +286,7 @@ func tableCells(line string) []string {
 // width, shrinking the widest columns and wrapping their cells to fit. A
 // column is never narrower than its widest character; when the box cannot
 // fit at those widths, each row becomes "header: value" lines.
-func renderTable(rows [][]string, aligns []align, width int) [][]span {
+func (mdctx markdownContext) renderTable(rows [][]string, aligns []align, width int) [][]span {
 	n := len(aligns)
 	cells := make([][][]span, len(rows))
 	natural := make([]int, n)
@@ -281,7 +302,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 			if r == 0 {
 				style = sgrBold
 			}
-			cells[r][c] = inlineMarkdown(text, style, false)
+			cells[r][c] = mdctx.inlineMarkdown(text, style, false)
 			natural[c] = max(natural[c], 1, spansCells(cells[r][c]))
 			least[c] = max(least[c], widestGlyph(cells[r][c]))
 		}
@@ -310,7 +331,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 		for c, w := range widths {
 			parts[c] = strings.Repeat("─", w+2)
 		}
-		return []span{{pal.dim, left + strings.Join(parts, mid) + right}}
+		return []span{{mdctx.palette.dim, left + strings.Join(parts, mid) + right}}
 	}
 	out := [][]span{rule("┌", "┬", "┐")}
 	for r := range rows {
@@ -324,7 +345,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 			height = max(height, len(wrapped[c]))
 		}
 		for l := 0; l < height; l++ {
-			line := []span{{pal.dim, "│"}}
+			line := []span{{mdctx.palette.dim, "│"}}
 			for c, w := range widths {
 				var cell []span
 				if l < len(wrapped[c]) {
@@ -344,7 +365,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 				}
 				line = append(line, span{"", " " + strings.Repeat(" ", left)})
 				line = append(line, cell...)
-				line = append(line, span{"", strings.Repeat(" ", gap-left) + " "}, span{pal.dim, "│"})
+				line = append(line, span{"", strings.Repeat(" ", gap-left) + " "}, span{mdctx.palette.dim, "│"})
 			}
 			out = append(out, line)
 		}
@@ -355,7 +376,7 @@ func renderTable(rows [][]string, aligns []align, width int) [][]span {
 // pipeTable keeps a table as Markdown: pipe rows, the header bold, cells
 // padded into columns when the table fits width, else left as they are for
 // the terminal to wrap.
-func pipeTable(rows [][]string, aligns []align, width int) [][]span {
+func (mdctx markdownContext) pipeTable(rows [][]string, aligns []align, width int) [][]span {
 	n := len(aligns)
 	cells := make([][][]span, len(rows))
 	widths := make([]int, n)
@@ -370,13 +391,13 @@ func pipeTable(rows [][]string, aligns []align, width int) [][]span {
 			if r == 0 {
 				style = sgrBold
 			}
-			cells[r][c] = inlineMarkdown(text, style, true)
+			cells[r][c] = mdctx.inlineMarkdown(text, style, true)
 			widths[c] = max(widths[c], 3, spansCells(cells[r][c]))
 		}
 	}
 	pad := sum(widths)+3*n+1 <= width
 	line := func(cells [][]span) []span {
-		out := []span{{pal.dim, "|"}}
+		out := []span{{mdctx.palette.dim, "|"}}
 		for c, cell := range cells {
 			gap := 0
 			if pad {
@@ -391,7 +412,7 @@ func pipeTable(rows [][]string, aligns []align, width int) [][]span {
 			}
 			out = append(out, span{"", " " + strings.Repeat(" ", left)})
 			out = append(out, cell...)
-			out = append(out, span{"", strings.Repeat(" ", gap-left) + " "}, span{pal.dim, "|"})
+			out = append(out, span{"", strings.Repeat(" ", gap-left) + " "}, span{mdctx.palette.dim, "|"})
 		}
 		return out
 	}
@@ -410,7 +431,7 @@ func pipeTable(rows [][]string, aligns []align, width int) [][]span {
 		case alignLeftMarked:
 			dashes = ":" + dashes[1:]
 		}
-		sep[c] = []span{{pal.dim, dashes}}
+		sep[c] = []span{{mdctx.palette.dim, dashes}}
 	}
 	out := [][]span{line(cells[0]), line(sep)}
 	for _, row := range cells[1:] {
@@ -465,15 +486,17 @@ func sum(xs []int) int {
 // style under all of it. With markup the delimiters stay, in the style of
 // what they enclose. It indexes the line once, so a line full of
 // delimiters that never close costs no more than one that is plain.
-func inlineMarkdown(s, style string, markup bool) []span {
+func (mdctx markdownContext) inlineMarkdown(s, style string, markup bool) []span {
 	ix := indexInline(s)
+	ix.palette = mdctx.palette
 	ix.markup = markup
 	return ix.render(0, len(s), style)
 }
 
 // inlineIndex is where each kind of closing delimiter sits in one line.
 type inlineIndex struct {
-	s string
+	palette convoPalette
+	s       string
 	// closers holds, for each emphasis delimiter (* or _, run of 1 or 2),
 	// the sorted positions of runs that can close it.
 	closers map[emphasisKey][]int
@@ -562,7 +585,7 @@ func (ix *inlineIndex) render(lo, hi int, style string) []span {
 					code = code[1 : len(code)-1]
 				}
 				flush()
-				out = append(out, span{style + pal.code, code})
+				out = append(out, span{style + ix.palette.code, code})
 				i = end + n
 				continue
 			}
@@ -575,10 +598,10 @@ func (ix *inlineIndex) render(lo, hi int, style string) []span {
 				if ix.markup {
 					out = append(out, span{style, "["})
 					out = append(out, ix.render(i+1, textEnd, style)...)
-					out = append(out, span{style, "]("}, span{style + pal.dim, s[urlStart:urlEnd]}, span{style, ")"})
+					out = append(out, span{style, "]("}, span{style + ix.palette.dim, s[urlStart:urlEnd]}, span{style, ")"})
 				} else {
 					out = append(out, ix.render(i+1, textEnd, style)...)
-					out = append(out, span{style, " ("}, span{style + pal.dim, s[urlStart:urlEnd]}, span{style, ")"})
+					out = append(out, span{style, " ("}, span{style + ix.palette.dim, s[urlStart:urlEnd]}, span{style, ")"})
 				}
 				i = urlEnd + 1
 				continue
