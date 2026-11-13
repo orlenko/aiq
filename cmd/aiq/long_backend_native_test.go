@@ -64,6 +64,7 @@ func TestLongAutoSelectsNativeInPrivateCore(t *testing.T) {
 			cfg.Long.Fallback = []string{"codex"}
 			cfg.Providers.Codex.Binary = provider
 			cfg.Updates.Enabled = false
+			cfg.Daemon.Listen = "127.0.0.1:1"
 			if err := config.Save(cfg); err != nil {
 				t.Fatal(err)
 			}
