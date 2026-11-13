@@ -30,6 +30,11 @@
     if (!active(owner)) return;
     const build = document.documentElement.dataset.aiqBuild;
     if (typeof build !== "string" || !/^[A-Za-z0-9._+-]{1,128}$/.test(build)) { failure(); retire(owner); return; }
+    if (document.documentElement.dataset.aiqUnavailable === "1") {
+      const status=document.getElementById("nav-auth-status");
+      if(status)status.textContent="Navigator unavailable; check the daemon and run aiq ui again.";
+      retire(owner);return;
+    }
     import("/assets/" + build + "/auth_session.js").then(module => {
       if (!active(owner)) return;
       let fragment = owner.fragment; owner.fragment = null;

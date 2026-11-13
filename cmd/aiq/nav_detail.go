@@ -31,6 +31,9 @@ func newNavDetailHandler(d navDetailDeps, limits navDetailLimits) (*navDetailHan
 		d.skippedNote == "" || limits.bodyBytes <= 0 || limits.requests <= 0 || len(d.build) == 0 || len(d.build) > 128 {
 		return nil, errNavDetailConfiguration
 	}
+	if limits.arrayEntries < 0 || limits.stringUnits < 0 || (limits.arrayEntries == 0) != (limits.stringUnits == 0) {
+		return nil, errNavDetailConfiguration
+	}
 	for _, c := range d.build {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._+-", c)) {
 			return nil, errNavDetailConfiguration
@@ -223,7 +226,8 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 	}
 	o := navConversationOptions{provider: q.provider, id: q.id, last: q.last, anchor: q.anchor, markup: q.markup,
 		now: h.deps.now(), location: h.deps.location, live: facts.live, hold: facts.hold, stale: facts.stale,
-		accounts: facts.accounts, skippedNote: h.deps.skippedNote, liveMark: h.deps.liveMark, bodyBytes: h.limits.bodyBytes}
+		accounts: facts.accounts, skippedNote: h.deps.skippedNote, liveMark: h.deps.liveMark, bodyBytes: h.limits.bodyBytes,
+		arrayEntries: h.limits.arrayEntries, stringUnits: h.limits.stringUnits}
 	if failure, stopped := check(); stopped {
 		return failure
 	}
@@ -248,6 +252,9 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 	value, ok := navDetailViewValue(view, h.limits.bodyBytes)
 	if !ok {
 		return h.failure(navDetailInternal, started)
+	}
+	if err := navDetailAdmitStructure(ctx, &value.envelope, h.limits.arrayEntries, h.limits.stringUnits); err != nil {
+		return h.failure(navDetailErrorCode(err), started)
 	}
 	if q.condition.match(value.fingerprint) {
 		return navDetailResponse{status: http.StatusNotModified, etag: value.fingerprint}
@@ -316,6 +323,9 @@ func (h *navDetailHandler) buildViewWithDiagnostics(worker *diagnostic.Holder, s
 	}
 	e := navDetailEnvelope{Build: h.deps.build, Session: window.Session, EarlierHidden: window.EarlierHidden,
 		LaterHidden: window.LaterHidden, WindowStart: window.WindowStart, Reset: window.Reset, Markup: window.Markup, Messages: window.Messages}
+	if err := navDetailAdmitStructure(ctx, &e, h.limits.arrayEntries, h.limits.stringUnits); err != nil {
+		return nil, err
+	}
 	size, fits := navJSONSize(e, math.MaxInt64)
 	if !fits {
 		return nil, transcript.ErrUnshowable

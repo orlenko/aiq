@@ -21,6 +21,7 @@ import (
 type navSessionsLimits struct {
 	rowBytes, bodyBytes int64
 	builders            int
+	arrayEntries        int64 // Optional for the unmounted component; positive in production.
 }
 
 type navSessionsDeps struct {
@@ -38,7 +39,7 @@ type navSessionsHandler struct {
 }
 
 func newNavSessionsHandler(deps navSessionsDeps, limits navSessionsLimits) (*navSessionsHandler, error) {
-	if deps.source == nil || deps.summary == nil || limits.rowBytes <= 0 || limits.bodyBytes <= 0 || limits.builders <= 0 {
+	if deps.source == nil || deps.summary == nil || limits.rowBytes <= 0 || limits.bodyBytes <= 0 || limits.builders <= 0 || limits.arrayEntries < 0 {
 		return nil, errors.New("invalid navigator list configuration")
 	}
 	for _, code := range []string{"invalid_request", "not_found", "method_not_allowed", "internal_error", "list_too_large", "request_cancelled", "list_busy"} {
@@ -257,6 +258,9 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 		body.Sessions = append(body.Sessions, navSessionDTO(row))
 	}
 	clear(selected)
+	if h.limits.arrayEntries > 0 && int64(len(body.RootsSearched))+int64(len(body.Sessions)) > h.limits.arrayEntries {
+		return navListError(http.StatusServiceUnavailable, "list_too_large")
+	}
 	size, fits := navJSONSize(body, h.limits.bodyBytes)
 	if !fits {
 		return navListError(http.StatusServiceUnavailable, "list_too_large")

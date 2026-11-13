@@ -5,6 +5,7 @@ const LOCKED = "This tab is locked; run aiq ui again.";
 const UNAVAILABLE = "Navigator request unavailable";
 const UNKNOWN = "This page uses memory only. A previously saved tab session could not be cleared or checked and may return on reload. Use your browser’s clear site data controls before restoring this tab.";
 const MEMORY = "Memory-only tab session; reload requires aiq ui.";
+const TERMINAL = "This navigator is no longer live; run aiq ui again.";
 const owners = new WeakMap(); // DOM ownership only; no credential or fragment.
 const apply = Reflect.apply;
 const bad = () => { throw new TypeError(UNAVAILABLE); };
@@ -27,6 +28,11 @@ function requestPath(kind, query) {
     if (mode !== "directory") bad();
     return "/api/nav/asks?dir="+encodeForm(directory(own(query,"dir")));
   }
+  if (kind === "placement") {
+    const id=own(query,"askId");
+    if (typeof id!=="string" || !/^[1-9][0-9]{0,18}$/.test(id) || id.length===19 && id>"9223372036854775807") bad();
+    return "/api/nav/asks/"+id+"/turn";
+  }
   if (kind !== "conversation") bad();
   const provider = own(query,"provider"), id = own(query,"id");
   if (!["claude","codex","agy"].includes(provider) || typeof id !== "string" || !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)) bad();
@@ -41,18 +47,24 @@ function requestPath(kind, query) {
 export function createTabSession(options) {
   const base = origin(options.base), build = options.build;
   if (typeof build !== "string" || !/^[A-Za-z0-9._+-]{1,128}$/.test(build)) bad();
-  const isCurrent = options.isCurrent, onState = options.onState ?? (() => {});
+  const isCurrent = options.isCurrent, onState = options.onState ?? (() => {}), onReadFailure = options.onReadFailure ?? (() => {});
   const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
   const getStorage = options.getStorage ?? (() => globalThis.sessionStorage);
   const now = options.now ?? (() => performance.now());
   const setTimer = options.setTimer ?? setTimeout, clearTimer = options.clearTimer ?? clearTimeout;
-  if (![isCurrent,onState,fetcher,getStorage,now,setTimer,clearTimer].every(v => typeof v === "function")) bad();
+  if (![isCurrent,onState,onReadFailure,fetcher,getStorage,now,setTimer,clearTimer].every(v => typeof v === "function")) bad();
   const signal = options.signal, key = "aiq.navigator.v1:"+build, limits = Object.create(null);
   if (options.limits !== undefined) {
     for (const kind of ["sessions","conversation","asks"]) limits[kind] = integer(own(options.limits,kind),1,Number.MAX_SAFE_INTEGER);
+    const placement=Object.getOwnPropertyDescriptor(options.limits,"placement");
+    if (placement) { if(!Object.hasOwn(placement,"value"))bad();limits.placement=integer(placement.value,1,Number.MAX_SAFE_INTEGER); }
   }
   let input = options.fragment, epoch = {}, token = null, disposed = false, kind = "locked", message = LOCKED, notice = "", selected = null;
-  let clearing = false, deferredDispose = false;
+  let clearing = false, deferredDispose = false, hostCleanup = null;
+  const failures = new WeakMap();
+  function failure(category) {
+    const error = new TypeError(UNAVAILABLE);failures.set(error,category);return error;
+  }
   const pending = new Set();
   const owned = e => {
     if (epoch !== e || signal?.aborted) return false;
@@ -62,12 +74,20 @@ export function createTabSession(options) {
   const live = e => !disposed && owned(e) && !disposed && epoch === e;
   const snapshot = () => Object.freeze({kind,message,notice});
   function emit() { if (!owned(epoch)) return; const value=snapshot(); try { onState(value); } catch { /* A host failure cannot regain authority. */ } }
-  function retire(text, final = false) {
-    const next = {}; epoch = next; token = null; selected = null; kind = final ? "disposed" : "locked"; message = text; notice = "";
+  function retire(text, final = false, phase = "locked") {
+    const next = {}; epoch = next; token = null; selected = null; kind = final ? "disposed" : phase; message = text; notice = "";
     if (final) disposed = true;
-    const old = [...pending]; pending.clear();
+    const old = [...pending], cleanup = hostCleanup; pending.clear();hostCleanup = null;
+    // Detach the captured sensitive host before abort listeners can reenter.
+    try { cleanup?.(); } catch { /* Independent physical retirement continues. */ }
     for (const op of old) { try { op.abort(); } catch { /* Continue independent cleanup. */ } }
     return next;
+  }
+  function attachHost(cleanup) {
+    const e = epoch;
+    if (typeof cleanup !== "function" || hostCleanup !== null || !["unlocked","restoring"].includes(kind) || !live(e)) return false;
+    if (hostCleanup !== null || epoch !== e || !["unlocked","restoring"].includes(kind)) return false;
+    hostCleanup = cleanup;return true;
   }
   function storageCall(e, method, ...args) {
     if (!live(e)) return {ok:false,stale:true};
@@ -92,26 +112,31 @@ export function createTabSession(options) {
     return !read.stale && read.ok && (read.value === null || read.value === "");
   }
   async function send(e,path,method,body,byteLimit,bearer,parent,decode) {
-    if (!live(e)) bad();
+    if (!live(e)) throw failure("cancelled");
     const controller = new AbortController(), started=now();
-    const valid = () => live(e) && !controller.signal.aborted && now()-started >= 0 && now()-started < 10000;
-    let response=null, reader=null, complete=false, timer=null, relay=null;
+    const valid = () => {
+      try { const elapsed=now()-started;return live(e) && !controller.signal.aborted && elapsed >= 0 && elapsed < 10000; }
+      catch { return false; }
+    };
+    let response=null, reader=null, complete=false, timer=null, relay=null, rejected=null;
     pending.add(controller);
     try {
-      if (parent?.aborted) bad();
+      if (parent?.aborted) throw failure("cancelled");
       if (parent) { relay=()=>controller.abort();parent.addEventListener("abort",relay,{once:true}); }
       timer=setTimer(()=>controller.abort(),10000);
       if (!valid()) bad();
       const headers = method === "POST" ? {"Content-Type":"application/json"} : {};
       if (bearer !== null) headers.Authorization="Bearer "+bearer;
       response=await fetcher(base+path,{method,headers,body,signal:controller.signal,redirect:"error",credentials:"omit",cache:"no-store"});
-      if (!valid()) bad();
-      if (response.status === 401) {
+      const status = response.status;
+      if (status === 401 && live(e)) {
         lockAndClear(false); // BEFORE error body or build interpretation.
-        bad();
+        throw failure("cancelled");
       }
-      if (response.status !== 200 || response.headers.get("X-Aiq-Build") !== build ||
+      if (!valid()) throw failure(parent?.aborted || !live(e) ? "cancelled" : "terminal");
+      if (response.headers.get("X-Aiq-Build") !== build ||
           !/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get("Content-Type") ?? "") || response.headers.has("Content-Encoding") || !response.body) bad();
+      if (status !== 200) throw failure(method === "GET" && [400,404,409,413,500,503].includes(status) ? "request" : "terminal");
       reader=response.body.getReader();
       const chunks=[];let total=0;
       for (;;) {
@@ -126,8 +151,12 @@ export function createTabSession(options) {
       const value=decode(raw);
       if (!valid()) bad();
       return value;
-    } catch { throw new TypeError(UNAVAILABLE); }
+    } catch (error) {
+      rejected = failure(failures.get(error) ?? (parent?.aborted || !live(e) ? "cancelled" : "terminal"));
+      throw rejected;
+    }
     finally {
+      const validBeforeCleanup = valid();
       let cleanupFailed = false;
       try { if (timer !== null) clearTimer(timer); } catch { cleanupFailed = true; }
       try { if (parent && relay) parent.removeEventListener("abort",relay); } catch { cleanupFailed = true; }
@@ -137,13 +166,15 @@ export function createTabSession(options) {
       }
       try { reader?.releaseLock(); } catch { cleanupFailed = true; }
       pending.delete(controller);
-      if (cleanupFailed || !valid()) throw new TypeError(UNAVAILABLE);
+      if (cleanupFailed) throw failure("terminal");
+      // Our own cancellation during failed-body cleanup is not a new failure.
+      if (!rejected && (!validBeforeCleanup || !live(e))) throw failure(parent?.aborted || !live(e) ? "cancelled" : "terminal");
     }
   }
   function dispose() {
     if (disposed) return;
     if (clearing) { deferredDispose=true;return; }
-    signal?.removeEventListener("abort",dispose);
+    try { signal?.removeEventListener("abort",dispose); } catch { /* Host/physical cleanup must continue. */ }
     input=null;const outcome=notice;retire(LOCKED,true);notice=outcome;emit();
   }
   function lockAndClear(explicit) {
@@ -201,49 +232,104 @@ export function createTabSession(options) {
     }
   }
   async function read(route,query,abortSignal) {
+    const e=epoch;
     try {
-      const e=epoch;
-      if (!live(e) || !["unlocked","restoring"].includes(kind) || token === null || limits[route] === undefined) bad();
-      const path=requestPath(route,query);
-      if (!live(e)) bad();
+      if (!live(e) || !["unlocked","restoring"].includes(kind) || token === null || limits[route] === undefined) throw failure("cancelled");
+      let path;
+      try { path=requestPath(route,query); } catch { throw failure("request"); }
+      if (!live(e)) throw failure("cancelled");
       const data=await send(e,path,"GET",undefined,limits[route],token,abortSignal,raw=>JSON.parse(new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(raw)));
       if (!live(e)) bad();
       if (kind === "restoring") { kind="unlocked";message="Navigator unlocked.";emit();if(!live(e))bad(); }
       return {data};
-    } catch { throw new TypeError(UNAVAILABLE); }
+    } catch (error) {
+      const category=failures.get(error) ?? "terminal";
+      if (live(e)) {
+        if (category === "terminal") {
+          const next=retire(TERMINAL,false,"terminal");
+          if (live(next)) emit();
+        }
+        // Only a code-owned enum crosses this boundary, never a raw error.
+        if (category !== "terminal" && live(e)) { try { onReadFailure(category); } catch { /* No new authority. */ } }
+      }
+      throw new TypeError(UNAVAILABLE);
+    }
   }
   signal?.addEventListener("abort",dispose,{once:true});
   if (!live(epoch)) dispose();
   const ready=disposed?Promise.resolve(false):begin();
-  return Object.freeze({ready,snapshot,forget,dispose,
+  return Object.freeze({ready,snapshot,forget,dispose,attachHost,
     selection:()=>["unlocked","restoring"].includes(kind)&&live(epoch)?selected:null,
-    sessions:(q,s)=>read("sessions",q,s),conversation:(q,s)=>read("conversation",q,s),asks:(q,s)=>read("asks",q,s)});
+    sessions:(q,s)=>read("sessions",q,s),conversation:(q,s)=>read("conversation",q,s),asks:(q,s)=>read("asks",q,s),placement:(q,s)=>read("placement",q,s)});
 }
 
 // The only production DOM host. All body nodes are static and precede the
 // first classic script; this module itself has no initialization side effects.
 export function start(options) {
   const {window,document,build,signal,isCurrent}=options;
+  let input=options.fragment;options=null;
   if (!window || document?.defaultView !== window || typeof isCurrent !== "function") bad();
   const root=document.getElementById("nav-auth-root"), heading=document.getElementById("nav-auth-heading"),
     status=document.getElementById("nav-auth-status"), storage=document.getElementById("nav-auth-storage"), button=document.getElementById("nav-auth-forget");
   if (![root,heading,status,storage,button].every(Boolean)) bad();
   const owner={};owners.set(root,owner);
-  let session;
+  let session,host=null,disposed=false,disposing=false,pageLimits=null,retiredFocus=null;
+  const current=()=>{
+    if(disposed||signal?.aborted||owners.get(root)!==owner)return false;
+    try{return Boolean(isCurrent())&&!disposed&&owners.get(root)===owner;}catch{return false;}
+  };
   const onState=value=>{
-    if (owners.get(root)!==owner) return;
-    const focus=document.hasFocus()&&root.contains(document.activeElement);
-    status.textContent=value.message;storage.textContent=value.notice;button.hidden=!["unlocked","restoring"].includes(value.kind);
-    if (value.kind==="locked"&&isCurrent()&&focus) heading.focus({preventScroll:true});
+    if (!current()) return;
+    let focus=false;
+    try { focus=document.hasFocus()&&(root.contains(document.activeElement)||retiredFocus&&(document.activeElement===retiredFocus||document.activeElement===document.body)); }catch{}
+    if(!current())return;status.textContent=value.message;
+    if(!current())return;storage.textContent=value.notice;
+    if(!current())return;button.hidden=!["unlocked","restoring","terminal"].includes(value.kind);
+    if(!current())return;
+    if(["locked","terminal","disposed"].includes(value.kind)){retiredFocus=null;if(focus)heading.focus({preventScroll:true});}
   };
   const click=()=>session?.forget();button.addEventListener("click",click);
   try {
-    session=createTabSession({base:window.location.origin,build,signal,isCurrent,fragment:options.fragment,onState,
+    const raw=document.documentElement?.dataset?.aiqLimits;
+    if(typeof raw==="string"&&raw!==""){
+      const parts=raw.split(":");
+      if(parts.length!==5||parts.some(v=>!(/^[1-9][0-9]{0,15}$/).test(v)||!Number.isSafeInteger(Number(v))))bad();
+      const [body,placement,arrayEntries,stringUnits,rows]=parts.map(Number);pageLimits={body,placement,arrayEntries,stringUnits,rows};
+    }
+    session=createTabSession({base:window.location.origin,build,signal,isCurrent:current,fragment:input,onState,
+      limits:pageLimits?{sessions:pageLimits.body,conversation:pageLimits.body,asks:pageLimits.body,placement:pageLimits.placement}:undefined,
       fetcher:window.fetch.bind(window),getStorage:()=>window.sessionStorage});
   } catch { button.removeEventListener("click",click);if(owners.get(root)===owner)owners.delete(root);throw new TypeError(UNAVAILABLE); }
+  finally {input=null;}
+  // Empty metadata retains the standalone login host used by existing callers.
+  // Production construction supplies positive policy; this module chooses none.
+  if(pageLimits){
+    const {arrayEntries,stringUnits,rows}=pageLimits;
+    session.ready.then(async ready=>{
+      if(!ready||!current()||!["unlocked","restoring"].includes(session.snapshot().kind))return;
+      const module=await import("./app.js");
+      if(!current()||!["unlocked","restoring"].includes(session.snapshot().kind))return;
+      // A separate reader session is unnecessary: all fixed capabilities below
+      // use the original private credential and its epoch.
+      const app=module.createAppHost(document,{window,root:document.getElementById("nav-app-root"),isCurrent:current,
+        limits:{arrayEntries,stringUnits,rows},initialNext:session.selection()?.next,
+        readers:{sessions:session.sessions,conversation:session.conversation,asks:session.asks,placement:session.placement}});
+      if(!current()||!session.attachHost(()=>{
+        const old=host;host=null;
+        try{const focused=document.activeElement;if(document.hasFocus()&&document.getElementById("nav-app-root")?.contains(focused))retiredFocus=focused;}catch{}
+        old?.dispose();
+      })){app.dispose();return;}
+      host=app;
+      if(!current()||!app.mount()){host=null;app.dispose();session.dispose();}
+    }).catch(()=>{if(current()){const old=host;host=null;old?.dispose();session.dispose();}});
+  }
   const dispose=()=>{
-    button.removeEventListener("click",click);session.dispose();
-    if(owners.get(root)===owner)owners.delete(root);
+    if(disposed||disposing)return;disposing=true;
+    try{button.removeEventListener("click",click);}catch{}
+    try{session.dispose();}finally{
+      disposed=true;disposing=false;const old=host;host=null;try{old?.dispose();}catch{}
+      if(owners.get(root)===owner)owners.delete(root);
+    }
   };
   return Object.freeze({dispose});
 }

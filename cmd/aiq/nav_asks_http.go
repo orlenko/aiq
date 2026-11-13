@@ -19,6 +19,7 @@ import (
 )
 
 var errNavAsksAliasUnavailable = errors.New("asks aliases unavailable")
+var errNavAsksStoreUnavailable = errors.New("asks store unavailable")
 
 // Injected and unmounted. Authentication, the filesystem adapter, production
 // limits and registered observer delivery belong to the guarded factory.
@@ -50,6 +51,7 @@ const (
 	askHTTPCancelled
 	askHTTPInternal
 	askHTTPUnshowable
+	askHTTPUnavailable
 )
 
 var navAsksHTTPCodes = [...]struct {
@@ -59,6 +61,7 @@ var navAsksHTTPCodes = [...]struct {
 	{400, "invalid_request"}, {404, "not_found"}, {405, "method_not_allowed"},
 	{503, "asks_busy"}, {503, "asks_too_large"}, {503, "request_cancelled"},
 	{500, "internal_error"}, {500, "unshowable"},
+	{503, "asks_unavailable"},
 }
 
 type navAsksOutcome uint8
@@ -283,6 +286,9 @@ func (h *navAsksHandler) prepare(req *http.Request, release *func(), f *navAsksF
 		return h.failure(askHTTPCancelled, askOrdinary)
 	}
 	if err != nil {
+		if err == errNavAsksStoreUnavailable {
+			return h.failure(askHTTPUnavailable, askOrdinary)
+		}
 		if err == context.Canceled || err == context.DeadlineExceeded {
 			return h.failure(askHTTPCancelled, askOrdinary)
 		}

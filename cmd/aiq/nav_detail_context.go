@@ -81,6 +81,11 @@ func navDetailContextKey(parent, ctx context.Context, s *transcript.Session, sna
 		navDetailBool(f.leaseKnown), f.leaseIdentity); err != nil {
 		return transcript.ViewKey{}, err
 	}
+	if o.arrayEntries != 0 || o.stringUnits != 0 {
+		if err := frame.add("browser-structure-v1", strconv.FormatInt(o.arrayEntries, 10), strconv.FormatInt(o.stringUnits, 10)); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
 	for i := start; i < end; i++ {
 		account := convoAccountFact{}
 		if i < len(f.accounts) {

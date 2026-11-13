@@ -38,7 +38,13 @@ func (denyAll) Proof(*http.Request) bool { return false }
 
 // navBuildAssets are the navigator's embedded files, which the build string covers so a
 // page can tell when it is served by another build.
-var navBuildAssets = [][]byte{navShellTemplate, navBootstrapJS, navSessionJS, navCodecJS, navAuthCSS}
+var navBuildAssets = func() [][]byte {
+	out := [][]byte{navShellTemplate, navBootstrapJS, navSessionJS, navCodecJS, navAuthCSS}
+	for _, a := range navAdditionalAssets {
+		out = append(out, a.body)
+	}
+	return out
+}()
 
 // navBuild is "<version>+<hash of the navigator's files>".
 func navBuild() string {

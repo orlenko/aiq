@@ -25,17 +25,18 @@ var (
 const navConversationSafeInteger int64 = 1<<53 - 1
 
 type navConversationOptions struct {
-	provider, id          string
-	last                  int
-	anchor                int64
-	markup                bool
-	now                   time.Time
-	location              *time.Location
-	live, hold, stale     bool
-	accounts              []convoAccountFact
-	skippedNote, liveMark string
-	bodyBytes             int64
-	faults                *diagnostic.Latch
+	provider, id              string
+	last                      int
+	anchor                    int64
+	markup                    bool
+	now                       time.Time
+	location                  *time.Location
+	live, hold, stale         bool
+	accounts                  []convoAccountFact
+	skippedNote, liveMark     string
+	bodyBytes                 int64
+	arrayEntries, stringUnits int64 // HTTP/browser admission, included in view identity
+	faults                    *diagnostic.Latch
 }
 
 type navConversationRender func(*transcript.Session, convoStyledOptions) ([]convoStyledMessage, error)

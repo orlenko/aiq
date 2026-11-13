@@ -786,16 +786,16 @@ func TestNavSessionsConstructorAndRealCache(t *testing.T) {
 	for _, code := range []string{"invalid_request", "not_found", "method_not_allowed", "internal_error", "list_too_large", "request_cancelled", "list_busy"} {
 		minBody = max(minBody, len(`{"error":"`+code+`"}`))
 	}
-	for _, limits := range []navSessionsLimits{{0, 1024, 1}, {1024, 0, 1}, {1024, 1024, 0}, {1024, int64(minBody - 1), 1}} {
+	for _, limits := range []navSessionsLimits{{rowBytes: 0, bodyBytes: 1024, builders: 1}, {rowBytes: 1024, bodyBytes: 0, builders: 1}, {rowBytes: 1024, bodyBytes: 1024, builders: 0}, {rowBytes: 1024, bodyBytes: int64(minBody - 1), builders: 1}} {
 		if h, err := newNavSessionsHandler(base, limits); h != nil || err == nil {
 			t.Fatal("invalid limits accepted")
 		}
 	}
-	if _, err := newNavSessionsHandler(base, navSessionsLimits{1024, int64(minBody), 1}); err != nil {
+	if _, err := newNavSessionsHandler(base, navSessionsLimits{rowBytes: 1024, bodyBytes: int64(minBody), builders: 1}); err != nil {
 		t.Fatal("derived body minimum rejected")
 	}
 	for _, deps := range []navSessionsDeps{{source: base.source}, {summary: base.summary}} {
-		if h, err := newNavSessionsHandler(deps, navSessionsLimits{1024, 1024, 1}); h != nil || err == nil {
+		if h, err := newNavSessionsHandler(deps, navSessionsLimits{rowBytes: 1024, bodyBytes: 1024, builders: 1}); h != nil || err == nil {
 			t.Fatal("missing dependency accepted")
 		}
 	}
@@ -832,7 +832,7 @@ func TestNavSessionsConstructorAndRealCache(t *testing.T) {
 	roots := transcript.Roots{ClaudeProjects: []string{claudeRoot}, CodexSessions: []string{codexRoot}, AgyAppData: []string{agyRoot}}
 	cache := transcript.NewCache()
 	index := transcript.NewIndex(roots)
-	h, err := newNavSessionsHandler(navSessionsDeps{roots: roots, source: index, summary: cache.Summary}, navSessionsLimits{1 << 20, 1 << 20, 1})
+	h, err := newNavSessionsHandler(navSessionsDeps{roots: roots, source: index, summary: cache.Summary}, navSessionsLimits{rowBytes: 1 << 20, bodyBytes: 1 << 20, builders: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

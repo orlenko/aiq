@@ -26,6 +26,9 @@ function scope(value) {
 export function createSessionController(document, options) {
   const {window, idPrefix} = options || {};
   let {readSessions, readConversation, copyText, announce} = options || {};
+  const selectedCallback=Object.getOwnPropertyDescriptor(options ?? {},"onSelection");
+  let onSelection=selectedCallback?.value ?? (()=>{});
+  if (selectedCallback && (!Object.hasOwn(selectedCallback,"value") || typeof selectedCallback.value!=="function")) fail();
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
       !/^[A-Za-z][A-Za-z0-9_-]*$/.test(idPrefix) ||
       ![readSessions, readConversation, copyText, announce].every(f => typeof f === "function")) fail();
@@ -253,6 +256,9 @@ export function createSessionController(document, options) {
     } catch { failed(op, detailPane); return; }
     finally { retire(previous); }
     if (!alive(op)) return;
+    try { onSelection(Object.freeze({...op.query})); }
+    catch { failed(op,detailPane);return; }
+    if (!alive(op)) return;
     status(op, detailPane, "Loading conversation.", true);
     if (alive(op)) read(op, readConversation, {...op.query, ...detailQuery}, detailPane, detailCommit);
   }
@@ -272,7 +278,7 @@ export function createSessionController(document, options) {
     selection = listQuery = activeScope = null;
     clearList(); for (const remove of removes) remove(); removes.length = 0;
     retireMany(oldList, oldDetail); root.remove();
-    readSessions = readConversation = copyText = announce = null;
+    readSessions = readConversation = copyText = announce = onSelection = null;
   }
   function mount() {
     if (disposed) return false;
