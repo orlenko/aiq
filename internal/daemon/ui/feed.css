@@ -1,0 +1,15 @@
+.nav-feed { min-width: 0; max-width: 100%; }
+.nav-feed .nav-feed-message, .nav-feed .nav-feed-body { min-width: 0; margin: 0; }
+.nav-feed .nav-feed-prompt, .nav-feed .nav-feed-answer {
+  margin: 0; padding: 0; line-height: 1.5; font: inherit;
+  overflow-wrap: anywhere; unicode-bidi: plaintext;
+}
+.nav-feed .nav-feed-prompt { font-weight: bold; background-color: var(--nav-band, transparent); }
+.nav-feed .nav-feed-answer { color: var(--nav-agent, currentColor); }
+.nav-feed .nav-feed-earlier { color: var(--nav-muted, currentColor); }
+.nav-feed .nav-feed-break { height: 1.5em; }
+.nav-feed .nav-feed-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5em; margin-block: .25em; }
+.nav-feed .nav-feed-copy { font: inherit; min-height: 2.5em; padding: .25em .75em; cursor: pointer; }
+.nav-feed .nav-feed-copy:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.nav-feed .nav-feed-copy[aria-disabled="true"] { cursor: progress; }
+.nav-feed .nav-feed-account { overflow-wrap: anywhere; color: var(--nav-muted, currentColor); }

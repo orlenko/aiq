@@ -4,6 +4,15 @@ const classes = new Map([
   "b", "dim", "i", "u", "inverse", "band", "you", "agent", "muted", "accent", "code",
 ].map(name => [name, `nav-md-${name}`]));
 
+// Return an owned result; the closed catalog itself never leaves this module.
+export function lineClassNames(value) {
+  const out = [];
+  for (const name of Array.isArray(value) ? value : []) {
+    if (classes.has(name)) out.push(classes.get(name));
+  }
+  return out;
+}
+
 export function renderLines(document, lines, options) {
   if (!options || typeof options.markup !== "boolean" ||
       !options.window || document.defaultView !== options.window) {
@@ -14,6 +23,7 @@ export function renderLines(document, lines, options) {
   const fragment = document.createDocumentFragment();
   let root = document.createElement("div");
   root.className = "nav-md";
+  for (const name of lineClassNames(options.base)) root.classList.add(name);
   fragment.append(root);
   const groups = [];
   let runKind = "", run = null;
@@ -51,11 +61,7 @@ export function renderLines(document, lines, options) {
     for (const span of Array.isArray(line.spans) ? line.spans : []) {
       if (!span || typeof span !== "object" || Array.isArray(span) || typeof span.t !== "string") continue;
       const node = document.createElement("span");
-      if (Array.isArray(span.c)) {
-        for (const name of span.c) {
-          if (classes.has(name)) node.classList.add(classes.get(name));
-        }
-      }
+      for (const name of lineClassNames(span.c)) node.classList.add(name);
       if (span.d === true) node.setAttribute("aria-hidden", "true");
       node.textContent = span.t;
       element.append(node);
