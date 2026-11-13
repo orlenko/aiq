@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	_ "embed"
@@ -146,7 +147,20 @@ const identityHeader = "X-Aiq-Daemon"
 // Identity is the identity header's value on this machine. It is keyed because health
 // output gets pasted around, and a machine ID should not be shown directly.
 func Identity() string {
-	id := pool.Hostname()
+	return identityValue(pool.Hostname())
+}
+
+// IdentityContext is the bounded fresh acquisition used by manual navigator
+// commands. It preserves Identity's exact HMAC, without its legacy cache.
+func IdentityContext(ctx context.Context) (string, error) {
+	id, err := pool.HostnameContext(ctx)
+	if err != nil {
+		return "", pool.ErrIdentityUnavailable
+	}
+	return identityValue(id), nil
+}
+
+func identityValue(id string) string {
 	if id == "" {
 		return ""
 	}
