@@ -196,7 +196,13 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		return failure
 	}
 	if err != nil {
-		return h.failure(navDetailErrorCode(err), started)
+		// The selected transcript already exists. Auxiliary facts failures
+		// cannot establish that it disappeared or exceeded a parser limit.
+		code := navDetailInternal
+		if errors.Is(err, transcript.ErrPreparing) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			code = navDetailPreparing
+		}
+		return h.failure(code, started)
 	}
 	facts, err = navDetailOwnFacts(facts, len(s.Turns))
 	if failure, stopped := check(); stopped {
