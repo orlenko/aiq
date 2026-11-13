@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -66,7 +67,7 @@ func cmdAccount(args []string) error {
 		return nil
 	case "authorize":
 		if len(rest) < 1 {
-			return fmt.Errorf("usage: aiq account authorize claude/<name>")
+			return fmt.Errorf("usage: aiq account authorize claude/<name> | codex/<name>")
 		}
 		return a.accountAuthorize(rest[0])
 	case "poll":
@@ -365,6 +366,9 @@ func (a *app) accountLogin(id string) error {
 	if err := a.prepareHome(acc); err != nil {
 		return err
 	}
+	// who is the identity the login itself reported, where it can differ
+	// from the account's.
+	who := ""
 	switch acc.Provider {
 	case "claude":
 		p, err := a.claudeProvider()
@@ -414,9 +418,7 @@ func (a *app) accountLogin(id string) error {
 		if err := p.Login(acc.Home, acc.Native); err != nil {
 			return err
 		}
-		if email, _ := codex.Identity(codex.AuthPath(acc.Home)); email != "" {
-			acc.Identity = email
-		}
+		acc, who = a.checkCodexLogin(acc)
 	case "agy":
 		p, err := a.agyProvider()
 		if err != nil {
@@ -457,7 +459,47 @@ func (a *app) accountLogin(id string) error {
 	a.st.UpdateAccount(acc)
 	a.st.LogEvent(acc.Provider, acc.ID, "login", acc.Identity, time.Now())
 	a.warnDuplicateIdentity(acc)
-	fmt.Printf("%s logged in%s\n", id, identitySuffix(acc.Identity))
+	fmt.Printf("%s logged in%s\n", id, identitySuffix(cmp.Or(who, acc.Identity)))
+	return nil
+}
+
+// checkCodexLogin compares the email a Codex login left in the home with
+// the account's identity. A login as someone else keeps the identity, so
+// the account is held from routing instead of spending the other person's
+// quota, and says how to settle it.
+func (a *app) checkCodexLogin(acc state.Account) (state.Account, string) {
+	email, _ := codex.Identity(codex.AuthPath(acc.Home))
+	if email == "" {
+		fmt.Fprintf(os.Stderr, "aiq: warning: could not read which account signed in to %s; aiq keeps it recorded as %s\n", acc.ID, cmp.Or(acc.Identity, "unknown"))
+		return acc, ""
+	}
+	stored := acc.Identity
+	acc, mismatch := a.pool.RecordCodexLogin(acc, email, time.Now())
+	if mismatch {
+		fmt.Fprintf(os.Stderr, "aiq: warning: %s is now logged in as %s, but aiq has it as %s; aiq will not route to it until they match.\n"+
+			"aiq: log in again as %s, or if the account really changed hands, run: aiq account authorize %s\n", acc.ID, email, stored, stored, shellQuote(acc.ID))
+	}
+	return acc, email
+}
+
+// accountAuthorizeCodex confirms that a Codex account changed hands: it
+// adopts the email its home is logged in as. It reads only that home's
+// auth.json, with no browser and no network.
+func (a *app) accountAuthorizeCodex(acc state.Account) error {
+	email, _ := codex.Identity(codex.AuthPath(acc.Home))
+	if email == "" {
+		return fmt.Errorf("cannot read which account %s is logged in as (%s); run: aiq account login %s", acc.ID, shortHome(codex.AuthPath(acc.Home)), shellQuote(acc.ID))
+	}
+	was := acc.Identity
+	acc.Identity = email
+	if err := a.st.UpdateAccount(acc); err != nil {
+		return err
+	}
+	now := time.Now()
+	a.st.SetCLILogin(acc.ID, true, email, now)
+	a.st.LogEvent(acc.Provider, acc.ID, "login", fmt.Sprintf("identity confirmed: was %s, now %s", cmp.Or(was, "none"), email), now)
+	fmt.Printf("%s identity: was %s, now %s\n", acc.ID, cmp.Or(was, "none"), email)
+	a.warnDuplicateIdentity(acc)
 	return nil
 }
 
@@ -471,8 +513,11 @@ func (a *app) accountAuthorize(id string) error {
 	if err != nil {
 		return err
 	}
+	if acc.Provider == "codex" {
+		return a.accountAuthorizeCodex(acc)
+	}
 	if acc.Provider != "claude" {
-		return fmt.Errorf("only Claude accounts need a poll grant; Codex and Antigravity are polled through their own CLIs")
+		return fmt.Errorf("only Claude accounts (poll grant) and Codex accounts (confirm the logged-in identity) can be authorized; %s is polled through its own CLI", acc.ID)
 	}
 	fmt.Fprintf(os.Stderr, "Step 2/2 for %s: quota polling grant.\n", id)
 	g, err := claude.Authorize(os.Stdin, os.Stderr)
@@ -954,6 +999,11 @@ func (a *app) accountImport(args []string) error {
 		if qa.Provider == "codex" && !known {
 			if err := codex.ImportAuth(qa.Credentials, acc.Home); err != nil {
 				return fmt.Errorf("%s: %w", qa.ID, err)
+			}
+			// The poll checks the account against the email in auth.json,
+			// so record the same value rather than aiquota's.
+			if email, _ := codex.Identity(codex.AuthPath(acc.Home)); email != "" {
+				acc.Identity = email
 			}
 			if err := a.prepareHome(acc); err != nil {
 				return err

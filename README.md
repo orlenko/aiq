@@ -1008,7 +1008,12 @@ successful. For a manual pause, use `aiq account disable codex/<name>` and later
 Sign in as the intended account at each browser step: sign out of claude.ai
 or chatgpt.com first, or use a private window, so the browser does not hand
 back the account it is already signed in as. aiq warns when two accounts
-turn out to be the same login.
+turn out to be the same login. When a Claude account with a poll grant, or a
+Codex account, is logged in as someone other than the account aiq recorded,
+aiq keeps the recorded identity, warns, and does not route to the account
+until a login as the right person; if the account really changed hands, run
+`aiq account authorize <provider>/<name>` (for Codex it accepts the login in
+the home, with no browser).
 
 If you run [aiquota](https://github.com/orlenko/misc/tree/main/quota-monitor) on the same machine,
 `aiq account import` adopts its accounts instead: Codex `auth.json` files and
@@ -1034,6 +1039,7 @@ aiq account add <provider> <name> [--device-auth|--browser]
 aiq account login <provider>/<name> [--device-auth|--browser]
                                      redo the CLI login
 aiq account authorize claude/<name>  redo the quota poll grant
+aiq account authorize codex/<name>   accept a new login as the account's identity
 aiq account poll [<id>...]           poll now
 aiq account label <id> <text>        label shown on the status page
 aiq account order [<id>...]          display order within each provider column

@@ -76,6 +76,7 @@ Pool:
     For Codex, add and login take --device-auth or --browser; with neither, an
     SSH session or a Linux machine with no display gets the device code.
   aiq account authorize claude/<name>      (re)mint the quota poll grant
+  aiq account authorize codex/<name>       accept the account the home is logged in as
   aiq account poll [<provider>/<name>...]  poll now
   aiq account label <provider>/<name> <text>
   aiq account order [<provider>/<name>...]  display order (per provider column)
