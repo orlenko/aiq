@@ -65,8 +65,9 @@ type viewOwner struct {
 	parsed *parsed
 }
 type brokenView struct {
-	shape viewShape
-	owner *viewOwner
+	shape  viewShape
+	owner  *viewOwner
+	origin diagnostic.Origin
 }
 type heldView struct {
 	key  ViewKey
@@ -83,10 +84,11 @@ type viewBuildKey struct {
 }
 
 type viewFlight struct {
-	done  chan struct{}
-	view  *View
-	err   error
-	owner *viewOwner
+	done   chan struct{}
+	view   *View
+	err    error
+	owner  *viewOwner
+	origin diagnostic.Origin // immutable after done, independent of result identity
 }
 type viewState struct {
 	views       map[ViewKey]*list.Element
@@ -131,6 +133,7 @@ func (c *Cache) ViewContext(ctx context.Context, k ViewKey, build func() (*View,
 			return nil, err
 		}
 		v, err, f, changed, found, _ := c.viewRole(ctx, k, build, false)
+		noteViewResult(ctx, err, f)
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
 		}
@@ -154,6 +157,7 @@ func (c *Cache) ViewContext(ctx context.Context, k ViewKey, build func() (*View,
 		if !launched {
 			<-c.viewSem
 		}
+		noteViewResult(ctx, err, f)
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
 		}
@@ -172,8 +176,9 @@ func (c *Cache) viewRole(ctx context.Context, k ViewKey, build func() (*View, er
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	defer func() {
-		if recover() != nil {
-			v, err, f, found = nil, ErrUnshowable, nil, true
+		if value := recover(); value != nil {
+			origin := capturePanic(value)
+			v, err, f, found = nil, diagnostic.Failure(diagnostic.Unshowable, origin), nil, true
 		}
 	}()
 	if err = ctx.Err(); err != nil {
@@ -183,7 +188,7 @@ func (c *Cache) viewRole(ctx context.Context, k ViewKey, build func() (*View, er
 	c.heldLocked()
 	if el := c.broken[shapeOf(k)]; el != nil {
 		c.brokenLRU.MoveToFront(el)
-		err, found = ErrUnshowable, true
+		err, found = diagnostic.Failure(diagnostic.Unshowable, el.Value.(*brokenView).origin), true
 		return
 	}
 	if el := c.views[k]; el != nil && el.Value.(*viewEntry).view != nil {
@@ -228,12 +233,27 @@ func (c *Cache) viewRole(ctx context.Context, k ViewKey, build func() (*View, er
 func waitView(ctx context.Context, f *viewFlight) (*View, error) {
 	select {
 	case <-ctx.Done():
+		noteViewResult(ctx, nil, f)
 		return nil, ctx.Err()
 	case <-f.done:
+		diagnostic.Note(ctx, f.origin)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		return f.view, f.err
+	}
+}
+
+// Selected errors and already completed flights are observed only after the
+// cache lock and any borrowed slot have been released. Never wait for metadata.
+func noteViewResult(ctx context.Context, err error, f *viewFlight) {
+	diagnostic.Note(ctx, PanicOrigin(err))
+	if f != nil {
+		select {
+		case <-f.done:
+			diagnostic.Note(ctx, f.origin)
+		default:
+		}
 	}
 }
 func (c *Cache) viewChangedLocked() { close(c.viewChanged); c.viewChanged = make(chan struct{}) }
@@ -297,15 +317,20 @@ func (c *Cache) flyView(bk viewBuildKey, f *viewFlight, build func() (*View, err
 	var v *View
 	var err error
 	var rendererFailure, ordinary bool
+	var faults diagnostic.Latch
 	defer func() {
-		if recover() != nil && !ordinary {
-			v, err = nil, ErrUnshowable
-			rendererFailure = false
+		if value := recover(); value != nil {
+			faults.Note(capturePanic(value))
+			if !ordinary {
+				v, err = nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
+				rendererFailure = false
+			}
 		}
-		c.finishView(bk, f, v, err, rendererFailure, ordinary)
+		c.finishView(bk, f, v, err, rendererFailure, ordinary, faults.Origin())
 	}()
 	start := c.now()
 	v, err = buildView(build)
+	faults.Note(PanicOrigin(err))
 	rendererFailure = errors.Is(err, ErrUnshowable)
 	ordinary = err != nil && !rendererFailure
 	c.stats.viewBuilds.Add(1)
@@ -313,8 +338,8 @@ func (c *Cache) flyView(bk viewBuildKey, f *viewFlight, build func() (*View, err
 }
 func buildView(build func() (*View, error)) (v *View, err error) {
 	defer func() {
-		if recover() != nil {
-			v, err = nil, ErrUnshowable
+		if value := recover(); value != nil {
+			v, err = nil, diagnostic.Failure(diagnostic.Unshowable, capturePanic(value))
 		}
 	}()
 	v, err = build()
@@ -323,10 +348,14 @@ func buildView(build func() (*View, error)) (v *View, err error) {
 	}
 	return
 }
-func (c *Cache) finishView(bk viewBuildKey, f *viewFlight, v *View, err error, rendererFailure, ordinary bool) {
+func (c *Cache) finishView(bk viewBuildKey, f *viewFlight, v *View, err error, rendererFailure, ordinary bool, origin diagnostic.Origin) {
+	var faults diagnostic.Latch
+	faults.Note(origin)
+	faults.Note(PanicOrigin(err))
 	k := bk.key
 	c.mu.Lock()
 	defer func() {
+		f.origin = faults.Origin()
 		if c.building[bk] == f {
 			delete(c.building, bk)
 		}
@@ -337,8 +366,11 @@ func (c *Cache) finishView(bk viewBuildKey, f *viewFlight, v *View, err error, r
 		c.mu.Unlock()
 	}()
 	defer func() {
-		if recover() != nil && !ordinary {
-			f.view, f.err = nil, ErrUnshowable
+		if value := recover(); value != nil {
+			faults.Note(capturePanic(value))
+			if !ordinary {
+				f.view, f.err = nil, diagnostic.Failure(diagnostic.Unshowable, faults.Origin())
+			}
 		}
 	}()
 	f.view, f.err = v, err
@@ -359,7 +391,7 @@ func (c *Cache) finishView(bk viewBuildKey, f *viewFlight, v *View, err error, r
 	}
 	switch {
 	case rendererFailure:
-		c.breakViewLocked(shapeOf(k), f.owner)
+		c.breakViewLocked(shapeOf(k), f.owner, faults.Origin())
 	case err == nil:
 		c.admitViewLocked(k, f.view)
 	}
@@ -427,12 +459,16 @@ func (c *Cache) removeViewLocked(el *list.Element) {
 	delete(c.views, e.key)
 	c.pruneViewOwnerLocked(e.key.Snap.Path)
 }
-func (c *Cache) breakViewLocked(shape viewShape, owner *viewOwner) {
+func (c *Cache) breakViewLocked(shape viewShape, owner *viewOwner, origin diagnostic.Origin) {
 	if el := c.broken[shape]; el != nil {
+		b := el.Value.(*brokenView)
+		if b.owner == owner && !b.origin.Present() && origin.Present() {
+			b.origin = origin
+		}
 		c.brokenLRU.MoveToFront(el)
 		return
 	}
-	c.broken[shape] = c.brokenLRU.PushFront(&brokenView{shape: shape, owner: owner})
+	c.broken[shape] = c.brokenLRU.PushFront(&brokenView{shape: shape, owner: owner, origin: origin})
 	for c.brokenLRU.Len() > c.cfg.viewFailures {
 		c.removeBrokenViewLocked(c.brokenLRU.Back())
 	}
