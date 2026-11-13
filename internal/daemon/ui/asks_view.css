@@ -1,0 +1,19 @@
+.nav-asks { min-width: 0; color: var(--fg); }
+.nav-asks-heading, .nav-asks-group-heading, .nav-asks-item-heading { overflow-wrap: anywhere; }
+.nav-asks-button { font: inherit; box-sizing: border-box; max-width: calc(100% - .5rem); white-space: normal; overflow-wrap: anywhere; margin: .25rem; }
+.nav-asks-region, .nav-asks-item, .nav-asks-body, .nav-asks-quote, .nav-asks-details { min-width: 0; }
+.nav-asks-item { border-top: 1px solid var(--border); padding: .75rem 0; }
+.nav-asks-source, .nav-asks-state, .nav-asks-scope, .nav-asks-report, .nav-asks-details, .nav-asks-totals { white-space: pre-wrap; overflow-wrap: anywhere; }
+.nav-asks-status { min-height: 1.5em; }
+.nav-asks [hidden] { display: none; }
+
+.nav-asks .nav-asks-moved-heading,
+.nav-asks .nav-asks-moved-day,
+.nav-asks .nav-asks-moved-counts,
+.nav-asks .nav-asks-moved-entry {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nav-asks .nav-asks-moved-list { padding-inline-start: 1.5em; }
+.nav-asks .nav-asks-moved-button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.nav-asks .nav-asks-moved-target:focus { outline: 2px solid currentColor; outline-offset: 2px; }
