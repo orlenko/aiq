@@ -50,6 +50,9 @@ func TestNativeAndTmuxStartRespectRealPreleasePane(t *testing.T) {
 	if !tmux.Available() {
 		t.Skip("tmux unavailable")
 	}
+	clearLongContext(t)
+	t.Setenv("HC_TERMINAL_ID", "t1")
+	t.Setenv("HC_TERMINAL_SOCKET", "/invented/owner")
 	for _, self := range []bool{false, true} {
 		t.Run(fmt.Sprint(self), func(t *testing.T) {
 			t.Setenv("AIQ_DATA_DIR", t.TempDir())
@@ -108,7 +111,7 @@ func TestNativeAndTmuxStartRespectRealPreleasePane(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, backend := range []string{"tmux", "herdr"} {
+			for _, backend := range []string{"tmux", "herdr", ""} {
 				a.longBackend = backend
 				target, attached, err := a.longExisting(ws)
 				target.unlock()

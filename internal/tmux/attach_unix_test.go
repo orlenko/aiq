@@ -112,7 +112,16 @@ func TestAttachControlBoundsAndNoFallback(t *testing.T) {
 			if mode == "invalid-pane" {
 				pane = "%17;new-session"
 			}
-			action, err := prepareAttach(pane, 2468, env, binary, 50*time.Millisecond)
+			budget := 4 * time.Second
+			if mode == "blocked" {
+				budget = time.Second
+			}
+			started := time.Now()
+			action, err := prepareAttach(pane, 2468, env, binary, budget)
+			elapsed := time.Since(started)
+			if mode == "blocked" && (elapsed < budget/2 || elapsed > budget+3*time.Second) {
+				t.Fatalf("blocked control elapsed %v, want between %v and %v", elapsed, budget/2, budget+3*time.Second)
+			}
 			if mode == "attach-failure" {
 				if err != nil {
 					t.Fatal(err)
