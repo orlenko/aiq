@@ -84,9 +84,12 @@ func (a *navAuthAdapter) Credential(value string) bool {
 type navAuthAttemptKey struct{}
 type navAuthBodyKey struct{}
 type navAuthFactsKey struct{}
+type navAuthLoginKey struct{}
+type navAuthLoginInvocation struct{ interrupted bool }
 type navAuthBody struct {
 	owner                      *navAuthAdapter
 	busy, valid                bool
+	invalid, proofBusy         bool
 	method, path, action, code string
 	raw                        []byte
 }
@@ -125,6 +128,9 @@ func navAuthFraming(r *http.Request) bool {
 		return false
 	}
 	if _, _, present := navAuthHeader(r.Header, "Content-Encoding"); present {
+		return false
+	}
+	if _, _, present := navAuthHeader(r.Header, "Trailer"); present {
 		return false
 	}
 	contentType, count, present := navAuthHeader(r.Header, "Content-Type")
@@ -183,7 +189,10 @@ func (a *navAuthAdapter) ownedBody(r *http.Request) (*navAuthBody, bool) {
 		return nil, false
 	}
 	if cached, ok := r.Context().Value(navAuthBodyKey{}).(*navAuthBody); ok {
-		return cached, cached != nil && cached.owner == a && !cached.busy && cached.valid
+		if cached != nil && cached.busy {
+			cached.invalid = true
+		}
+		return cached, cached != nil && cached.owner == a && !cached.busy && !cached.invalid && cached.valid
 	}
 	if !navAuthFraming(r) {
 		return nil, false
@@ -200,7 +209,7 @@ func (a *navAuthAdapter) ownedBody(r *http.Request) (*navAuthBody, bool) {
 	if r.Body != nil {
 		b.raw, err = io.ReadAll(io.LimitReader(r.Body, limit))
 	}
-	if err != nil || len(b.raw) > navauth.MaxRequest || length >= 0 && int64(len(b.raw)) != length || !utf8.Valid(b.raw) {
+	if err != nil || b.invalid || len(r.Trailer) != 0 || len(b.raw) > navauth.MaxRequest || length >= 0 && int64(len(b.raw)) != length || !utf8.Valid(b.raw) {
 		return b, false
 	}
 	if b.method == "GET" {
@@ -240,6 +249,9 @@ func (a *navAuthAdapter) Proof(r *http.Request) bool {
 	proof, err := navauth.ParseProof(header)
 	if err != nil {
 		return false
+	}
+	if cached, ok := r.Context().Value(navAuthBodyKey{}).(*navAuthBody); ok && cached != nil && cached.owner == a && cached.busy {
+		cached.proofBusy, cached.invalid = true, true
 	}
 	b, ok := a.ownedBody(r)
 	if !ok || b.path == "/api/nav/hello" || b.path == "/api/nav/login" && b.action != "issue" || r.Context().Err() != nil {
@@ -418,7 +430,28 @@ func (a *navAuthAdapter) Hello(w http.ResponseWriter, r *http.Request) {
 	navAuthWrite(w, r, navAuthReply{status: 200, body: body, hello: navauth.Encode32(mac)})
 }
 func (a *navAuthAdapter) Login(w http.ResponseWriter, r *http.Request) {
+	if r == nil {
+		navAuthWrite(w, r, navAuthError(400, "invalid_request"))
+		return
+	}
+	if invocation, ok := r.Context().Value(navAuthLoginKey{}).(*navAuthLoginInvocation); ok && invocation != nil {
+		invocation.interrupted = true
+		return // the original invocation alone owns output and privileged work
+	}
+	invocation := &navAuthLoginInvocation{}
+	*r = *r.WithContext(context.WithValue(r.Context(), navAuthLoginKey{}, invocation))
 	b, ok := a.ownedBody(r)
+	if invocation.interrupted {
+		if b != nil {
+			b.invalid, b.valid = true, false
+		}
+		navAuthWrite(w, r, navAuthError(400, "invalid_request"))
+		return
+	}
+	if b != nil && b.owner == a && b.proofBusy {
+		navAuthWrite(w, r, navAuthReply{status: 401})
+		return
+	}
 	if !ok || b.path != "/api/nav/login" {
 		navAuthWrite(w, r, navAuthError(400, "invalid_request"))
 		return
