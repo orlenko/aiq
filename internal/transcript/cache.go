@@ -353,6 +353,50 @@ func (c *Cache) fly(f *flight) {
 		c.finishFlight(f, s, err)
 	}()
 	s, err = c.runParse(f.snap)
+	if err == nil && s != nil {
+		s = ownedCachedSession(s)
+	}
+}
+
+// ownedCachedSession detaches the retained graph from parser backing storage.
+// A short substring or an empty slice must not keep discarded records alive.
+// This runs outside mu and parser recovery, under the admitted parse slot.
+func ownedCachedSession(s *Session) *Session {
+	out := *s
+	out.Provider, out.ID = strings.Clone(s.Provider), strings.Clone(s.ID)
+	out.Path, out.Cwd = strings.Clone(s.Path), strings.Clone(s.Cwd)
+	out.Title, out.Branch, out.Model = strings.Clone(s.Title), strings.Clone(s.Branch), strings.Clone(s.Model)
+	if s.Turns != nil {
+		out.Turns = make([]Turn, len(s.Turns))
+		copy(out.Turns, s.Turns)
+		for i := range out.Turns {
+			t := &out.Turns[i]
+			t.Prompt, t.Reply = strings.Clone(t.Prompt), strings.Clone(t.Reply)
+			t.Steers = ownedCachedStrings(t.Steers)
+			t.Earlier = ownedCachedStrings(t.Earlier)
+			if t.Items != nil {
+				items := make([]TurnItem, len(t.Items))
+				copy(items, t.Items)
+				for j := range items {
+					items[j].Text = strings.Clone(items[j].Text)
+					items[j].MsgID = strings.Clone(items[j].MsgID)
+				}
+				t.Items = items
+			}
+		}
+	}
+	return &out
+}
+
+func ownedCachedStrings(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, text := range in {
+		out[i] = strings.Clone(text)
+	}
+	return out
 }
 
 // finishFlight owns terminal publication. Roles cannot join between capturing
@@ -464,7 +508,15 @@ func (c *Cache) heldLocked() *parsed {
 // already: then it is held, not admitted, for the floor, its bytes counting
 // against the budget while held.
 func (c *Cache) admitLocked(snap Snapshot, s *Session) {
+	if snap.Path == s.Path {
+		snap.Path = s.Path
+	} else {
+		snap.Path = strings.Clone(snap.Path)
+	}
 	p := &parsed{snap: snap, sess: s, bytes: sessionBytes(s), at: c.now()}
+	if snap.Path != s.Path {
+		p.bytes += int64(len(snap.Path))
+	}
 	h := c.heldLocked()
 	// Even an equal snapshot can be a new parse incarnation. Do this after
 	// fallible accounting/timing, before replacing any authoritative parse.
@@ -495,6 +547,8 @@ func (c *Cache) admitLocked(snap Snapshot, s *Session) {
 		c.fullBytes -= el.Value.(*parsed).bytes
 		el.Value = p
 		c.fullLRU.MoveToFront(el)
+		delete(c.full, snap.Path)
+		c.full[snap.Path] = el
 	} else {
 		c.full[snap.Path] = c.fullLRU.PushFront(p)
 	}
@@ -714,7 +768,7 @@ func estimateRowBytes(r *row) int64 {
 // each turn and item.
 func sessionBytes(s *Session) int64 {
 	const sessionCost, turnCost, itemCost, stringCost = 512, 320, 96, 16
-	n := int64(sessionCost + len(s.ID) + len(s.Path) + len(s.Cwd) + len(s.Title) + len(s.Branch) + len(s.Model))
+	n := int64(sessionCost + len(s.Provider) + len(s.ID) + len(s.Path) + len(s.Cwd) + len(s.Title) + len(s.Branch) + len(s.Model))
 	for i := range s.Turns {
 		t := &s.Turns[i]
 		n += int64(turnCost + len(t.Prompt) + len(t.Reply))
