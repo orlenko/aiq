@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <!-- The isolated fixture server supplies the actual navigator CSP header. -->
+  <title>Invented controller component fixture</title>
+  <link rel="stylesheet" href="dom.css">
+  <link rel="stylesheet" href="feed.css">
+  <link rel="stylesheet" href="session_controller.css">
+  <link rel="stylesheet" href="controller_browser.css">
+  <script type="module" src="controller_browser.mjs"></script>
+</head>
+<body>
+  <main class="controller-fixture">
+    <h1>Invented controller component fixture</h1>
+    <p>Injected invented responses only. Copy records a value in memory.</p>
+    <div class="controller-fixture-actions">
+      <button type="button" id="fixture-load">Load invented sessions</button>
+      <button type="button" id="fixture-deliver-a">Deliver A</button>
+      <button type="button" id="fixture-deliver-b">Deliver B</button>
+      <button type="button" id="fixture-neighbor">Mount second instance</button>
+      <button type="button" id="fixture-dispose">Dispose first instance</button>
+    </div>
+    <button type="button" id="fixture-focus-neighbor">Independent focus neighbor</button>
+    <div id="fixture-first"></div>
+    <div id="fixture-second"></div>
+  </main>
+</body>
+</html>
