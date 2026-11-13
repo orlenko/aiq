@@ -113,7 +113,7 @@ func PrepareAttach(pane string, pid int) (func() error, error) {
 }
 
 func prepareAttach(pane string, pid int, environment []string, binary string, timeout time.Duration) (func() error, error) {
-	if !attachToken(pane, '%') || pid <= 0 || !filepath.IsAbs(binary) || timeout <= 0 {
+	if !attachToken(pane, '%') || pid <= 0 || !filepath.IsAbs(binary) || timeout < 4*time.Nanosecond {
 		return nil, ErrAttachChanged
 	}
 	env := append([]string(nil), environment...)
@@ -127,9 +127,13 @@ func prepareAttach(pane string, pid int, environment []string, binary string, ti
 		args = append(args, "-S", socket)
 	}
 	args = append(args, "display-message", "-p", "-t", pane, attachFormat)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Reserve part of the nominal control budget for pipes retained after the
+	// command exits. Cancellation alone cannot bound os/exec's EOF wait.
+	drain := min(100*time.Millisecond, timeout/4)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout-drain)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.WaitDelay = drain
 	cmd.Env, cmd.Stdin, cmd.Stderr = env, nil, io.Discard
 	capture := &attachCapture{bytes: make([]byte, 0, attachMetadataLimit)}
 	cmd.Stdout = capture
