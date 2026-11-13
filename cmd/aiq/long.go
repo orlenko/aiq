@@ -30,15 +30,25 @@ import (
 // aiq long resume [--account <name>] [<id>]       the same, as the session ran
 // aiq long list                   long sessions and their drain state
 // aiq long drain <lease-id|.>     ask a session to wrap up and move now
-// aiq long attach [.]             attach to this workspace's session
+// aiq long attach [.|<id> [--started <unix>]] attach the workspace or an exact lease
 // aiq long stop <lease-id|.>      end the session and its tmux session
 func cmdLong(args []string) error {
+	explicitBackend := len(args) > 0 && (args[0] == "--backend" || strings.HasPrefix(args[0], "--backend="))
 	backend, args, err := longBackendArgs(args)
 	if err != nil {
 		return configErr("bad-flags", "%v", err)
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq long %s|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | [auto] resume [--account <name>] [<id>] | list | drain <id|.> | attach [.] | stop <id|.>", config.ProviderList("|"))
+		return fmt.Errorf("usage: aiq long %s|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | [auto] resume [--account <name>] [<id>] | list | drain <id|.> | attach [.|<id> [--started <unix-seconds>]] | stop <id|.>", config.ProviderList("|"))
+	}
+	if args[0] == "attach" {
+		o, err := parseLongAttachArgs(args[1:], explicitBackend)
+		if err != nil {
+			return configErr("bad-flags", "%v", err)
+		}
+		if !o.legacy {
+			return runLongAttach(o, os.Stdout)
+		}
 	}
 	a, err := openApp()
 	if err != nil {

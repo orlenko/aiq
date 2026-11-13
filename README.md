@@ -194,8 +194,16 @@ aiq long resume [--account <name>] [<id>]
 aiq long list                       leases, pane, drain state, idle/busy, why it waits
 aiq long drain .                    move this workspace's session now
 aiq long attach                     re-attach
+aiq long attach <lease-id> [--started <unix-seconds>]
+                                    attach the recorded local lease
 aiq long stop .                     end it
 ```
+
+`aiq long list` supplies the lease ID. A copied `--started` value must match
+that lease's Unix start time. Exact attachment reads existing state and prints
+the quoted workspace and account before opening the saved terminal. Tmux lookup
+uses the caller's current/default server; another server context refuses.
+The saved lease selects its backend, so omit `--backend` on this form.
 
 Choose the initial account with `aiq long codex --account acme -- --yolo`
 (or `--account=acme`). This also works with Claude and named launchers.
