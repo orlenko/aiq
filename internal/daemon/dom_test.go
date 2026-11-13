@@ -20,7 +20,7 @@ func TestNavigatorDOMNodeFixtures(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, node, "--experimental-default-type=module", "--test", "ui/dom_test.mjs")
+	cmd := exec.CommandContext(ctx, node, "--test", "--test-reporter=tap", "ui/dom_test.mjs")
 	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
