@@ -54,6 +54,10 @@ On a terminal it opens full screen with the newest message selected. j/k or the 
 a message, Tab and Shift-Tab jump between your prompts, g and G go to the first and last,
 PgUp/PgDn and the wheel scroll, a click selects, y copies the message as Markdown, and q,
 Esc or Ctrl-C quits. Shift-drag (Option-drag in iTerm2) selects text with the mouse.
+/ searches loaded messages by case-insensitive substring: type a query, use the arrows
+to choose a matching snippet, and Enter focuses its message. Escape cancels search.
+Search includes folded continuation text; a match hidden by the rendering keeps its
+snippet on the status line. Search pauses following; G returns to following afterward.
 With --follow the newest message selected moves on to each new one; moved up, the screen
 stays put and G goes back to following.
 
