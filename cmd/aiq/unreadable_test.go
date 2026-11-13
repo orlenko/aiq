@@ -293,7 +293,7 @@ func TestLongAndConvoNameAnUnreadableTranscript(t *testing.T) {
 // An id that matches no readable session says the transcripts named above
 // could not be read, and gives no --all hint, which would not list them.
 func TestNoReadableSessionGivesNoAllHint(t *testing.T) {
-	work, bad := listHome(t)
+	_, bad := listHome(t)
 	a, err := openApp()
 	if err != nil {
 		t.Fatal(err)
@@ -319,8 +319,7 @@ func TestNoReadableSessionGivesNoAllHint(t *testing.T) {
 				return err
 			},
 			"convo": func() error {
-				_, err := newConvoResolver(nil, defaultRoots()).resolveID(work, id)
-				return err
+				return cmdConvo([]string{id})
 			},
 		} {
 			r, w, err := os.Pipe()
@@ -333,6 +332,25 @@ func TestNoReadableSessionGivesNoAllHint(t *testing.T) {
 			os.Stdout, os.Stderr = stdout, stderr
 			w.Close()
 			out, _ := io.ReadAll(r)
+			if name == "convo" {
+				wantError := fmt.Sprintf("no readable session %q under configured roots", id)
+				cause := transcript.ErrNoSuchSession
+				if unreadable {
+					wantError = fmt.Sprintf("could not read transcript %q", bad)
+					cause = transcript.ErrUnreadable
+					var loadError *convoLoadError
+					if !errors.As(runErr, &loadError) {
+						t.Error("unreadable full UUID did not return the selected-load error")
+					}
+				}
+				if runErr == nil || runErr.Error() != wantError || !errors.Is(runErr, cause) {
+					t.Errorf("convo, unreadable %v: error %v, want %q", unreadable, runErr, wantError)
+				}
+				if len(out) != 0 {
+					t.Errorf("convo eagerly printed selected diagnostic: %q", out)
+				}
+				continue
+			}
 			if runErr == nil || runErr.Error() != want {
 				t.Errorf("%s, unreadable %v: error %v, want %q", name, unreadable, runErr, want)
 			}

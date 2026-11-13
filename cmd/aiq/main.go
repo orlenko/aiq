@@ -125,7 +125,8 @@ Sessions in this directory (Claude, Codex and Antigravity transcripts):
   aiq convo [--pane <id>] [--follow] [--last N] [<id>]
                                     only what was typed and what the agent answered,
                                     of the session in this tmux pane or directory;
-                                    --follow keeps printing (tmux bindings: aiq convo --help)
+                                    a full UUID also searches configured roots;
+                                    --follow reads that file (tmux bindings: aiq convo --help)
 
 Machine:
   aiq shim install|uninstall|path

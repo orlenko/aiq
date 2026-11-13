@@ -34,9 +34,11 @@ const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--them
   no id, elsewhere  the one live session here: a Claude session or a session
                     aiq launched, whose directory is this one or holds it (a
                     Codex session started without aiq is found by id only)
-  <session-id>      that session of this directory (a unique prefix is enough)
+  <session-id>      this directory first (a unique prefix is enough); a full UUID
+                    also searches every configured root if no local session matches
   --pane <id>       the agent in tmux pane <id> (key bindings pass #{pane_id})
-  --follow          keep showing the conversation as it goes on (for a side split)
+  --follow          keep reading the selected file as it grows (for a side split);
+                    Antigravity supports snapshots only
   --last N          only the last N prompts you typed
   --theme T         colours for a light or dark background (also AIQ_THEME; the
                     flag wins); auto, the default, asks the terminal for its
@@ -152,6 +154,9 @@ func parseConvoArgs(args []string) (convoOpts, error) {
 	if o.id != "" && o.pane != "" {
 		return o, fmt.Errorf("--pane and a session id contradict each other")
 	}
+	if err := validateConvoID(o.id); err != nil {
+		return o, err
+	}
 	return o, nil
 }
 
@@ -202,6 +207,7 @@ func cmdConvo(args []string) error {
 	if err != nil {
 		return err
 	}
+	defer tgt.flushWarnings(false)
 	if o.follow && tgt.provider == "agy" {
 		// ParseAgy has no notion of a running turn or of narration, so a
 		// live follow would print every planner message as an answer.
@@ -323,8 +329,10 @@ type convoTarget struct {
 	pane     string
 	// stale says no running CLI is known to write the transcript (read by
 	// id), so a turn left open is one the CLI never finished.
-	stale bool
-	id    string // the session id it was asked for by, if any
+	stale    bool
+	id       string // the session id it was asked for by, if any
+	global   bool   // exact lookup outside the readable current-directory list
+	warnings *convoWarnings
 }
 
 func (t convoTarget) label() string {
@@ -596,14 +604,32 @@ type ambiguousErr string
 
 func (e ambiguousErr) Error() string { return string(e) }
 
-// resolveID finds a session of dir by id, the way aiq resume does.
+// resolveID prefers the directory's readable sessions, then an exact full ID.
 func (r *convoResolver) resolveID(dir, id string) (convoTarget, error) {
+	if err := validateConvoID(id); err != nil {
+		return convoTarget{}, err
+	}
 	sessions, unreadable, err := transcript.List(r.roots, dir)
-	reportUnreadable(r.warn, unreadable)
+	deferred := false
+	defer func() {
+		if !deferred {
+			reportUnreadable(r.warn, unreadable)
+		}
+	}()
 	if err != nil {
 		return convoTarget{}, err
 	}
 	s, err := findSession(sessions, unreadable, id)
+	if errors.Is(err, errSessionNoMatch) && transcript.IsFullID("claude", id) {
+		t, err := resolveGlobalConvo(context.Background(), r.discovery(), id, transcript.ParseSummary)
+		if err != nil {
+			return convoTarget{}, err
+		}
+		t.stale = r.stale(t)
+		t.warnings = &convoWarnings{paths: unreadable, selected: t.path, warn: r.warn}
+		deferred = true
+		return t, nil
+	}
 	if err != nil {
 		return convoTarget{}, err
 	}
@@ -652,15 +678,26 @@ func (r *convoResolver) running(id string) bool {
 func loadConvo(t convoTarget) (*transcript.Session, error) {
 	var s *transcript.Session
 	var err error
-	switch t.provider {
-	case "claude":
-		s, err = transcript.ParseClaude(t.path)
-	case "codex":
-		s, err = transcript.ParseCodex(t.path)
-	case "agy":
-		s, err = transcript.ParseAgy(t.path)
-	default:
-		return nil, fmt.Errorf("aiq convo cannot read %s transcripts", t.provider)
+	if t.global {
+		t.flushWarnings(true)
+		s, err = transcript.ParseFile(t.path)
+		if err == nil && (s == nil || s.Provider != t.provider || s.ID != t.id) {
+			err = errConvoIdentity
+		}
+		if err != nil {
+			return nil, &convoLoadError{path: t.path, cause: err}
+		}
+	} else {
+		switch t.provider {
+		case "claude":
+			s, err = transcript.ParseClaude(t.path)
+		case "codex":
+			s, err = transcript.ParseCodex(t.path)
+		case "agy":
+			s, err = transcript.ParseAgy(t.path)
+		default:
+			return nil, fmt.Errorf("aiq convo cannot read %s transcripts", t.provider)
+		}
 	}
 	if err == nil && t.stale && len(s.Turns) > 0 && s.Turns[len(s.Turns)-1].Open {
 		// The turn ended with the CLI: its last answer is its reply.
@@ -1600,6 +1637,13 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 }
 
 func (f *convoFollow) loop(stop <-chan struct{}) error {
+	if f.tgt.global {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+	}
 	// The file is looked at before each parse, never after, so a write
 	// that lands during a parse shows as a change on the next tick.
 	size, mod := statFile(f.tgt.path)
@@ -1682,6 +1726,11 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 				} else {
 					f.print(f.emit(p, s, mod))
 				}
+			} else if f.tgt.global {
+				if f.send == nil {
+					f.setStatus("")
+				}
+				return err
 			}
 			dirty = p.pending
 		}

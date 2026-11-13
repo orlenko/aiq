@@ -22,6 +22,9 @@ type Hit struct {
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// IsFullID reports whether provider accepts id for exact lookup across roots.
+func IsFullID(provider, id string) bool { return validFullID(provider, id) }
+
 // validFullID says id may be looked up for provider: not empty, at most 128
 // bytes, not . or .. or starting with a dot, with no slash, backslash,
 // control character, DEL or glob character, and a UUID, as every provider's

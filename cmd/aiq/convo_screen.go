@@ -617,6 +617,13 @@ func repanic(err error) error {
 
 // screen runs --follow on the screen: the loop finds what changed and the screen shows it.
 func (f *convoFollow) screen(in *devTTY, stop <-chan struct{}) error {
+	if f.tgt.global {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+	}
 	updates := make(chan convoUpdate)
 	quit := make(chan struct{})
 	defer close(quit)

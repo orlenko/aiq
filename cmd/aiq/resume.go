@@ -194,10 +194,16 @@ func interactiveOnly(list []transcript.Session) []transcript.Session {
 	return out
 }
 
+var errSessionNoMatch = errors.New("no matching session")
+
+type sessionNoMatch string
+
+func (e sessionNoMatch) Error() string        { return string(e) }
+func (e sessionNoMatch) Is(target error) bool { return target == errSessionNoMatch }
+
 // findSession finds the one session of list whose id is prefix or starts
-// with it. unreadable is what the list could not read, already named on
-// stderr: the session asked for may be among them, and --all would not
-// list it.
+// with it. unreadable is what the list could not read: the session asked
+// for may be among them, and --all would not list it. The caller reports it.
 func findSession(list []transcript.Session, unreadable []string, prefix string) (transcript.Session, error) {
 	var hits []transcript.Session
 	for _, s := range list {
@@ -211,9 +217,9 @@ func findSession(list []transcript.Session, unreadable []string, prefix string) 
 	switch len(hits) {
 	case 0:
 		if len(unreadable) > 0 {
-			return transcript.Session{}, fmt.Errorf("no readable session %q in this directory; the transcripts named above could not be read", prefix)
+			return transcript.Session{}, sessionNoMatch(fmt.Sprintf("no readable session %q in this directory; the transcripts named above could not be read", prefix))
 		}
-		return transcript.Session{}, fmt.Errorf("no session %q in this directory (aiq resume --print --all lists them)", prefix)
+		return transcript.Session{}, sessionNoMatch(fmt.Sprintf("no session %q in this directory (aiq resume --print --all lists them)", prefix))
 	case 1:
 		return hits[0], nil
 	}
