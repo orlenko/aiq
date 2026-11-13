@@ -241,8 +241,5 @@ func CopyProjectTrust(srcHome string, srcNative bool, dstHome string, dstNative 
 // HookSettings renders the --settings JSON that wires aiq's hooks into a
 // long session. Hooks are only attached to sessions launched this way.
 func HookSettings(aiqBin string) string {
-	hook := func(event string) string {
-		return fmt.Sprintf(`"%s":[{"hooks":[{"type":"command","command":%q,"timeout":30}]}]`, event, aiqBin+" claude-hook "+strings.ToLower(event))
-	}
-	return `{"hooks":{` + hook("SessionStart") + `,` + hook("UserPromptSubmit") + `,` + hook("Stop") + `}}`
+	return LaunchSettings(aiqBin, "")
 }

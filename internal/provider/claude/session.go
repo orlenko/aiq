@@ -12,7 +12,7 @@ var subcommands = map[string]bool{
 	"agents": true, "attach": true, "auth": true, "auto-mode": true, "config": true,
 	"doctor": true, "gateway": true, "import": true, "install": true, "kill": true,
 	"logs": true, "mcp": true, "migrate-installer": true, "plugin": true, "plugins": true,
-	"project": true, "respawn": true, "rm": true, "setup-token": true, "stop": true,
+	"project": true, "purge": true, "respawn": true, "rm": true, "setup-token": true, "stop": true,
 	"ultrareview": true, "update": true, "upgrade": true,
 }
 
@@ -73,7 +73,7 @@ func firstPositional(args []string) string {
 			return ""
 		}
 		if strings.HasPrefix(a, "-") {
-			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && takesValue(a) {
+			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && (takesValue(a) || optionalValue(a)) {
 				i++
 			}
 			continue
@@ -91,7 +91,18 @@ func takesValue(flag string) bool {
 		"--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools", "--tools",
 		"--permission-mode", "--mcp-config", "--append-system-prompt", "--system-prompt",
 		"--fallback-model", "--effort", "--plugin-dir", "--output-format", "--input-format",
-		"--max-turns", "--name", "-n", "--worktree", "-w", "--debug-file", "--betas", "--ide":
+		"--max-turns", "--name", "-n", "--worktree", "-w", "--debug-file", "--betas":
+		return true
+	}
+	return false
+}
+
+// optionalValue lists the claude flags whose value may be left out
+// (`-w, --worktree [name]`, `-d, --debug [filter]`): the next argument is
+// their value only when it does not start with "-".
+func optionalValue(flag string) bool {
+	switch flag {
+	case "--worktree", "-w", "--debug", "-d":
 		return true
 	}
 	return false

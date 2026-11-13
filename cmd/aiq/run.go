@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -64,6 +65,10 @@ type runFlags struct {
 	resumeTranscript string
 	sessionName      string
 	nudge            string
+
+	// memoryDir points a Claude overlay launch's auto memory at the real
+	// ~/.claude/projects folder (see claude.OverlayMemoryDir).
+	memoryDir string
 }
 
 func parseRunFlags(args []string) runFlags {
@@ -495,6 +500,11 @@ func cmdRun(provider string, args []string) error {
 			}
 		}
 
+		l, hasLauncher := memoryLauncher(a.cfg, f.launcher, mode)
+		overlayMemory(&f, provider, acc.Native, mode, func() string {
+			return launchMemoryDir(l, hasLauncher, claude.WorkingDir(), env)
+		})
+
 		if mode == state.ModeLong {
 			env = append(env, "AIQ_LONG=1", "AIQ_LEASE="+strconv.FormatInt(leaseID, 10))
 			if native {
@@ -622,7 +632,7 @@ func longArgs(provider, aiqBin string, f runFlags) ([]string, error) {
 	var out []string
 	switch provider {
 	case "claude":
-		out = append(out, "--settings", claude.HookSettings(aiqBin))
+		out = append(out, "--settings", claude.LaunchSettings(aiqBin, f.memoryDir))
 	case "codex":
 		out = append(out, codex.HookArgs(aiqBin)...)
 		out = append(out, codex.UnattendedArgs...)
@@ -663,6 +673,57 @@ func trimArgs(args []string) []string {
 		out = append(out, a)
 	}
 	return out
+}
+
+// overlayMemory points an overlay Claude launch's auto memory at the folder
+// memoryDir names (claude.OverlayMemoryDir; empty leaves Claude Code's
+// default). It is asked only for an overlay Claude launch. A long
+// session carries it in longArgs' --settings with aiq's hooks, as Claude Code
+// keeps only one --settings; any other launch gets it in its own arguments.
+func overlayMemory(f *runFlags, provider string, native bool, mode string, memoryDir func() string) {
+	// A flag that moves the session's project makes aiq's folder a guess.
+	if provider != "claude" || native || claude.MovesProject(f.rest) {
+		return
+	}
+	f.memoryDir = memoryDir()
+	if mode != state.ModeLong {
+		var file bool
+		// Workers keep stderr for failures, so only an interactive launch
+		// gets the note.
+		if f.rest, file = claude.WithMemoryDir(f.rest, f.memoryDir); file && mode == state.ModeInteractive {
+			fmt.Fprintf(os.Stderr, "aiq: --settings names a file, so aiq left the memory folder to it; unless it sets autoMemoryDirectory to %s, Claude Code asks before every memory write on this account\n", f.memoryDir)
+		}
+	}
+}
+
+// memoryLauncher is the launcher, if any, that execProvider starts this
+// mode's CLI through, so the memory folder is judged on what that CLI gets.
+func memoryLauncher(cfg *config.Config, name, mode string) (config.Launcher, bool) {
+	if mode == state.ModeWorker {
+		return config.Launcher{}, false
+	}
+	return cfg.Launcher(name)
+}
+
+// launchMemoryDir is the memory folder for an overlay Claude launch in dir,
+// judged on the environment the CLI will get, a launcher's Env included. It
+// is empty when the launcher's Args carry a --settings: aiq's would come
+// after it and replace it.
+func launchMemoryDir(l config.Launcher, hasLauncher bool, dir string, env []string) string {
+	if hasLauncher {
+		// A wrapper launcher often passes the CLI's own flags after "--",
+		// so its args are read whole, as the --settings scan below does.
+		if claude.MovesProject(slices.DeleteFunc(slices.Clone(l.Args), func(a string) bool { return a == "--" })) {
+			return ""
+		}
+		for _, arg := range l.Args {
+			if arg == "--settings" || strings.HasPrefix(arg, "--settings=") {
+				return ""
+			}
+		}
+		env = launcherEnv(env, l)
+	}
+	return claude.OverlayMemoryDirIn(dir, env)
 }
 
 // hostname is the lease's host identity; it must match what the daemon and

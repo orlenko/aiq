@@ -7,3 +7,4 @@ initial-convo.html
 initial-convo_files/
 .env
 .playwright-mcp/
+mise.toml
