@@ -214,7 +214,7 @@ func main() {
 	// Navigator admission and failures never consult launchers or their logs.
 	if len(os.Args) > 1 && os.Args[1] == "ui" {
 		if err := cmdUI(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "aiq:", err)
+			fmt.Fprintln(os.Stderr, "aiq:", errorText(err))
 			os.Exit(1)
 		}
 		return
