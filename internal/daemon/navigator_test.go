@@ -87,6 +87,8 @@ type testDaemon struct {
 	mu        sync.Mutex
 	navSrv    *http.Server
 	statusSrv *http.Server
+	navLn     net.Listener
+	statusLn  net.Listener
 }
 
 // startDaemon runs a daemon on the current data directory until the test stops it.
@@ -108,7 +110,7 @@ func startDaemon(t *testing.T, navigator bool) *testDaemon {
 	startLoops = func(*Server) {}
 	serveStatus = func(srv *http.Server, ln net.Listener) error {
 		d.mu.Lock()
-		d.statusSrv = srv
+		d.statusSrv, d.statusLn = srv, ln
 		d.mu.Unlock()
 		go srv.Serve(ln)
 		close(ready)
@@ -118,7 +120,7 @@ func startDaemon(t *testing.T, navigator bool) *testDaemon {
 	}
 	serveNav = func(srv *http.Server, ln net.Listener) error {
 		d.mu.Lock()
-		d.navSrv = srv
+		d.navSrv, d.navLn = srv, ln
 		d.mu.Unlock()
 		close(navReady)
 		return srv.Serve(ln)

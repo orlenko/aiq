@@ -245,3 +245,14 @@ func (s *Server) navigatorHandler() http.Handler {
 		api:      s.navAPI,
 	}, build, s.log.Printf)
 }
+
+// navigatorRefusal keeps the navigator's guards and response envelope while
+// refusing retired connections without invoking an application route.
+func (s *Server) navigatorRefusal() http.Handler {
+	refuse := connectionUnavailable()
+	return newNavHandler(navGate{
+		verifier: s.navVerifier,
+		hello:    refuse, login: refuse, revoke: refuse, info: refuse,
+		api: refuse, pages: refuse,
+	}, navBuild(), s.log.Printf)
+}
