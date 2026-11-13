@@ -53,7 +53,7 @@
   .leases .mode { color: var(--accent); width: 82px; flex: none; }
   .leases .mode.worker { color: var(--muted); }
   .leases .lease-target { flex: none; min-width: 0; max-width: 25%; overflow: hidden; text-overflow: ellipsis; }
-  .leases .lease-target.native { max-width: min(6ch, 25%); }
+  .leases .lease-target.native { max-width: min(calc(6ch + 1px), 25%); }
   .leases .lease-workspace { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .leases div.why { display: block; white-space: pre-line; overflow: visible; color: var(--muted); margin: 0 0 4px 90px; }
   .terms { margin-top: 6px; font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
