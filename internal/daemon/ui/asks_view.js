@@ -193,6 +193,10 @@ export function createAsksView(document, data, options) {
   }
 
   root.append(node("p", "nav-asks-scope", snapshot.scope.mode === "all" ? "All directories" : snapshot.scope.dir));
+  if (snapshot.totals) {
+    const t = snapshot.totals;
+    root.append(node("p", "nav-asks-totals", `Skipped: ${t.skipped}; calls today: ${t.calls_today}; UTC day: ${t.utc_day}`));
+  }
   let report = snapshot.report;
   let reportNode = node("aside", "nav-asks-report"); root.append(reportNode);
   if (!report.known) reportNode.append(node("p", "", "Watcher report unavailable"));

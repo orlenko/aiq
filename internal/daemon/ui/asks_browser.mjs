@@ -14,4 +14,11 @@ function attach(idPrefix) {
 }
 const first=attach('fixtureFirst'),second=attach('fixtureSecond');
 // Fixture-only diagnostics use invented text and an in-memory copy hook.
-window.asksFixture={first,second,copies,announcements,navigations};
+function attachTotals(totals,font='') {
+  const data=snapshot();data.sections.forEach(s=>{s.items=[];});data.report={known:false};data.totals=totals;
+  const view=createAsksView(document,data,{...options,idPrefix:'fixtureTotals'});
+  fixture.append(view.fragment);fixture.lastElementChild.style.fontFamily=font;
+  if(!view.mount())throw Error('invented totals fixture activation failed');
+  return view;
+}
+window.asksFixture={first,second,copies,announcements,navigations,attachTotals};
