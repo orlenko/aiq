@@ -89,20 +89,20 @@ func readIdentity(parent context.Context, sources identitySources) (string, erro
 }
 
 type identityOutput struct {
-	bytes.Buffer
+	buffer   bytes.Buffer
 	cancel   context.CancelFunc
 	overflow bool
 }
 
 func (w *identityOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	remaining := 65536 - w.Len()
+	remaining := 65536 - w.buffer.Len()
 	if len(p) > remaining {
 		p = p[:remaining]
 		w.overflow = true
 		w.cancel()
 	}
-	_, _ = w.Buffer.Write(p)
+	_, _ = w.buffer.Write(p)
 	return n, nil
 }
 
@@ -135,5 +135,5 @@ func runIdentityProbe(ctx context.Context, command func(context.Context) *exec.C
 	if err != nil {
 		return nil, err
 	} // Ordinary probe failure permits hostname fallback.
-	return out.Bytes(), nil
+	return out.buffer.Bytes(), nil
 }
