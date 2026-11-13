@@ -266,18 +266,29 @@ func (a *app) doctorChecks() *doctorReport {
 	if listenErr == nil && !daemonUp && lockUnknown != "" {
 		startFix = lockFix
 	}
+	// A daemon holding the lock polls and supervises even when it cannot serve, and
+	// a restart would meet the same port.
+	portFix := &doctorFix{
+		key:   "daemon:port",
+		title: "Free the daemon's port",
+		steps: []string{fmt.Sprintf("A daemon holds the lock, so one is polling and supervising, but it cannot serve on %s. %s", a.cfg.Daemon.Listen, portHeldAdvice(a.cfg.Daemon.Listen))},
+	}
+	installFix := startFix
+	if listenErr == nil && !daemonIdentified && lockHeld {
+		startFix, daemonFix = portFix, portFix
+	}
 	now := time.Now()
 	for _, acc := range accounts {
 		// A daemon that is down leaves every account's telemetry stale;
 		// starting it polls them all, so that is the fix, not a poll each.
 		var staleFix *doctorFix
-		if (listenErr == nil && !daemonUp) || (listenErr != nil && !lockHeld && lockUnknown == "") {
+		if (listenErr == nil && !daemonUp && !lockHeld) || (listenErr != nil && !lockHeld && lockUnknown == "") {
 			staleFix = startFix
 		}
 		a.checkAccount(r, acc, now, staleFix)
 	}
 
-	r.check(svc, startFix, "daemon service installed")
+	r.check(svc, installFix, "daemon service installed")
 	if listenErr != nil {
 		r.check(false, startFix, "daemon.listen usable: %v", listenErr)
 	} else {
@@ -285,7 +296,11 @@ func (a *app) doctorChecks() *doctorReport {
 	}
 	switch {
 	case daemonUp && !daemonIdentified:
-		r.check(false, daemonFix, "what answers there does not identify as a daemon of this version on this machine, so it may be an older one or a tunnel. If it is a tunnel, close it or give it another local port, as no daemon here can serve, poll or supervise while it holds this one. If it still answers after reinstalling, the service did not start it. %s", findDaemonListeners)
+		if lockHeld {
+			r.check(false, daemonFix, "what answers there does not identify as a daemon of this version on this machine, such as a tunnel, so the daemon that holds the lock polls and supervises but serves no status page")
+			break
+		}
+		r.check(false, daemonFix, "what answers there does not identify as a daemon of this version on this machine, so it may be an older one or a tunnel. If it is a tunnel, close it or give it another local port, as no daemon here can serve the status page while it holds this one. If it still answers after reinstalling, the service did not start it. %s", findDaemonListeners)
 	case daemonIdentified && !lockHeld && lockUnknown == "":
 		r.check(false, &doctorFix{
 			key:   "daemon:datadir",
@@ -296,6 +311,8 @@ func (a *app) doctorChecks() *doctorReport {
 		// A daemon holding this lock answers, so the lock adds nothing here.
 	case lockUnknown != "":
 		r.check(false, lockFix, "%s", lockUnknown)
+	case listenErr == nil && lockHeld:
+		r.check(true, nil, "a daemon holds the lock, so one is polling and supervising without its status page")
 	case listenErr == nil:
 		// The answering check above has already failed, with its own fix.
 	case lockHeld:
@@ -527,6 +544,9 @@ func (a *app) doctorDaemonInstall() error {
 			return nil
 		}
 		answering = alive
+	}
+	if held, _ := lockFinding(); held {
+		return fmt.Errorf("the service is installed and a daemon holds the lock, so one is polling and supervising, but it does not serve on %s. %s", listen, portHeldAdvice(listen))
 	}
 	if answering {
 		return fmt.Errorf("the service is installed, but what answers on %s does not identify as a daemon of this version on this machine, so it did not take over; see %s. %s", listen, daemon.LogPath(), findDaemonListeners)

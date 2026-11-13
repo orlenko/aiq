@@ -271,9 +271,10 @@ var (
 
 // Run serves until the listener fails. With a listen address it must refuse, it
 // serves nothing and leaves polling and session supervision running, so a bad
-// setting for the status page does not strand long sessions. A listener failure
-// on an accepted address still ends the process. The navigator, when it is on, is
-// served beside the status page, and its failure leaves the daemon running without it.
+// setting for the status page does not strand long sessions. An accepted address it
+// cannot bind gets the same, and it serves once the address can be bound. A listener
+// failure after that still ends the process. The navigator, when it is on, is served
+// beside the status page, and its failure leaves the daemon running without it.
 func (s *Server) Run() error {
 	// This comes before the lock, so a daemon about to stop is never seen holding it.
 	if olderDaemonAnswers(s.cfg.Daemon.Listen) {
@@ -302,11 +303,15 @@ func (s *Server) Run() error {
 	// Read once here, so the handler never reads it while a loop first sets it.
 	mux := s.routes(Identity())
 	ln, err := net.Listen("tcp", s.cfg.Daemon.Listen)
+	loopsStarted := false
 	if err != nil {
-		// The process exits and the service starts it again, so an earlier start's
-		// token file must not say the navigator is served meanwhile.
-		s.navigatorEnds(navOwner, "the status page could not listen")
-		return err
+		// The navigator is served only beside the status page, so an earlier start's
+		// token file must not say it is served meanwhile.
+		navOwner = s.navigatorEnds(navOwner, "the status page could not listen")
+		if ln, err = s.listenWhileSupervising(err); err != nil {
+			return err
+		}
+		loopsStarted = true
 	}
 	if a, ok := ln.Addr().(*net.TCPAddr); !ok || !a.IP.IsLoopback() {
 		ln.Close()
@@ -321,8 +326,9 @@ func (s *Server) Run() error {
 	if nav != nil {
 		go s.serveNavigator(nav)
 	}
-	// Only now, so a daemon restarting because it cannot bind never polls or supervises.
-	startLoops(s)
+	if !loopsStarted {
+		startLoops(s)
+	}
 	s.log.Printf("aiq daemon listening on http://%s/", s.cfg.Daemon.Listen)
 	if nav != nil {
 		s.log.Printf("aiq navigator listening on http://127.0.0.1:%d/", nav.port)
@@ -330,6 +336,45 @@ func (s *Server) Run() error {
 	err = serveStatus(s.slots.server(localOnly(mux), localOnly(connectionUnavailable())), s.slots.listener(ln))
 	s.navigatorEnds(navOwner, "the status page stopped")
 	return err
+}
+
+// listenRetryPause is how long a daemon that cannot bind its address waits before
+// trying again. It is a variable so a test can free the port in between.
+var listenRetryPause = func() { time.Sleep(listenRetry) }
+
+const listenRetry = 30 * time.Second
+
+// listenWhileSupervising polls and supervises without the status page until the
+// address, which failed with err, can be bound. Exiting instead would leave long
+// sessions unsupervised while the service restarted the process. The instance lock
+// keeps a second daemon of this version away; a daemon from before the lock that was
+// too slow for the first probe is stopped only by this check, so it runs before the
+// loops start and again before each try. Its two requests carry no token or identity.
+func (s *Server) listenWhileSupervising(err error) (net.Listener, error) {
+	listen := s.cfg.Daemon.Listen
+	_, port, _ := net.SplitHostPort(listen)
+	logged, started := "", false
+	for {
+		if olderDaemonAnswers(listen) {
+			s.log.Printf("stopping, so not polling or supervising: what answers on the port of %s looks like an older aiq daemon on this machine. Under the service, this keeps retrying and takes over once that one stops. To find it: lsof -nP -a -c aiq -iTCP -sTCP:LISTEN", listen)
+			return nil, fmt.Errorf("not running beside what looks like an older aiq daemon")
+		}
+		if err.Error() != logged {
+			logged = err.Error()
+			s.log.Printf("not serving the status page or API, but polling and supervising: %v. Trying again every %v. To see what holds the port: lsof -nP -iTCP:%s -sTCP:LISTEN", err, listenRetry, port)
+		}
+		if !started {
+			startLoops(s)
+			started = true
+		}
+		listenRetryPause()
+		ln, lerr := net.Listen("tcp", listen)
+		if lerr == nil {
+			s.log.Printf("%s can be bound now", listen)
+			return ln, nil
+		}
+		err = lerr
+	}
 }
 
 // statusServer is the server of the status page and of the navigator. Its deadlines
