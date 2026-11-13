@@ -57,6 +57,14 @@ func defaultContextProbe(root string) (Core, error) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		return core, fmt.Errorf("same-terminal attach launched a nested viewer")
 	}
+	alias := core
+	alias.Socket = filepath.Dir(core.Socket) + string(os.PathSeparator) + "." + string(os.PathSeparator) + filepath.Base(core.Socket)
+	if err := alias.attach(); err != nil {
+		return core, err
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		return core, fmt.Errorf("socket alias launched a nested viewer")
+	}
 	os.Setenv("HC_SOCKET", core.Socket)
 	for _, bad := range []string{"", "relative.sock", filepath.Join(root, "missing-owner")} {
 		os.Setenv("HC_TERMINAL_SOCKET", bad)

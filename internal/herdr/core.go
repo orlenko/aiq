@@ -204,7 +204,9 @@ func (c Core) attach() error {
 		if err != nil {
 			return fmt.Errorf("cannot verify the current Herdr terminal for attachment: %w", err)
 		}
-		if current == c {
+		// Both endpoints have proved the same terminal identity. Socket
+		// spelling may differ for an existing absolute path or symlink alias.
+		if current.ID == c.ID && current.Terminal == c.Terminal && current.PID == c.PID {
 			return nil
 		}
 		// A verified different core may use the same local ID. External attach
