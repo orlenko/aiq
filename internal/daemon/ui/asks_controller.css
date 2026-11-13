@@ -1,0 +1,17 @@
+.nav-asks-controller { min-width: 0; }
+.nav-asks-controller .nav-asks-refresh {
+  font: inherit;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.nav-asks-controller .nav-asks-refresh:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.nav-asks-controller .nav-asks-load-status {
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nav-asks-controller .nav-asks-content { min-width: 0; }
