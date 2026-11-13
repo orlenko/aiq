@@ -157,9 +157,17 @@ function sessionsLink(port) {
 }
 // sessionsLink:end
 
+// refresh:begin
+let hasDisplayedState = false;
 async function refresh() {
   try {
     const r = await fetch('/api/state', { cache: 'no-store' });
+    if (r.status === 503) {
+      sessionsLink(null);
+      document.getElementById('meta').textContent = 'daemon busy · retrying…' +
+        (hasDisplayedState ? ' · showing previous state' : '');
+      return;
+    }
     const { daemon, view } = await r.json();
     sessionsLink(daemon.navigator_port);
     document.getElementById('meta').textContent =
@@ -176,11 +184,13 @@ async function refresh() {
     if (!view.accounts.length) html = '<section class="card wide"><div class="empty">no accounts — run <code>aiq account import</code></div></section>';
     html += rankingTable(view) + '<section class="card wide"><h2>events</h2><div class="empty">not shown here: run <code>aiq status --events 50</code></div></section>';
     document.getElementById('main').innerHTML = html;
+    hasDisplayedState = true;
   } catch (e) {
     sessionsLink(null);
     document.getElementById('meta').textContent = 'daemon unreachable: ' + e;
   }
 }
+// refresh:end
 document.getElementById('poll').onclick = async () => { await fetch('/api/poll', { method: 'POST' }); setTimeout(refresh, 3000); };
 refresh();
 setInterval(refresh, 5000);

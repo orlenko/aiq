@@ -62,6 +62,9 @@ type Server struct {
 	// there. Both are set before Run.
 	navVerifier NavVerifier
 	navAPI      http.Handler
+
+	// slots counts the connections of the status page and the navigator together.
+	slots *connSlots
 }
 
 func New(cfg *config.Config, p *pool.Pool, logger *log.Logger) *Server {
@@ -299,15 +302,15 @@ func (s *Server) Run() error {
 		s.navigatorEnds(err)
 		return err
 	}
+	s.slots = newConnSlots(connCap, s.log.Printf)
 	navLn := s.startNavigator()
 	// Only now, so a daemon restarting because it cannot bind never polls or supervises.
 	startLoops(s)
 	s.log.Printf("aiq daemon listening on http://%s/", s.cfg.Daemon.Listen)
 	if navLn != nil {
-		go s.serveNavigator(navLn)
+		go s.serveNavigator(s.slots.listener(navLn))
 	}
-	srv := statusServer(localOnly(mux))
-	err = serveStatus(srv, ln)
+	err = serveStatus(s.slots.server(localOnly(mux), localOnly(connectionUnavailable())), s.slots.listener(ln))
 	s.navigatorEnds(fmt.Errorf("the status page stopped: %w", err))
 	return err
 }
@@ -318,7 +321,8 @@ func (s *Server) Run() error {
 // what the page's 5 s poll and its kept-alive connection need; an answer that takes
 // longer is lost, and no handler of either streams or waits. A navigator that does
 // needs its own settings, and the test that the two match changes with it.
-// OPTIONS * goes to the handler too, so every request meets its checks.
+// OPTIONS * goes to the handler too, so every request meets its checks. Both
+// servers share one count of connections (connSlots).
 func statusServer(h http.Handler) *http.Server {
 	return &http.Server{
 		Handler:                      h,
