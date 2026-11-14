@@ -2,6 +2,14 @@ import {captureAsks} from "./asks_data.js";
 import {renderLines} from "./dom.js";
 
 const labels = ["Asks", "Warnings", "Other open", "Probably done", "Closed and dismissed"];
+export function navigatorAskCommand(id,state){
+  if(typeof id!=="string"||id.length<1||id.length>19||/[^0-9]/.test(id)||id[0]==="0"||id.length===19&&id>"9223372036854775807"||!["open","probably-done","closed","dismissed"].includes(state))return null;
+  return `aiq asks ${state==="open"?"dismiss":"restore"} ${id}`;
+}
+export function navigatorRemedyCommands(values){
+  if(!Array.isArray(values))return [];
+  return [["service_install","aiq asks service install","Copy background watcher command"],["setup","aiq asks setup","Copy setup command"],["watch","aiq asks watch","Copy watch command (in its own window)"]].filter(([key])=>values.includes(key));
+}
 function clock(value) {
   if (!value.known) return "unknown";
   const date = new Date(value.ms);
@@ -27,7 +35,7 @@ export function createAsksView(document, data, options) {
   status.setAttribute("aria-live", "polite"); root.append(status);
   const rows = [], groups = [], removes = [];
   let phase = "detached", flight = null, focusIntent = null, overview = null;
-  const overviewButtons = [];
+  const overviewButtons = [],commandButtons=[];
   function node(tag, className, text) {
     const n = document.createElement(tag); n.className = className;
     if (text !== undefined) n.textContent = text;
@@ -49,9 +57,11 @@ export function createAsksView(document, data, options) {
     row.ready = null;
   }
   function controls() {
+    for(const control of commandButtons)control.setAttribute("aria-disabled",phase!=="ready"||!root?.isConnected||flight?"true":"false");
     for (const button of overviewButtons) button.setAttribute("aria-disabled", phase !== "ready" || !root?.isConnected ? "true" : "false");
     for (const row of rows) {
       row.copy.setAttribute("aria-disabled", !eligible(row) || flight ? "true" : "false");
+      if(row.command)row.command.setAttribute("aria-disabled",!eligible(row)||flight?"true":"false");
       row.nav.setAttribute("aria-disabled", !eligible(row) || !row.data.selectable ? "true" : "false");
     }
   }
@@ -191,16 +201,17 @@ export function createAsksView(document, data, options) {
       }
     });
   }
-  function copy(row) {
-    if (!eligible(row) || flight) return;
-    const intent = row.ready, text = intent.copy, token = {row, intent, settled:false};
+  function copy(row,command=null) {
+    const ready=()=>row?eligible(row):phase==="ready"&&root?.isConnected;
+    if (!ready() || flight) return;
+    const intent = row?.ready, text = command??intent.copy, token = {row, intent, settled:false};
     flight = token; controls();
     function settle(ok) {
       if (token.settled || flight !== token) return;
       token.settled = true;
       try {
-        if (eligible(row, intent)) {
-          const message = ok ? "Quote copied" : "Could not copy quote";
+        if (row?eligible(row,intent):ready()) {
+          const message = command===null?(ok?"Quote copied":"Could not copy quote"):(ok?"Terminal command copied":"Could not copy terminal command");
           status.textContent = message;
           try { announce(message); } catch { /* Status cannot reclassify the copy. */ }
         }
@@ -245,6 +256,7 @@ export function createAsksView(document, data, options) {
     }
     for (const remove of removes) remove(); removes.length = 0;
     overview?.replaceChildren(); overview = null; overviewButtons.length = 0;
+    commandButtons.length=0;
     for (const row of rows) for (const key of Object.keys(row)) row[key] = null;
     rows.length = 0; groups.length = 0; snapshot = null;
     copyText = null; announce = null; onConversation = null; onPlacement = null;
@@ -253,6 +265,13 @@ export function createAsksView(document, data, options) {
   }
 
   root.append(node("p", "nav-asks-scope", snapshot.scope.mode === "all" ? "All directories" : snapshot.scope.dir));
+  if(snapshot.scope_counts)root.append(node("p","nav-asks-scope-counts",snapshot.scope_counts.open+" open here · "+snapshot.scope_counts.elsewhere_open+" open elsewhere"));
+  if(snapshot.scope.mode!=="all"){const all=node("a","nav-asks-all","Show all Asks");all.href="/asks?all=true";root.append(all);}
+  if(snapshot.status_line){
+    const value=snapshot.status_line,line=node("p","nav-asks-trust",(value.problem?"! ":"")+value.text);
+    if(value.problem)line.setAttribute("data-problem","true");root.append(line);
+    for(const [,text,label]of navigatorRemedyCommands(value.remedy)){const control=button(label);control.title=text;root.append(control);commandButtons.push(control);listen(control,()=>copy(null,text));}
+  }
   if (snapshot.totals) {
     const t = snapshot.totals;
     root.append(node("p", "nav-asks-totals", `Skipped: ${t.skipped}; calls today: ${t.calls_today}; UTC day: ${t.utc_day}`));
@@ -285,12 +304,14 @@ export function createAsksView(document, data, options) {
       quote.id = `${article.id}-quote`; details.id = `${article.id}-details`; details.hidden = true;
       const row = {group, data, article, quote, details, wording:node("p", "nav-asks-wording", "Original wording"),
         expanded:false, generation:0n, ready:null, heading:node("h3", "nav-asks-item-heading", `Ask ${data.id}`),
-        current:null, toggle:button("Show details"), copy:button("Copy quote"), nav:button("Open conversation")};
+        current:null, toggle:button("Show details"), copy:button("Copy quote"), nav:button("Open conversation"),command:null};
       rows.push(row); group.rows.push(row); group.region.append(article);
       article.append(row.heading,
         node("p", "nav-asks-source", `${data.provider}: ${data.session_id}`));
       if (data.state !== "open") article.append(node("p", "nav-asks-state", `${data.state}: ${data.state_text} (${data.state_reason})`));
       article.append(row.wording, quote, row.toggle, row.copy, row.nav, details);
+      const command=navigatorAskCommand(data.id,data.state);
+      if(command){row.command=button(data.state==="open"?"Copy dismiss command":"Copy restore command");row.command.title=command;article.append(row.command);listen(row.command,()=>copy(row,command));}
       row.toggle.setAttribute("aria-controls", `${quote.id} ${details.id}`); row.toggle.setAttribute("aria-expanded", "false");
       row.copy.setAttribute("aria-describedby", quote.id);
       row.nav.disabled = !data.selectable;

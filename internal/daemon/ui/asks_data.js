@@ -128,6 +128,17 @@ export function captureAsks(data, expectedScope, limits) {
         out.totals.calls_today === out.report.calls_today);
     }
     const m = Object.getOwnPropertyDescriptor(data, "moved_today");
+    const counts=Object.getOwnPropertyDescriptor(data,"scope_counts");
+    if(counts){
+      require(Object.hasOwn(counts,"value"));out.scope_counts=capture(counts.value,{open:"uint",elsewhere_open:"uint"},budget);
+      require(out.scope_counts.open===out.sections.slice(0,3).reduce((sum,group)=>sum+group.items.length,0));
+      require(out.scope.mode!=="all"||out.scope_counts.elsewhere_open===0);
+    }
+    const status=Object.getOwnPropertyDescriptor(data,"status_line");
+    if(status){
+      require(Object.hasOwn(status,"value"));out.status_line=capture(status.value,{known:"bool",text:"str",problem:"bool",remedy:["str"]},budget);
+      require(out.status_line.remedy.every(value=>["setup","service_install","watch"].includes(value)));
+    }
     if (m) {
       require(Object.hasOwn(m, "value"));
       out.moved_today = capture(m.value, moved, budget);

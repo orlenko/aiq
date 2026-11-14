@@ -35,6 +35,16 @@ type navAsksMoved struct {
 	Start navWireTime `json:"start_at"`
 	IDs   []string    `json:"ids"`
 }
+type navAsksCounts struct {
+	Open      int64 `json:"open"`
+	Elsewhere int64 `json:"elsewhere_open"`
+}
+type navAsksStatus struct {
+	Known   bool     `json:"known"`
+	Text    string   `json:"text"`
+	Problem bool     `json:"problem"`
+	Remedy  []string `json:"remedy"`
+}
 type navAsksItem struct {
 	ID        string         `json:"id"`
 	Provider  string         `json:"provider"`
@@ -78,6 +88,8 @@ type navAsksUnknownBody struct {
 	Report   navAsksUnknownReport `json:"report"`
 	Totals   navAsksTotals        `json:"totals"`
 	Moved    navAsksMoved         `json:"moved_today"`
+	Counts   navAsksCounts        `json:"scope_counts"`
+	Status   navAsksStatus        `json:"status_line"`
 }
 type navAsksKnownBody struct {
 	Scope    navAsksScope       `json:"scope"`
@@ -85,6 +97,8 @@ type navAsksKnownBody struct {
 	Report   navAsksKnownReport `json:"report"`
 	Totals   navAsksTotals      `json:"totals"`
 	Moved    navAsksMoved       `json:"moved_today"`
+	Counts   navAsksCounts      `json:"scope_counts"`
+	Status   navAsksStatus      `json:"status_line"`
 }
 type navAsksResponseOptions struct {
 	scope                                                    navAsksScope
@@ -94,6 +108,7 @@ type navAsksResponseOptions struct {
 	rows, inputBytes, renderCells, arrayEntries, stringUnits uint64
 	bodyBytes                                                int64
 	faults                                                   *diagnostic.Latch // One serial operation.
+	keyKnown, keyOK, notSetup                                bool
 }
 type navAsksCredits struct {
 	input, work, entries, units uint64
@@ -172,6 +187,8 @@ type navAsksResponseCapture struct {
 	known    bool
 	totals   navAsksTotals
 	moved    navAsksMoved
+	counts   navAsksCounts
+	status   navAsksStatus
 	seeds    []navAsksResponseSeed
 }
 
@@ -366,7 +383,13 @@ func (r *navAsksRun) captureSelected() (*navAsksResponseCapture, error) {
 			}
 		}
 		if !selected {
+			if a.State == state.AskOpen {
+				out.counts.Elsewhere++
+			}
 			continue
+		}
+		if a.State == state.AskOpen {
+			out.counts.Open++
 		}
 		group := 4
 		switch a.State {
@@ -399,6 +422,26 @@ func (r *navAsksRun) captureSelected() (*navAsksResponseCapture, error) {
 		out.seeds = append(out.seeds, navAsksResponseSeed{group: group, index: len(out.sections[group].Items), raw: [2]string{a.FirstQuote, a.LastQuote}})
 		out.sections[group].Items = append(out.sections[group].Items, item)
 	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	status := navAsksStatus{Known: o.keyKnown || o.notSetup, Text: "Watcher status unavailable", Remedy: []string{}}
+	if o.notSetup {
+		status.Text = "Not set up. Run aiq asks setup"
+		status.Problem = true
+		status.Remedy = []string{"setup"}
+	} else if o.keyKnown {
+		status.Text = asksStatusLine(s.Status, o.keyOK, int(out.counts.Open+out.counts.Elsewhere), o.now, "aiq asks")
+		status.Problem = !o.keyOK || s.Status.PassAt == 0 || s.Status.LastError != "" || o.now.Sub(time.Unix(s.Status.PassAt, 0)) > asksStaleAfter
+		if !o.keyOK {
+			status.Remedy = []string{"setup"}
+		} else if s.Status.PassAt == 0 || o.now.Sub(time.Unix(s.Status.PassAt, 0)) > asksStaleAfter {
+			status.Remedy = []string{"service_install", "watch"}
+		}
+	}
+	status.Text = c.text(status.Text)
+	status.Remedy = c.list(status.Remedy)
+	out.status = status
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -495,9 +538,9 @@ func (r *navAsksRun) finish(render navAsksWordingRender, marshal func(any) ([]by
 	}
 	var payload any // Always one of these two concrete, closed values.
 	if data.known {
-		payload = navAsksKnownBody{data.scope, data.sections, data.report, data.totals, data.moved}
+		payload = navAsksKnownBody{data.scope, data.sections, data.report, data.totals, data.moved, data.counts, data.status}
 	} else {
-		payload = navAsksUnknownBody{data.scope, data.sections, navAsksUnknownReport{Known: false}, data.totals, data.moved}
+		payload = navAsksUnknownBody{data.scope, data.sections, navAsksUnknownReport{Known: false}, data.totals, data.moved, data.counts, data.status}
 	}
 	size, fits := navJSONSize(payload, math.MaxInt64)
 	if !fits {

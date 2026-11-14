@@ -21,6 +21,7 @@ import (
 
 var errNavAsksAliasUnavailable = errors.New("asks aliases unavailable")
 var errNavAsksStoreUnavailable = errors.New("asks store unavailable")
+var errNavAsksStoreMissing = errors.New("asks store missing")
 
 // Injected and unmounted. Authentication, the filesystem adapter, production
 // limits and registered observer delivery belong to the guarded factory.
@@ -30,11 +31,12 @@ type navAsksAlias struct {
 }
 type navAsksResolve func(context.Context, string) (navAsksAlias, error)
 type navAsksHTTPDeps struct {
-	read    func(context.Context, time.Time, state.AsksSnapshotLimits) (*state.AsksSnapshot, error)
-	resolve navAsksResolve
-	now     func() time.Time
-	render  navAsksWordingRender
-	marshal func(any) ([]byte, error)
+	read       func(context.Context, time.Time, state.AsksSnapshotLimits) (*state.AsksSnapshot, error)
+	resolve    navAsksResolve
+	now        func() time.Time
+	keyPresent func() bool
+	render     navAsksWordingRender
+	marshal    func(any) ([]byte, error)
 }
 type navAsksHTTPLimits struct {
 	response navAsksResponseOptions // Only numerical allowances are retained.
@@ -278,6 +280,11 @@ func (h *navAsksHandler) prepare(req *http.Request, release *func(), f *navAsksF
 		return h.failure(askHTTPUnshowable, askOrdinary)
 	}
 	s, err := h.d.read(ctx, o.now, h.limits.reader)
+	if err == errNavAsksStoreMissing {
+		o.notSetup = true
+		s = &state.AsksSnapshot{UTCDay: state.AsksDay(o.now)}
+		err = nil
+	}
 	f.external(err)
 	if f.current {
 		return h.failure(askHTTPInternal, askPanicFinal)
@@ -299,6 +306,10 @@ func (h *navAsksHandler) prepare(req *http.Request, release *func(), f *navAsksF
 	}
 	if s == nil {
 		return h.failure(askHTTPInternal, askOrdinary)
+	}
+	if !o.notSetup && h.d.keyPresent != nil {
+		o.keyKnown = true
+		o.keyOK = h.d.keyPresent()
 	}
 	r, err := newNavAsksRun(ctx, *s, o, f)
 	if err == nil {

@@ -149,7 +149,8 @@ func TestNavFactoryMissingAsksNeverFabricatesOrCreates(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := factoryGet(t, f, "/api/nav/asks")
-	if w.Code != 503 || w.Body.String() != `{"error":"asks_unavailable"}` {
+	var body navAsksUnknownBody
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || !body.Status.Known || body.Status.Text != "Not set up. Run aiq asks setup" || !body.Status.Problem || len(body.Status.Remedy) != 1 || body.Status.Remedy[0] != "setup" || body.Report.Known {
 		t.Fatal("unread database fabricated facts", w.Code, w.Body.String())
 	}
 	if _, err = os.Stat(x.asksPath); !os.IsNotExist(err) {

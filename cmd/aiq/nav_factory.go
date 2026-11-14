@@ -49,15 +49,16 @@ func navProductionPolicy() navFactoryPolicy {
 }
 
 type navFactoryInput struct {
-	roots     func(context.Context) (transcript.Roots, error)
-	metadata  func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error)
-	witness   func(context.Context, string, state.NavigatorLease) (bool, error)
-	observe   func(context.Context, terminal.ObservationTarget) terminal.Observation
-	workspace func(context.Context, string) (string, bool)
-	notes     func(context.Context, string, state.NavigatorSnapshotLimits) (navLongNote, error)
-	asksPath  string
-	now       func() time.Time
-	location  *time.Location
+	roots          func(context.Context) (transcript.Roots, error)
+	metadata       func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error)
+	witness        func(context.Context, string, state.NavigatorLease) (bool, error)
+	observe        func(context.Context, terminal.ObservationTarget) terminal.Observation
+	workspace      func(context.Context, string) (string, bool)
+	notes          func(context.Context, string, state.NavigatorSnapshotLimits) (navLongNote, error)
+	asksPath       string
+	asksKeyPresent func() bool
+	now            func() time.Time
+	location       *time.Location
 }
 type navFactoryBundle struct {
 	sessions, detail, asks, turn http.Handler
@@ -266,6 +267,9 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 	}
 	detail.slots = f.detailSlots
 	read := func(ctx context.Context, now time.Time, l state.AsksSnapshotLimits) (snapshot *state.AsksSnapshot, err error) {
+		if _, statErr := os.Lstat(f.input.asksPath); os.IsNotExist(statErr) {
+			return nil, errNavAsksStoreMissing
+		}
 		store, err := state.OpenReadOnly(f.input.asksPath)
 		if err != nil {
 			return nil, errNavAsksStoreUnavailable
@@ -282,7 +286,7 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 		}
 		return snapshot, err
 	}
-	asks, err := newNavAsksHandler(navAsksHTTPDeps{read: read, now: f.input.now, resolve: navFactoryAlias}, f.policy.asks)
+	asks, err := newNavAsksHandler(navAsksHTTPDeps{read: read, now: f.input.now, resolve: navFactoryAlias, keyPresent: f.input.asksKeyPresent}, f.policy.asks)
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +339,7 @@ func navProductionInput() navFactoryInput {
 func navProductionInputWithIdentity(identity func(context.Context) (string, error)) navFactoryInput {
 	claude, codex, agyHome := paths.RealClaudeHome(), paths.RealCodexHome(), agy.AppDataDir(paths.RealAgyHome())
 	parents := []string{paths.ClaudeHomesDir(), paths.CodexHomesDir()}
-	return navFactoryInput{asksPath: filepath.Join(paths.DataDir(), asksDBName), now: time.Now, location: time.Local,
+	return navFactoryInput{asksPath: filepath.Join(paths.DataDir(), asksDBName), now: time.Now, location: time.Local, asksKeyPresent: func() bool { return asksKey() != "" },
 		metadata: navProductionMetadata(paths.StateDB(), identity), witness: navProductionWitness(paths.StateDB()), observe: terminal.Observe,
 		workspace: navWorkspaceAt, notes: navProductionNoteMetadata,
 		roots: func(ctx context.Context) (transcript.Roots, error) {
