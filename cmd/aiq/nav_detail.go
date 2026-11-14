@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -119,10 +120,7 @@ func (h *navDetailHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if p.status != http.StatusNotModified {
 		headers.Set("Content-Length", strconv.Itoa(len(p.body)))
 	}
-	w.WriteHeader(p.status)
-	if p.status != http.StatusNotModified {
-		_, _ = w.Write(p.body)
-	}
+	daemon.WriteNavigatorBody(w, req, headers, p.status, p.body)
 }
 
 func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *context.Context, cancel, release *func()) (p navDetailResponse) {

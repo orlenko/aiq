@@ -83,7 +83,7 @@ func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) 
 			bundle, err := f.get(ctx)
 			if err != nil {
 				diagnostic.Note(ctx, transcript.PanicOrigin(err))
-				navFactoryUnavailable(w)
+				navFactoryUnavailable(w, r)
 				return
 			}
 			var h http.Handler
@@ -105,11 +105,11 @@ func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) 
 	f.api = mux
 	return f, nil
 }
-func navFactoryUnavailable(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(503)
-	_, _ = w.Write([]byte(`{"error":"navigator_unavailable"}`))
+func navFactoryUnavailable(w http.ResponseWriter, r *http.Request) {
+	headers := w.Header()
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Cache-Control", "no-store")
+	daemon.WriteNavigatorBody(w, r, headers, 503, []byte(`{"error":"navigator_unavailable"}`))
 }
 func (f *navFactory) get(ctx context.Context) (bundle *navFactoryBundle, err error) {
 	for {
@@ -296,7 +296,7 @@ func navProductionInput() navFactoryInput {
 func mountProductionNavigator(s *daemon.Server) {
 	f, err := newNavFactory(navProductionInput(), navProductionPolicy())
 	if err != nil {
-		s.MountNavigator(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { navFactoryUnavailable(w) }))
+		s.MountNavigator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { navFactoryUnavailable(w, r) }))
 		s.MountNavigatorPages(daemon.NavigatorUnavailablePages())
 		return
 	}

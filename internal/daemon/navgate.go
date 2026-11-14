@@ -130,6 +130,17 @@ func (g *navGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.proven(g.info, w, r)
 		return
 	}
+	if verifier, ok := g.verifier.(interface {
+		AuthorizeRead(*http.Request) (*http.Request, bool)
+	}); ok {
+		owned, accepted := verifier.AuthorizeRead(r)
+		if !accepted || owned == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		g.api.ServeHTTP(w, owned)
+		return
+	}
 	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || bearer == "" || len(r.Header.Values("Authorization")) != 1 || !g.verifier.Credential(bearer) {
 		w.WriteHeader(http.StatusUnauthorized)

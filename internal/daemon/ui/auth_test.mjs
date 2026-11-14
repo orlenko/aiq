@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import vm from "node:vm";
+import {rememberBody,signReply,until} from "./auth_test_proof.mjs";
 import {canonical32,credential,encodeForm,fragment,route} from "./auth_codec.js";
 import {createTabSession} from "./auth_session.js";
 
@@ -11,15 +12,16 @@ function storage(seed) {
   const values=new Map(seed?[[key,seed]]:[]),calls=[];
   return {values,calls,getItem(k){calls.push("get");return values.get(k)??null;},setItem(k,v){calls.push("set");values.set(k,v);},removeItem(k){calls.push("remove");values.delete(k);}};
 }
-function reply(body,status=200,headers={}) {
-  return new Response(body,{status,headers:{"Content-Type":"application/json","X-Aiq-Build":build,...headers}});
+function reply(body,status=200,headers={},proofBody=body) {
+  return rememberBody(new Response(body,{status,headers:{"Content-Type":"application/json","X-Aiq-Build":build,...headers}}),proofBody);
 }
 function setup(extra={}) {
   const saved=extra.saved??storage(),requests=[],states=[];
+  let reads=0;const supplied=extra.fetcher;
   const session=createTabSession({base,build,fragment:"code="+code,isCurrent:()=>true,getStorage:()=>saved,
     limits:{sessions:128,conversation:128,asks:128},onState:s=>states.push(s),
-    fetcher:async(url,options)=>{requests.push({url,options});return reply('{"credential":"'+bearer+'"}');},...extra});
-  return {session,saved,requests,states};
+    fetcher:async(url,options)=>{requests.push({url,options});return reply('{"credential":"'+bearer+'"}');},...extra,fetcher:async(url,options)=>{if(options.method==="GET")reads++;const r=await (supplied?supplied(url,options):(requests.push({url,options}),reply('{"credential":"'+bearer+'"}')));return signReply(r,options,bearer,build);}});
+  return {session,saved,requests,states,readStarted:()=>until(()=>reads>0)};
 }
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};}
 
@@ -54,7 +56,7 @@ test("restore is not an authenticated liveness claim; success confirms it",async
   const x=setup({saved,fragment:"",getStorage:()=>saved,fetcher:async(url,opts)=>{requests.push({url,opts});return reply('{"rows":[]}');}});
   assert.equal(await x.session.ready,true);assert.equal(x.session.snapshot().kind,"restoring");
   assert.deepEqual(await x.session.sessions({dir:"/invented",workers:false}),{data:{rows:[]}});
-  assert.equal(x.session.snapshot().kind,"unlocked");assert.equal(requests[0].opts.headers.Authorization,"Bearer "+bearer);
+  assert.equal(x.session.snapshot().kind,"unlocked");assert.match(requests[0].opts.headers.Authorization,/^AiqTab /);assert(!requests[0].opts.headers.Authorization.includes(bearer));
   assert.equal(requests[0].url,base+"/api/nav/sessions?dir=%2Finvented&workers=0");x.session.dispose();
 });
 test("unconfigured readers send zero data requests",async()=>{
@@ -111,7 +113,7 @@ test("stale success and stale401 have zero authority after local forget",async()
   for(const status of [200,401]) {
     const saved=storage(bearer),held=deferred();
     const x=setup({fragment:"",getStorage:()=>saved,fetcher:()=>held.promise});await x.session.ready;
-    const request=x.session.asks({mode:"all"});x.session.forget();const state=x.session.snapshot();
+    const request=x.session.asks({mode:"all"});await x.readStarted();x.session.forget();const state=x.session.snapshot();
     held.resolve(reply('{"fixture":true}',status));await assert.rejects(request,/Navigator request unavailable/);
     assert.deepEqual(x.session.snapshot(),state);assert.equal(saved.values.has(key),false);x.session.dispose();
   }
@@ -120,7 +122,7 @@ test("body exact/one-over and reader cancellation settle before rejection",async
   for(const size of [128,129]) {
     const saved=storage(bearer);let canceled=false;
     const body='{"x":"'+"a".repeat(size-8)+'"}';assert.equal(encoder.encode(body).length,size);
-    const x=setup({fragment:"",getStorage:()=>saved,fetcher:async()=>reply(new ReadableStream({start(c){c.enqueue(encoder.encode(body));if(size===128)c.close()},cancel(){canceled=true}}))});await x.session.ready;
+    const x=setup({fragment:"",getStorage:()=>saved,fetcher:async()=>reply(new ReadableStream({start(c){c.enqueue(encoder.encode(body));if(size===128)c.close()},cancel(){canceled=true}}),200,{},body)});await x.session.ready;
     if(size===128)assert.equal((await x.session.asks({mode:"all"})).data.x.length,120);
     else{await assert.rejects(x.session.asks({mode:"all"}));assert(canceled);}
     x.session.dispose();
@@ -209,7 +211,7 @@ test("Forget and active401 finish clearing before reentrant notification or abor
     assert.equal(await x.session.ready,true);armed=true;
     if(denied){saved.removeItem=()=>{throw Error("invented removal denial")};saved.setItem=()=>{throw Error("invented overwrite denial")};}
     if(action==="401")await assert.rejects(x.session.asks({mode:"all"}));
-    else{if(action==="abort")request=x.session.asks({mode:"all"});x.session.forget();if(request)await assert.rejects(request);}
+    else{if(action==="abort"){request=x.session.asks({mode:"all"});await x.readStarted();}x.session.forget();if(request)await assert.rejects(request);}
     assert.equal(saved.values.has(key),denied);assert.equal(notified,1);
     if(denied)assert.match(x.session.snapshot().notice,/may return on reload/);
     else if(action!=="401")assert.match(x.session.snapshot().notice,/removed/);

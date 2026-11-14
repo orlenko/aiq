@@ -31,7 +31,7 @@ var navAuthCSS []byte
 // Only this fixed production dependency closure is embedded/served. Browser
 // fixtures, examples and tests remain outside the asset namespace.
 //
-//go:embed ui/app.js ui/read_broker.js ui/session_controller.js ui/controller_data.js ui/feed.js ui/feed_data.js ui/dom.js ui/asks_controller.js ui/asks_view.js ui/asks_data.js ui/app.css ui/session_controller.css ui/feed.css ui/dom.css ui/asks_controller.css ui/asks_view.css
+//go:embed ui/app.js ui/tab_proof.js ui/read_broker.js ui/session_controller.js ui/controller_data.js ui/feed.js ui/feed_data.js ui/dom.js ui/asks_controller.js ui/asks_view.js ui/asks_data.js ui/app.css ui/session_controller.css ui/feed.css ui/dom.css ui/asks_controller.css ui/asks_view.css
 var navAppFiles embed.FS
 
 type navStaticAsset struct {
@@ -41,7 +41,7 @@ type navStaticAsset struct {
 
 var navAdditionalAssets = func() []navStaticAsset {
 	var assets []navStaticAsset
-	for _, name := range []string{"app.js", "read_broker.js", "session_controller.js", "controller_data.js", "feed.js", "feed_data.js", "dom.js", "asks_controller.js", "asks_view.js", "asks_data.js", "app.css", "session_controller.css", "feed.css", "dom.css", "asks_controller.css", "asks_view.css"} {
+	for _, name := range []string{"app.js", "tab_proof.js", "read_broker.js", "session_controller.js", "controller_data.js", "feed.js", "feed_data.js", "dom.js", "asks_controller.js", "asks_view.js", "asks_data.js", "app.css", "session_controller.css", "feed.css", "dom.css", "asks_controller.css", "asks_view.css"} {
 		body, err := navAppFiles.ReadFile("ui/" + name)
 		if err != nil {
 			panic("missing navigator production asset")
