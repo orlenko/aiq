@@ -71,7 +71,7 @@ func (f navDetailFrame) add(fields ...string) error {
 }
 
 func navDetailContextKey(parent, ctx context.Context, s *transcript.Session, snap transcript.Snapshot, q navDetailQuery, f navDetailFacts, o navConversationOptions, build string) (transcript.ViewKey, error) {
-	start, end, err := navConversationBounds(s.Turns, q.last, q.anchor)
+	start, end, err := navConversationWindowBounds(s.Turns, q.last, q.anchor, q.all)
 	if err != nil {
 		return transcript.ViewKey{}, err
 	}
@@ -83,6 +83,11 @@ func navDetailContextKey(parent, ctx context.Context, s *transcript.Session, sna
 	}
 	if o.arrayEntries != 0 || o.stringUnits != 0 {
 		if err := frame.add("browser-structure-v1", strconv.FormatInt(o.arrayEntries, 10), strconv.FormatInt(o.stringUnits, 10)); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
+	if q.all {
+		if err := frame.add("all-prompts-v1"); err != nil {
 			return transcript.ViewKey{}, err
 		}
 	}

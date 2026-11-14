@@ -41,7 +41,7 @@ export function createAppHost(document,options) {
   if (!window || document.defaultView!==window || root?.ownerDocument!==document || typeof isCurrent!=="function") throw refused();
   const limits={};for(const key of ["rows","arrayEntries","stringUnits"]){const n=options.limits?.[key];if(!Number.isSafeInteger(n)||n<=0)throw refused();limits[key]=n;}
   const initial=options.initialNext,broker=createReadBroker(readers),owner={},removes=[];
-  let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true;
+  let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true,lastPrompts=50;
   const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   const button=(text,cls="")=>{const n=node("button",cls,text);n.type="button";return n;};
   const shell=node("div","nav-shell"),header=node("header","nav-header"),nav=node("nav","nav-tabs");nav.setAttribute("aria-label","Navigator pages");
@@ -55,8 +55,10 @@ export function createAppHost(document,options) {
   const controls=node("div","nav-controls"),searchLabel=node("label","nav-search-label","Search loaded results"),search=node("input","nav-search");search.type="search";search.autocomplete="off";searchLabel.append(search);
   const workersLabel=node("label","nav-toggle"),workers=node("input");workers.type="checkbox";workersLabel.append(workers,document.createTextNode(" Workers"));
   const marksLabel=node("label","nav-toggle"),marks=node("input");marks.type="checkbox";marksLabel.append(marks,document.createTextNode(" Markdown marks"));
+  const windowLabel=node("label","nav-window-label","Conversation window"),windowSelect=node("select","nav-window");
+  for(const [value,label]of [["50","Last 50 prompts"],["100","Last 100 prompts"],["500","Last 500 prompts"],["all","Show all"]]){const option=node("option","",label);option.value=value;windowSelect.append(option);}windowLabel.append(windowSelect);
   const themeLabel=node("label","nav-theme-label","Theme"),theme=node("select","nav-theme");for(const [value,label]of [["system","System"],["light","Light"],["dark","Dark"]]){const o=node("option","",label);o.value=value;theme.append(o);}themeLabel.append(theme);
-  controls.append(searchLabel,workersLabel,marksLabel,themeLabel);
+  controls.append(searchLabel,workersLabel,marksLabel,windowLabel,themeLabel);
   const status=node("p","nav-app-status");status.setAttribute("role","status");status.setAttribute("aria-live","polite");
   const note=node("p","nav-snapshot-note","Snapshot views · refresh to read changes. Live session state is not shown here yet.");
   const placement=node("aside","nav-placement");placement.hidden=true;
@@ -121,7 +123,7 @@ export function createAppHost(document,options) {
     const previous=selected(currentAddress);
     if(previous&&previous.provider===value.provider&&previous.id===value.id)return;
     if(currentAddress.anchor&&(!previous||previous.provider!==value.provider||previous.id!==value.id)){navigate(next);return;}
-    if(next!==currentAddress.next){if(!navHistory(next))throw refused();if(active(op)){currentAddress=route(next);title.textContent="Conversation";document.title=value.provider+" · "+value.id+" — aiq";}}
+    if(next!==currentAddress.next){if(!navHistory(next))throw refused();if(active(op)){currentAddress=route(next);title.textContent="Conversation";windowLabel.hidden=false;document.title=value.provider+" · "+value.id+" — aiq";}}
   }
   async function place(op,value){
     if(!active(op))return;
@@ -140,7 +142,7 @@ export function createAppHost(document,options) {
     open.addEventListener("click",()=>{if(active(op)&&epoch===placementEpoch)navigate(address("/sessions/"+value.provider+"/"+value.id,currentAddress.dir));},{once:true});
   }
   function help(){
-    const section=node("section","nav-help");section.append(node("h3","","Read your sessions"),node("p","","Choose a directory to list its sessions, then open a conversation. Search filters only the results already loaded. Refresh reads a new snapshot; it never types into or resumes a session."),node("h3","","Asks"),node("p","","Choose a directory or explicitly select All Asks. Open a question’s conversation to locate its turn. When placement is uncertain, open the session yourself."),node("h3","","Login and privacy"),node("p","","Open this tab with aiq ui. Its login expires after 30 minutes without successful requests or eight hours total. Forget this tab clears its saved login; aiq ui --revoke signs out every browser. After a daemon restart or a terminal connection failure, run aiq ui again. Remote browsers and SSH forwarding are unsupported."),node("p","","Theme, Markdown marks and keyboard choices last for this open page. Tab always belongs to your browser. Copy requires an explicit action. Session control remains in the terminal."));
+    const section=node("section","nav-help");section.append(node("h3","","Read your sessions"),node("p","","Choose a directory to list its sessions, then open a conversation. Search filters only the results already loaded. Refresh reads a new snapshot; it never types into or resumes a session."),node("h3","","Asks"),node("p","","Choose a directory or explicitly select All Asks. Open a question’s conversation to locate its turn. When placement is uncertain, open the session yourself."),node("h3","","Login and privacy"),node("p","","Open this tab with aiq ui. Its login expires after 30 minutes without successful requests or eight hours total. Forget this tab clears its saved login; aiq ui --revoke signs out every browser. After a daemon restart or a terminal connection failure, run aiq ui again. Remote browsers and SSH forwarding are unsupported."),node("p","","Conversation window, theme, Markdown marks and keyboard choices last for this open page. Tab always belongs to your browser. Copy requires an explicit action. Session control remains in the terminal."));
     return section;
   }
   function render(parsed,focus){
@@ -150,6 +152,7 @@ export function createAppHost(document,options) {
     if(!active(op))return;
     dirInput.value=parsed.dir||lastDirectory;allInput.checked=parsed.path==="/asks"&&parsed.all;dirInput.disabled=allInput.checked;
     allLabel.hidden=parsed.path!=="/asks";workersLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";marksLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";
+    windowLabel.hidden=!selected(parsed);windowSelect.value=String(parsed.anchor?50:lastPrompts);
     title.textContent=parsed.path==="/asks"?"Asks":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
     document.title=title.textContent+" — aiq";
     for(const[path,a]of links){a.href=address(path,parsed.dir||lastDirectory);if(path==="/sessions"&&parsed.path.startsWith("/sessions")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
@@ -164,7 +167,7 @@ export function createAppHost(document,options) {
     }else{
       op.controller=createSessionController(document,{window,idPrefix:"nav-app-session-"+(++generation),limits,
         readingControls:true,shortcutsEnabled:()=>shortcuts,
-        detailQuery:{last:50,markup:marks.checked,anchor:parsed.anchor},
+        detailQuery:{last:parsed.anchor?50:lastPrompts,markup:marks.checked,anchor:parsed.anchor},
         readSessions:(q,s)=>op.lease.read("sessions",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),
         copyText:t=>copy(t,op),announce:announceCurrent,onSelection:v=>selectionChanged(op,v)});
     }
@@ -200,6 +203,7 @@ export function createAppHost(document,options) {
     for(const[path,a]of links)listen(a,"click",e=>{if(e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();search.value="";navigate(address(path,currentAddress?.dir||lastDirectory));});
     listen(allInput,"change",()=>{search.value="";navigate(address("/asks",allInput.checked?"":lastDirectory,allInput.checked));});
     listen(search,"input",filter);listen(workers,"change",()=>render(currentAddress,false));listen(marks,"change",()=>render(currentAddress,false));
+    listen(windowSelect,"change",()=>{const value=windowSelect.value;if(!["50","100","500","all"].includes(value)){announce("Choose a conversation window.");return;}lastPrompts=value==="all"?"all":Number(value);navigate(address(currentAddress.path,currentAddress.dir),{replace:true,focus:false});});
     listen(search,"keydown",e=>{if(e.key==="Escape"){e.preventDefault();search.value="";filter();announce("Search cleared.");}});
     listen(theme,"change",()=>{if(["system","light","dark"].includes(theme.value))document.documentElement.dataset.navTheme=theme.value;});
     listen(back,"click",goBack);listen(helpButton,"click",()=>helpDialog.showModal());listen(closeHelp,"click",()=>helpDialog.close());listen(shortcutInput,"change",()=>{shortcuts=shortcutInput.checked;});

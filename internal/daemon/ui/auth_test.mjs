@@ -165,7 +165,7 @@ test("classic import positive and history failure are real execution controls",a
 });
 
 test("conversation controller inputs emit shared actual-decoder wire literals",async()=>{
-  const rows=JSON.parse(readFileSync(new URL("./auth_reader_vectors.json",import.meta.url),"utf8"));assert.equal(rows.length,8);
+  const rows=JSON.parse(readFileSync(new URL("./auth_reader_vectors.json",import.meta.url),"utf8"));assert.equal(rows.length,10);
   for(const fresh of [false,true])for(const row of rows){
     const urls=[],saved=storage(fresh?undefined:bearer);
     const x=setup({fragment:fresh?"code="+code:"",getStorage:()=>saved,fetcher:async(url,o)=>{

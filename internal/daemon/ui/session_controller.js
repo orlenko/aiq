@@ -42,8 +42,10 @@ export function createSessionController(document, options) {
   for (const key of ["arrayEntries", "stringUnits", "rows"]) {
     limits[key] = integer(field(suppliedLimits, key), 1, Number.MAX_SAFE_INTEGER);
   }
-  const detailQuery = {last:integer(field(query, "last"), 1, 10000),
+  const rawLast=field(query,"last");
+  const detailQuery = {last:rawLast==="all"?"all":integer(rawLast, 1, 10000),
     markup:bool(field(query, "markup")), anchor:integer(field(query, "anchor"), 0, 9999999999999)};
+  if(detailQuery.last==="all"&&detailQuery.anchor!==0)fail();
   const fragment = document.createDocumentFragment();
   const root = node("div", "nav-controller"); fragment.append(root);
   const listPane = pane("Sessions", "sessions"), detailPane = pane("Conversation", "conversation");

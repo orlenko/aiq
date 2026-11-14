@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -370,5 +371,37 @@ func TestNavDetailDifferentBudgetFlightsDoNotJoin(t *testing.T) {
 	}
 	if encodes.Load() != 1 {
 		t.Fatal("large success envelope encoding count")
+	}
+}
+
+func TestNavDetailExplicitAllCachePolicyAndWholeRefusal(t *testing.T) {
+	f := detailTestNew(t)
+	var source strings.Builder
+	for i := 0; i < 60; i++ {
+		row := string(detailTestData(fmt.Sprintf("invented prompt %d", i), f.at.Add(time.Duration(i)*time.Minute)))
+		source.WriteString(strings.ReplaceAll(row, "fixture-message", fmt.Sprintf("invented-message-%d", i)))
+	}
+	if err := os.WriteFile(f.path, []byte(source.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := f.handler(t)
+	bounded := detailTestServe(h, httptest.NewRequest("GET", detailTestPath+"?last=50", nil))
+	all := detailTestServe(h, httptest.NewRequest("GET", detailTestPath+"?last=all", nil))
+	var a, b navDetailEnvelope
+	if bounded.status != 200 || all.status != 200 || json.Unmarshal(bounded.body, &a) != nil || json.Unmarshal(all.body, &b) != nil || a.WindowStart != 10 || b.WindowStart != 0 || b.EarlierHidden != 0 || len(b.Messages) <= len(a.Messages) {
+		t.Fatal("all and bounded response did not remain distinct")
+	}
+	before := f.cache.Stats().ViewBuilds
+	repeat := detailTestServe(h, httptest.NewRequest("GET", detailTestPath+"?last=all", nil))
+	if repeat.status != 200 || !bytes.Equal(repeat.body, all.body) || f.cache.Stats().ViewBuilds != before {
+		t.Fatal("all view did not reuse its own cached representation")
+	}
+	f.limits.bodyBytes = int64(len(bounded.body))
+	small := f.handler(t)
+	detailTestError(t, detailTestServe(small, httptest.NewRequest("GET", detailTestPath+"?last=all", nil)), 503, "view_too_large")
+	for _, q := range []string{"last=0", "last=ALL", "last=all&at=1", "last=all&last=1"} {
+		if _, _, ok := navDetailDecode(httptest.NewRequest("GET", detailTestPath+"?"+q, nil)); ok {
+			t.Fatal("invalid all window accepted")
+		}
 	}
 }

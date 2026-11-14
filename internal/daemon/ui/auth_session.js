@@ -38,8 +38,9 @@ function requestPath(kind, query) {
   if (kind !== "conversation") bad();
   const provider = own(query,"provider"), id = own(query,"id");
   if (!["claude","codex","agy"].includes(provider) || typeof id !== "string" || !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)) bad();
-  const last = integer(own(query,"last"),1,10000), markup = own(query,"markup"), anchor = integer(own(query,"anchor"),0,9999999999999);
+  const rawLast=own(query,"last"), last=rawLast==="all"?"all":integer(rawLast,1,10000), markup = own(query,"markup"), anchor = integer(own(query,"anchor"),0,9999999999999);
   if (typeof markup !== "boolean") bad();
+  if (last==="all"&&anchor!==0)bad();
   return "/api/nav/sessions/"+provider+"/"+id+"?"+(anchor===0?"":"at="+anchor+"&")+"last="+last+"&markup="+(markup?"1":"0");
 }
 
