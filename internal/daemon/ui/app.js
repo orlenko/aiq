@@ -6,6 +6,17 @@ import {createAsksController} from "./asks_controller.js";
 const owners=new WeakMap();
 const copyFlights=new WeakMap(); // One physical clipboard operation per document.
 const refused=()=>new TypeError("Navigator view unavailable");
+// Unavailable rows must not consume the list's only keyboard entry point.
+// Native visibility also excludes controls inside closed/hidden disclosures.
+export function setNavigatorRoving(group,active) {
+  // ARIA busy controls remain focusable, including after async re-enable.
+  const rows=[...group.querySelectorAll(".nav-controller-row,.nav-asks-item")].filter(n=>!n.hidden);
+  const entries=rows.map(row=>({row,controls:[...row.querySelectorAll("button,a")].filter(c=>!c.disabled&&!c.hidden&&
+    (c.tagName!=="A"||c.hasAttribute("href"))&&c.getClientRects().length>0)})).filter(e=>e.controls.length>0);
+  const chosen=entries.find(e=>e.row.contains(active))??entries.find(e=>e.row.dataset.current==="true")??entries[0];
+  for(const row of rows){row.dataset.current=String(row===chosen?.row);for(const c of row.querySelectorAll("button,a"))c.tabIndex=row===chosen?.row&&chosen.controls.includes(c)?0:-1;}
+  return entries;
+}
 function address(path,dir="",all=false,anchor=0) {
   const values={};if(dir)values.dir=directory(dir);if(all)values.all="true";if(anchor)values.at=String(anchor);
   const query=Object.keys(values).sort().map(k=>encodeForm(k)+"="+encodeForm(values[k])).join("&");
@@ -60,9 +71,7 @@ export function createAppHost(document,options) {
   }
   function roving(){
     for(const group of content.querySelectorAll(".nav-controller-rows,.nav-asks-region")){
-      const rows=[...group.querySelectorAll(".nav-controller-row,.nav-asks-item")].filter(n=>!n.hidden);
-      const focused=rows.find(n=>n.contains(document.activeElement)),chosen=focused??rows.find(n=>n.dataset.current==="true")??rows[0];
-      for(const row of rows){const yes=row===chosen;row.dataset.current=String(yes);const controls=[...row.querySelectorAll("button,a")];for(const c of controls)c.tabIndex=yes?0:-1;}
+      setNavigatorRoving(group,document.activeElement);
     }
   }
   async function copy(text,op){
@@ -170,9 +179,10 @@ export function createAppHost(document,options) {
     if(e.key==="/"){e.preventDefault();search.focus();return;}
     if(e.key==="?"){e.preventDefault();helpDialog.showModal();return;}
     const group=e.target.closest(".nav-controller-rows,.nav-asks-region");if(!group)return;
-    const rows=[...group.querySelectorAll(".nav-controller-row,.nav-asks-item")].filter(n=>!n.hidden),index=rows.findIndex(n=>n.contains(document.activeElement));
+    const entries=setNavigatorRoving(group,document.activeElement),index=entries.findIndex(e=>e.row.contains(document.activeElement));
+    const rows=entries.map(e=>e.row);
     let next=index;if(["j","ArrowDown"].includes(e.key))next=Math.min(rows.length-1,index+1);else if(["k","ArrowUp"].includes(e.key))next=Math.max(0,index-1);else if(["g","Home"].includes(e.key))next=0;else if(["G","End"].includes(e.key))next=rows.length-1;else return;
-    const target=rows[next]?.querySelector("button,a");if(target){e.preventDefault();target.focus();roving();}
+    const target=entries[next]?.controls[0];if(target){e.preventDefault();target.focus();roving();}
   }
   function mount(){
     if(disposed)return false;if(mounted)return alive();if(!root.isConnected)return false;

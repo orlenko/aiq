@@ -243,3 +243,130 @@ func TestNavFactoryPagePolicyIsPublicAndComplete(t *testing.T) {
 		t.Fatal("page policy incomplete or private root exposed")
 	}
 }
+
+func TestNavFactoryRefreshRootClassAndSharedAdmission(t *testing.T) {
+	for _, mode := range []string{"new-provider-parent", "new-overlay-home", "new-transcript-child", "removed-root", "label-change", "unchanged"} {
+		t.Run(mode, func(t *testing.T) {
+			x := newNavAppFixture(t, 0, navAppFixtureQuote)
+			in := x.input(nil)
+			now := x.at
+			in.now = func() time.Time { return now }
+			roots := cloneNavRoots(x.roots)
+			in.roots = func(context.Context) (transcript.Roots, error) { return roots, nil }
+			f, err := newNavFactory(in, navProductionPolicy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, err := f.get(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "new-provider-parent":
+				roots.CodexSessions = append(roots.CodexSessions, filepath.Join(x.root, "invented-new-parent", "account", "sessions"))
+			case "new-overlay-home":
+				roots.ClaudeProjects = append(roots.ClaudeProjects, filepath.Join(x.root, "invented-new-home", "projects"))
+			case "new-transcript-child":
+				roots.ClaudeProjects = append(roots.ClaudeProjects, filepath.Join(x.root, "invented-account", "projects"))
+			case "removed-root":
+				roots.ClaudeProjects = nil
+			case "label-change":
+				roots.Labels = map[string]string{x.roots.ClaudeProjects[0]: "invented-label"}
+			}
+			within, err := f.get(context.Background())
+			if err != nil || within != old {
+				t.Fatal("roots did not retain the discovery TTL")
+			}
+			now = now.Add(transcript.DiscoveryTTL)
+			next, err := f.get(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (next == old) != (mode == "unchanged") {
+				t.Fatal("root generation refresh/reuse wrong", mode)
+			}
+			a, b := old.sessions.(*navSessionsHandler), next.sessions.(*navSessionsHandler)
+			da, db := old.detail.(*navDetailHandler), next.detail.(*navDetailHandler)
+			aa, ab := old.asks.(*navAsksHandler), next.asks.(*navAsksHandler)
+			if a.slots != b.slots || da.slots != db.slots || aa.slots != ab.slots || ab.slots != next.turn.(*navAskTurnHandler).slots {
+				t.Fatal("root refresh multiplied admission")
+			}
+			aa.slots <- struct{}{}
+			w := factoryGet(t, f, "/api/nav/asks")
+			<-aa.slots
+			if w.Code != 503 || w.Body.String() != "{\"error\":\"asks_busy\"}" {
+				t.Fatal("old generation admission bypassed")
+			}
+		})
+	}
+}
+
+func TestNavFactoryProductionOverlayAppearsAfterInitialRead(t *testing.T) {
+	for _, stage := range []string{"parent", "home", "projects", "metadata-file"} {
+		t.Run(stage, func(t *testing.T) {
+			x := newNavAppFixture(t, 0, navAppFixtureQuote)
+			data := filepath.Join(x.root, "isolated-data")
+			t.Setenv("AIQ_DATA_DIR", data)
+			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(x.root, "empty-native-claude"))
+			t.Setenv("CODEX_HOME", filepath.Join(x.root, "empty-native-codex"))
+			t.Setenv("HOME", filepath.Join(x.root, "empty-home"))
+			parent := filepath.Join(data, "claude")
+			home := filepath.Join(parent, "invented-account")
+			if stage == "home" {
+				if err := os.MkdirAll(parent, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if stage == "projects" {
+				if err := os.MkdirAll(home, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if stage == "metadata-file" {
+				if err := os.MkdirAll(parent, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(parent, ".DS_Store"), []byte("invented metadata"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			in := navProductionInput()
+			in.asksPath = x.asksPath
+			now := x.at
+			in.now = func() time.Time { return now }
+			in.location = time.UTC
+			f, err := newNavFactory(in, navProductionPolicy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := "/api/nav/sessions?dir=" + url.QueryEscape(x.work) + "&workers=0"
+			first := factoryGet(t, f, path)
+			var before navSessionsBody
+			if first.Code != 200 || json.Unmarshal(first.Body.Bytes(), &before) != nil || len(before.Sessions) != 0 {
+				t.Fatal("empty fixture was not empty")
+			}
+			original := filepath.Join(x.roots.ClaudeProjects[0], claudeNonAlnum.ReplaceAllString(x.work, "-"), fullIDFixtureID+".jsonl")
+			raw, err := os.ReadFile(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			created := filepath.Join(home, "projects", claudeNonAlnum.ReplaceAllString(x.work, "-"), fullIDFixtureID+".jsonl")
+			if err = os.MkdirAll(filepath.Dir(created), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(created, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(transcript.DiscoveryTTL)
+			after := factoryGet(t, f, path)
+			var list navSessionsBody
+			if after.Code != 200 || json.Unmarshal(after.Body.Bytes(), &list) != nil || len(list.Sessions) != 1 || list.Sessions[0].ID != fullIDFixtureID {
+				t.Fatal("new production overlay stayed invisible")
+			}
+			detail := factoryGet(t, f, "/api/nav/sessions/claude/"+fullIDFixtureID+"?last=50&markup=0")
+			if detail.Code != 200 {
+				t.Fatal("refreshed roots did not reach shared conversation lookup")
+			}
+		})
+	}
+}

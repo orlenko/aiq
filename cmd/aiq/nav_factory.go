@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -48,20 +49,25 @@ type navFactoryInput struct {
 	now      func() time.Time
 	location *time.Location
 }
-type navFactoryBundle struct{ sessions, detail, asks, turn http.Handler }
+type navFactoryBundle struct {
+	sessions, detail, asks, turn http.Handler
+	roots                        transcript.Roots
+}
 type navFactory struct {
-	mu       sync.Mutex
-	input    navFactoryInput
-	policy   navFactoryPolicy
-	cache    *transcript.Cache
-	building chan struct{}
-	bundle   *navFactoryBundle
-	api      http.Handler
-	pages    http.Handler
+	mu                                  sync.Mutex
+	input                               navFactoryInput
+	policy                              navFactoryPolicy
+	cache                               *transcript.Cache
+	building                            chan struct{}
+	bundle                              *navFactoryBundle
+	checked                             time.Time
+	sessionSlots, detailSlots, askSlots chan struct{}
+	api                                 http.Handler
+	pages                               http.Handler
 }
 
 func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) {
-	if in.roots == nil || in.asksPath == "" || in.now == nil || in.location == nil || p.timeout <= 0 || p.placementBytes < 64 ||
+	if in.roots == nil || in.asksPath == "" || in.now == nil || in.location == nil || p.timeout <= 0 || p.placementBytes < 64 || p.sessions.builders <= 0 || p.detail.requests <= 0 || p.asks.requests <= 0 ||
 		p.detail.arrayEntries <= 0 || p.detail.stringUnits <= 0 || p.sessions.arrayEntries != p.detail.arrayEntries ||
 		p.sessions.bodyBytes != p.detail.bodyBytes || p.asks.response.bodyBytes != p.detail.bodyBytes ||
 		p.asks.response.arrayEntries != uint64(p.detail.arrayEntries) || p.asks.response.stringUnits != uint64(p.detail.stringUnits) ||
@@ -73,7 +79,8 @@ func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) 
 		return nil, errors.New("invalid navigator page configuration")
 	}
 	in.asksPath = strings.Clone(in.asksPath)
-	f := &navFactory{input: in, policy: p, cache: transcript.NewCache(), pages: pages}
+	f := &navFactory{input: in, policy: p, cache: transcript.NewCache(), pages: pages,
+		sessionSlots: make(chan struct{}, p.sessions.builders), detailSlots: make(chan struct{}, p.detail.requests), askSlots: make(chan struct{}, p.asks.requests)}
 	mux := navroute.NewMux()
 	for _, kind := range []navroute.Route{navroute.Sessions, navroute.Conversation, navroute.Asks, navroute.AskTurn} {
 		kind := kind
@@ -112,12 +119,25 @@ func navFactoryUnavailable(w http.ResponseWriter, r *http.Request) {
 	daemon.WriteNavigatorBody(w, r, headers, 503, []byte(`{"error":"navigator_unavailable"}`))
 }
 func (f *navFactory) get(ctx context.Context) (bundle *navFactoryBundle, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			if v == http.ErrAbortHandler {
+				panic(v)
+			}
+			origin := transcript.CapturePanic(v)
+			diagnostic.Note(ctx, origin)
+			bundle = nil
+			err = diagnostic.Failure(diagnostic.Unshowable, origin)
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		now := f.input.now() // Clock callout stays outside the factory lock.
 		f.mu.Lock()
-		if f.bundle != nil {
+		age := now.Sub(f.checked)
+		if f.bundle != nil && age >= 0 && age < transcript.DiscoveryTTL {
 			b := f.bundle
 			f.mu.Unlock()
 			return b, nil
@@ -139,6 +159,7 @@ func (f *navFactory) get(ctx context.Context) (bundle *navFactoryBundle, err err
 			f.mu.Lock()
 			if err == nil && bundle != nil {
 				f.bundle = bundle
+				f.checked = now
 			}
 			f.building = nil
 			close(done)
@@ -167,11 +188,18 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 		return nil, err
 	}
 	roots = cloneNavRoots(roots) // MUST precede constructing the shared Index.
+	f.mu.Lock()
+	previous := f.bundle
+	f.mu.Unlock()
+	if previous != nil && reflect.DeepEqual(previous.roots, roots) {
+		return previous, nil
+	}
 	index := transcript.NewIndex(roots)
 	sessions, err := newNavSessionsHandler(navSessionsDeps{roots: roots, source: index, summary: f.cache.Summary}, f.policy.sessions)
 	if err != nil {
 		return nil, err
 	}
+	sessions.slots = f.sessionSlots
 	resolve := func(ctx context.Context, p, id string) (transcript.Hit, error) {
 		return index.Find(ctx, p, id, f.cache.Summary)
 	}
@@ -191,6 +219,7 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 	if err != nil {
 		return nil, err
 	}
+	detail.slots = f.detailSlots
 	read := func(ctx context.Context, now time.Time, l state.AsksSnapshotLimits) (snapshot *state.AsksSnapshot, err error) {
 		store, err := state.OpenReadOnly(f.input.asksPath)
 		if err != nil {
@@ -212,6 +241,7 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 	if err != nil {
 		return nil, err
 	}
+	asks.slots = f.askSlots
 	point := func(ctx context.Context, id, limit int64) (item state.AskPlacement, err error) {
 		store, err := state.OpenReadOnly(f.input.asksPath)
 		if err != nil {
@@ -232,7 +262,7 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &navFactoryBundle{sessions, detail, asks, turn}, nil
+	return &navFactoryBundle{sessions: sessions, detail: detail, asks: asks, turn: turn, roots: roots}, nil
 }
 func navFactoryAlias(ctx context.Context, key string) (navAsksAlias, error) {
 	if err := ctx.Err(); err != nil {
@@ -273,6 +303,9 @@ func navProductionInput() navFactoryInput {
 				for _, home := range homes {
 					if err := ctx.Err(); err != nil {
 						return transcript.Roots{}, err
+					}
+					if !home.IsDir() && home.Type()&os.ModeSymlink == 0 {
+						continue
 					}
 					p := filepath.Join(parent, home.Name())
 					project := filepath.Join(p, "projects")
