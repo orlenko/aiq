@@ -25,6 +25,7 @@ type navDetailLimits struct {
 type navDetailFacts struct {
 	live, hold, stale, leaseKnown bool
 	leaseIdentity                 string
+	selectionContext              string
 	accounts                      []convoAccountFact
 }
 
@@ -32,6 +33,7 @@ type navDetailDeps struct {
 	cache       *transcript.Cache
 	resolve     func(context.Context, string, string) (transcript.Hit, error)
 	facts       func(context.Context, transcript.Hit, *transcript.Session) (navDetailFacts, error)
+	selection   func(context.Context, transcript.Hit, *transcript.Session, transcript.Snapshot, string) (string, error)
 	now         func() time.Time
 	location    *time.Location
 	build       string
@@ -48,6 +50,7 @@ type navDetailDeps struct {
 // Explicit closed envelope: no private structs, embedding or second encoding.
 type navDetailEnvelope struct {
 	Build         string                   `json:"build"`
+	Selection     string                   `json:"selection"`
 	Session       navConversationSession   `json:"session"`
 	EarlierHidden int                      `json:"earlier_hidden"`
 	LaterHidden   int                      `json:"later_hidden"`

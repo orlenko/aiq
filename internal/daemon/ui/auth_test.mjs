@@ -56,6 +56,16 @@ test("directory catalog uses the fixed proof-protected path and Sessions byte al
   assert.equal(await x.session.ready,true);assert.deepEqual(await x.session.directories({}),{data:{source:'launch metadata',directories:[]}});
   assert.equal(requests[1].url,base+'/api/nav/directories');assert.match(requests[1].options.headers.Authorization,/^AiqTab2 /);assert(!requests[1].options.headers.Authorization.includes(bearer));x.session.dispose();
 });
+test("cached state reader binds the selection in its authenticated fixed path",async()=>{
+  const requests=[],query={provider:'claude',id:'00000001-0000-4000-8000-000000000001',selection:'A'.repeat(43)};
+  const x=setup({fetcher:async(url,options)=>{requests.push({url,options});return options.method==='POST'?reply('{"credential":"'+bearer+'"}'):reply('{"match":false}');}});
+  assert.equal(await x.session.ready,true);assert.deepEqual(await x.session.state(query),{data:{match:false}});
+  assert.equal(requests[1].url,base+'/api/nav/sessions/claude/'+query.id+'/state?selection='+query.selection);
+  assert.match(requests[1].options.headers.Authorization,/^AiqTab2 /);
+  for(const selection of ['',query.selection+'=',query.selection+'&last=50','A'.repeat(42)+'B'])await assert.rejects(x.session.state({...query,selection}));
+  let accessed=0;await assert.rejects(x.session.state(Object.defineProperty({...query},'selection',{get(){accessed++;return query.selection;}})));
+  assert.equal(accessed,0);assert.equal(requests.length,2);x.session.dispose();
+});
 test("restore is not an authenticated liveness claim; success confirms it",async()=>{
   const saved=storage(bearer),requests=[];
   const x=setup({saved,fragment:"",getStorage:()=>saved,fetcher:async(url,opts)=>{requests.push({url,opts});return reply('{"rows":[]}');}});

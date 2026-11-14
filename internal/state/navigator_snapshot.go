@@ -34,6 +34,16 @@ type NavigatorLease struct {
 type NavigatorSnapshot struct {
 	Launches []NavigatorLaunch
 	Leases   []NavigatorLease
+	hostname string
+}
+
+// HostIdentity correlates a later point witness with this admitted snapshot.
+// It is deliberately not a JSON field or a source of terminal authority.
+func (s *NavigatorSnapshot) HostIdentity() string {
+	if s == nil {
+		return ""
+	}
+	return s.hostname
 }
 
 type navigatorTable struct {
@@ -130,7 +140,7 @@ func (s *Store) ReadNavigatorSnapshot(ctx context.Context, hostname string, limi
 			return nil, err
 		}
 	}
-	out = &NavigatorSnapshot{Launches: []NavigatorLaunch{}, Leases: []NavigatorLease{}}
+	out = &NavigatorSnapshot{Launches: []NavigatorLaunch{}, Leases: []NavigatorLease{}, hostname: strings.Clone(hostname)}
 	rows, err := tx.QueryContext(ctx, `SELECT id,COALESCE(started_at_ms,0),COALESCE(lease_id,0),COALESCE(provider,''),COALESCE(account_id,''),COALESCE(launcher,''),COALESCE(cwd,''),COALESCE(mode,''),COALESCE(session_id,'') FROM launches WHERE hostname = ? ORDER BY started_at_ms,id`, hostname)
 	if err != nil {
 		return nil, err

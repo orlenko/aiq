@@ -216,7 +216,7 @@ func TestPanicOriginRowFaultFullSuccessAndLaterPublication(t *testing.T) {
 		if !inspectionClosed(f.done) || len(c.sem) != 0 || len(c.flights) != 0 || len(c.quarantine) != 0 {
 			t.Fatal("row/publication fault leaked slot/flight or quarantined healthy parse")
 		}
-		panicOriginWant(t, f.origin, "internal/transcript/cache.go", 795)
+		panicOriginWant(t, f.origin, "internal/transcript/cache.go", 796)
 		if PanicOrigin(f.rowErr) != f.origin || !errors.Is(f.rowErr, ErrUnreadable) {
 			t.Fatal("row origin lost before full publication")
 		}
