@@ -50,6 +50,16 @@ func cmdLong(args []string) error {
 			return runLongAttach(o, os.Stdout)
 		}
 	}
+	if args[0] == "drain" {
+		o, err := parseLongDrainArgs(args[1:], explicitBackend)
+		if err != nil {
+			return configErr("bad-flags", "%v", err)
+		}
+		if o.guarded {
+			return runLongDrain(o, os.Stdout)
+		}
+		args = []string{"drain", o.ref}
+	}
 	a, err := openApp()
 	if err != nil {
 		return err
@@ -76,6 +86,7 @@ func cmdLong(args []string) error {
 		if err != nil {
 			return err
 		}
+		fmt.Printf("wrap-up target %q · %q\n", l.Workspace, l.AccountID)
 		longrun.ArchiveNote(l.Workspace, time.Now())
 		if err := longLeaseStore(a.st, l).RequestDrainByUser(l.ID, time.Now()); err != nil {
 			return err
