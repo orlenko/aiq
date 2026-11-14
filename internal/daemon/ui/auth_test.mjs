@@ -54,14 +54,14 @@ test("one exchange and private bounded fixed-route capability",async()=>{
 test("directory catalog uses the fixed proof-protected path and Sessions byte allowance",async()=>{
   const requests=[];const x=setup({fetcher:async(url,options)=>{requests.push({url,options});return options.method==='POST'?reply('{"credential":"'+bearer+'"}'):reply('{"source":"launch metadata","directories":[]}');}});
   assert.equal(await x.session.ready,true);assert.deepEqual(await x.session.directories({}),{data:{source:'launch metadata',directories:[]}});
-  assert.equal(requests[1].url,base+'/api/nav/directories');assert.match(requests[1].options.headers.Authorization,/^AiqTab /);assert(!requests[1].options.headers.Authorization.includes(bearer));x.session.dispose();
+  assert.equal(requests[1].url,base+'/api/nav/directories');assert.match(requests[1].options.headers.Authorization,/^AiqTab2 /);assert(!requests[1].options.headers.Authorization.includes(bearer));x.session.dispose();
 });
 test("restore is not an authenticated liveness claim; success confirms it",async()=>{
   const saved=storage(bearer),requests=[];
   const x=setup({saved,fragment:"",getStorage:()=>saved,fetcher:async(url,opts)=>{requests.push({url,opts});return reply('{"rows":[]}');}});
   assert.equal(await x.session.ready,true);assert.equal(x.session.snapshot().kind,"restoring");
   assert.deepEqual(await x.session.sessions({dir:"/invented",workers:false}),{data:{rows:[]}});
-  assert.equal(x.session.snapshot().kind,"unlocked");assert.match(requests[0].opts.headers.Authorization,/^AiqTab /);assert(!requests[0].opts.headers.Authorization.includes(bearer));
+  assert.equal(x.session.snapshot().kind,"unlocked");assert.match(requests[0].opts.headers.Authorization,/^AiqTab2 /);assert(!requests[0].opts.headers.Authorization.includes(bearer));
   assert.equal(requests[0].url,base+"/api/nav/sessions?dir=%2Finvented&workers=0");x.session.dispose();
 });
 test("unconfigured readers send zero data requests",async()=>{
