@@ -234,9 +234,10 @@ export function createAppHost(document,options) {
   function keys(e){
     if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)||e.target.isContentEditable)return;
     if(e.key==="Escape"){e.preventDefault();if(helpDialog.open)helpDialog.close();else if(search.value){search.value="";filter();announce("Search cleared.");}else goBack();return;}
-    if(!shortcuts||!e.target.closest(".nav-controller,.nav-asks,.nav-feed,.nav-long"))return;
-    if(e.key==="/"){e.preventDefault();search.focus();return;}
-    if(e.key==="?"){e.preventDefault();helpDialog.showModal();return;}
+    if(!e.target.closest(".nav-controller,.nav-asks,.nav-feed,.nav-long"))return;
+    if(shortcuts&&e.key==="/"){e.preventDefault();search.focus();return;}
+    if(shortcuts&&e.key==="?"){e.preventDefault();helpDialog.showModal();return;}
+    if(!shortcuts&&!["ArrowDown","ArrowUp","Home","End"].includes(e.key))return;
     const group=e.target.closest(".nav-controller-rows,.nav-asks-region");if(!group)return;
     const entries=setNavigatorRoving(group,document.activeElement),index=entries.findIndex(e=>e.row.contains(document.activeElement));
     const rows=entries.map(e=>e.row);

@@ -1,5 +1,6 @@
 import {captureAsks} from "./asks_data.js";
 import {renderLines} from "./dom.js";
+import {directory,encodeForm} from "./auth_codec.js";
 
 const labels = ["Asks", "Warnings", "Other open", "Probably done", "Closed and dismissed"];
 export function navigatorAskCommand(id,state){
@@ -308,6 +309,8 @@ export function createAsksView(document, data, options) {
       rows.push(row); group.rows.push(row); group.region.append(article);
       article.append(row.heading,
         node("p", "nav-asks-source", `${data.provider}: ${data.session_id}`));
+      article.append(node("p","nav-asks-live","Live state unknown · open the conversation to inspect its activity."));
+      if(data.workspace){try{directory(data.workspace);const link=node("a","nav-asks-workspace","Workspace history →");link.href="/long?dir="+encodeForm(data.workspace);link.rel="noreferrer";article.append(link);}catch{}}
       if (data.state !== "open") article.append(node("p", "nav-asks-state", `${data.state}: ${data.state_text} (${data.state_reason})`));
       article.append(row.wording, quote, row.toggle, row.copy, row.nav, details);
       const command=navigatorAskCommand(data.id,data.state);
