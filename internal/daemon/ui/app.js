@@ -42,7 +42,7 @@ export function createAppHost(document,options) {
   if (!window || document.defaultView!==window || root?.ownerDocument!==document || typeof isCurrent!=="function") throw refused();
   const limits={};for(const key of ["rows","arrayEntries","stringUnits"]){const n=options.limits?.[key];if(!Number.isSafeInteger(n)||n<=0)throw refused();limits[key]=n;}
   const initial=options.initialNext,broker=createReadBroker(readers),owner={},removes=[];
-  let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true,lastPrompts=50;
+  let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true,lastPrompts=50,scopeReason="";
   const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   const button=(text,cls="")=>{const n=node("button",cls,text);n.type="button";return n;};
   const shell=node("div","nav-shell"),header=node("header","nav-header"),nav=node("nav","nav-tabs");nav.setAttribute("aria-label","Navigator pages");
@@ -115,10 +115,10 @@ export function createAppHost(document,options) {
     try{const marked=!replace||window.history.state?.aiqNavigator===1;window.history[replace?"replaceState":"pushState"]({aiqNavigator:marked?1:0},"",next);return alive();}
     catch{announce("The page address could not be updated.");return false;}
   }
-  function navigate(next,{replace=false,pop=false,focus=true}={}){
+  function navigate(next,{replace=false,pop=false,focus=true,automatic=false}={}){
     let parsed;try{parsed=route(next);}catch{announce("Choose a navigator page and an absolute directory.");return;}
     if(!alive())return;if(!pop&&!navHistory(parsed.next,replace))return;
-    render(parsed,focus);
+    scopeReason=automatic?"most recent":"";render(parsed,focus);
   }
   function selectionChanged(op,value){
     if(!active(op))return;
@@ -138,7 +138,7 @@ export function createAppHost(document,options) {
       recent.value=value.directories.some(item=>item.path===parsed.dir)?parsed.dir:"";
       catalogStatus.textContent=value.directories.length?"Recent directories · launch metadata":"No recent launch directories. Enter an absolute directory.";
       if(parsed.path==="/sessions"&&!parsed.dir&&!selected(parsed)&&!op.scopeTouched&&value.directories.length){
-        navigate(address("/sessions",value.directories[0].path),{replace:true,focus:false});
+        navigate(address("/sessions",value.directories[0].path),{replace:true,focus:false,automatic:true});
       }
     }catch{if(active(op)){recent.disabled=true;catalogStatus.textContent="Recent directories unavailable. Enter an absolute directory.";}}
   }
@@ -172,6 +172,7 @@ export function createAppHost(document,options) {
     windowLabel.hidden=!selected(parsed);windowSelect.value=String(parsed.anchor?50:lastPrompts);
     recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help";catalogStatus.textContent="";
     title.textContent=parsed.path==="/asks"?"Asks":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
+    if(parsed.path==="/sessions"&&scopeReason)title.textContent+=" · "+scopeReason;
     document.title=title.textContent+" — aiq";
     for(const[path,a]of links){a.href=address(path,parsed.dir||lastDirectory);if(path==="/sessions"&&parsed.path.startsWith("/sessions")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
     if(parsed.path==="/help"){content.append(help());if(focus)title.focus({preventScroll:true});return;}
