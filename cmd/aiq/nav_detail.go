@@ -239,6 +239,9 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		now: h.deps.now(), location: h.deps.location, live: facts.live, hold: facts.hold, stale: facts.stale,
 		accounts: facts.accounts, skippedNote: h.deps.skippedNote, liveMark: h.deps.liveMark, bodyBytes: h.limits.bodyBytes,
 		arrayEntries: h.limits.arrayEntries, stringUnits: h.limits.stringUnits}
+	if h.deps.prefixScope != nil {
+		o.prefixScope = h.deps.prefixScope(hit, snap, facts.selectionContext)
+	}
 	if failure, stopped := check(); stopped {
 		return failure
 	}
@@ -266,6 +269,15 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 	}
 	if err := navDetailAdmitStructure(ctx, &value.envelope, h.limits.arrayEntries, h.limits.stringUnits); err != nil {
 		return h.failure(navDetailErrorCode(err), started)
+	}
+	if q.fromKey != "" && o.prefixScope != "" {
+		response, used, err := h.deltaResponse(ctx, value, q, o.prefixScope)
+		if err != nil {
+			return h.failure(navDetailErrorCode(err), started)
+		}
+		if used {
+			return response
+		}
 	}
 	if q.condition.match(value.fingerprint) {
 		return navDetailResponse{status: http.StatusNotModified, etag: value.fingerprint}
@@ -336,6 +348,21 @@ func (h *navDetailHandler) buildViewWithDiagnostics(worker *diagnostic.Holder, s
 		LaterHidden: window.LaterHidden, WindowStart: window.WindowStart, Reset: window.Reset, Markup: window.Markup, Messages: window.Messages}
 	if err := navDetailAdmitStructure(ctx, &e, h.limits.arrayEntries, h.limits.stringUnits); err != nil {
 		return nil, err
+	}
+	if o.prefixScope != "" {
+		e.TailTurn = e.WindowStart
+		for _, message := range e.Messages {
+			if message.Turn > e.TailTurn {
+				e.TailTurn = message.Turn
+			}
+		}
+		e.TailKey, err = navDeltaPrefix(ctx, &e, int64(e.TailTurn), o.prefixScope)
+		if err != nil {
+			return nil, err
+		}
+		if err := navDetailAdmitStructure(ctx, &e, h.limits.arrayEntries, h.limits.stringUnits); err != nil {
+			return nil, err
+		}
 	}
 	size, fits := navJSONSize(e, math.MaxInt64)
 	if !fits {

@@ -66,6 +66,15 @@ test("cached state reader binds the selection in its authenticated fixed path",a
   let accessed=0;await assert.rejects(x.session.state(Object.defineProperty({...query},'selection',{get(){accessed++;return query.selection;}})));
   assert.equal(accessed,0);assert.equal(requests.length,2);x.session.dispose();
 });
+test("delta reader emits a paired canonical prefix query and refuses incomplete or anchored pairs",async()=>{
+  const requests=[],query={provider:'claude',id:'00000001-0000-4000-8000-000000000001',last:50,markup:false,anchor:0,fromTurn:0,fromKey:'a'.repeat(64)};
+  const x=setup({fetcher:async(url,options)=>{requests.push(url);return options.method==='POST'?reply('{"credential":"'+bearer+'"}'):reply('{}');}});
+  assert.equal(await x.session.ready,true);await x.session.conversation(query);
+  assert.equal(requests[1],base+'/api/nav/sessions/claude/'+query.id+'?from_key='+query.fromKey+'&from_turn=0&last=50&markup=0');
+  const {fromKey,...noKey}=query,{fromTurn,...noTurn}=query;
+  for(const input of [noKey,noTurn,{...query,anchor:1},{...query,fromTurn:-1},{...query,fromTurn:0.5},{...query,fromKey:'A'.repeat(64)}])await assert.rejects(x.session.conversation(input));
+  assert.equal(requests.length,2);x.session.dispose();
+});
 test("restore is not an authenticated liveness claim; success confirms it",async()=>{
   const saved=storage(bearer),requests=[];
   const x=setup({saved,fragment:"",getStorage:()=>saved,fetcher:async(url,opts)=>{requests.push({url,opts});return reply('{"rows":[]}');}});

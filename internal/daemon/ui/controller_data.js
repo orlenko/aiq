@@ -107,8 +107,7 @@ export function captureSessions(data, expectedCanonicalDir, limits) {
 }
 
 // Full header and paint/raw facts are captured once from the same caller graph.
-export function captureDetail(data, expectedScope, limits) {
-  try {
+function ownDetail(data,limits){
     const budget=credits(limits),owned = capture(data, detail, budget);
     const selection=Object.getOwnPropertyDescriptor(data,"selection");
     if(selection){
@@ -116,11 +115,39 @@ export function captureDetail(data, expectedScope, limits) {
       owned.selection=capture(selection.value,"str",budget);
       require(owned.selection===""||canonical32(owned.selection));
     }
+    const tail=["tail_turn","tail_key","from_turn"].map(key=>Object.getOwnPropertyDescriptor(data,key));
+    if(tail.some(Boolean)){
+      require(tail.every(d=>d&&Object.hasOwn(d,"value")));
+      owned.tail_turn=capture(tail[0].value,"uint",budget);owned.tail_key=capture(tail[1].value,"str",budget);owned.from_turn=capture(tail[2].value,"uint",budget);
+      require(owned.tail_key===""||/^[0-9a-f]{64}$/.test(owned.tail_key));
+    }
+    return owned;
+}
+export function captureDetail(data, expectedScope, limits) {
+  try {
+    const owned=ownDetail(data,limits);
     validTime(owned.session.started); validTime(owned.session.updated);
     const body = captureConversation(owned, expectedScope);
     // The existing feed validator intentionally returns an identity-only session.
-    return {...body, session:owned.session,...(selection?{selection:owned.selection}:{})};
+    return {...body, session:owned.session,...(Object.hasOwn(owned,"selection")?{selection:owned.selection}:{}),
+      ...(Object.hasOwn(owned,"tail_key")?{tail_turn:owned.tail_turn,tail_key:owned.tail_key,from_turn:owned.from_turn}:{})};
   } catch { fail(); }
+}
+
+export function captureDetailResponse(data,expectedScope,limits,previous,request){
+  try{
+    if(field(data,"reset")===true)return captureDetail(data,expectedScope,limits);
+    const tail=ownDetail(data,limits),base=captureDetail(previous,expectedScope,limits);
+    const from=field(request,"fromTurn"),key=field(request,"fromKey");
+    require(Number.isSafeInteger(from)&&from>=0&&typeof key==="string"&&/^[0-9a-f]{64}$/.test(key));
+    require(tail.reset===false&&tail.from_turn===from&&base.tail_turn===from&&base.tail_key===key);
+    require(tail.window_start===base.window_start&&tail.markup===base.markup&&tail.build===base.build&&tail.tail_turn>=from&&tail.later_hidden===0);
+    const prefix=base.messages.filter(message=>message.turn<from);
+    require(tail.messages.every(message=>message.turn>=from));
+    // Re-admit the COMPLETE candidate, including retained raw text and arrays.
+    // A small delta cannot bypass the ordinary complete-window allowances.
+    return captureDetail({...tail,reset:true,from_turn:0,messages:prefix.concat(tail.messages)},expectedScope,limits);
+  }catch{fail();}
 }
 
 const stateBase={build:"str",provider:"str",id:"str",selection:"str",match:"bool"};

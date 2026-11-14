@@ -52,7 +52,7 @@ func navDetailAdmitStructure(ctx context.Context, e *navDetailEnvelope, entries,
 		}
 		return ctx.Err()
 	}
-	if err := text(e.Build, e.Selection, e.Session.Provider, e.Session.ID, e.Session.Cwd, e.Session.Title, e.Session.Model, e.Session.Branch); err != nil {
+	if err := text(e.Build, e.Selection, e.TailKey, e.Session.Provider, e.Session.ID, e.Session.Cwd, e.Session.Title, e.Session.Model, e.Session.Branch); err != nil {
 		return err
 	}
 	if err := array(len(e.Messages)); err != nil {

@@ -228,7 +228,8 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 		return index.Find(ctx, p, id, f.cache.Summary)
 	}
 	detail, err := newNavDetailHandler(navDetailDeps{cache: f.cache, resolve: resolve, now: f.input.now, location: f.input.location, build: daemon.NavigatorBuild(), skippedNote: transcript.SkippedNote(), liveMark: "▌",
-		selection: selections.register,
+		selection:   selections.register,
+		prefixScope: selections.prefixScope,
 		facts: func(ctx context.Context, hit transcript.Hit, selected *transcript.Session) (navDetailFacts, error) {
 			current, snap, err := f.cache.Session(ctx, hit.Path)
 			if err != nil {

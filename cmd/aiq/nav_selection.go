@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -122,4 +123,14 @@ func (r *navSelections) current(record navSelectedParse) bool {
 	}
 	identity, ok := r.cache.SessionIdentity(record.path, snap, s)
 	return ok && identity == record.identity
+}
+
+// This private scope remains stable across an append to the same file, but
+// changes with its copy, inode, root bundle or managed-session context.
+func (r *navSelections) prefixScope(hit transcript.Hit, snap transcript.Snapshot, sourceContext string) string {
+	mac := hmac.New(sha256.New, r.key[:])
+	mac.Write([]byte(navConversationKey("nav-prefix-scope-v1", hit.Path, strconv.FormatUint(snap.Dev, 10), strconv.FormatUint(snap.Ino, 10), sourceContext)))
+	var digest [32]byte
+	copy(digest[:], mac.Sum(nil))
+	return navauth.Encode32(digest)
 }

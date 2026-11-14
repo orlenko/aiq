@@ -96,6 +96,11 @@ func navDetailContextKey(parent, ctx context.Context, s *transcript.Session, sna
 			return transcript.ViewKey{}, err
 		}
 	}
+	if o.prefixScope != "" {
+		if err := frame.add("delta-prefix-scope-v1", o.prefixScope); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
 	if f.live && s.Unfinished {
 		if err := frame.add("working-clock-v1", o.now.Format(time.RFC3339Nano)); err != nil {
 			return transcript.ViewKey{}, err
