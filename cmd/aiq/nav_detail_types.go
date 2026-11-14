@@ -116,8 +116,9 @@ var navDetailCodes = [...]struct {
 }
 
 type navDetailResponse struct {
-	status int
-	code   navDetailCode
-	body   []byte
-	etag   string
+	status         int
+	code           navDetailCode
+	body           []byte
+	etag           string
+	deltaValidated bool
 }

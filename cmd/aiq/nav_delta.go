@@ -25,6 +25,17 @@ func navDeltaKey(value string) bool {
 	return true
 }
 
+func navDeltaCacheKey(q navDetailQuery) string {
+	return "nav-validated-delta-v1:" + strconv.FormatInt(q.fromTurn, 10) + ":" + q.fromKey
+}
+
+func navStrongCondition(c navDetailCondition) string {
+	if len(c.raw) != 66 || c.raw[0] != '"' || c.raw[65] != '"' || !navDeltaKey(c.raw[1:65]) {
+		return ""
+	}
+	return c.raw[1:65]
+}
+
 // A proof over every rendered field before the changing tail, including raw
 // copy text, origin/account facts, skipped notices and paint. The private source
 // scope also binds the selected copy, inode, root bundle and managed context.
@@ -91,7 +102,7 @@ func (h *navDetailHandler) deltaResponse(ctx context.Context, value *navDetailVi
 	digest := sha256.Sum256(body)
 	etag := hex.EncodeToString(digest[:])
 	if q.condition.match(etag) {
-		return navDetailResponse{status: http.StatusNotModified, etag: etag}, true, nil
+		return navDetailResponse{status: http.StatusNotModified, etag: etag, deltaValidated: true}, true, nil
 	}
-	return navDetailResponse{status: http.StatusOK, body: body, etag: etag}, true, nil
+	return navDetailResponse{status: http.StatusOK, body: body, etag: etag, deltaValidated: true}, true, nil
 }

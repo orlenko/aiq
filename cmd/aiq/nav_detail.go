@@ -271,11 +271,17 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		return h.failure(navDetailErrorCode(err), started)
 	}
 	if q.fromKey != "" && o.prefixScope != "" {
+		if etag := navStrongCondition(q.condition); etag != "" && h.deps.cache.NotModified(key, navDeltaCacheKey(q), etag) {
+			return navDetailResponse{status: http.StatusNotModified, etag: etag}
+		}
 		response, used, err := h.deltaResponse(ctx, value, q, o.prefixScope)
 		if err != nil {
 			return h.failure(navDetailErrorCode(err), started)
 		}
 		if used {
+			if response.deltaValidated {
+				h.deps.cache.NoteDelta(key, view, navDeltaCacheKey(q), response.etag)
+			}
 			return response
 		}
 	}
