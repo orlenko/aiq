@@ -27,7 +27,7 @@ func TestNavigatorStaticPagesBuildAndAllowlist(t *testing.T) {
 		sum.Write(body)
 	}
 	// Independent explicit production closure, not the implementation's registry.
-	for _, name := range []string{"app.js", "tab_proof.js", "read_broker.js", "session_controller.js", "controller_data.js", "feed.js", "feed_data.js", "dom.js", "asks_controller.js", "asks_view.js", "asks_data.js", "app.css", "session_controller.css", "feed.css", "dom.css", "asks_controller.css", "asks_view.css"} {
+	for _, name := range []string{"app.js", "long_view.js", "tab_proof.js", "read_broker.js", "session_controller.js", "controller_data.js", "feed.js", "feed_data.js", "dom.js", "asks_controller.js", "asks_view.js", "asks_data.js", "app.css", "session_controller.css", "feed.css", "dom.css", "asks_controller.css", "asks_view.css"} {
 		body, err := os.ReadFile("ui/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -84,7 +84,7 @@ func TestNavigatorSharedRouteVectors(t *testing.T) {
 		Route string `json:"route"`
 		OK    bool   `json:"ok"`
 	}
-	if json.Unmarshal(raw, &rows) != nil || len(rows) != 26 {
+	if json.Unmarshal(raw, &rows) != nil || len(rows) != 32 {
 		t.Fatal("route vector fixture incomplete")
 	}
 	for _, row := range rows {
@@ -156,7 +156,7 @@ func TestNavigatorAuthNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth fixtures failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "# pass 29") || !strings.Contains(string(out), "# fail 0") || !strings.Contains(string(out), "# skipped 0") {
+	if !strings.Contains(string(out), "# pass 30") || !strings.Contains(string(out), "# fail 0") || !strings.Contains(string(out), "# skipped 0") {
 		t.Fatalf("auth fixtures incomplete:\n%s", out)
 	}
 }

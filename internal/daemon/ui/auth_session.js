@@ -19,6 +19,11 @@ function own(value, key) {
 }
 function integer(v,min,max) { if (!Number.isSafeInteger(v) || v < min || v > max) bad(); return v; }
 function requestPath(kind, query) {
+  if(kind==="long"){
+    const dir=own(query,"dir"),history=own(query,"history");
+    if(typeof history!=="boolean"||typeof dir!=="string"||dir===""&&!history)bad();
+    return "/api/nav/long"+(dir===""?"":"?dir="+encodeForm(directory(dir))+"&history="+(history?"1":"0"));
+  }
   if(kind==="directories"){
     const catalog=Object.getOwnPropertyDescriptor(query??{},"catalog");
     if(catalog&&(!Object.hasOwn(catalog,"value")||typeof catalog.value!=="boolean"))bad();
@@ -77,6 +82,7 @@ export function createTabSession(options) {
   if (options.limits !== undefined) {
     for (const kind of ["sessions","conversation","asks"]) limits[kind] = integer(own(options.limits,kind),1,Number.MAX_SAFE_INTEGER);
     limits.directories=limits.sessions;
+    limits.long=limits.sessions;
     limits.state=limits.conversation;
     const placement=Object.getOwnPropertyDescriptor(options.limits,"placement");
     if (placement) { if(!Object.hasOwn(placement,"value"))bad();limits.placement=integer(placement.value,1,Number.MAX_SAFE_INTEGER); }
@@ -299,7 +305,7 @@ export function createTabSession(options) {
   const ready=disposed?Promise.resolve(false):begin();
   return Object.freeze({ready,snapshot,forget,dispose,attachHost,
     selection:()=>["unlocked","restoring"].includes(kind)&&live(epoch)?selected:null,
-    directories:(q,s)=>read("directories",q,s),sessions:(q,s)=>read("sessions",q,s),conversation:(q,s)=>read("conversation",q,s),state:(q,s)=>read("state",q,s),asks:(q,s)=>read("asks",q,s),placement:(q,s)=>read("placement",q,s)});
+    directories:(q,s)=>read("directories",q,s),long:(q,s)=>read("long",q,s),sessions:(q,s)=>read("sessions",q,s),conversation:(q,s)=>read("conversation",q,s),state:(q,s)=>read("state",q,s),asks:(q,s)=>read("asks",q,s),placement:(q,s)=>read("placement",q,s)});
 }
 
 // The only production DOM host. All body nodes are static and precede the
@@ -351,7 +357,7 @@ export function start(options) {
       // use the original private credential and its epoch.
       const app=createAppHost(document,{window,root:document.getElementById("nav-app-root"),isCurrent:current,
         limits:{arrayEntries,stringUnits,rows},initialNext:session.selection()?.next,
-        readers:{directories:session.directories,sessions:session.sessions,conversation:session.conversation,state:session.state,asks:session.asks,placement:session.placement}});
+        readers:{directories:session.directories,long:session.long,sessions:session.sessions,conversation:session.conversation,state:session.state,asks:session.asks,placement:session.placement}});
       if(!current()||!session.attachHost(()=>{
         const old=host;host=null;
         try{const focused=document.activeElement;if(document.hasFocus()&&document.getElementById("nav-app-root")?.contains(focused))retiredFocus=focused;}catch{}

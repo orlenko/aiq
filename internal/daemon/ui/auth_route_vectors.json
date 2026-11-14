@@ -24,5 +24,11 @@
  {"route":"/sessions/claude/00000001-0000-4000-8000-000000000001?all=true&at=123","ok":true},
  {"route":"/sessions?all=true&dir=%2Finvented","ok":false},
  {"route":"/help?all=true","ok":false},
- {"route":"/sessions?all=false","ok":true}
+ {"route":"/sessions?all=false","ok":true},
+ {"route":"/long","ok":true},
+ {"route":"/long?dir=%2Finvented%2Fworkspace","ok":true},
+ {"route":"/long?all=true","ok":false},
+ {"route":"/long?at=123","ok":false},
+ {"route":"/long?dir=relative","ok":false},
+ {"route":"/long?dir=%2Finvented&history=0","ok":false}
 ]

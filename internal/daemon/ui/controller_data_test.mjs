@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {captureSessions, captureDetail, captureDetailResponse, captureDirectories, captureState} from './controller_data.js';
+import {captureSessions, captureDetail, captureDetailResponse, captureDirectories, captureState, captureLong} from './controller_data.js';
 
 const id = '00000001-0000-4000-8000-000000000001';
 const scope = {provider:'agy', id};
@@ -21,6 +21,24 @@ function row(more={}) {
 }
 const sessions = (rows=[]) => ({dir:'/x',roots_searched:['r'],partial:true,scanned:3,of:7,unreadable_count:2,sessions:rows});
 const reject = fn => assert.throws(fn,{name:'TypeError',message:'could not capture navigator response'});
+
+test('workspace metadata owns nullable fields, scope, knownness and aggregate admission',()=>{
+  const value={build:'b',kind:'workspace',requested_dir:'/A/sub',workspace:'/A',workspace_known:true,state:'unknown',partial:true,unmapped_launches:1,history_present:true,observed:time(),
+    lease:null,current:null,current_spans:[],earlier:[{key:'a'.repeat(64),provider:'claude',session_id:'',transcript_available:false,workspace_known:false,last:time(),spans:[{account:'Invented A',launcher:'fixture',from:time(),until:time()}]}],
+    workspaces:[],note:{available:false,exists:false,updated:time(),archived:0}};
+  const out=captureLong(value,'/A/sub',true,limits());assert.deepEqual(out,value);value.earlier[0].spans[0].account='mutated';assert.equal(out.earlier[0].spans[0].account,'Invented A');
+  for(const change of [{current:{provider:'claude',id}},{requested_dir:'/B'},{history_present:false},{kind:'list'},{workspace:'relative'},{state:'ended'}])reject(()=>captureLong({...value,...change},'/A/sub',true,limits()));
+  reject(()=>captureLong(value,'/A/sub',true,limits(1)));reject(()=>captureLong(value,'/A/sub',true,limits(1000,2)));
+  let calls=0;Object.defineProperty(value,'lease',{get(){calls++;return null;}});reject(()=>captureLong(value,'/A/sub',true,limits()));assert.equal(calls,0);
+});
+test('workspace current requires positive backend and closed supported identity',()=>{
+  const value={build:'b',kind:'workspace',requested_dir:'/A',workspace:'/A',workspace_known:true,state:'live',partial:false,unmapped_launches:0,history_present:false,observed:time(),
+    lease:{id:'7',started:'1',provider:'agy',account:'Invented',launcher:'fixture',pane:'%1',live:'live',drain:'waiting',working_known:false,working:false,turn_started:time()},current:scope,current_spans:[],earlier:[],workspaces:[],note:{available:false,exists:false,updated:time(),archived:0}};
+  assert.deepEqual(captureLong(value,'/A',false,limits()),value);
+  for(const change of [{live:'unknown'},{drain:'server shell text'},{working_known:true},{working:true}])reject(()=>captureLong({...value,lease:{...value.lease,...change}},'/A',false,limits()));
+  reject(()=>captureLong({...value,current:{provider:'herdr',id}},'/A',false,limits()));
+  reject(()=>captureLong({...value,note:{...value.note,available:true}},'/A',false,limits()));
+});
 
 test('full directory catalog owns knownness, default scope and complete text admission',()=>{
   const value={source:'session index',partial:true,metadata_known:false,scanned:1,of:1,unreadable_count:0,unknown_directories:0,

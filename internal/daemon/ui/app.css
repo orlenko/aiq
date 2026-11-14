@@ -11,3 +11,11 @@ body{background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif}.n
 .nav-directory-depth-4 .nav-directory-branches{padding-inline-start:0}
 .nav-follow-status{position:sticky;top:0;z-index:1;background:var(--panel);padding-block:.35rem}
 .nav-follow-newest{position:sticky;bottom:0;z-index:1;background:var(--panel)}
+.nav-long { min-width: 0; max-width: 100%; }
+.nav-long p, .nav-long li, .nav-long summary, .nav-long a { overflow-wrap: anywhere; unicode-bidi: plaintext; white-space: pre-wrap; }
+.nav-long .nav-controller { grid-template-columns: minmax(0, 1fr); }
+.nav-long .nav-controller-rows { list-style: none; padding: 0; }
+.nav-long .nav-controller-row { border-block-end: 1px solid currentColor; padding-block: .5em; }
+.nav-long button { font: inherit; min-height: 2.5em; max-width: 100%; }
+.nav-long-newest { position: sticky; top: 0; z-index: 2; background: Canvas; color: CanvasText; }
+.nav-long-divider { border-block: 2px solid currentColor; padding-block: .75em; }
