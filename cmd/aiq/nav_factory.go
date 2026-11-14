@@ -15,6 +15,7 @@ import (
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/navroute"
 	"github.com/orlenko/aiq/internal/paths"
+	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/transcript"
@@ -288,10 +289,13 @@ func navFactoryAlias(ctx context.Context, key string) (navAsksAlias, error) {
 // Capture configuration paths only. Overlay enumeration remains lazy and
 // authenticated; a failed enumeration is not converted to a complete empty set.
 func navProductionInput() navFactoryInput {
+	return navProductionInputWithIdentity(pool.HostnameContext)
+}
+func navProductionInputWithIdentity(identity func(context.Context) (string, error)) navFactoryInput {
 	claude, codex, agyHome := paths.RealClaudeHome(), paths.RealCodexHome(), agy.AppDataDir(paths.RealAgyHome())
 	parents := []string{paths.ClaudeHomesDir(), paths.CodexHomesDir()}
 	return navFactoryInput{asksPath: filepath.Join(paths.DataDir(), asksDBName), now: time.Now, location: time.Local,
-		metadata: navProductionMetadata(paths.StateDB(), os.Hostname),
+		metadata: navProductionMetadata(paths.StateDB(), identity),
 		roots: func(ctx context.Context) (transcript.Roots, error) {
 			r := transcript.Roots{ClaudeProjects: []string{filepath.Join(claude, "projects")}, CodexSessions: []string{filepath.Join(codex, "sessions")}, CodexIndex: []string{filepath.Join(codex, "session_index.jsonl")}, AgyAppData: []string{agyHome}}
 			for _, parent := range parents {
@@ -332,9 +336,12 @@ func navProductionInput() navFactoryInput {
 		}}
 }
 
-func navProductionMetadata(path string, hostname func() (string, error)) func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
+func navProductionMetadata(path string, identity func(context.Context) (string, error)) func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
 	return func(ctx context.Context, limits state.NavigatorSnapshotLimits) (out *state.NavigatorSnapshot, err error) {
-		host, err := hostname()
+		if identity == nil {
+			return nil, state.ErrNavigatorSnapshotUnavailable
+		}
+		host, err := identity(ctx)
 		if err != nil {
 			return nil, state.ErrNavigatorSnapshotUnavailable
 		}
