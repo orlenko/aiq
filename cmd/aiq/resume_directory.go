@@ -68,7 +68,9 @@ func checkResumeConfiguredPaths(cfg *config.Config) error {
 		return path != "" && !filepath.IsAbs(path) && (strings.ContainsAny(path, "/\\") || filepath.VolumeName(path) != "")
 	}
 	for _, provider := range config.Providers {
-		if relative(cfg.Provider(provider).Binary) {
+		// Configured provider binaries are passed to exec verbatim, including
+		// bare names. Only launcher commands resolve bare names through PATH.
+		if binary := cfg.Provider(provider).Binary; binary != "" && !filepath.IsAbs(binary) {
 			return fmt.Errorf("configured %s binary is relative; use an absolute path, or cd to the session's directory and run the command again", provider)
 		}
 	}

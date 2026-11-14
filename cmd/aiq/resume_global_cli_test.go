@@ -207,7 +207,11 @@ func TestResumeGlobalForcedAccountConflictFailsBeforeDirectoryChange(t *testing.
 
 func TestResumeGlobalConfiguredExecutableClassStaysInCallerDirectory(t *testing.T) {
 	for _, tc := range []string{"claude", "codex", "agy", "copilot", "launcher"} {
-		for _, path := range []string{"./bin/fixture", "../fixture", "bin/fixture"} {
+		paths := []string{"./bin/fixture", "../fixture", "bin/fixture"}
+		if tc != "launcher" {
+			paths = append(paths, "fixture-cli")
+		}
+		for _, path := range paths {
 			t.Run(tc+path, func(t *testing.T) {
 				f := newResumeCLIFixture(t)
 				fullIDWrite(t, defaultRoots(), "claude", fullIDFixtureID, f.target)
@@ -237,12 +241,17 @@ func TestResumeGlobalConfiguredExecutableClassStaysInCallerDirectory(t *testing.
 			})
 		}
 	}
-	for _, path := range []string{"", "fixture-cli", "/invented/bin/fixture-cli"} {
+	for _, path := range []string{"", "/invented/bin/fixture-cli"} {
 		cfg := config.Default()
 		cfg.Providers.Claude.Binary = path
 		cfg.Launchers = map[string]config.Launcher{"fixture": {Provider: "claude", Command: path}}
 		if err := checkResumeConfiguredPaths(cfg); err != nil {
 			t.Fatal("stable executable refused", err)
 		}
+	}
+	cfg := config.Default()
+	cfg.Launchers = map[string]config.Launcher{"fixture": {Provider: "claude", Command: "fixture-cli"}}
+	if err := checkResumeConfiguredPaths(cfg); err != nil {
+		t.Fatal("PATH-resolved bare launcher refused", err)
 	}
 }

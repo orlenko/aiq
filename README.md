@@ -445,9 +445,9 @@ principal aiq cannot prove is limited to you refuses the directory change.
 
 When changing directories, aiq also refuses relative configuration/home paths
 or relative `PATH` entries, so the move cannot select another credential store
-or executable. Configured provider binaries and launcher commands must also be
-absolute paths or bare names resolved through the absolute `PATH`. Use absolute
-paths, or enter the session's directory yourself.
+or executable. Configured provider binaries must be absolute paths. Launcher
+commands must be absolute paths or bare names resolved through the absolute
+`PATH`. Use absolute paths, or enter the session's directory yourself.
 
 The first screen lists every Claude and Codex session whose working directory
 is the current one, newest first, with the model, turn and tool counts, and
