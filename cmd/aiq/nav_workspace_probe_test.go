@@ -76,7 +76,8 @@ func TestNavWorkspaceProbeUsesOnlyFixedReadOnlyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || root != canonical {
+	resolved, resolveErr := filepath.EvalSymlinks(root)
+	if !ok || resolveErr != nil || resolved != canonical {
 		t.Fatal("fixed command not used", root, ok)
 	}
 	if err := os.WriteFile(git, []byte("#!/bin/sh\nexit 128\n"), 0700); err != nil {
