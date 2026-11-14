@@ -3,6 +3,11 @@ import {createConversationFeed} from "./feed.js";
 
 const fail = () => { throw new TypeError("could not configure session controller"); };
 const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+export function navigatorReadCommand(provider, id, follow = false) {
+  if (!["claude", "codex", "agy"].includes(provider) || typeof id !== "string" || !uuid.test(id) ||
+      typeof follow !== "boolean" || follow && provider === "agy") return null;
+  return `aiq convo ${id}${follow ? " --follow" : ""}`;
+}
 function field(value, key) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail();
   const d = Object.getOwnPropertyDescriptor(value, key);
@@ -32,6 +37,9 @@ export function createSessionController(document, options) {
   const readingOption=Object.getOwnPropertyDescriptor(options ?? {},"readingControls"), shortcutOption=Object.getOwnPropertyDescriptor(options ?? {},"shortcutsEnabled");
   const readingControls=readingOption ? readingOption.value : false;
   let shortcutsEnabled=shortcutOption ? shortcutOption.value : ()=>true;
+  const commandOption=Object.getOwnPropertyDescriptor(options ?? {},"readCommands");
+  const readCommands=commandOption ? commandOption.value : false;
+  if(commandOption&&(!Object.hasOwn(commandOption,"value")||typeof readCommands!=="boolean"))fail();
   if (readingOption && (!Object.hasOwn(readingOption,"value") || typeof readingControls!=="boolean") ||
       shortcutOption && (!Object.hasOwn(shortcutOption,"value") || typeof shortcutsEnabled!=="function")) fail();
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
@@ -82,6 +90,8 @@ export function createSessionController(document, options) {
     // A paused activation may install more resources after reentry returns.
     if (candidate.busy || candidate.cleaned) return;
     candidate.cleaned = true;
+    for(const remove of candidate.removes ?? [])remove();
+    if(candidate.removes)candidate.removes.length=0;
     try { candidate.child?.teardown(); } catch { /* Trusted cleanup failure stays local. */ }
     candidate.child = null;
   }
@@ -127,6 +137,25 @@ export function createSessionController(document, options) {
       if (selection?.row === item) item.button.setAttribute("aria-current", "true");
       else item.button.removeAttribute("aria-current");
     }
+  }
+  function commandControls(parent, value, current, cleanup) {
+    if(!readCommands)return;
+    const group=node("div","nav-read-commands"), buttons=[];
+    let busy=false;
+    for(const [follow,label]of [[false,"Copy read command"],[true,"Copy follow command"]]) {
+      const command=navigatorReadCommand(value.provider,value.id,follow);
+      if(command===null)continue;
+      const button=node("button","nav-command-copy",label);button.type="button";button.title=command;buttons.push(button);group.append(button);
+      const click=async()=>{
+        if(!current()||busy)return;
+        busy=true;for(const item of buttons)item.setAttribute("aria-disabled","true");
+        try { await copyText(command); if(current())announce("Read command copied. Paste it in a terminal."); }
+        catch { if(current())announce("Read command could not be copied."); }
+        finally { busy=false;if(current())for(const item of buttons)item.removeAttribute("aria-disabled"); }
+      };
+      button.addEventListener("click",click);cleanup.push(()=>button.removeEventListener("click",click));
+    }
+    if(buttons.length){group.append(node("p","nav-controller-facts",`Terminal only · Directory: ${value.cwd}`));parent.append(group);}
   }
   function failed(op, target) {
     if (!alive(op)) return;
@@ -176,6 +205,7 @@ export function createSessionController(document, options) {
           item.button.addEventListener("click", click);
           view.removes.push(() => item.button.removeEventListener("click", click));
         } else li.append(node("p", "nav-controller-unavailable", `${label} · Unavailable for selection`));
+        commandControls(li,value,()=>mounted&&!disposed&&listView===view,view.removes);
         li.append(node("p", "nav-controller-facts", `Title: ${value.title} · Directory: ${value.cwd}`),
           node("p", "nav-controller-facts", `Model: ${value.model} · Branch: ${value.branch} · Updated: ${value.updated}`),
           node("p", "nav-controller-facts", `Turns: ${value.turns} · Tools: ${value.tools} · Worker: ${value.worker ? "yes" : "no"} · Bypass: ${value.bypass ? "yes" : "no"}`));
@@ -194,7 +224,7 @@ export function createSessionController(document, options) {
     return Number.isFinite(date.getTime()) ? date.toISOString() : `${value.ms} ms since Unix epoch`;
   }
   function detailCommit(op, data) {
-    const candidate = {root:node("div", "nav-controller-conversation"), child:null, busy:true, retired:false, cleaned:false};
+    const candidate = {root:node("div", "nav-controller-conversation"), child:null, busy:true, retired:false, cleaned:false, removes:[]};
     op.candidate = candidate;
     try {
       const s = data.session;
@@ -204,6 +234,7 @@ export function createSessionController(document, options) {
         node("p", "nav-controller-facts", `Started: ${timeText(s.started)} · Updated: ${timeText(s.updated)}`),
         node("p", "nav-controller-facts", `Worker: ${s.worker ? "yes" : "no"} · Bypass: ${s.bypass ? "yes" : "no"}`),
         node("p", "nav-controller-facts", `Earlier hidden: ${data.earlier_hidden} · Later hidden: ${data.later_hidden} · Window start: ${data.window_start}`));
+      commandControls(candidate.root,s,()=>alive(op)&&!candidate.retired,candidate.removes);
       candidate.child = createConversationFeed(document, data, {window,
         idPrefix:`${idPrefix}-feed-${op.version}`, expectedScope:op.query,
         readingControls, shortcutsEnabled:()=>alive(op)&&!candidate.retired&&shortcutsEnabled(),

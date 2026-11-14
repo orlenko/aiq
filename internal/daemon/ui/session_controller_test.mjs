@@ -1,6 +1,6 @@
 import test, {afterEach} from 'node:test';
 import assert from 'node:assert/strict';
-import {createSessionController} from './session_controller.js';
+import {createSessionController,navigatorReadCommand} from './session_controller.js';
 import {ids,scope,limits,query,row,sessions,detail} from './controller_values.mjs';
 
 // Supplied geometry/explicit event dispatch: synthetic ownership evidence only.
@@ -244,4 +244,43 @@ test('explicit all remains owned and closed without admitting numeric zero or an
  const f=fixture({detailQuery:{last:'all',markup:false,anchor:0}});f.mount();f.controller.selectConversation(scope('A'));assert.equal(f.detailCalls[0].q.last,'all');f.clean();
  for(const last of [0,'0','ALL',null])assert.throws(()=>fixture({detailQuery:{last,markup:false,anchor:0}}));
  assert.throws(()=>fixture({detailQuery:{last:'all',markup:false,anchor:1}}));
+});
+
+test('read command templates accept only complete IDs and supported follow providers',()=>{
+  for(const provider of ['claude','codex','agy']){
+    assert.equal(navigatorReadCommand(provider,ids.A),`aiq convo ${ids.A}`);
+    assert.equal(navigatorReadCommand(provider,ids.A,true),provider==='agy'?null:`aiq convo ${ids.A} --follow`);
+  }
+  for(const id of ['','short',ids.A+'; echo invented',ids.A+'\n',ids.A+' ',null,5,{}])assert.equal(navigatorReadCommand('claude',id),null);
+  for(const provider of ['copilot','unknown','claude;echo',null])assert.equal(navigatorReadCommand(provider,ids.A),null);
+  assert.equal(navigatorReadCommand('claude',ids.A,'--follow'),null);
+});
+
+test('read chips copy fixed text only after activation and omit unsupported IDs and agy follow',async()=>{
+  const f=fixture({readCommands:true});f.mount();f.controller.loadSessions(query());
+  const values=[row('A',{provider:'claude'}),{...row('B'),provider:'agy',cwd:'/invented/$(text)',commands:[{verb:'untrusted command'}]}, {...row('C'),id:'short'}];
+  f.listCalls[0].resolve(sessions('/fixture/A',values));await tick();assert.deepEqual(f.copies,[]);
+  const buttons=find(f,n=>has(n,'nav-command-copy'));assert.equal(buttons.length,3);
+  for(const button of buttons){button.click();await tick();}
+  assert.deepEqual(f.copies,[`aiq convo ${ids.A}`,`aiq convo ${ids.A} --follow`,`aiq convo ${ids.B}`]);
+  assert.ok(!f.copies.some(s=>s.includes('invented')||s.includes('untrusted')));f.clean();
+});
+
+test('read chips suppress duplicate activation and retire pending copy completions',async()=>{
+  let settle;const pending=new Promise(r=>settle=r),f=fixture({readCommands:true,copyText:raw=>{f.copies.push(raw);return pending;}});
+  f.mount();f.controller.selectConversation({...scope('A'),provider:'claude'});const d=detail();d.session.provider='claude';f.detailCalls[0].resolve(d);await tick();
+  const old=byText(f,'Copy read command'),follow=byText(f,'Copy follow command');old.click();old.click();follow.click();
+  assert.deepEqual(f.copies,[`aiq convo ${ids.A}`]);assert.equal(old.getAttribute('aria-disabled'),'true');
+  f.controller.selectConversation(scope('B'));const before=f.announcements.length;old.click();settle();await tick();
+  assert.equal(f.announcements.length,before);assert.equal(f.copies.length,1);
+  f.detailCalls[1].resolve(detail('B'));await tick();assert.equal(byText(f,'Copy read command').getAttribute('aria-disabled'),null);f.clean();
+});
+
+test('read chip rejection is generic and preserves retry without stale controls',async()=>{
+  let fail=true;const f=fixture({readCommands:true,copyText:raw=>{f.copies.push(raw);if(fail)throw new Error('PRIVATE clipboard detail');return Promise.resolve();}});
+  f.mount();f.controller.selectConversation(scope('A'));f.detailCalls[0].resolve(detail());await tick();
+  const button=byText(f,'Copy read command');button.click();await tick();assert.equal(button.getAttribute('aria-disabled'),null);
+  assert.ok(f.announcements.includes('Read command could not be copied.'));assert.ok(!f.document.body.textContent.includes('PRIVATE'));
+  fail=false;button.click();await tick();assert.ok(f.announcements.includes('Read command copied. Paste it in a terminal.'));
+  f.clean();button.click();assert.equal(f.copies.length,2);
 });

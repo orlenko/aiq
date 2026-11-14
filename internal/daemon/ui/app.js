@@ -166,7 +166,7 @@ export function createAppHost(document,options) {
         onPlacement:v=>{void place(op,v);}});
     }else{
       op.controller=createSessionController(document,{window,idPrefix:"nav-app-session-"+(++generation),limits,
-        readingControls:true,shortcutsEnabled:()=>shortcuts,
+        readingControls:true,readCommands:true,shortcutsEnabled:()=>shortcuts,
         detailQuery:{last:parsed.anchor?50:lastPrompts,markup:marks.checked,anchor:parsed.anchor},
         readSessions:(q,s)=>op.lease.read("sessions",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),
         copyText:t=>copy(t,op),announce:announceCurrent,onSelection:v=>selectionChanged(op,v)});
