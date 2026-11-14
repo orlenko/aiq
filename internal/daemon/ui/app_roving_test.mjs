@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setNavigatorRoving} from './app.js';
+import {setNavigatorRoving,bindNavigatorRoving} from './app.js';
 function control(extra={}){return{tagName:'BUTTON',tabIndex:7,disabled:false,hidden:false,visible:true,aria:null,href:null,getAttribute(n){return n==='aria-disabled'?this.aria:null;},hasAttribute(n){return n==='href'&&this.href!==null;},getClientRects(){return this.visible?[{}]:[];},...extra};}
 function row(controls=[],extra={}){return{hidden:false,dataset:{},querySelectorAll:()=>controls,contains:n=>controls.includes(n),...extra};}
 const group=rows=>({querySelectorAll:()=>rows});
@@ -31,4 +31,19 @@ test('ARIA busy controls keep their focusable entry point across asynchronous re
  const busy=control({aria:'true'}),rows=[row([busy])];
  assert.equal(setNavigatorRoving(group(rows),null).length,1);assert.equal(busy.tabIndex,0);
  busy.aria=null;assert.equal(busy.tabIndex,0);
+});
+
+test('disclosure activation restores row Tab order before focus leaves its heading',()=>{
+ for(const activation of ['pointer click','native Enter click','native Space click']){
+  const action=control({visible:false}),g=group([row([action])]),listeners=new Map(),heading={},content={ownerDocument:{activeElement:heading},querySelectorAll:()=>[g],addEventListener:(n,f)=>listeners.set(n,f),removeEventListener:n=>listeners.delete(n)};
+  const clean=bindNavigatorRoving(content,()=>true);listeners.get('focusin')();assert.equal(action.tabIndex,-1,activation);
+  action.visible=true;listeners.get('click')();assert.equal(action.tabIndex,0,activation);assert.equal(content.ownerDocument.activeElement,heading);
+  action.visible=false;listeners.get('click')();assert.equal(action.tabIndex,-1);action.visible=true;listeners.get('click')();assert.equal(action.tabIndex,0);clean();assert.equal(listeners.size,0);
+ }
+});
+
+test('retired visibility bindings cannot mutate a successor and remove both listeners',()=>{
+ const action=control(),g=group([row([action])]),listeners=new Map();let current=true;
+ const content={ownerDocument:{activeElement:null},querySelectorAll:()=>[g],addEventListener:(n,f)=>listeners.set(n,f),removeEventListener:n=>listeners.delete(n)};
+ const clean=bindNavigatorRoving(content,()=>current),late=listeners.get('click');current=false;action.tabIndex=5;late();assert.equal(action.tabIndex,5);clean();assert.equal(listeners.size,0);late();assert.equal(action.tabIndex,5);
 });

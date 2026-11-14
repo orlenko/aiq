@@ -17,6 +17,13 @@ export function setNavigatorRoving(group,active) {
   for(const row of rows){row.dataset.current=String(row===chosen?.row);for(const c of row.querySelectorAll("button,a"))c.tabIndex=row===chosen?.row&&chosen.controls.includes(c)?0:-1;}
   return entries;
 }
+export function bindNavigatorRoving(content,isCurrent) {
+  const update=()=>{if(!isCurrent())return;for(const group of content.querySelectorAll(".nav-controller-rows,.nav-asks-region"))setNavigatorRoving(group,content.ownerDocument.activeElement);};
+  // Native Enter/Space activation emits a bubbling click after disclosure state
+  // changes. Refresh tab stops before the next Tab, even if focus stays put.
+  content.addEventListener("focusin",update);content.addEventListener("click",update);
+  return ()=>{content.removeEventListener("focusin",update);content.removeEventListener("click",update);};
+}
 function address(path,dir="",all=false,anchor=0) {
   const values={};if(dir)values.dir=directory(dir);if(all)values.all="true";if(anchor)values.at=String(anchor);
   const query=Object.keys(values).sort().map(k=>encodeForm(k)+"="+encodeForm(values[k])).join("&");
@@ -195,7 +202,7 @@ export function createAppHost(document,options) {
     listen(search,"keydown",e=>{if(e.key==="Escape"){e.preventDefault();search.value="";filter();announce("Search cleared.");}});
     listen(theme,"change",()=>{if(["system","light","dark"].includes(theme.value))document.documentElement.dataset.navTheme=theme.value;});
     listen(back,"click",goBack);listen(helpButton,"click",()=>helpDialog.showModal());listen(closeHelp,"click",()=>helpDialog.close());listen(shortcutInput,"change",()=>{shortcuts=shortcutInput.checked;});
-    listen(content,"keydown",keys);listen(content,"focusin",roving);
+    listen(content,"keydown",keys);removes.push(bindNavigatorRoving(content,alive));
     listen(window,"popstate",()=>{search.value="";navigate(window.location.pathname+window.location.search,{pop:true});});
     const location=window.location.pathname+window.location.search;
     navigate(window.location.pathname==="/"?initial||"/sessions":location,{replace:true});
