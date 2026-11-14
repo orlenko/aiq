@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"math"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -80,35 +79,11 @@ func (f *navFactory) liveFacts(ctx context.Context, s *transcript.Session, inclu
 		out.context = navConversationKey("nav-aux-context-v1", "no-managed-lease", latestID)
 		return out, nil
 	}
-	var launchID int64
-	if lease.StartedAt > 0 && lease.StartedAt <= navConversationSafeInteger/1000 {
-		for _, v := range snapshot.Launches {
-			if v.Mode == state.ModeLong && v.Provider == lease.Provider && v.SessionID == lease.SessionID && v.LeaseID == lease.ID && v.AccountID == lease.AccountID && navSameDirectory(v.Cwd, lease.Cwd) && v.StartedMS/1000 == lease.StartedAt {
-				if launchID != 0 {
-					launchID = 0
-					break
-				}
-				launchID = v.ID
-			}
-		}
-	}
+	launchID := navLeaseLaunchID(ctx, snapshot, lease, false)
 	out.context = navConversationKey("nav-aux-context-v1", strconv.FormatInt(lease.ID, 10), strconv.FormatInt(lease.StartedAt, 10), strconv.FormatInt(lease.PID, 10), lease.Pane, lease.AccountID, lease.Provider, lease.SessionID, lease.Workspace, strconv.FormatInt(launchID, 10), latestID)
-	if lease.PID <= 0 || lease.PID > math.MaxInt32 || lease.StartedAt <= 0 || launchID <= 0 || f.input.observe == nil || f.input.witness == nil || snapshot.HostIdentity() == "" {
-		return out, nil
-	}
-	observed := f.input.observe(ctx, terminal.ObservationTarget{Ref: lease.Pane, Workspace: lease.Workspace, PID: int(lease.PID), LeaseID: lease.ID, LaunchID: launchID})
-	if ctx.Err() != nil {
-		return navLiveFacts{}, ctx.Err()
-	}
-	if observed == terminal.Unknown {
-		return out, nil
-	}
-	match, err := f.input.witness(ctx, snapshot.HostIdentity(), *lease)
-	if ctx.Err() != nil {
-		return navLiveFacts{}, ctx.Err()
-	}
-	if err != nil || !match {
-		return out, nil
+	observed, err := f.observeNavLease(ctx, snapshot, lease, launchID)
+	if err != nil {
+		return navLiveFacts{}, err
 	}
 	out.observation = observed
 	if s.Provider != "agy" && observed == terminal.Running && lease.TurnStartedAt > 0 && lease.TurnStartedAt <= navConversationSafeInteger/1000 && lease.TurnEndedAt >= 0 && lease.TurnEndedAt <= navConversationSafeInteger/1000 {
