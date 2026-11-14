@@ -167,7 +167,7 @@ func cmdResume(args []string) error {
 		if selection.global {
 			sessions = append(sessions, selection.s)
 			if !o.print {
-				dir, o.changedDir, err = enterResumeDirectory(resumeDirectoryRuntime(), selection.s.Cwd, selection.s.ID)
+				dir, o.changedDir, err = enterResumeDirectory(a.resumeDirectoryDeps(), selection.s.Cwd, selection.s.ID)
 				if err != nil {
 					return err
 				}

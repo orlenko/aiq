@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/orlenko/aiq/internal/config"
 	"io"
 	"os"
 	"path/filepath"
@@ -44,6 +45,40 @@ func defaultResumeDirDeps() resumeDirDeps {
 }
 
 var resumeDirectoryRuntime = defaultResumeDirDeps
+
+func (a *app) resumeDirectoryDeps() resumeDirDeps {
+	d := resumeDirectoryRuntime()
+	before := d.before
+	d.before = func() error {
+		if before != nil {
+			if err := before(); err != nil {
+				return err
+			}
+		}
+		return checkResumeConfiguredPaths(a.cfg)
+	}
+	return d
+}
+
+func checkResumeConfiguredPaths(cfg *config.Config) error {
+	if cfg == nil {
+		return errors.New("resume configuration unavailable")
+	}
+	relative := func(path string) bool {
+		return path != "" && !filepath.IsAbs(path) && (strings.ContainsAny(path, "/\\") || filepath.VolumeName(path) != "")
+	}
+	for _, provider := range config.Providers {
+		if relative(cfg.Provider(provider).Binary) {
+			return fmt.Errorf("configured %s binary is relative; use an absolute path, or cd to the session's directory and run the command again", provider)
+		}
+	}
+	for name, launcher := range cfg.Launchers {
+		if relative(launcher.Command) {
+			return fmt.Errorf("launcher %q command is relative; use an absolute path, or cd to the session's directory and run the command again", name)
+		}
+	}
+	return nil
+}
 
 // Relative process configuration would refer to a different store or executable
 // after chdir. Refuse before moving rather than retargeting a provider's home.
@@ -263,6 +298,12 @@ func (e *resumeDirError) Error() string {
 				next = "see who it lets write by running getfacl on that directory; " + next
 			}
 		}
+	case "mac_acl":
+		message = "its macOS access list may permit another user to write"
+		if e.cause != nil {
+			message = "aiq could not read its macOS access list (" + resumeErrno(e.cause) + ")"
+		}
+		next = "inspect and remove unwanted write grants, or " + cd + " and run the command again"
 	default:
 		message = "aiq could not examine it (" + resumeErrno(e.cause) + ")"
 		next = "check the permissions on " + quoted + " and its parents"
@@ -325,6 +366,16 @@ func checkResumeDirectory(d resumeDirDeps, path, sessionDir, id string, workspac
 	}
 	if facts.mode&0002 != 0 {
 		return refuse("other_write", nil)
+	}
+	if d.goos == "darwin" {
+		write, err := fd.accessList("darwin.acl")
+		if err != nil || write {
+			return refuse("mac_acl", err)
+		}
+		after, err := fd.facts()
+		if err != nil || after != facts {
+			return resumeDirRefusal(d, path, sessionDir, id, workspace, "unexamined", errors.New("directory metadata changed during ACL check"), nil)
+		}
 	}
 	if facts.mode&0020 != 0 {
 		if d.goos != "linux" {

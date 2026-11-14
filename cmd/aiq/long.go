@@ -632,7 +632,7 @@ func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
 			}
 		}
 		if selected.global {
-			p.dir, p.changedDir, err = enterResumeDirectory(resumeDirectoryRuntime(), p.s.Cwd, p.s.ID)
+			p.dir, p.changedDir, err = enterResumeDirectory(a.resumeDirectoryDeps(), p.s.Cwd, p.s.ID)
 			if err != nil {
 				return p, false, err
 			}

@@ -85,7 +85,7 @@ func resumeReason(t *testing.T, err error, want string) {
 }
 
 func TestResumeDirectoryDescriptorDecisionClass(t *testing.T) {
-	for _, tc := range []string{"safe", "private group", "other owner", "other write", "sticky other write", "shared group", "ACL present", "ACL unavailable", "macOS group", "fstat unavailable", "not directory", "fchdir unavailable", "unreadable accounts"} {
+	for _, tc := range []string{"safe", "private group", "other owner", "other write", "sticky other write", "shared group", "ACL present", "ACL unavailable", "macOS group", "macOS write ACL with 0755", "macOS unavailable ACL with 0755", "fstat unavailable", "not directory", "fchdir unavailable", "unreadable accounts"} {
 		t.Run(tc, func(t *testing.T) {
 			fd := &fixtureResumeDir{value: resumeDirFacts{true, 1001, 2001, 0755}}
 			d := resumeDirFixture(fd)
@@ -118,6 +118,14 @@ func TestResumeDirectoryDescriptorDecisionClass(t *testing.T) {
 				fd.value.mode = 0775
 				d.goos = "darwin"
 				want = "not_linux"
+			case "macOS write ACL with 0755":
+				d.goos = "darwin"
+				fd.acl = true
+				want = "mac_acl"
+			case "macOS unavailable ACL with 0755":
+				d.goos = "darwin"
+				fd.aclErr = syscall.EACCES
+				want = "mac_acl"
 			case "fstat unavailable":
 				fd.statErr = syscall.EBADF
 				want = "unexamined"

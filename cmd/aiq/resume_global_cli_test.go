@@ -204,3 +204,45 @@ func TestResumeGlobalForcedAccountConflictFailsBeforeDirectoryChange(t *testing.
 		t.Fatal("account conflict reached a terminal action")
 	}
 }
+
+func TestResumeGlobalConfiguredExecutableClassStaysInCallerDirectory(t *testing.T) {
+	for _, tc := range []string{"claude", "codex", "agy", "copilot", "launcher"} {
+		for _, path := range []string{"./bin/fixture", "../fixture", "bin/fixture"} {
+			t.Run(tc+path, func(t *testing.T) {
+				f := newResumeCLIFixture(t)
+				fullIDWrite(t, defaultRoots(), "claude", fullIDFixtureID, f.target)
+				switch tc {
+				case "claude":
+					f.a.cfg.Providers.Claude.Binary = path
+				case "codex":
+					f.a.cfg.Providers.Codex.Binary = path
+				case "agy":
+					f.a.cfg.Providers.Agy.Binary = path
+				case "copilot":
+					f.a.cfg.Providers.Copilot.Binary = path
+				case "launcher":
+					f.a.cfg.Launchers = map[string]config.Launcher{"fixture": {Provider: "claude", Command: path}}
+				}
+				_, _, err := f.a.runAutoResumeArgs([]string{fullIDFixtureID})
+				if err == nil || !strings.Contains(err.Error(), "relative") {
+					t.Fatal("configured executable could be retargeted", err)
+				}
+				cwd, _ := os.Getwd()
+				if canonicalDir(cwd) != canonicalDir(f.caller) {
+					t.Fatal("relative command changed directory")
+				}
+				if _, err := os.Stat(filepath.Join(f.bin, "tmux-args")); !os.IsNotExist(err) {
+					t.Fatal("relative command reached terminal action")
+				}
+			})
+		}
+	}
+	for _, path := range []string{"", "fixture-cli", "/invented/bin/fixture-cli"} {
+		cfg := config.Default()
+		cfg.Providers.Claude.Binary = path
+		cfg.Launchers = map[string]config.Launcher{"fixture": {Provider: "claude", Command: path}}
+		if err := checkResumeConfiguredPaths(cfg); err != nil {
+			t.Fatal("stable executable refused", err)
+		}
+	}
+}
