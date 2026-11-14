@@ -422,6 +422,27 @@ aiq resume --print [<id>]   the same lists as plain text, for scripts and agents
 aiq resume --bare <id>      resume without the launcher the session ran under
 ```
 
+A complete session UUID also works from another directory, including with
+`--bare`, `--launcher`, `aiq run auto resume` and `aiq long auto resume`.
+Prefixes stay local to the current directory. aiq resolves the session first,
+prints its recorded directory, then enters that directory before choosing a
+workspace or starting or attaching to a session. The newest transcript copy wins;
+a newest copy in one account's overlay pins that recorded account, while a
+newest real-home copy does not. Antigravity needs one
+unambiguous recorded directory association.
+
+On macOS and Linux, changing directory this way refuses a missing, unexaminable,
+foreign-owned or other-writable directory. Group write is allowed only on Linux
+when the directory has no access list and the local account files confirm a
+private group. A different workspace top level is checked too for long sessions
+and launchers. The refusal explains how to recover; reading with `aiq convo` does
+not need the project to exist. Running the command from inside the recorded
+directory retains the existing behavior.
+
+When changing directories, aiq also refuses relative configuration/home paths
+or relative `PATH` entries, so the move cannot select another credential store
+or executable. Use absolute paths, or enter the session's directory yourself.
+
 The first screen lists every Claude and Codex session whose working directory
 is the current one, newest first, with the model, turn and tool counts, and
 the session's name or first prompt. Enter opens a session's turns: each prompt

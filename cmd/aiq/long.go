@@ -533,6 +533,7 @@ func splitResumeArgs(args []string) (account string, tierArgs, rest []string, er
 
 // resumeRequest is a parsed run or long resume command line.
 type resumeRequest struct {
+	verb     string
 	auto     bool // auto's bypass and default tier
 	account  string
 	tierArgs []string
@@ -544,7 +545,7 @@ type resumeRequest struct {
 // bad flag fails here and not in a tmux pane that closes before it can be
 // read.
 func (a *app) parseResume(verb string, auto bool, args []string) (resumeRequest, error) {
-	r := resumeRequest{auto: auto}
+	r := resumeRequest{auto: auto, verb: verb}
 	usage := resumeUsageFor(verb, auto)
 	// Bypass runs on the real home and ignores routing and --account, and a
 	// long session never gets its lease, so an auto or long resume refuses
@@ -587,12 +588,14 @@ func (a *app) parseResume(verb string, auto bool, args []string) (resumeRequest,
 
 // resumePick is the session a resume reopens, and how.
 type resumePick struct {
-	s        transcript.Session
-	dir      string
-	launcher string
-	why      string
-	forced   string   // account name; "" routes
-	cliArgs  []string // the bypass and the extra CLI args, without the resume verb
+	changedDir bool
+	workspace  string
+	s          transcript.Session
+	dir        string
+	launcher   string
+	why        string
+	forced     string   // account name; "" routes
+	cliArgs    []string // the bypass and the extra CLI args, without the resume verb
 }
 
 // pickResume finds the session to resume in this directory, by id or in
@@ -603,18 +606,46 @@ func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
 		return p, false, err
 	}
 	sessions, unreadable, err := transcript.List(defaultRoots(), p.dir)
-	reportUnreadable(os.Stderr, unreadable)
 	if err != nil {
+		reportUnreadable(os.Stderr, unreadable)
 		return p, false, err
+	}
+	if r.o.id == "" {
+		reportUnreadable(os.Stderr, unreadable)
+	}
+	if r.o.id != "" {
+		selected, e := resolveResumeSelection(a.st, defaultRoots(), sessions, unreadable, r.o.id)
+		if e != nil {
+			var load *convoLoadError
+			path := ""
+			if errors.As(e, &load) {
+				path = load.path
+			}
+			reportResumeUnreadable(os.Stderr, unreadable, path)
+			return p, false, e
+		}
+		reportResumeUnreadable(os.Stderr, unreadable, selected.s.Path)
+		p.s = selected.s
+		if selected.global || selected.forced != "" {
+			if p.forced, err = a.resumeCopyAccount(p.s.Provider, selected.forced, r.account); err != nil {
+				return p, false, err
+			}
+		}
+		if selected.global {
+			p.dir, p.changedDir, err = enterResumeDirectory(resumeDirectoryRuntime(), p.s.Cwd, p.s.ID)
+			if err != nil {
+				return p, false, err
+			}
+			sessions = append(sessions, p.s)
+			resumeGlobalEcho(os.Stderr, p.s, p.dir, p.forced)
+		}
 	}
 	live := liveSessions(a.st, paths.RealClaudeHome(), a.cfg.Long.TmuxPrefix)
 	origins := loadOrigins(a.st, hostname(), os.Getenv("PWD"), p.dir, sessions)
 	o := r.o
 	switch {
 	case o.id != "":
-		if p.s, err = findSession(sessions, unreadable, o.id); err != nil {
-			return p, false, err
-		}
+		// Exact global lookup and directory admission precede live decisions.
 	case !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())):
 		return p, false, configErr("bad-flags", "no terminal to browse sessions on; give a session id (aiq resume --print lists them)")
 	default:
@@ -634,26 +665,12 @@ func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
 		return p, false, err
 	}
 
-	note := live[s.ID]
-	if note.native != "" {
-		err := herdr.Attach(note.native)
-		if !errors.Is(err, herdr.ErrEnded) {
-			return p, true, err
-		}
-	}
-	if note.tmux != "" && tmux.HasSession(note.tmux) {
-		resumeNote(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, note.note)
-		return p, true, tmux.Attach(note.tmux)
-	}
-	if note.pid > 0 {
-		resumeNote(os.Stderr, "aiq: note: session %s is also %s\n", s.ID, note.note)
-	}
 	org := originOf(origins, s)
 	if p.launcher, p.why, err = resumeLauncher(a.cfg, s, org, o); err != nil {
 		return p, false, err
 	}
 	// The pick fixes the provider, so a forced account can be checked now.
-	if r.account != "" {
+	if r.account != "" && p.forced == "" {
 		if p.forced, err = a.longAccountName(s.Provider, r.account); err != nil {
 			return p, false, err
 		}
@@ -671,6 +688,26 @@ func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
 	f.rest = p.cliArgs
 	if _, err := modelFlags(s.Provider, f); err != nil {
 		return p, false, configErr("bad-flags", "%v", err)
+	}
+	if p.changedDir && (r.verb == "long" || p.launcher != "") {
+		p.workspace = workspaceID()
+		if err := checkResumeWorkspace(resumeDirectoryRuntime(), p.dir, p.workspace, s.ID, true); err != nil {
+			return p, false, err
+		}
+	}
+	note := live[s.ID]
+	if note.native != "" {
+		err := herdr.Attach(note.native)
+		if !errors.Is(err, herdr.ErrEnded) {
+			return p, true, err
+		}
+	}
+	if note.tmux != "" && tmux.HasSession(note.tmux) {
+		resumeNote(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, note.note)
+		return p, true, tmux.Attach(note.tmux)
+	}
+	if note.pid > 0 {
+		resumeNote(os.Stderr, "aiq: note: session %s is also %s\n", s.ID, note.note)
 	}
 	return p, false, nil
 }
@@ -731,15 +768,32 @@ func (a *app) longResume(args []string, auto bool) error {
 	if err != nil {
 		return err
 	}
-	ws := workspaceID()
-	target, attached, err := a.longExisting(ws)
-	defer target.unlock()
-	if attached || err != nil {
-		return err
+	var ws string
+	var target longTarget
+	if r.o.id == "" {
+		ws = workspaceID()
+		var attached bool
+		target, attached, err = a.longExisting(ws)
+		defer target.unlock()
+		if attached || err != nil {
+			return err
+		}
 	}
 	p, done, err := a.pickResume(r)
 	if done || err != nil {
 		return err
+	}
+	if r.o.id != "" {
+		ws = p.workspace
+		if ws == "" {
+			ws = workspaceID()
+		}
+		var attached bool
+		target, attached, err = a.longExisting(ws)
+		defer target.unlock()
+		if attached || err != nil {
+			return err
+		}
 	}
 	s, launcher := p.s, p.launcher
 
