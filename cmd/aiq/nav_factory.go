@@ -49,13 +49,15 @@ func navProductionPolicy() navFactoryPolicy {
 }
 
 type navFactoryInput struct {
-	roots    func(context.Context) (transcript.Roots, error)
-	metadata func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error)
-	witness  func(context.Context, string, state.NavigatorLease) (bool, error)
-	observe  func(context.Context, terminal.ObservationTarget) terminal.Observation
-	asksPath string
-	now      func() time.Time
-	location *time.Location
+	roots     func(context.Context) (transcript.Roots, error)
+	metadata  func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error)
+	witness   func(context.Context, string, state.NavigatorLease) (bool, error)
+	observe   func(context.Context, terminal.ObservationTarget) terminal.Observation
+	workspace func(context.Context, string) (string, bool)
+	notes     func(context.Context, string, state.NavigatorSnapshotLimits) (navLongNote, error)
+	asksPath  string
+	now       func() time.Time
+	location  *time.Location
 }
 type navFactoryBundle struct {
 	sessions, detail, asks, turn http.Handler
@@ -93,6 +95,9 @@ func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) 
 		sessionSlots: make(chan struct{}, p.sessions.builders), detailSlots: make(chan struct{}, p.detail.requests), askSlots: make(chan struct{}, p.asks.requests)}
 	mux := navroute.NewMux()
 	if err := mux.Handle(navroute.Directories, http.HandlerFunc(f.directories)); err != nil {
+		return nil, err
+	}
+	if err := mux.Handle(navroute.Long, http.HandlerFunc(f.longMetadata)); err != nil {
 		return nil, err
 	}
 	if err := mux.Handle(navroute.ConversationState, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +337,7 @@ func navProductionInputWithIdentity(identity func(context.Context) (string, erro
 	parents := []string{paths.ClaudeHomesDir(), paths.CodexHomesDir()}
 	return navFactoryInput{asksPath: filepath.Join(paths.DataDir(), asksDBName), now: time.Now, location: time.Local,
 		metadata: navProductionMetadata(paths.StateDB(), identity), witness: navProductionWitness(paths.StateDB()), observe: terminal.Observe,
+		workspace: navWorkspaceAt, notes: navProductionNoteMetadata,
 		roots: func(ctx context.Context) (transcript.Roots, error) {
 			r := transcript.Roots{ClaudeProjects: []string{filepath.Join(claude, "projects")}, CodexSessions: []string{filepath.Join(codex, "sessions")}, CodexIndex: []string{filepath.Join(codex, "session_index.jsonl")}, AgyAppData: []string{agyHome}}
 			for _, parent := range parents {

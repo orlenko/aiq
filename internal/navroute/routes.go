@@ -25,6 +25,7 @@ const (
 	AskTurn
 	Directories
 	ConversationState
+	Long
 )
 
 var patterns = [...]string{
@@ -39,6 +40,7 @@ var patterns = [...]string{
 	AskTurn:           "GET /api/nav/asks/{id}/turn",
 	Directories:       "GET /api/nav/directories",
 	ConversationState: "GET /api/nav/sessions/{provider}/{id}/state",
+	Long:              "GET /api/nav/long",
 }
 
 func (route Route) Key() string {
