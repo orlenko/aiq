@@ -9,7 +9,7 @@ class Target {
   listeners = new Map();
   addEventListener(n,f) { if (!this.listeners.has(n)) this.listeners.set(n,new Set()); this.listeners.get(n).add(f); }
   removeEventListener(n,f) { this.listeners.get(n)?.delete(f); }
-  emit(n) { for(const f of [...(this.listeners.get(n)||[])]) f({}); }
+  emit(n,event={}) { for(const f of [...(this.listeners.get(n)||[])]) f(event); }
   count() { return [...this.listeners.values()].reduce((n,s)=>n+s.size,0); }
 }
 class Element extends Target {
@@ -29,6 +29,8 @@ class Element extends Target {
   removeAttribute(n) {this.attrs.delete(n);}
   getAttribute(n) {return this.attrs.get(n)??null;}
   contains(n) {return this===n||this.children.some(c=>c.contains(n));}
+  focus() {this.ownerDocument.activeElement=this;for(let n=this;n;n=n.parentNode)n.emit('focusin',{target:this});this.onFocus?.();}
+  scrollIntoView() {this.scrolled=(this.scrolled??0)+1;this.onScroll?.();}
   get isConnected() {return this===this.ownerDocument.body||Boolean(this.parentNode?.isConnected);}
   getClientRects() {return this.isConnected?[{}]:[];}
 }
@@ -159,4 +161,75 @@ test('wire duration literals retain signed branches and explicit millisecond pre
   // Independently generated with Go integer arithmetic; source ns/terminal
   // labels were recorded separately, including the lossy 10000-hour pair.
   for(const [ms,want] of [[-9223372036854,'-9223372036s'],[-61000,'-61s'],[-999,'0s'],[0,'0s'],[59999,'59s'],[60000,'1m'],[3599999,'59m'],[3600000,'1h00m'],[35999999999,'9999h59m'],[9223372036854,'2562047h47m']]) assert.equal(durationText(ms),want);
+});
+
+function readingWindow() {
+  const prompt=(n,ordinal,who)=>({...fixtureMessage(n,[fixtureGroup(ordinal,{...fixtureHead('prompt'),who})]),turn:n});
+  const answer={...fixtureMessage(2,[fixtureGroup(1,{...fixtureHead('final'),duration_known:true,duration_ms:125000,tools:3})]),turn:1,kind:'answer',sub:'final',source:'unknown',source_known:false};
+  return fixtureWindow([prompt(1,0,'Prompt A'),answer,prompt(3,2,'Prompt B'),prompt(4,3,'Prompt C')]);
+}
+const byClass=(f,name)=>all(f.document.body).filter(n=>has(n,name));
+function reading(f,more={}) {return mounted(f,readingWindow(),{readingControls:true,...more});}
+function key(root,target,key,more={}) {const e={target,key,defaultPrevented:false,preventDefault(){this.defaultPrevented=true;},...more};root.emit('keydown',e);return e;}
+
+test('reading controls are opt-in, validate before allocation, and keep owned ordered prompt facts',()=>{
+  for(const value of [null,0,'true',undefined]){const f=fixture();assert.throws(()=>f.feed(readingWindow(),{readingControls:value}));assert.equal(f.count,0);}
+  let calls=0;const f=fixture(),options={};Object.defineProperty(options,'readingControls',{get(){calls++;return true;}});
+  const makeOptions={window:f.window,idPrefix:'fixture',expectedScope:fixtureScope,copyText:()=>{},announce:()=>{}};
+  Object.defineProperty(makeOptions,'readingControls',Object.getOwnPropertyDescriptor(options,'readingControls'));
+  assert.throws(()=>createConversationFeed(f.document,readingWindow(),makeOptions));assert.equal(calls,0);assert.equal(f.count,0);
+  const data=readingWindow(),g=fixture(),feed=mounted(g,data,{readingControls:true});data.messages[0].groups[0].head.who='mutated';
+  assert.deepEqual(byClass(g,'nav-feed-outline-prompt').map(n=>n.textContent),['Prompt A','Prompt B','Prompt C']);
+  assert.equal(byClass(g,'nav-feed-outline-facts')[0].textContent,'2m · 3 tools');
+  assert.equal(g.document.activeElement,null);feed.refresh();assert.equal(g.document.activeElement,null);feed.teardown();
+});
+
+test('explicit reading navigation preserves answer position when focus moves onto controls',()=>{
+  const f=fixture(),feed=reading(f),heads=byClass(f,'nav-feed-prompt'),copies=byClass(f,'nav-feed-copy'),next=byClass(f,'nav-feed-next')[0],previous=byClass(f,'nav-feed-previous')[0];
+  copies[1].focus();next.focus();next.emit('click');assert.equal(f.document.activeElement,heads[1]);
+  next.focus();next.emit('click');assert.equal(f.document.activeElement,heads[2]);
+  previous.focus();previous.emit('click');assert.equal(f.document.activeElement,heads[1]);
+  assert.equal(heads[1].scrolled,2);assert.equal(heads[1].tabIndex,-1);feed.teardown();
+});
+
+test('initial reading controls have defined edges and outline targets never mutate history',()=>{
+  for(const direction of ['previous','next']){
+    const f=fixture(),announcements=[],feed=reading(f,{announce:t=>announcements.push(t)}),heads=byClass(f,'nav-feed-prompt'),control=byClass(f,'nav-feed-'+direction)[0];
+    control.focus();control.emit('click');const expected=direction==='next'?heads[0]:heads[2];assert.equal(f.document.activeElement,expected);
+    control.focus();const edge=direction==='next'?byClass(f,'nav-feed-previous')[0]:byClass(f,'nav-feed-next')[0];edge.emit('click');assert.equal(f.document.activeElement,control);assert.match(announcements.at(-1),/First|Last/);
+    const pick=byClass(f,'nav-feed-outline-prompt')[1];pick.focus();pick.emit('click');assert.equal(f.document.activeElement,heads[1]);assert.equal(pick.getAttribute('aria-controls'),heads[1].id);feed.teardown();
+  }
+});
+
+test('n and p respect global toggle, modifiers, editable targets and native Tab',()=>{
+  const f=fixture();let enabled=true;const feed=reading(f,{shortcutsEnabled:()=>enabled}),root=byClass(f,'nav-feed')[0],copies=byClass(f,'nav-feed-copy'),heads=byClass(f,'nav-feed-prompt');copies[1].focus();
+  for(const more of [{ctrlKey:true},{altKey:true},{metaKey:true},{shiftKey:true},{defaultPrevented:true}]){const e=key(root,copies[1],'n',more);assert.equal(e.defaultPrevented,Boolean(more.defaultPrevented));assert.equal(f.document.activeElement,copies[1]);}
+  for(const target of [f.document.createElement('input'),f.document.createElement('textarea'),f.document.createElement('select'),Object.assign(f.document.createElement('div'),{isContentEditable:true})]){root.append(target);assert.equal(key(root,target,'n').defaultPrevented,false);}
+  assert.equal(key(root,f.document.createElement('button'),'n').defaultPrevented,false);
+  assert.equal(key(root,copies[1],'Tab').defaultPrevented,false);
+  enabled=false;assert.equal(key(root,copies[1],'n').defaultPrevented,false);assert.equal(f.document.activeElement,copies[1]);
+  enabled=true;assert.equal(key(root,copies[1],'n').defaultPrevented,true);assert.equal(f.document.activeElement,heads[1]);
+  assert.equal(key(root,heads[1],'p').defaultPrevented,true);assert.equal(f.document.activeElement,heads[0]);feed.teardown();
+});
+
+test('retired reading controls and reentrant shortcut or focus callouts cannot move focus again',()=>{
+  for(const mode of ['shortcut','focus','scroll']){
+    const f=fixture();let feed,called=0;feed=reading(f,{shortcutsEnabled:()=>{if(mode==='shortcut')feed.teardown();return true;},announce:()=>called++});
+    const root=byClass(f,'nav-feed')[0],head=byClass(f,'nav-feed-prompt')[0],next=byClass(f,'nav-feed-next')[0];
+    if(mode==='focus')head.onFocus=()=>feed.teardown();if(mode==='scroll')head.onScroll=()=>feed.teardown();
+    if(mode==='shortcut')key(root,next,'n');else next.emit('click');
+    assert.equal(called,0);assert.equal(head.scrolled??0,mode==='scroll'?1:0);assert.equal(f.document.body.children.length,0);
+    const before=f.document.activeElement;next.emit('click');key(root,next,'n');assert.equal(f.document.activeElement,before);assert.equal(feed.mount(),false);
+  }
+});
+
+test('multiple human headings in one message navigate independently and ignore invisible headings',()=>{
+  const f=fixture(),data=fixtureWindow([fixtureMessage(1,[fixtureGroup(0,{...fixtureHead('prompt'),who:'One'}),fixtureGroup(1,{...fixtureHead('steer'),who:'Two'}),{...fixtureGroup(2,fixtureHead('prompt')),visible:false}])]),feed=mounted(f,data,{readingControls:true});
+  const heads=byClass(f,'nav-feed-prompt'),next=byClass(f,'nav-feed-next')[0];next.emit('click');assert.equal(f.document.activeElement,heads[0]);next.emit('click');assert.equal(f.document.activeElement,heads[1]);assert.equal(byClass(f,'nav-feed-outline-prompt').length,2);feed.teardown();
+});
+
+test('reading position and listeners belong to each mounted feed',()=>{
+  const f=fixture(),a=reading(f),first=byClass(f,'nav-feed-next')[0],firstHeads=byClass(f,'nav-feed-prompt');
+  const b=reading(f),second=byClass(f,'nav-feed-next')[1],allHeads=byClass(f,'nav-feed-prompt');
+  first.emit('click');assert.equal(f.document.activeElement,firstHeads[0]);second.emit('click');assert.equal(f.document.activeElement,allHeads[3]);a.teardown();second.emit('click');assert.equal(f.document.activeElement,allHeads[4]);b.teardown();
 });
