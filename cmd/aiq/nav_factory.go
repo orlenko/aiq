@@ -31,6 +31,8 @@ type navFactoryPolicy struct {
 	timeout        time.Duration
 }
 
+const navRootsTTL = 2 * time.Second
+
 // Direct owner resource bundle, 2026-11-13. These are distinct admission/work
 // units, not a claim about total process/SQLite/parser/discovery memory.
 func navProductionPolicy() navFactoryPolicy {
@@ -157,7 +159,7 @@ func (f *navFactory) get(ctx context.Context) (bundle *navFactoryBundle, err err
 		now := f.input.now() // Clock callout stays outside the factory lock.
 		f.mu.Lock()
 		age := now.Sub(f.checked)
-		if f.bundle != nil && age >= 0 && age < transcript.DiscoveryTTL {
+		if f.bundle != nil && age >= 0 && age < navRootsTTL {
 			b := f.bundle
 			f.mu.Unlock()
 			return b, nil
@@ -214,7 +216,7 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 	if previous != nil && reflect.DeepEqual(previous.roots, roots) {
 		return previous, nil
 	}
-	index := transcript.NewIndex(roots)
+	index := transcript.NewLiveIndex(roots)
 	selections, err := newNavSelections(f.cache, rand.Reader)
 	if err != nil {
 		return nil, err

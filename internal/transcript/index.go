@@ -13,8 +13,8 @@ import (
 	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
-// DiscoveryTTL is how long one scan of the Codex rollouts or of
-// Antigravity's history answers the navigator.
+// DiscoveryTTL is the default lifetime of a Codex/Antigravity scan. The local
+// navigator's follow policy uses NewLiveIndex's shorter, fresh-read lifetime.
 const DiscoveryTTL = 15 * time.Second
 
 // Index is the navigator's Discovery. Claude is found by project directory,
@@ -28,6 +28,7 @@ const DiscoveryTTL = 15 * time.Second
 type Index struct {
 	r     Roots
 	ttl   time.Duration
+	fresh bool // Navigator follow waits for the shared refresh after expiry.
 	now   func() time.Time
 	codex scan
 	agy   scan
@@ -86,6 +87,15 @@ type agyScan struct {
 // NewIndex is an Index over r.
 func NewIndex(r Roots) *Index {
 	return &Index{r: r, ttl: DiscoveryTTL, now: time.Now, memo: map[string]memoEntry{}}
+}
+
+// NewLiveIndex is the local navigator's two-second discovery policy. Normal
+// reads wait for an expired provider scan; cached-only state never calls it.
+// Other readers keep NewIndex's existing stale-while-refresh behavior.
+func NewLiveIndex(r Roots) *Index {
+	x := NewIndex(r)
+	x.ttl, x.fresh = 2*time.Second, true
+	return x
 }
 
 // Walks is how many scans of the Codex rollouts the index has run.
@@ -156,7 +166,7 @@ func (x *Index) readObserved(ctx context.Context, s *scan, run func(any, *diagno
 	}
 	d, observation, running := s.data, s.observation, s.running
 	s.mu.Unlock()
-	if d != nil {
+	if d != nil && !x.fresh {
 		return notedScan(ctx, d, observation, nil)
 	}
 	select {
