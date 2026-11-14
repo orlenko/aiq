@@ -42,29 +42,45 @@ func ClaudeOpen(realClaude string) map[string]int {
 // session of either CLI without hooks, so no hook reports its transcript;
 // this is how to find it from the session's lease.
 func Written(r Roots, provider, dir string, since time.Time) []string {
+	return DirectWalk(r).Written(context.Background(), provider, dir, since)
+}
+
+func (w directWalk) Written(ctx context.Context, provider, dir string, since time.Time) []string {
 	dir = canonical(dir)
 	var paths []Candidate
 	switch provider {
 	case "codex":
-		for _, f := range codexFiles(context.Background(), r.CodexSessions, dir, since) {
+		for _, f := range codexFiles(ctx, w.r.CodexSessions, dir, since) {
 			meta, _ := codexMeta(f.Path)
-			var source string
-			json.Unmarshal(meta.Source, &source)
-			if source == "exec" || strings.HasSuffix(meta.Originator, "_exec") || isSubagent(meta.Source) {
+			if !interactive(meta) {
 				continue
 			}
 			paths = append(paths, f)
 		}
 	case "agy":
-		paths = agyFiles(context.Background(), r.AgyAppData, dir)
+		paths = agyFiles(ctx, w.r.AgyAppData, dir)
 	}
+	return newestWritten(paths, since)
+}
+
+// interactive says a rollout's head is a session someone typed into: not
+// codex exec, not a subagent.
+func interactive(meta codexPayload) bool {
+	var source string
+	json.Unmarshal(meta.Source, &source)
+	return !(source == "exec" || strings.HasSuffix(meta.Originator, "_exec") || isSubagent(meta.Source))
+}
+
+// newestWritten is the paths of cands modified at or after since, newest
+// first, each file once.
+func newestWritten(cands []Candidate, since time.Time) []string {
 	type written struct {
 		path string
 		mod  time.Time
 	}
 	var out []written
 	seen := map[string]bool{}
-	for _, f := range paths {
+	for _, f := range cands {
 		info, err := os.Stat(f.Path)
 		if err != nil || info.ModTime().Before(since) || seen[canonical(f.Path)] {
 			continue

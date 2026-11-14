@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/term"
 
+	"errors"
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/state"
@@ -27,12 +29,14 @@ const resumeUsage = `usage: aiq resume [--all] [--print] [--launcher <name> | --
   --bare                resume without a launcher, even if the session ran under one`
 
 type resumeOpts struct {
-	all      bool
-	print    bool
-	launcher string
-	bare     bool
-	id       string
-	extra    []string
+	all        bool
+	print      bool
+	launcher   string
+	bare       bool
+	id         string
+	extra      []string
+	forced     string
+	changedDir bool
 }
 
 func parseResumeArgs(args []string) (resumeOpts, error) {
@@ -42,7 +46,7 @@ func parseResumeArgs(args []string) (resumeOpts, error) {
 		switch {
 		case a == "--":
 			o.extra = args[i+1:]
-			return o, nil
+			i = len(args)
 		case a == "--all" || a == "-a":
 			o.all = true
 		case a == "--print" || a == "-p":
@@ -70,6 +74,9 @@ func parseResumeArgs(args []string) (resumeOpts, error) {
 	if o.bare && o.launcher != "" {
 		return o, fmt.Errorf("--bare and --launcher contradict each other")
 	}
+	if err := validateConvoID(o.id); err != nil {
+		return o, err
+	}
 	return o, nil
 }
 
@@ -89,12 +96,27 @@ func reportUnreadable(w io.Writer, paths []string) {
 	}
 }
 
+func reportResumeUnreadable(w io.Writer, paths []string, selected string) {
+	if selected == "" {
+		reportUnreadable(w, paths)
+		return
+	}
+	other := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path != selected {
+			other = append(other, path)
+		}
+	}
+	reportUnreadable(w, other)
+}
+
 // liveNote says where a session is running now, so resuming it does not
 // start a second copy of the same conversation.
 type liveNote struct {
-	pid  int    // an open Claude process
-	tmux string // an aiq long tmux session
-	note string
+	native string // native Herdr runner reference
+	pid    int    // an open Claude process
+	tmux   string // an aiq long tmux session
+	note   string
 }
 
 func cmdResume(args []string) error {
@@ -117,18 +139,47 @@ func cmdResume(args []string) error {
 		return err
 	}
 	sessions, unreadable, err := transcript.List(defaultRoots(), dir)
-	reportUnreadable(os.Stderr, unreadable)
 	if err != nil {
+		reportUnreadable(os.Stderr, unreadable)
 		return err
 	}
-	live := a.liveSessions()
-	origins := a.loadOrigins(dir, sessions)
-
+	if o.id == "" {
+		reportUnreadable(os.Stderr, unreadable)
+	}
+	var selection resumeSelection
 	if o.id != "" {
-		s, err := findSession(sessions, unreadable, o.id)
+		selection, err = resolveResumeSelection(a.st, defaultRoots(), sessions, unreadable, o.id)
 		if err != nil {
+			var load *convoLoadError
+			selected := ""
+			if errors.As(err, &load) {
+				selected = load.path
+			}
+			reportResumeUnreadable(os.Stderr, unreadable, selected)
 			return err
 		}
+		reportResumeUnreadable(os.Stderr, unreadable, selection.s.Path)
+		if !o.print && (selection.global || selection.forced != "") {
+			if o.forced, err = a.resumeCopyAccount(selection.s.Provider, selection.forced, ""); err != nil {
+				return err
+			}
+		}
+		if selection.global {
+			sessions = append(sessions, selection.s)
+			if !o.print {
+				dir, o.changedDir, err = enterResumeDirectory(a.resumeDirectoryDeps(), selection.s.Cwd, selection.s.ID)
+				if err != nil {
+					return err
+				}
+				resumeGlobalEcho(os.Stderr, selection.s, dir, o.forced)
+			}
+		}
+	}
+	live := liveSessions(a.st, paths.RealClaudeHome(), a.cfg.Long.TmuxPrefix)
+	origins := loadOrigins(a.st, hostname(), os.Getenv("PWD"), dir, sessions)
+
+	if o.id != "" {
+		s := selection.s
 		if o.print {
 			fmt.Print(renderTurnsPlain(s, origins))
 			return nil
@@ -159,18 +210,23 @@ func cmdResume(args []string) error {
 }
 
 // liveSessions gathers the sessions running right now: open Claude
-// processes and aiq long sessions whose hooks reported a session id.
-func (a *app) liveSessions() map[string]liveNote {
+// processes of the real home realClaude, and aiq long sessions in st whose
+// hooks reported a session id, in tmux sessions named with tmuxPrefix.
+func liveSessions(st *state.Store, realClaude, tmuxPrefix string) map[string]liveNote {
 	out := map[string]liveNote{}
-	for id, pid := range transcript.ClaudeOpen(paths.RealClaudeHome()) {
+	for id, pid := range transcript.ClaudeOpen(realClaude) {
 		out[id] = liveNote{pid: pid, note: fmt.Sprintf("open in pid %d", pid)}
 	}
-	leases, _ := a.st.ListLeases()
+	leases, _ := st.ListLeases()
 	for _, l := range leases {
 		if l.Mode != state.ModeLong || l.SessionID == "" {
 			continue
 		}
-		name := longrun.SessionName(a.cfg.Long.TmuxPrefix, l.Workspace)
+		if herdr.IsRef(l.Pane) {
+			out[l.SessionID] = liveNote{native: l.Pane, note: fmt.Sprintf("running in aiq long (%s, Herdr)", l.AccountID)}
+			continue
+		}
+		name := longrun.SessionName(tmuxPrefix, l.Workspace)
 		out[l.SessionID] = liveNote{tmux: name, note: fmt.Sprintf("running in aiq long (%s, %s)", l.AccountID, name)}
 	}
 	return out
@@ -186,10 +242,16 @@ func interactiveOnly(list []transcript.Session) []transcript.Session {
 	return out
 }
 
+var errSessionNoMatch = errors.New("no matching session")
+
+type sessionNoMatch string
+
+func (e sessionNoMatch) Error() string        { return string(e) }
+func (e sessionNoMatch) Is(target error) bool { return target == errSessionNoMatch }
+
 // findSession finds the one session of list whose id is prefix or starts
-// with it. unreadable is what the list could not read, already named on
-// stderr: the session asked for may be among them, and --all would not
-// list it.
+// with it. unreadable is what the list could not read: the session asked
+// for may be among them, and --all would not list it. The caller reports it.
 func findSession(list []transcript.Session, unreadable []string, prefix string) (transcript.Session, error) {
 	var hits []transcript.Session
 	for _, s := range list {
@@ -203,9 +265,9 @@ func findSession(list []transcript.Session, unreadable []string, prefix string) 
 	switch len(hits) {
 	case 0:
 		if len(unreadable) > 0 {
-			return transcript.Session{}, fmt.Errorf("no readable session %q in this directory; the transcripts named above could not be read", prefix)
+			return transcript.Session{}, sessionNoMatch(fmt.Sprintf("no readable session %q in this directory; the transcripts named above could not be read", prefix))
 		}
-		return transcript.Session{}, fmt.Errorf("no session %q in this directory (aiq resume --print --all lists them)", prefix)
+		return transcript.Session{}, sessionNoMatch(fmt.Sprintf("no session %q in this directory (aiq resume --print --all lists them)", prefix))
 	case 1:
 		return hits[0], nil
 	}
@@ -235,22 +297,51 @@ func resumeNote(w io.Writer, format string, args ...any) {
 
 // resumeSession closes the app and hands the terminal to the resumed CLI.
 func (a *app) resumeSession(s transcript.Session, origins map[string]origin, live liveNote, o resumeOpts) error {
-	if live.tmux != "" && tmux.HasSession(live.tmux) {
-		resumeNote(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, live.note)
-		return tmux.Attach(live.tmux)
-	}
 	var org *origin
 	if g, ok := origins[sessionKey(s)]; ok {
 		org = &g
 	}
-	launcher, why, err := resumeLauncher(a.cfg, s, org, o)
-	if err != nil {
-		return err
+	var launcher, why string
+	var err error
+	if o.changedDir {
+		launcher, why, err = resumeLauncher(a.cfg, s, org, o)
+		if err != nil {
+			return err
+		}
+		if launcher != "" {
+			dir, e := os.Getwd()
+			if e != nil {
+				return e
+			}
+			if e = checkResumeWorkspace(resumeDirectoryRuntime(), dir, workspaceID(), s.ID, true); e != nil {
+				return e
+			}
+		}
+	}
+	if live.native != "" {
+		err := herdr.Attach(live.native)
+		if !errors.Is(err, herdr.ErrEnded) {
+			return err
+		}
+	}
+
+	if live.tmux != "" && tmux.HasSession(live.tmux) {
+		resumeNote(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, live.note)
+		return tmux.Attach(live.tmux)
+	}
+	if !o.changedDir {
+		launcher, why, err = resumeLauncher(a.cfg, s, org, o)
+		if err != nil {
+			return err
+		}
 	}
 	if live.pid > 0 {
 		resumeNote(os.Stderr, "aiq: note: session %s is also %s\n", s.ID, live.note)
 	}
 	run := []string{"--mode", state.ModeInteractive}
+	if o.forced != "" {
+		run = append(run, "--account", o.forced)
+	}
 	if launcher != "" {
 		run = append(run, "--launcher", launcher)
 	}
@@ -273,7 +364,11 @@ func (a *app) resumeSession(s transcript.Session, origins map[string]origin, liv
 // whenLabel is a compact local timestamp: the time today, the weekday this
 // week, the date before that.
 func whenLabel(t, now time.Time) string {
-	t, now = t.Local(), now.Local()
+	return whenLabelIn(t, now, time.Local)
+}
+
+func whenLabelIn(t, now time.Time, location *time.Location) string {
+	t, now = t.In(location), now.In(location)
 	y1, m1, d1 := t.Date()
 	y2, m2, d2 := now.Date()
 	switch {
@@ -326,8 +421,14 @@ func durationLabel(d time.Duration) string {
 }
 
 func homeRel(dir string) string {
-	if h, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(h, dir); err == nil && !strings.HasPrefix(rel, "..") {
+	h, _ := os.UserHomeDir()
+	return homeRelTo(h, dir)
+}
+
+// homeRelTo is dir under home as ~/..., or dir as it is outside it or with no home.
+func homeRelTo(home, dir string) string {
+	if home != "" {
+		if rel, err := filepath.Rel(home, dir); err == nil && !strings.HasPrefix(rel, "..") {
 			return filepath.Join("~", rel)
 		}
 	}

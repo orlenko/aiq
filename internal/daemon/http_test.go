@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -241,16 +243,49 @@ func TestStateAnswerNamesThisMachineWhereTheCheckLooks(t *testing.T) {
 	}
 }
 
-func TestRunStartsNoLoopsWhenItCannotBind(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("AIQ_DATA_DIR", t.TempDir())
-	t.Setenv("PATH", os.Getenv("PATH"))
-	defer func() {
-		if instanceLock != nil {
-			instanceLock.Close()
-			instanceLock = nil
+// freeAfter stands in for the wait between binds. It runs during on each wait and
+// frees the held port at wait number at, and it gives back how many waits ran.
+func freeAfter(t *testing.T, held net.Listener, at int, during func()) *int {
+	t.Helper()
+	n := 0
+	saved := listenRetryPause
+	t.Cleanup(func() { listenRetryPause = saved })
+	listenRetryPause = func() {
+		n++
+		if during != nil {
+			during()
 		}
-	}()
+		if n == at {
+			held.Close()
+		}
+		if n > at+3 {
+			t.Fatalf("still waiting after %d tries", n)
+		}
+	}
+	return &n
+}
+
+// serveStops makes the status page's Serve return at once, so Run ends, and gives
+// back the addresses it was asked to serve on.
+func serveStops(t *testing.T) *[]string {
+	t.Helper()
+	var served []string
+	saved := serveStatus
+	t.Cleanup(func() { serveStatus = saved })
+	serveStatus = func(_ *http.Server, ln net.Listener) error {
+		served = append(served, ln.Addr().String())
+		ln.Close()
+		return errors.New("stopped by the test")
+	}
+	return &served
+}
+
+// The regression of #38: a daemon whose accepted address another program holds polls
+// and supervises under its lock instead of exiting, which made the service restart it
+// before supervision ever ran, and it serves once the port is free.
+func TestRunSupervisesWhileThePortIsHeldAndServesOnceFree(t *testing.T) {
+	useDataDir(t)
+	defer releaseInstanceLock()
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -258,11 +293,147 @@ func TestRunStartsNoLoopsWhenItCannotBind(t *testing.T) {
 	defer taken.Close()
 	cfg := config.Default()
 	cfg.Daemon.Listen = taken.Addr().String()
-	defer func(loops func(*Server)) { startLoops = loops }(startLoops)
-	startLoops = func(*Server) { t.Error("the loops started without the address") }
-	if err := New(cfg, nil, log.New(io.Discard, "", 0)).Run(); err == nil {
-		t.Fatal("Run returned no error")
+	logged := &lockedBuffer{}
+	s := New(cfg, nil, log.New(logged, "", 0))
+
+	served := serveStops(t)
+	loops := 0
+	defer func(saved func(*Server)) { startLoops = saved }(startLoops)
+	startLoops = func(*Server) {
+		loops++
+		if held, err := LockHeld(); err != nil || !held {
+			t.Errorf("the loops started without the lock: held %v, err %v", held, err)
+		}
+		if len(*served) != 0 {
+			t.Error("the loops waited for the status page")
+		}
 	}
+	waits := freeAfter(t, taken, 3, func() {
+		if loops != 1 {
+			t.Errorf("waiting for the port with the loops started %d times", loops)
+		}
+	})
+	if err := s.Run(); err == nil || err.Error() != "stopped by the test" {
+		t.Fatalf("Run returned %v", err)
+	}
+	if loops != 1 || *waits != 3 || len(*served) != 1 || (*served)[0] != cfg.Daemon.Listen {
+		t.Fatalf("loops %d, waits %d, served %v", loops, *waits, *served)
+	}
+	out := logged.String()
+	if n := strings.Count(out, "not serving the status page or API, but polling and supervising"); n != 1 {
+		t.Errorf("the bind failure was logged %d times: %s", n, out)
+	}
+	if !strings.Contains(out, "can be bound now") {
+		t.Errorf("the recovery was not logged: %s", out)
+	}
+}
+
+// The loops start exactly once whichever way Run goes, and never beside an older
+// daemon or a second daemon of this version.
+func TestRunStartsTheLoopsOnceOnEveryPath(t *testing.T) {
+	here := pool.Hostname() // looked up once, before any server reads it
+	older := func(slowFirst bool) http.Handler {
+		var mu sync.Mutex
+		first := slowFirst
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			slow := first && r.URL.Path == "/healthz"
+			if slow {
+				first = false
+			}
+			mu.Unlock()
+			if slow {
+				time.Sleep(time.Second) // past the probe's 700 ms
+			}
+			if r.URL.Path == "/healthz" {
+				w.Write([]byte("ok\n"))
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"view": pool.View{Hostname: here}})
+		})
+	}
+	serveOn := func(t *testing.T, ln net.Listener, h http.Handler) {
+		srv := &http.Server{Handler: h}
+		go srv.Serve(ln)
+		t.Cleanup(func() { srv.Close() })
+	}
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, cfg *config.Config)
+		loops int
+		err   string // "" for nil
+	}{
+		{"refused address", func(t *testing.T, cfg *config.Config) {
+			_, port, _ := net.SplitHostPort(freeLoopback(t))
+			cfg.Daemon.Listen = net.JoinHostPort("0.0.0.0", port)
+		}, 1, ""},
+		{"free address", func(t *testing.T, cfg *config.Config) {
+			cfg.Daemon.Listen = freeLoopback(t)
+			freeAfter(t, nil, 0, func() { t.Error("waited with the port free") })
+		}, 1, "stopped by the test"},
+		{"held, then freed", func(t *testing.T, cfg *config.Config) {
+			taken := holdPort(t)
+			cfg.Daemon.Listen = taken.Addr().String()
+			freeAfter(t, taken, 1, nil)
+		}, 1, "stopped by the test"},
+		{"held, then an older daemon answers", func(t *testing.T, cfg *config.Config) {
+			taken := holdPort(t)
+			cfg.Daemon.Listen = taken.Addr().String()
+			freeAfter(t, taken, 2, func() { serveOn(t, taken, older(false)) })
+		}, 1, "older"},
+		{"an older daemon too slow for the first probe", func(t *testing.T, cfg *config.Config) {
+			taken := holdPort(t)
+			cfg.Daemon.Listen = taken.Addr().String()
+			serveOn(t, taken, older(true))
+			freeAfter(t, taken, 1, func() { t.Error("waited beside an older daemon") })
+		}, 0, "older"},
+		{"a second daemon while the port is held", func(t *testing.T, cfg *config.Config) {
+			taken := holdPort(t)
+			cfg.Daemon.Listen = taken.Addr().String()
+			f, err := os.OpenFile(lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { f.Close() })
+			if err := filelock.TryExclusive(f); err != nil {
+				t.Fatal(err)
+			}
+			saved := lockRetryPause
+			t.Cleanup(func() { lockRetryPause = saved })
+			lockRetryPause = func() {}
+			freeAfter(t, taken, 1, func() { t.Error("a second daemon waited for the port") })
+		}, 0, "another aiq daemon"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			useDataDir(t)
+			defer releaseInstanceLock()
+			defer func(loops func(*Server), wait func()) { startLoops, waitWithoutHTTP = loops, wait }(startLoops, waitWithoutHTTP)
+			loops := 0
+			startLoops = func(*Server) { loops++ }
+			waitWithoutHTTP = func() {}
+			serveStops(t)
+			cfg := config.Default()
+			c.setup(t, cfg)
+			err := New(cfg, nil, log.New(io.Discard, "", 0)).Run()
+			if c.err == "" && err != nil || c.err != "" && (err == nil || !strings.Contains(err.Error(), c.err)) {
+				t.Errorf("Run returned %v, want %q", err, c.err)
+			}
+			if loops != c.loops {
+				t.Errorf("the loops started %d times, want %d", loops, c.loops)
+			}
+		})
+	}
+}
+
+// holdPort holds a loopback port of the test's own until the test ends.
+func holdPort(t *testing.T) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	return ln
 }
 
 func TestRunStopsBesideAnOlderDaemonWithoutTakingTheLock(t *testing.T) {

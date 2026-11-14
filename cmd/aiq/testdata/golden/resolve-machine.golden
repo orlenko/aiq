@@ -1,0 +1,17 @@
+dir <root>/work/demo: error: 2 live sessions in ~/work/demo; name one:
+  aiq convo 019c0000-0000-7000-8000-000000000001   (or --pane %4)   codex/b
+  aiq convo c0ffee02-0000-4000-8000-000000000002   (or --pane %5)   claude
+dir <root>/work/other: provider codex, path <root>/codex/sessions/2025/09/10/rollout-2025-09-10T10-00-00-019c0000-0000-7000-8000-000000000006.jsonl, account "codex/e", pane "", stale false, id ""
+dir <root>: provider claude, path <root>/claude/projects/<root as a project>/c0ffee04-0000-4000-8000-000000000004.jsonl, account "", pane "", stale false, id ""
+dir <root>/elsewhere: error: no live agent session in ~/elsewhere; aiq resume --print lists its sessions, aiq convo <session-id> reads one
+pane %4: provider codex, path <root>/codex/sessions/2025/09/10/rollout-2025-09-10T10-00-00-019c0000-0000-7000-8000-000000000001.jsonl, account "codex/b", pane "%4", stale false, id ""
+pane %7: error: pane %7 runs codex, not an agent session aiq can find; aiq convo <session-id> reads one by id
+pane %8: error: pane %8 runs codex, not an agent session aiq can find; aiq convo <session-id> reads one by id
+id c0ffee01-0000-4000-8000-000000000001: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee01-0000-4000-8000-000000000001.jsonl, account "", pane "", stale true, id "c0ffee01-0000-4000-8000-000000000001"
+id c0ffee02-0000-4000-8000-000000000002: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee02-0000-4000-8000-000000000002.jsonl, account "", pane "", stale false, id "c0ffee02-0000-4000-8000-000000000002"
+stale x1: false
+stale x2: true
+stale x3: true
+stale x4: true
+stale x5: false
+stale x8: true

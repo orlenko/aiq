@@ -74,7 +74,7 @@ func TestAsksInDir(t *testing.T) {
 		{"/w/alpha", "/", true},
 		{"/", "/w/alpha", true},
 	} {
-		if got := asksInDir(tc.ws, tc.dir); got != tc.want {
+		if got := asksInDir(tc.ws, tc.dir, asksRealPath); got != tc.want {
 			t.Errorf("asksInDir(%q, %q) = %v", tc.ws, tc.dir, got)
 		}
 	}
@@ -107,7 +107,7 @@ func TestAsksListRender(t *testing.T) {
 		{ID: 3, State: state.AskProbablyDone, Workspace: "/w/alpha", Provider: "claude", RaisedAt: now.Unix(), FirstQuote: "Run the example check.", StateReason: "reply"},
 		{ID: 4, State: state.AskDismissed, Workspace: "/w/alpha", Provider: "claude", RaisedAt: now.Unix(), FirstQuote: "Old example."},
 	}
-	out := renderAsksList(items, nil, st, true, false, now)
+	out := renderAsksList(items, nil, st, true, false, now, asksCmd)
 	if strings.Contains(out, "\x1b") {
 		t.Fatalf("escape reached the list: %q", out)
 	}
@@ -118,7 +118,7 @@ func TestAsksListRender(t *testing.T) {
 	if strings.Contains(out, "Run the example check") || !strings.Contains(out, "1 probably done, 1 closed or dismissed") {
 		t.Fatalf("settled items should only be counted without --all:\n%s", out)
 	}
-	all := renderAsksList(items, nil, st, true, true, now)
+	all := renderAsksList(items, nil, st, true, true, now, asksCmd)
 	if !strings.Contains(all, "\nProbably done\n") || !strings.Contains(all, "(reply)") || !strings.Contains(all, "Old example.") {
 		t.Fatalf("--all should show settled items:\n%s", all)
 	}
@@ -141,7 +141,7 @@ func TestAsksStatusLineSaysWhetherToTrustTheList(t *testing.T) {
 		{state.AsksStatus{PassAt: now.Unix(), Waiting: 3}, true, "Reading: 3 texts waiting"},
 		{state.AsksStatus{PassAt: now.Unix(), Watched: 1}, true, "Nothing open. Watching 1"},
 	} {
-		if got := asksStatusLine(tc.st, tc.keyOK, 0, now); !strings.HasPrefix(got, tc.want) {
+		if got := asksStatusLine(tc.st, tc.keyOK, 0, now, asksCmd); !strings.HasPrefix(got, tc.want) {
 			t.Errorf("%+v: %q, want prefix %q", tc.st, got, tc.want)
 		}
 	}
@@ -258,10 +258,10 @@ func TestAsksInDirThroughALink(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	if !asksInDir(real, link) || !asksInDir(real, filepath.Join(link, "sub")) || !asksInDir(link, real) {
+	if !asksInDir(real, link, asksRealPath) || !asksInDir(real, filepath.Join(link, "sub"), asksRealPath) || !asksInDir(link, real, asksRealPath) {
 		t.Fatal("a link and its target must match")
 	}
-	if asksInDir(filepath.Join(root, "other"), link) {
+	if asksInDir(filepath.Join(root, "other"), link, asksRealPath) {
 		t.Fatal("an unrelated directory matched")
 	}
 }
@@ -279,7 +279,7 @@ func TestAsksBackoffReadsAsFailing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if line := asksStatusLine(st, true, 0, now); !strings.HasPrefix(line, "Failing since") || !strings.Contains(line, "Next try") {
+	if line := asksStatusLine(st, true, 0, now, asksCmd); !strings.HasPrefix(line, "Failing since") || !strings.Contains(line, "Next try") {
 		t.Fatal(line)
 	}
 	if err := reg.SetAsksStatus(state.AsksStatus{PassAt: now.Unix()}); err != nil {

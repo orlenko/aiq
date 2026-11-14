@@ -87,6 +87,8 @@ type testDaemon struct {
 	mu        sync.Mutex
 	navSrv    *http.Server
 	statusSrv *http.Server
+	navLn     net.Listener
+	statusLn  net.Listener
 }
 
 // startDaemon runs a daemon on the current data directory until the test stops it.
@@ -102,13 +104,14 @@ func startDaemon(t *testing.T, navigator bool) *testDaemon {
 	t.Cleanup(func() { st.Close() })
 	d := &testDaemon{t: t, listen: cfg.Daemon.Listen, log: &lockedBuffer{}, stop: make(chan struct{}), done: make(chan error, 1)}
 	d.s = New(cfg, &pool.Pool{Cfg: cfg, St: st}, log.New(d.log, "", 0))
+	d.s.navLifecycle = &navLifecycleDeps{hostname: func() (string, error) { return "invented-host", nil }}
 
 	loops, status, nav := startLoops, serveStatus, serveNav
 	ready, navReady := make(chan struct{}), make(chan struct{})
 	startLoops = func(*Server) {}
 	serveStatus = func(srv *http.Server, ln net.Listener) error {
 		d.mu.Lock()
-		d.statusSrv = srv
+		d.statusSrv, d.statusLn = srv, ln
 		d.mu.Unlock()
 		go srv.Serve(ln)
 		close(ready)
@@ -118,7 +121,7 @@ func startDaemon(t *testing.T, navigator bool) *testDaemon {
 	}
 	serveNav = func(srv *http.Server, ln net.Listener) error {
 		d.mu.Lock()
-		d.navSrv = srv
+		d.navSrv, d.navLn = srv, ln
 		d.mu.Unlock()
 		close(navReady)
 		return srv.Serve(ln)
@@ -161,9 +164,9 @@ func (d *testDaemon) stopNavigator() {
 	}
 	srv.Close()
 	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(d.log.String(), "navigator not served: serving it") {
+	for d.s.navigatorPort() != 0 {
 		if time.Now().After(deadline) {
-			d.t.Fatal("the navigator's end was not logged")
+			d.t.Fatal("the navigator's retirement was not published")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -281,7 +284,7 @@ func checkIdentity(t *testing.T, d *testDaemon) {
 	if body != "ok\n" || resp.Header.Get(identityHeader) != Identity() || len(resp.Header.Values(identityHeader)) != 1 {
 		t.Errorf("/healthz: %q, %s %q", body, identityHeader, resp.Header.Values(identityHeader))
 	}
-	want := fmt.Sprintf("pid=%d; start=%d; nav=0", os.Getpid(), d.s.started.Unix())
+	want := fmt.Sprintf("pid=%d; start=%d; nav=1", os.Getpid(), d.s.started.Unix())
 	if got := resp.Header.Get(navHeader); got != want {
 		t.Errorf("%s is %q, want %q", navHeader, got, want)
 	}
@@ -366,12 +369,12 @@ func TestNavigatorServesNothingYetOnItsOwnPort(t *testing.T) {
 // The navigator's handler keeps the status page's checks, so a page on another
 // site, a rebound name or another machine gets nothing from it.
 func TestNavigatorHandlerIsLocalOnly(t *testing.T) {
-	h := navigatorHandler()
+	h := New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler()
 	for _, c := range []struct {
 		name, peer, host string
 		want             int
 	}{
-		{"a loopback request", "127.0.0.1:50000", "127.0.0.1:50001", http.StatusNotFound},
+		{"a loopback request", "127.0.0.1:50000", "127.0.0.1:50001", http.StatusOK},
 		{"a rebound name", "127.0.0.1:50000", "evil.example:50001", http.StatusForbidden},
 		{"a network peer", "192.0.2.5:50000", "127.0.0.1:50001", http.StatusForbidden},
 	} {
@@ -421,16 +424,17 @@ func TestANavigatorFailureLeavesTheDaemonServing(t *testing.T) {
 func TestTheStatusPageStoppingMarksTheNavigatorFailed(t *testing.T) {
 	useDataDir(t)
 	d := startDaemon(t, true)
-	d.stopNavigator() // so only the status page's end writes the file below
-	if err := os.WriteFile(navTokenPath(), []byte("on 1 2 3 x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// Stop status while its captured navigator is live. An obsolete callback
+	// cannot repair arbitrary later file edits by impersonating a newer owner.
 	close(d.stop)
 	if err := <-d.done; err == nil {
 		t.Error("Run returned no error")
 	}
 	releaseInstanceLock()
 	wantNavState(t, d.s, navFailed)
+	if d.s.navigatorPort() != 0 {
+		t.Error("status termination retained navigator exposure")
+	}
 }
 
 func TestACorruptPortListFailsClosed(t *testing.T) {
@@ -443,7 +447,7 @@ func TestACorruptPortListFailsClosed(t *testing.T) {
 	if _, ok := d.daemonObject()["navigator_port"]; ok {
 		t.Error("/api/state names a navigator port")
 	}
-	if l := d.log.String(); !strings.Contains(l, "remove or fix "+navPortsPath()) {
+	if l := d.log.String(); !strings.Contains(l, "remove or fix ui-ports") || strings.Contains(l, navPortsPath()) {
 		t.Errorf("the log does not say what to do: %s", l)
 	}
 	checkIdentity(t, d)
@@ -765,13 +769,29 @@ func TestRefusedAndFailedStartsSayWhyInTheTokenFile(t *testing.T) {
 	defer taken.Close()
 	cfg.Daemon.Listen = taken.Addr().String()
 	s = New(cfg, nil, log.New(io.Discard, "", 0))
+	// While the status port is held, the daemon supervises and serves no navigator.
+	waits := freeAfter(t, taken, 1, func() {
+		wantNavState(t, s, navFailed)
+		if _, err := os.Lstat(navPortsPath()); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a start that could not serve drew a navigator port: %v", err)
+		}
+	})
+	// Once the port is free, the navigator is served beside the status page.
+	defer func(saved func(*http.Server, net.Listener) error) { serveStatus = saved }(serveStatus)
+	serveStatus = func(_ *http.Server, ln net.Listener) error {
+		if line := navFile(t); !strings.HasPrefix(line, navOn+" ") {
+			t.Errorf("the navigator is not served beside the status page: ui-token starts %q", strings.Fields(line + " ")[0])
+		}
+		ln.Close()
+		return errors.New("stopped by the test")
+	}
 	if err := s.Run(); err == nil {
 		t.Fatal("Run returned no error")
 	}
-	wantNavState(t, s, navFailed)
-	if _, err := os.Lstat(navPortsPath()); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a start that could not serve drew a navigator port: %v", err)
+	if *waits != 1 {
+		t.Errorf("%d waits for the port, want 1", *waits)
 	}
+	wantNavState(t, s, navFailed)
 }
 
 // fakeListener stands in for a navigator bind.
@@ -862,7 +882,7 @@ func distinctPorts(ports []navPort) bool {
 	return true
 }
 
-// A daemon restarting over a taken status port, with the navigator off, says nothing
+// A daemon waiting for a taken status port, with the navigator off, says nothing
 // about the navigator, but still leaves no earlier start's line behind.
 func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 	useDataDir(t)
@@ -881,6 +901,8 @@ func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 	cfg.Daemon.Listen = taken.Addr().String()
 	logged := &lockedBuffer{}
 	s := New(cfg, nil, log.New(logged, "", 0))
+	freeAfter(t, taken, 1, func() { wantNavState(t, s, navFailed) })
+	serveStops(t)
 	if err := s.Run(); err == nil {
 		t.Fatal("Run returned no error")
 	}
@@ -893,7 +915,7 @@ func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 // The navigator's server bounds a request that is slow to arrive: a request that
 // declares a body and never sends it loses its connection at the read deadline.
 func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
-	srv := statusServer(navigatorHandler())
+	srv := statusServer(New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler())
 	srv.ReadTimeout = 300 * time.Millisecond
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -917,9 +939,10 @@ func TestTheNavigatorClosesARequestThatNeverArrives(t *testing.T) {
 	}
 }
 
-// OPTIONS * is the navigator handler's to answer, not the server's.
+// OPTIONS * is the navigator handler's to answer, not the server's: the gate refuses
+// its target, with the navigator's headers.
 func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
-	srv := statusServer(navigatorHandler())
+	srv := statusServer(New(config.Default(), nil, log.New(io.Discard, "", 0)).navigatorHandler())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -938,7 +961,7 @@ func TestTheNavigatorHandlesOptionsStar(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound || resp.Header.Get("X-Frame-Options") != "DENY" {
+	if resp.StatusCode != http.StatusBadRequest || resp.Header.Get("X-Frame-Options") != "DENY" || resp.Header.Get("X-Aiq-Build") == "" {
 		t.Errorf("OPTIONS *: %d %v", resp.StatusCode, resp.Header)
 	}
 }

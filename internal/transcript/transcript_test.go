@@ -10,12 +10,16 @@ import (
 
 func writeLines(t *testing.T, path string, lines ...string) {
 	t.Helper()
+	if err := writeLinesErr(path, lines...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeLinesErr(path string, lines ...string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
 func claudeFixture(cwd string) []string {

@@ -3,6 +3,7 @@ package transcript
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
 // ErrBudget is what a list's parse returns when the list's time ran out
@@ -19,7 +22,7 @@ var ErrBudget = errors.New("transcript: out of time for the list")
 // ErrUnreadable marks a transcript whose parse panicked. ParseFile returns
 // it wrapped with the path, so a caller can leave the file out, say so, and
 // not try it again until it changes.
-var ErrUnreadable = errors.New("transcript could not be read")
+var ErrUnreadable = diagnostic.Base(diagnostic.Unreadable)
 
 // errNoSession is a parse that found no session of its own: a Codex
 // subagent's rollout, or a file with no id.
@@ -29,6 +32,12 @@ var errNoSession = errors.New("transcript: no session")
 type Candidate struct {
 	Provider string // "claude", "codex" or "agy"
 	Path     string
+	// Root and Account are set by ByID: the root the file was found under,
+	// and that root's label in Roots.Labels.
+	Root, Account string
+	// Directory is an unambiguous external workspace association, used only
+	// when a transcript (currently Antigravity) does not record its own cwd.
+	Directory string
 }
 
 // Discovery finds the transcripts of a directory: Claude by project directory,
@@ -39,6 +48,13 @@ type Discovery interface {
 	Candidates(ctx context.Context, dir string) ([]Candidate, error)
 	// CodexNames maps Codex thread ids to the names given with /rename.
 	CodexNames(ctx context.Context) map[string]string
+	// ByID lists the files that may hold the session id of provider, under
+	// every root in Roots order: Claude's <id>.jsonl in each project
+	// directory, Codex's rollouts named for it, Antigravity's brain/<id>.
+	// id has been checked by FindByID.
+	ByID(ctx context.Context, provider, id string) ([]Candidate, error)
+	// Written is the package's Written, from this source.
+	Written(ctx context.Context, provider, dir string, since time.Time) []string
 }
 
 // DirectWalk is the Discovery that reads the roots each time it is asked.
@@ -56,6 +72,31 @@ func (w directWalk) Candidates(ctx context.Context, dir string) ([]Candidate, er
 
 func (w directWalk) CodexNames(ctx context.Context) map[string]string {
 	return codexNames(w.r.CodexIndex)
+}
+
+func (w directWalk) ByID(ctx context.Context, provider, id string) ([]Candidate, error) {
+	switch provider {
+	case "claude":
+		return claudeByID(ctx, w.r, id), ctx.Err()
+	case "codex":
+		var out []Candidate
+		name := "-" + id + ".jsonl"
+		for _, root := range w.r.CodexSessions {
+			filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+				if ctx.Err() != nil {
+					return filepath.SkipAll
+				}
+				if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), "rollout-") && strings.HasSuffix(d.Name(), name) {
+					out = append(out, Candidate{Provider: "codex", Path: p, Root: root, Account: w.r.Labels[root]})
+				}
+				return nil
+			})
+		}
+		return out, ctx.Err()
+	case "agy":
+		return agyByID(w.r, id), ctx.Err()
+	}
+	return nil, nil
 }
 
 // Summary is what a list row shows of a session, without its turns.
@@ -103,7 +144,10 @@ type ListResult struct {
 // its value dropped. parse runs on up to 8 goroutines at once. The list's
 // time is ctx's deadline.
 func ListWith(ctx context.Context, src Discovery, dir string, parse func(ctx context.Context, path string) (Summary, error)) (ListResult, error) {
-	dir = canonical(dir)
+	return listWith(ctx, src, canonical(dir), parse, true)
+}
+
+func listWith(ctx context.Context, src Discovery, dir string, parse func(ctx context.Context, path string) (Summary, error), scoped bool) (ListResult, error) {
 	var res ListResult
 	cands, err := src.Candidates(ctx, dir)
 	if err != nil {
@@ -125,8 +169,11 @@ func ListWith(ctx context.Context, src Discovery, dir string, parse func(ctx con
 		if errs[i] = err; err != nil || s.Provider != cands[i].Provider {
 			return
 		}
-		if s.Cwd != "" && canonical(s.Cwd) != dir {
+		if scoped && s.Cwd != "" && canonical(s.Cwd) != dir {
 			return // an encoded project name shared by two directories
+		}
+		if !scoped && s.Cwd == "" {
+			s.Cwd = cands[i].Directory
 		}
 		rows[i] = &s
 	})
@@ -170,14 +217,52 @@ func ListWith(ctx context.Context, src Discovery, dir string, parse func(ctx con
 	return res, nil
 }
 
+// A navigator list's bounds: its time, and the rows it returns.
+const (
+	ListBudget = 3 * time.Second
+	ListRows   = 500
+)
+
+// ListDirs lists dirs one after another, as ListWith does, within
+// ListBudget and ListRows: the rows newest first, and Partial when time ran
+// out, a directory was not reached or rows were left out.
+func ListDirs(ctx context.Context, src Discovery, dirs []string, parse func(ctx context.Context, path string) (Summary, error)) (ListResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, ListBudget)
+	defer cancel()
+	var res ListResult
+	for _, dir := range dirs {
+		if ctx.Err() != nil || len(res.Rows) >= ListRows {
+			res.Partial = true
+			break
+		}
+		r, err := ListWith(ctx, src, dir, parse)
+		if err != nil {
+			return res, err
+		}
+		res.Rows = append(res.Rows, r.Rows...)
+		res.Scanned += r.Scanned
+		res.Of += r.Of
+		res.Partial = res.Partial || r.Partial
+		res.Unreadable = append(res.Unreadable, r.Unreadable...)
+	}
+	sort.SliceStable(res.Rows, func(i, j int) bool { return res.Rows[i].Updated.After(res.Rows[j].Updated) })
+	if len(res.Rows) > ListRows {
+		res.Rows, res.Partial = res.Rows[:ListRows], true
+	}
+	return res, nil
+}
+
 // recovered runs parse on path, and answers ErrUnreadable for a parse that
 // panics, as ParseFile does, so a parse that does not recover cannot take the
 // list down.
 func recovered(ctx context.Context, parse func(ctx context.Context, path string) (Summary, error), path string) (s Summary, err error) {
 	defer func() {
-		if recover() != nil {
-			s, err = Summary{}, &unreadableError{path}
+		if value := recover(); value != nil {
+			origin := capturePanic(value)
+			s, err = Summary{}, &unreadableError{path: strings.Clone(path), origin: origin}
 		}
+		// Both ListWith and FindByID reduce this result after it returns.
+		diagnostic.Note(ctx, PanicOrigin(err))
 	}()
 	return parse(ctx, path)
 }
@@ -240,19 +325,23 @@ func ParseSummary(ctx context.Context, path string) (Summary, error) {
 // ParseFile parses the transcript at path with the parser its path calls for.
 // A parse that panics returns ErrUnreadable rather than taking down the
 // caller; the panic's value, which may quote the transcript, is dropped.
-// That covers the callers that parse through ParseFile, the list walk among
-// them. The daemon's readers and aiq convo's parse of the session it shows
-// still call the parsers directly. Nothing is cached.
+// That covers callers that parse through ParseFile, including the list walk
+// and aiq convo's new global-ID targets. Its local/pane targets and the
+// daemon's existing readers still call the parsers directly. Nothing is cached.
 func ParseFile(path string) (s *Session, err error) {
 	defer func() {
-		if recover() != nil {
-			s, err = nil, &unreadableError{path}
+		if value := recover(); value != nil {
+			origin := capturePanic(value)
+			s, err = nil, &unreadableError{path: strings.Clone(path), origin: origin}
 		}
 	}()
 	return (*parser.Load())(path)
 }
 
-type unreadableError struct{ path string }
+type unreadableError struct {
+	path   string
+	origin diagnostic.Origin
+}
 
 // Error quotes the path, which is a file's name and may hold any byte.
 func (e *unreadableError) Error() string        { return ErrUnreadable.Error() + ": " + strconv.Quote(e.path) }

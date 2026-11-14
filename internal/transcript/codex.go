@@ -10,12 +10,18 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/orlenko/aiq/internal/diagnostic"
 )
 
 // codexFiles lists the rollouts whose session_meta names dir and that were
 // written at or after since (any time when since is zero), until ctx ends.
 // Only the first line of each file is read here.
 func codexFiles(ctx context.Context, roots []string, dir string, since time.Time) []Candidate {
+	return codexFilesWithMeta(ctx, roots, dir, since, codexMeta)
+}
+
+func codexFilesWithMeta(ctx context.Context, roots []string, dir string, since time.Time, head func(string) (codexPayload, bool)) []Candidate {
 	var all []string
 	for _, root := range roots {
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -36,6 +42,7 @@ func codexFiles(ctx context.Context, roots []string, dir string, since time.Time
 			return nil
 		})
 	}
+	var faults diagnostic.Holder
 	match := make([]bool, len(all))
 	parallel(len(all), func(i int) {
 		if ctx.Err() != nil {
@@ -43,14 +50,20 @@ func codexFiles(ctx context.Context, roots []string, dir string, since time.Time
 		}
 		// A head that makes the decoder panic leaves that rollout out, and
 		// the worker carries on.
-		defer func() { recover() }()
-		meta, ok := codexMeta(all[i])
+		defer func() {
+			if value := recover(); value != nil {
+				origin := capturePanic(value)
+				faults.Note(origin)
+			}
+		}()
+		meta, ok := head(all[i])
 		match[i] = ok && canonical(meta.Cwd) == dir
 	})
+	diagnostic.Note(ctx, faults.Origin())
 	var out []Candidate
 	for i, p := range all {
 		if match[i] {
-			out = append(out, Candidate{"codex", p})
+			out = append(out, Candidate{Provider: "codex", Path: p})
 		}
 	}
 	return out
@@ -134,6 +147,10 @@ func ParseCodex(path string) (*Session, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseCodexReader(path, f)
+}
+
+func parseCodexReader(path string, f io.ReadSeeker) (*Session, error) {
 	// Older CLIs log each prompt twice: as a response item and as a
 	// user_message event. The event is the typed text alone, so it wins
 	// when present.

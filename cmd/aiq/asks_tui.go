@@ -60,11 +60,12 @@ func asksWorkspace(l state.Lease) string {
 	return l.Cwd
 }
 
+// asksLiveLeases keeps the long leases on host whose process alive says runs.
 // No transcript path or quoted text participates in navigation or session switches.
-func asksLiveLeases(all []state.Lease) []state.Lease {
+func asksLiveLeases(all []state.Lease, host string, alive func(pid int) bool) []state.Lease {
 	var out []state.Lease
 	for _, l := range all {
-		if l.Mode == state.ModeLong && l.Hostname == hostname() && proc.Alive(l.PID) {
+		if l.Mode == state.ModeLong && l.Hostname == host && alive(l.PID) {
 			out = append(out, l)
 		}
 	}
@@ -92,7 +93,7 @@ func asksLoad(reg, leases *state.Store, closed bool, now time.Time) (s asksSnaps
 	if err != nil {
 		return s, err
 	}
-	s.leases, s.keyOK = asksLiveLeases(all), asksKey() != ""
+	s.leases, s.keyOK = asksLiveLeases(all, hostname(), proc.Alive), asksKey() != ""
 	s.workspaces, err = asksWorkspaceNames(leases)
 	if err != nil {
 		return s, err
@@ -204,14 +205,14 @@ func (b *asksScreen) shownItems() []state.Ask {
 	if !b.filtered {
 		return b.snapshot.items
 	}
-	return asksFilter(b.snapshot.items, b.here)
+	return asksFilter(b.snapshot.items, b.here, asksRealPath)
 }
 
 func (b *asksScreen) shownMoved() []state.Ask {
 	if !b.filtered {
 		return b.snapshot.moved
 	}
-	return asksFilter(b.snapshot.moved, b.here)
+	return asksFilter(b.snapshot.moved, b.here, asksRealPath)
 }
 
 // asksStartFiltered opens the app on this directory's items when it holds a long session,
@@ -225,7 +226,7 @@ func asksStartFiltered(leases *state.Store, dir string, all bool) bool {
 		return false
 	}
 	for _, name := range names {
-		if asksInDir(name, dir) {
+		if asksInDir(name, dir, asksRealPath) {
 			return true
 		}
 	}
@@ -301,16 +302,22 @@ func (b *asksScreen) workspaceName(ws string) string {
 // asksLinks finds [text](http...) in a quote, so a collapsed quote shows only the text.
 var asksLinks = regexp.MustCompile(`\[([^\]\n]+)\]\(https?://[^)\s]+\)`)
 
+// Shared paint preparation only; copying uses the original sanitized wording.
+func asksQuotePaintText(quote string, expanded bool) string {
+	text := strings.TrimSpace(sanitize(quote))
+	if text == "" || expanded {
+		return text
+	}
+	return asksLinks.ReplaceAllString(text, "$1")
+}
+
 // asksQuoteRows renders a quote as Markdown, wrapped in full. The text is cleaned first, so
 // the only escapes in the result are the renderer's own. base opens every row, which keeps a
 // band unbroken through the renderer's resets.
 func (b *asksScreen) asksQuoteRows(quote string, expanded bool, width int, base string) []string {
-	text := strings.TrimSpace(sanitize(quote))
+	text := asksQuotePaintText(quote, expanded)
 	if text == "" {
 		return nil
-	}
-	if !expanded {
-		text = asksLinks.ReplaceAllString(text, "$1")
 	}
 	saved := pal
 	if b.noColor {
@@ -592,7 +599,7 @@ func (b *asksScreen) header(now time.Time) []asksRow {
 	for _, a := range b.snapshot.items {
 		if a.State == state.AskOpen {
 			total++
-			if !asksInDir(a.Workspace, b.here) {
+			if !asksInDir(a.Workspace, b.here, asksRealPath) {
 				hidden++
 			}
 		}
@@ -612,7 +619,7 @@ func (b *asksScreen) header(now time.Time) []asksRow {
 	}
 	head := []asksRow{segs(tabs...)}
 	// Line 2: the status. A problem takes the warning style, and starts with what is wrong.
-	status := asksStatusLine(b.snapshot.status, b.snapshot.keyOK, open, now)
+	status := asksStatusLine(b.snapshot.status, b.snapshot.keyOK, open, now, asksCmd)
 	if !b.loaded {
 		status = "Loading asks…"
 	} else if b.stale {
@@ -1369,7 +1376,7 @@ func runAsksScreen(reg, leases *state.Store, in, out *os.File, mouse bool) error
 			dirty = true
 		case <-tick.C:
 			now := time.Now()
-			stamp := asksStatusLine(b.snapshot.status, b.snapshot.keyOK, len(b.shownItems()), now)
+			stamp := asksStatusLine(b.snapshot.status, b.snapshot.keyOK, len(b.shownItems()), now, asksCmd)
 			for _, a := range b.shownItems() {
 				stamp += fmtAge(max(now.Sub(time.Unix(a.RaisedAt, 0)), 0)) + ";"
 			}

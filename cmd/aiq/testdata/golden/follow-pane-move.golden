@@ -1,0 +1,114 @@
+=== width 52, colour and marks false
+--- the first session
+claude opus-5 · claude/a · ~/work/demo · session c0ffee07 · pane %9
+
+▌ you · 2025-09-08
+tidy the imports
+
+▌ claude · 14s
+Tidied.
+--- the pane moves
+
+── moved to codex/b · session 019a0000 · 11:32 ──
+(1 earlier turn not shown)
+
+▌ you · 2025-09-08
+close the stale one
+
+▌ codex · 2s · 1 tool
+Closed #41.
+--- the new session goes on
+
+▌ you · 2025-09-08
+and the duplicate
+
+▌ codex · 2s · 1 tool
+Closed #42 as a duplicate of #40.
+[pending false]
+=== width 52, colour and marks true
+--- the first session
+\e[0m\e[1;7;38;5;110m aiq convo \e[0m \e[38;5;246mclaude opus-5 · claude/a · ~/work/demo · session c0ffee07 · pane %9\e[0m \e[0m
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-08                                  \e[0m
+\e[48;5;236m\e[1mtidy the imports                                    \e[0m
+\e[48;5;236m                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 14s\e[0m\e[48;5;235m                                      \e[0m
+Tidied.
+--- the pane moves
+
+\e[0m\e[1m\e[38;5;180m MOVED TO CODEX/B · SESSION 019A0000 · 11:32 \e[0m\e[1m\e[38;5;180m━━━━━━━\e[0m\e[0m
+\e[38;5;246m(1 earlier turn not shown)\e[0m
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-08                                  \e[0m
+\e[48;5;236m\e[1mclose the stale one                                 \e[0m
+\e[48;5;236m                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● codex · 2s · 1 tool\e[0m\e[48;5;235m                               \e[0m
+Closed #41.
+--- the new session goes on
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-08                                  \e[0m
+\e[48;5;236m\e[1mand the duplicate                                   \e[0m
+\e[48;5;236m                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● codex · 2s · 1 tool\e[0m\e[48;5;235m                               \e[0m
+Closed #42 as a duplicate of #40.
+[pending false]
+=== width 110, colour and marks false
+--- the first session
+claude opus-5 · claude/a · ~/work/demo · session c0ffee07 · pane %9
+
+▌ you · 2025-09-08
+tidy the imports
+
+▌ claude · 14s
+Tidied.
+--- the pane moves
+
+── moved to codex/b · session 019a0000 · 11:32 ──
+(1 earlier turn not shown)
+
+▌ you · 2025-09-08
+close the stale one
+
+▌ codex · 2s · 1 tool
+Closed #41.
+--- the new session goes on
+
+▌ you · 2025-09-08
+and the duplicate
+
+▌ codex · 2s · 1 tool
+Closed #42 as a duplicate of #40.
+[pending false]
+=== width 110, colour and marks true
+--- the first session
+\e[0m\e[1;7;38;5;110m aiq convo \e[0m \e[38;5;246mclaude opus-5 · claude/a · ~/work/demo · session c0ffee07 · pane %9\e[0m \e[0m
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-08                                                                                            \e[0m
+\e[48;5;236m\e[1mtidy the imports                                                                                              \e[0m
+\e[48;5;236m                                                                                                              \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 14s\e[0m\e[48;5;235m                                                                                                \e[0m
+Tidied.
+--- the pane moves
+
+\e[0m\e[1m\e[38;5;180m MOVED TO CODEX/B · SESSION 019A0000 · 11:32 \e[0m\e[1m\e[38;5;180m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m\e[0m
+\e[38;5;246m(1 earlier turn not shown)\e[0m
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-08                                                                                            \e[0m
+\e[48;5;236m\e[1mclose the stale one                                                                                           \e[0m
+\e[48;5;236m                                                                                                              \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● codex · 2s · 1 tool\e[0m\e[48;5;235m                                                                                         \e[0m
+Closed #41.
+--- the new session goes on
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-08                                                                                            \e[0m
+\e[48;5;236m\e[1mand the duplicate                                                                                             \e[0m
+\e[48;5;236m                                                                                                              \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● codex · 2s · 1 tool\e[0m\e[48;5;235m                                                                                         \e[0m
+Closed #42 as a duplicate of #40.
+[pending false]

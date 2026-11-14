@@ -1,0 +1,104 @@
+=== width 52, colour and marks false
+--- prompt and a tool call
+claude opus-5 · claude/a · ~/work/demo · session c0ffee05 · pane %7
+
+▌ you · 2025-09-06
+publish the release notes
+
+▌ claude · 14:00:14
+Checking the draft.
+--- the answer written, the file not quiet
+  · Uploading the notes.
+[pending true]
+--- the file quiet
+
+▌ claude · 56s · 2 tools
+Published. The notes are at **docs/release.md**:
+
+- what changed
+- how to upgrade
+[pending false]
+--- a new prompt
+
+▌ you · 2025-09-06
+thanks
+[pending false]
+=== width 52, colour and marks true
+--- prompt and a tool call
+\e[0m\e[1;7;38;5;110m aiq convo \e[0m \e[38;5;246mclaude opus-5 · claude/a · ~/work/demo · session c0ffee05 · pane %7\e[0m \e[0m
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-06                                  \e[0m
+\e[48;5;236m\e[1mpublish the release notes                           \e[0m
+\e[48;5;236m                                                    \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 14:00:14\e[0m\e[48;5;235m                                 \e[0m
+Checking the draft.
+--- the answer written, the file not quiet
+\e[2m  · Uploading the notes.\e[0m
+[pending true]
+--- the file quiet
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 56s · 2 tools\e[0m\e[48;5;235m                            \e[0m
+Published. The notes are at \e[1m**docs/release.md**\e[0m:
+
+- what changed
+- how to upgrade
+[pending false]
+--- a new prompt
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-06                                  \e[0m
+\e[48;5;236m\e[1mthanks                                              \e[0m
+\e[48;5;236m                                                    \e[0m
+[pending false]
+=== width 110, colour and marks false
+--- prompt and a tool call
+claude opus-5 · claude/a · ~/work/demo · session c0ffee05 · pane %7
+
+▌ you · 2025-09-06
+publish the release notes
+
+▌ claude · 14:00:14
+Checking the draft.
+--- the answer written, the file not quiet
+  · Uploading the notes.
+[pending true]
+--- the file quiet
+
+▌ claude · 56s · 2 tools
+Published. The notes are at **docs/release.md**:
+
+- what changed
+- how to upgrade
+[pending false]
+--- a new prompt
+
+▌ you · 2025-09-06
+thanks
+[pending false]
+=== width 110, colour and marks true
+--- prompt and a tool call
+\e[0m\e[1;7;38;5;110m aiq convo \e[0m \e[38;5;246mclaude opus-5 · claude/a · ~/work/demo · session c0ffee05 · pane %7\e[0m \e[0m
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-06                                                                                            \e[0m
+\e[48;5;236m\e[1mpublish the release notes                                                                                     \e[0m
+\e[48;5;236m                                                                                                              \e[0m
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 14:00:14\e[0m\e[48;5;235m                                                                                           \e[0m
+Checking the draft.
+--- the answer written, the file not quiet
+\e[2m  · Uploading the notes.\e[0m
+[pending true]
+--- the file quiet
+
+\e[0m\e[48;5;235m\e[1;32m● claude · 56s · 2 tools\e[0m\e[48;5;235m                                                                                      \e[0m
+Published. The notes are at \e[1m**docs/release.md**\e[0m:
+
+- what changed
+- how to upgrade
+[pending false]
+--- a new prompt
+
+\e]133;A\e\\\e[48;5;236m\e[1;36m▌ you · 2025-09-06                                                                                            \e[0m
+\e[48;5;236m\e[1mthanks                                                                                                        \e[0m
+\e[48;5;236m                                                                                                              \e[0m
+[pending false]

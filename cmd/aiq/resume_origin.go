@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -80,11 +79,12 @@ func matchOrigins(sessions []transcript.Session, launches []state.Launch, canon 
 	return out
 }
 
-// loadOrigins reads the launches that could explain sessions in dir.
-func (a *app) loadOrigins(dir string, sessions []transcript.Session) map[string]origin {
+// loadOrigins reads from st the launches on host that could explain sessions
+// in dir; pwd is the shell's spelling of the working directory, if any.
+func loadOrigins(st *state.Store, host, pwd, dir string, sessions []transcript.Session) map[string]origin {
 	cwds := map[string]bool{dir: true, canonicalDir(dir): true}
-	if wd := os.Getenv("PWD"); wd != "" && canonicalDir(wd) == canonicalDir(dir) {
-		cwds[filepath.Clean(wd)] = true
+	if pwd != "" && canonicalDir(pwd) == canonicalDir(dir) {
+		cwds[filepath.Clean(pwd)] = true
 	}
 	var dirs, ids []string
 	for c := range cwds {
@@ -97,7 +97,7 @@ func (a *app) loadOrigins(dir string, sessions []transcript.Session) map[string]
 	// SQLite caps bound parameters; ask in chunks.
 	for len(ids) > 0 || dirs != nil {
 		n := min(len(ids), 400)
-		chunk, err := a.st.ListLaunches(hostname(), dirs, ids[:n])
+		chunk, err := st.ListLaunches(host, dirs, ids[:n])
 		if err != nil {
 			return nil
 		}

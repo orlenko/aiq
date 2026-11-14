@@ -1,0 +1,1 @@
+:root{font-family:system-ui,sans-serif;color-scheme:light dark}body{margin:0}.nav-auth{max-width:58rem;margin:2rem auto;padding:1rem;overflow-wrap:anywhere}.nav-auth button{font:inherit;padding:.6rem 1rem}.nav-auth :focus-visible{outline:3px solid currentColor;outline-offset:3px}#nav-auth-storage:empty{display:none}#nav-auth-limit{font-size:.9rem}button[hidden]{display:none}
