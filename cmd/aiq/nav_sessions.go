@@ -30,6 +30,7 @@ type navSessionsDeps struct {
 	source      transcript.Discovery
 	summary     func(context.Context, string) (transcript.Summary, error)
 	listContext func(context.Context) (context.Context, context.CancelFunc)
+	activity    func(context.Context, navListQuery, []transcript.Summary, *navListRun) ([]navSessionActivity, navActivitySummary, error)
 }
 
 type navSessionsHandler struct {
@@ -269,8 +270,29 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 	result.Rows, eligible = nil, nil
 	body := navSessionsBody{Dir: q.dir, RootsSearched: append([]string{}, h.roots...), Partial: partial,
 		Scanned: result.Scanned, Of: result.Of, UnreadableCount: len(result.Unreadable), Sessions: make([]navSessionRow, 0, len(selected))}
-	for _, row := range selected {
-		body.Sessions = append(body.Sessions, navSessionDTO(row))
+	var activity []navSessionActivity
+	if h.deps.activity != nil {
+		var err error
+		activity, body.Activity, err = h.deps.activity(parent, q, selected, run)
+		if err != nil {
+			if errors.Is(err, errNavAuxTooLarge) {
+				return navListError(503, "list_too_large")
+			}
+			if parent.Err() != nil {
+				return navListError(503, "request_cancelled")
+			}
+			return navListError(500, "internal_error")
+		}
+		if len(activity) != len(selected) {
+			return navListError(500, "internal_error")
+		}
+	}
+	for i, row := range selected {
+		dto := navSessionDTO(row)
+		if activity != nil {
+			dto.Activity = activity[i]
+		}
+		body.Sessions = append(body.Sessions, dto)
 	}
 	clear(selected)
 	if h.limits.arrayEntries > 0 && int64(len(body.RootsSearched))+int64(len(body.Sessions)) > h.limits.arrayEntries {
@@ -291,30 +313,32 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 }
 
 type navSessionsBody struct {
-	Dir             string          `json:"dir"`
-	RootsSearched   []string        `json:"roots_searched"`
-	Partial         bool            `json:"partial"`
-	Scanned         int             `json:"scanned"`
-	Of              int             `json:"of"`
-	UnreadableCount int             `json:"unreadable_count"`
-	Sessions        []navSessionRow `json:"sessions"`
+	Dir             string             `json:"dir"`
+	RootsSearched   []string           `json:"roots_searched"`
+	Partial         bool               `json:"partial"`
+	Scanned         int                `json:"scanned"`
+	Of              int                `json:"of"`
+	UnreadableCount int                `json:"unreadable_count"`
+	Sessions        []navSessionRow    `json:"sessions"`
+	Activity        navActivitySummary `json:"activity"`
 }
 
 type navSessionRow struct {
-	Provider string           `json:"provider"`
-	ID       string           `json:"id"`
-	Cwd      string           `json:"cwd"`
-	Label    string           `json:"label"`
-	Title    string           `json:"title"`
-	Model    string           `json:"model"`
-	Branch   string           `json:"branch"`
-	Started  string           `json:"started"`
-	Updated  string           `json:"updated"`
-	Turns    int              `json:"turns"`
-	Tools    int              `json:"tools"`
-	Worker   bool             `json:"worker"`
-	Bypass   bool             `json:"bypass"`
-	Commands []navListCommand `json:"commands"`
+	Provider string             `json:"provider"`
+	ID       string             `json:"id"`
+	Cwd      string             `json:"cwd"`
+	Label    string             `json:"label"`
+	Title    string             `json:"title"`
+	Model    string             `json:"model"`
+	Branch   string             `json:"branch"`
+	Started  string             `json:"started"`
+	Updated  string             `json:"updated"`
+	Turns    int                `json:"turns"`
+	Tools    int                `json:"tools"`
+	Worker   bool               `json:"worker"`
+	Bypass   bool               `json:"bypass"`
+	Commands []navListCommand   `json:"commands"`
+	Activity navSessionActivity `json:"activity"`
 }
 
 type navListCommand struct {
@@ -332,5 +356,5 @@ func navSessionDTO(s transcript.Summary) navSessionRow {
 	}
 	return navSessionRow{Provider: s.Provider, ID: s.ID, Cwd: s.Cwd, Label: s.Label, Title: s.Title, Model: s.Model, Branch: s.Branch,
 		Started: s.Started.UTC().Format(time.RFC3339Nano), Updated: s.Updated.UTC().Format(time.RFC3339Nano),
-		Turns: s.Turns, Tools: s.Tools, Worker: s.Worker, Bypass: s.Bypass, Commands: commands}
+		Turns: s.Turns, Tools: s.Tools, Worker: s.Worker, Bypass: s.Bypass, Commands: commands, Activity: navSessionActivity{Live: "unknown"}}
 }

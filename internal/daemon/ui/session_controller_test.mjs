@@ -1,6 +1,6 @@
 import test, {afterEach} from 'node:test';
 import assert from 'node:assert/strict';
-import {createSessionController,navigatorReadCommand,navigatorResumeCommand,navigatorLeaseCommand} from './session_controller.js';
+import {createSessionController,navigatorReadCommand,navigatorResumeCommand,navigatorLeaseCommand,navigatorLauncherResumeCommand} from './session_controller.js';
 import {createLongView} from './long_view.js';
 import {ids,scope,limits,query,row,sessions,detail} from './controller_values.mjs';
 
@@ -482,4 +482,18 @@ test('workspace unknown and malformed lease metadata cannot produce a command',a
   for(const extra of [{state:'unknown',current:null,lease:{...longValue().lease,live:'unknown'}},{lease:{...longValue().lease,id:'7\n'}},{workspace_known:false}]){
     const f=longFixture();await tick();f.longCalls[0].resolve(longValue('A',true,extra));await tick();byText(f,'Copy wrap-up command').click();byText(f,'Copy attach command').click();assert.deepEqual(f.copies,[]);f.clean();
   }
+});
+
+test('session activity labels keep unknown and recent distinct and expose only a fixed workspace link',async()=>{
+ const f=fixture({resumeCommands:true});f.mount();f.controller.loadSessions(query());
+ const activity={live:'live',pid:0,managed:true,workspace:'/fixture/work space',account:'Invented account',launcher:'fixture',pane:'%9',lease_id:'7',started:'123',drain:'waiting',drain_manual:true,continued:false};
+ const value=sessions('/fixture/A',[row('A',{provider:'claude',activity}),row('B',{activity:{...activity,live:'recent',managed:false,workspace:'',lease_id:'',started:''}})]);
+ value.activity={known:false,live:1,elsewhere:1,claude_open_known:false,observed:{ms:0,known:true}};
+ f.listCalls[0].resolve(value);await tick();
+ assert.ok(f.document.body.textContent.includes('Verified running · aiq long'));assert.ok(f.document.body.textContent.includes('Recent activity (not verified live)'));
+ assert.ok(f.document.body.textContent.includes('At least 1 verified managed sessions · 1 elsewhere · other managed state unknown'));
+ assert.ok(f.document.body.textContent.includes('waiting for an account · requested by you'));
+ byText(f,'Copy recorded launcher resume command').click();await tick();assert.equal(f.copies.at(-1),`aiq resume --launcher fixture ${ids.A}`);
+ for(const name of ['','-flag','fixture;echo','fixture\n','X',{},null])assert.equal(navigatorLauncherResumeCommand('claude',ids.A,name),null);
+ assert.equal(find(f,n=>has(n,'nav-controller-workspace'))[0].href,'/long?dir=%2Ffixture%2Fwork+space');f.clean();
 });
