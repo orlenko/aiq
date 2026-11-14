@@ -13,6 +13,7 @@ import (
 
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/proc"
+	"github.com/orlenko/aiq/internal/provider/claude"
 	"github.com/orlenko/aiq/internal/state"
 )
 
@@ -40,9 +41,16 @@ func TestAgyPollReplacesStaleQuotaAndPreservesMetadata(t *testing.T) {
 		cmd.Env = append(env, "AIQ_TEST_OUTPUT="+output)
 		return cmd
 	}}
+	// The agy poll keeps the status line's windows, rolled or not.
+	st.UpsertWindow(state.Window{AccountID: acc.ID, Key: "line", Kind: state.KindShort,
+		ResetsAt: now.Add(-time.Hour).Unix(), Source: "statusline", ObservedAt: now.Add(-2 * time.Hour).Unix()})
 	if err := p.pollOne(acc, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
+	if ws, _ := st.ListWindows(acc.ID); len(ws) != 2 {
+		t.Fatalf("agy poll windows: %+v", ws)
+	}
+	st.DeleteRolledWindows(acc.ID, "statusline", now.Unix())
 	u, _, _ := st.GetUsage(acc.ID)
 	if u.PollError != "" || u.Plan != "Google AI Pro" || u.ObservedAt < now.Unix() {
 		t.Fatalf("metadata: %+v", u)
@@ -168,5 +176,53 @@ func TestAgyPollGetsAtLeastASecond(t *testing.T) {
 	p.pollOne(acc, time.Second)
 	if i := slices.Index(got, "--print-timeout"); i < 0 || i+1 == len(got) || got[i+1] != "1s" {
 		t.Errorf("agy args %q, want --print-timeout 1s", got)
+	}
+}
+
+// The usage API leaves the five-hour window out while none is running, so the
+// status line's last session window goes once its reset time has passed. One
+// still running stays, even when the poll reports nothing.
+func TestClaudePollDropsRolledStatusLineWindows(t *testing.T) {
+	t.Setenv("AIQ_DATA_DIR", t.TempDir())
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	acc := state.Account{ID: "claude/acct-a", Provider: "claude", Name: "acct-a", Home: t.TempDir(), Enabled: true}
+	if err := st.AddAccount(acc); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	st.UpsertWindow(state.Window{AccountID: acc.ID, Key: "session", Kind: state.KindShort, UsedPct: 10,
+		ResetsAt: now.Add(-239 * time.Hour).Unix(), Source: "statusline", ObservedAt: now.Add(-240 * time.Hour).Unix()})
+	p := &Pool{Cfg: config.Default(), St: st}
+	u := &claude.Usage{Windows: []state.Window{{Key: "weekly", Kind: state.KindWeekly, UsedPct: 2, ObservedAt: now.Unix()}}}
+	if err := p.saveClaudeUsage(acc, u, now); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := st.ListWindows(acc.ID)
+	if len(ws) != 1 || ws[0].Key != "weekly" {
+		t.Fatalf("after the poll: %+v", ws)
+	}
+	st.UpsertWindow(state.Window{AccountID: acc.ID, Key: "session", Kind: state.KindShort, UsedPct: 97,
+		ResetsAt: now.Add(2 * time.Hour).Unix(), Source: "statusline", ObservedAt: now.Add(-30 * time.Second).Unix()})
+	if err := p.saveClaudeUsage(acc, u, now); err != nil {
+		t.Fatal(err)
+	}
+	if ws, _ := st.ListWindows(acc.ID); len(ws) != 2 {
+		t.Fatalf("a running status-line window went: %+v", ws)
+	}
+	// A good poll with no window running clears the poll's own windows,
+	// keeps the running status line's, and stores the rest of the reply.
+	st.SetUsageMeta(acc.ID, "pro", 0, "usage: HTTP 500", now.Add(-time.Hour))
+	if err := p.saveClaudeUsage(acc, &claude.Usage{Plan: "max", ResetCredits: 2}, now); err != nil {
+		t.Fatal(err)
+	}
+	if ws, _ := st.ListWindows(acc.ID); len(ws) != 1 || ws[0].Source != "statusline" {
+		t.Fatalf("after a poll with no windows: %+v", ws)
+	}
+	if got, _, _ := st.GetUsage(acc.ID); got.PollError != "" || got.Plan != "max" || got.ResetCredits != 2 || got.ObservedAt != now.Unix() {
+		t.Fatalf("usage after a poll with no windows: %+v", got)
 	}
 }
