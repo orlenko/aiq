@@ -55,6 +55,8 @@ export function createAppHost(document,options) {
   toolbar.append(dirLabel,apply,allLabel);
   const recentLabel=node("label","nav-directory-label","Recent directories"),recent=node("select","nav-recent-directories"),catalogStatus=node("p","nav-catalog-status");
   recentLabel.append(recent);toolbar.append(recentLabel,catalogStatus);
+  const allSessions=button("All Sessions","nav-all-sessions"),directoryTree=node("details","nav-directory-tree");
+  toolbar.append(allSessions);
   const controls=node("div","nav-controls"),searchLabel=node("label","nav-search-label","Search loaded results"),search=node("input","nav-search");search.type="search";search.autocomplete="off";searchLabel.append(search);
   const workersLabel=node("label","nav-toggle"),workers=node("input");workers.type="checkbox";workersLabel.append(workers,document.createTextNode(" Workers"));
   const marksLabel=node("label","nav-toggle"),marks=node("input");marks.type="checkbox";marksLabel.append(marks,document.createTextNode(" Markdown marks"));
@@ -63,14 +65,14 @@ export function createAppHost(document,options) {
   const themeLabel=node("label","nav-theme-label","Theme"),theme=node("select","nav-theme");for(const [value,label]of [["system","System"],["light","Light"],["dark","Dark"]]){const o=node("option","",label);o.value=value;theme.append(o);}themeLabel.append(theme);
   controls.append(searchLabel,workersLabel,marksLabel,windowLabel,themeLabel);
   const status=node("p","nav-app-status");status.setAttribute("role","status");status.setAttribute("aria-live","polite");
-  const note=node("p","nav-snapshot-note","Snapshot views · refresh to read changes. Live session state is not shown here yet.");
+  const note=node("p","nav-snapshot-note","Claude and Codex conversations update while visible. Scroll up to pause; End or Jump to newest resumes. Antigravity is a refreshing snapshot. Unverified live state stays unknown.");
   const placement=node("aside","nav-placement");placement.hidden=true;
   const copyFallback=node("aside","nav-copy-fallback");copyFallback.hidden=true;
   const content=node("div","nav-app-content");
   const helpDialog=node("dialog","nav-key-dialog"),closeHelp=button("Close keyboard help"),keyText=node("p","","Tab stays with your browser. In a list: j/k or arrows move, Home/End move to an edge, Enter opens. / searches loaded results; Esc clears search or goes back. In a focused conversation: n/p move between prompt headings.");
   const shortcutLabel=node("label","nav-toggle"),shortcutInput=node("input");shortcutInput.type="checkbox";shortcutInput.checked=true;shortcutLabel.append(shortcutInput,document.createTextNode(" Enable single-key shortcuts"));helpDialog.append(node("h2","","Keyboard help"),keyText,shortcutLabel,closeHelp);
   const helpButton=button("? Keyboard help","nav-key-help");header.append(helpButton);
-  shell.append(header,title,toolbar,controls,note,status,placement,copyFallback,content,helpDialog);
+  shell.append(header,title,toolbar,directoryTree,controls,note,status,placement,copyFallback,content,helpDialog);
   function alive(){if(!mounted||disposed||owners.get(root)!==owner||!root.isConnected)return false;try{return Boolean(isCurrent())&&!disposed&&owners.get(root)===owner;}catch{return false;}}
   function active(op){return alive()&&current===op&&!op.retired;}
   function listen(target,type,fn){const wrapped=e=>{if(alive())fn(e);};removes.push(()=>target.removeEventListener(type,wrapped));target.addEventListener(type,wrapped);}
@@ -115,14 +117,14 @@ export function createAppHost(document,options) {
     try{const marked=!replace||window.history.state?.aiqNavigator===1;window.history[replace?"replaceState":"pushState"]({aiqNavigator:marked?1:0},"",next);return alive();}
     catch{announce("The page address could not be updated.");return false;}
   }
-  function navigate(next,{replace=false,pop=false,focus=true,automatic=false}={}){
+  function navigate(next,{replace=false,pop=false,focus=true,automatic=false,reason=""}={}){
     let parsed;try{parsed=route(next);}catch{announce("Choose a navigator page and an absolute directory.");return;}
     if(!alive())return;if(!pop&&!navHistory(parsed.next,replace))return;
-    scopeReason=automatic?"most recent":"";render(parsed,focus);
+    scopeReason=automatic?(reason==="directory fallback"?"directory fallback":reason==="most recent found"?"most recent found":"most recent"):"";render(parsed,focus);
   }
   function selectionChanged(op,value){
     if(!active(op))return;
-    const next=address("/sessions/"+value.provider+"/"+value.id,currentAddress.dir);
+    const next=address("/sessions/"+value.provider+"/"+value.id,currentAddress.dir,currentAddress.all);
     const previous=selected(currentAddress);
     if(previous&&previous.provider===value.provider&&previous.id===value.id)return;
     if(currentAddress.anchor&&(!previous||previous.provider!==value.provider||previous.id!==value.id)){navigate(next);return;}
@@ -130,17 +132,31 @@ export function createAppHost(document,options) {
   }
   async function loadDirectories(op,parsed){
     try{
-      const envelope=await op.lease.read("directories",{});if(!active(op))return;
+      const envelope=await op.lease.read("directories",{catalog:true});if(!active(op))return;
       const value=captureDirectories(envelope.data,limits);if(!active(op))return;
       const fragment=document.createDocumentFragment(),placeholder=node("option","","Choose a recent directory");placeholder.value="";fragment.append(placeholder);
       for(const item of value.directories){const option=node("option","",item.path);option.value=item.path;fragment.append(option);}
       if(!active(op))return;recent.replaceChildren(fragment);recent.disabled=value.directories.length===0;
       recent.value=value.directories.some(item=>item.path===parsed.dir)?parsed.dir:"";
-      catalogStatus.textContent=value.directories.length?"Recent directories · launch metadata":"No recent launch directories. Enter an absolute directory.";
-      if(parsed.path==="/sessions"&&!parsed.dir&&!selected(parsed)&&!op.scopeTouched&&value.directories.length){
-        navigate(address("/sessions",value.directories[0].path),{replace:true,focus:false,automatic:true});
+      const full=value.source!=="launch metadata";
+      catalogStatus.textContent=full?`Directory catalog · ${value.scanned} of ${value.of} candidates scanned${value.partial?" · partial results":""}${value.metadata_known?"":" · launch metadata unavailable"}${value.unknown_directories?` · ${value.unknown_directories} sessions without a known directory`:""}`:
+        value.directories.length?"Recent directories · launch metadata":"No recent launch directories. Enter an absolute directory.";
+      const summary=node("summary","",`Known directories (${value.directories.length})`),list=node("ul","nav-directory-branches"),stack=[];
+      for(const item of value.directories.slice().sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)){
+        while(stack.length&&!item.path.startsWith(stack.at(-1).path==="/"?"/":stack.at(-1).path+"/"))stack.pop();
+        const li=node("li","nav-directory-branch"),link=node("a","",item.path),children=node("ul","nav-directory-branches");
+        li.classList.add("nav-directory-depth-"+Math.min(stack.length,4));
+        const next=address(parsed.path==="/asks"?"/asks":"/sessions",item.path);link.href=next;link.rel="noreferrer";
+        link.addEventListener("click",event=>{if(!active(op)||event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;event.preventDefault();op.scopeTouched=true;navigate(next);});
+        li.append(link);if(full)li.append(node("span","nav-directory-count",` · ${item.sessions} sessions found · ${item.workers} workers found`));
+        li.append(children);(stack.at(-1)?.children??list).append(li);stack.push({path:item.path,children});
       }
-    }catch{if(active(op)){recent.disabled=true;catalogStatus.textContent="Recent directories unavailable. Enter an absolute directory.";}}
+      if(!active(op))return;directoryTree.replaceChildren(summary,list);directoryTree.hidden=false;
+      const defaultDir=full?value.default_dir:value.directories[0]?.path;
+      if(parsed.path==="/sessions"&&!parsed.all&&!parsed.dir&&!selected(parsed)&&!op.scopeTouched&&defaultDir){
+        navigate(address("/sessions",defaultDir),{replace:true,focus:false,automatic:true,reason:full?(value.default_reason==="directory fallback"?"directory fallback":value.partial?"most recent found":value.default_reason):""});
+      }
+    }catch{if(active(op)){recent.disabled=true;catalogStatus.textContent="Directory catalog unavailable. Enter an absolute directory.";}}
   }
   async function place(op,value){
     if(!active(op))return;
@@ -170,7 +186,7 @@ export function createAppHost(document,options) {
     dirInput.value=parsed.dir||lastDirectory;allInput.checked=parsed.path==="/asks"&&parsed.all;dirInput.disabled=allInput.checked;
     allLabel.hidden=parsed.path!=="/asks";workersLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";marksLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";
     windowLabel.hidden=!selected(parsed);windowSelect.value=String(parsed.anchor?50:lastPrompts);
-    recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help";catalogStatus.textContent="";
+    recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help";catalogStatus.textContent="";directoryTree.replaceChildren();directoryTree.hidden=true;allSessions.hidden=parsed.path==="/asks"||parsed.path==="/help";
     title.textContent=parsed.path==="/asks"?"Asks":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
     if(parsed.path==="/sessions"&&scopeReason)title.textContent+=" · "+scopeReason;
     document.title=title.textContent+" — aiq";
@@ -189,7 +205,7 @@ export function createAppHost(document,options) {
         readingControls:true,readCommands:true,autoFollow:true,shortcutsEnabled:()=>shortcuts,
         detailQuery:{last:parsed.anchor?50:lastPrompts,markup:marks.checked,anchor:parsed.anchor},
         readSessions:(q,s)=>op.lease.read("sessions",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),readState:(q,s)=>op.lease.read("state",q,s),
-        onNewest:v=>{if(active(op))navigate(address("/sessions/"+v.provider+"/"+v.id,parsed.dir),{replace:true});},
+        onNewest:v=>{if(active(op))navigate(address("/sessions/"+v.provider+"/"+v.id,parsed.dir,parsed.all),{replace:true});},
         copyText:t=>copy(t,op),announce:announceCurrent,onSelection:v=>selectionChanged(op,v)});
     }
     if(!active(op)){op.controller.teardown();return;}
@@ -197,13 +213,14 @@ export function createAppHost(document,options) {
     if(!active(op)||!op.controller.mount()){try{op.controller.teardown();}catch{}return;}
     if(parsed.path==="/asks")op.controller.loadScope({mode:parsed.all?"all":"directory",dir:parsed.dir});
     else{
-      if(parsed.dir)op.controller.loadSessions({dir:parsed.dir,canonicalDir:parsed.dir,workers:workers.checked});
+      if(parsed.all)op.controller.loadSessions({dir:"",canonicalDir:"",workers:workers.checked,all:true});
+      else if(parsed.dir)op.controller.loadSessions({dir:parsed.dir,canonicalDir:parsed.dir,workers:workers.checked});
       const pick=selected(parsed);if(pick)op.controller.selectConversation(pick);
-      if(!pick&&!parsed.dir)announce("Choose an absolute directory to load sessions.");
+      if(!pick&&!parsed.dir&&!parsed.all)announce("Choose an absolute directory to load sessions.");
     }
     normalizeStatuses();if(focus&&active(op))title.focus({preventScroll:true});
   }
-  function goBack(){try{if(window.history.state?.aiqNavigator===1&&window.history.length>1){window.history.back();return;}}catch{}navigate(address("/sessions",currentAddress?.dir||lastDirectory),{replace:true});}
+  function goBack(){try{if(window.history.state?.aiqNavigator===1&&window.history.length>1){window.history.back();return;}}catch{}const all=Boolean(currentAddress?.all&&currentAddress.path.startsWith("/sessions"));navigate(address("/sessions",all?"":currentAddress?.dir||lastDirectory,all),{replace:true});}
   function keys(e){
     if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)||e.target.isContentEditable)return;
     if(e.key==="Escape"){e.preventDefault();if(helpDialog.open)helpDialog.close();else if(search.value){search.value="";filter();announce("Search cleared.");}else goBack();return;}
@@ -225,8 +242,9 @@ export function createAppHost(document,options) {
     listen(recent,"change",()=>{if(!recent.value)return;try{const dir=directory(recent.value);search.value="";navigate(address(currentAddress.path==="/asks"?"/asks":"/sessions",dir));}catch{announce("Choose an available directory.");}});
     for(const[path,a]of links)listen(a,"click",e=>{if(e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();search.value="";navigate(address(path,currentAddress?.dir||lastDirectory));});
     listen(allInput,"change",()=>{search.value="";navigate(address("/asks",allInput.checked?"":lastDirectory,allInput.checked));});
+    listen(allSessions,"click",()=>{if(current)current.scopeTouched=true;search.value="";navigate(address("/sessions","",true));});
     listen(search,"input",filter);listen(workers,"change",()=>render(currentAddress,false));listen(marks,"change",()=>render(currentAddress,false));
-    listen(windowSelect,"change",()=>{const value=windowSelect.value;if(!["50","100","500","all"].includes(value)){announce("Choose a conversation window.");return;}lastPrompts=value==="all"?"all":Number(value);navigate(address(currentAddress.path,currentAddress.dir),{replace:true,focus:false});});
+    listen(windowSelect,"change",()=>{const value=windowSelect.value;if(!["50","100","500","all"].includes(value)){announce("Choose a conversation window.");return;}lastPrompts=value==="all"?"all":Number(value);navigate(address(currentAddress.path,currentAddress.dir,currentAddress.all),{replace:true,focus:false});});
     listen(search,"keydown",e=>{if(e.key==="Escape"){e.preventDefault();search.value="";filter();announce("Search cleared.");}});
     listen(theme,"change",()=>{if(["system","light","dark"].includes(theme.value))document.documentElement.dataset.navTheme=theme.value;});
     listen(back,"click",goBack);listen(helpButton,"click",()=>helpDialog.showModal());listen(closeHelp,"click",()=>helpDialog.close());listen(shortcutInput,"change",()=>{shortcuts=shortcutInput.checked;});

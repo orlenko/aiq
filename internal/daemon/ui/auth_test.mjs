@@ -31,11 +31,11 @@ test("closed canonical fragment and nested Go-compatible encoding",()=>{
   assert.equal(parsed.next.next,next);assert.equal(parsed.code,code);
   assert.equal(fragment("").code,null);assert.equal(route("/asks?all=true").all,true);
   for(const raw of ["code="+code+"&code="+code,"%63ode="+code,"code="+code.slice(0,42)+"B","code="+code+"%3D","code="+code+"&next=%FF","code="+code+"&unknown=x",null,"x".repeat(8193)])assert.throws(()=>fragment(raw));
-  for(const value of ["http://foreign.invalid/","//foreign","/sessions/../asks","/sessions?dir=%2finvented","/asks?all=true&dir=%2Finvented","/sessions?all=true","/sessions?dir=%2Finvented&dir=%2Fother","/sessions?dir=%2Fa%00b","/sessions?dir=%2Fa%2F..%2Fb"])assert.throws(()=>route(value));
+  for(const value of ["http://foreign.invalid/","//foreign","/sessions/../asks","/sessions?dir=%2finvented","/asks?all=true&dir=%2Finvented","/sessions?all=1","/sessions?dir=%2Finvented&dir=%2Fother","/sessions?dir=%2Fa%00b","/sessions?dir=%2Fa%2F..%2Fb"])assert.throws(()=>route(value));
   assert(canonical32(code));assert(!canonical32(code.slice(0,42)+"B"));
 });
 test("shared literal route vectors match the Go page admission",()=>{
-  const rows=JSON.parse(readFileSync(new URL("./auth_route_vectors.json",import.meta.url),"utf8"));assert.equal(rows.length,21);
+  const rows=JSON.parse(readFileSync(new URL("./auth_route_vectors.json",import.meta.url),"utf8"));assert.equal(rows.length,26);
   for(const row of rows){let ok=true;try{route(row.route)}catch{ok=false}assert.equal(ok,row.ok,row.route);}
 });
 test("credential raw grammar refuses substitution, duplicates and BOM",()=>{
@@ -55,6 +55,13 @@ test("directory catalog uses the fixed proof-protected path and Sessions byte al
   const requests=[];const x=setup({fetcher:async(url,options)=>{requests.push({url,options});return options.method==='POST'?reply('{"credential":"'+bearer+'"}'):reply('{"source":"launch metadata","directories":[]}');}});
   assert.equal(await x.session.ready,true);assert.deepEqual(await x.session.directories({}),{data:{source:'launch metadata',directories:[]}});
   assert.equal(requests[1].url,base+'/api/nav/directories');assert.match(requests[1].options.headers.Authorization,/^AiqTab2 /);assert(!requests[1].options.headers.Authorization.includes(bearer));x.session.dispose();
+});
+test("full catalog and all-session readers use explicit proof-bound query scopes",async()=>{
+  const urls=[];const x=setup({fetcher:async(url,options)=>{urls.push(url);return options.method==='POST'?reply('{"credential":"'+bearer+'"}'):reply('{}');}});
+  assert.equal(await x.session.ready,true);await x.session.directories({catalog:true});await x.session.sessions({dir:'',all:true,workers:false});
+  assert.deepEqual(urls.slice(1),[base+'/api/nav/directories?catalog=1',base+'/api/nav/sessions?all=1&workers=0']);
+  for(const query of [{dir:'/A',all:true,workers:false},{dir:'',all:false,workers:false},{dir:'',all:'1',workers:false}])await assert.rejects(x.session.sessions(query));
+  await assert.rejects(x.session.directories({catalog:'1'}));assert.equal(urls.length,3);x.session.dispose();
 });
 test("cached state reader binds the selection in its authenticated fixed path",async()=>{
   const requests=[],query={provider:'claude',id:'00000001-0000-4000-8000-000000000001',selection:'A'.repeat(43)};

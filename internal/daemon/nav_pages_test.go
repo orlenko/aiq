@@ -84,7 +84,7 @@ func TestNavigatorSharedRouteVectors(t *testing.T) {
 		Route string `json:"route"`
 		OK    bool   `json:"ok"`
 	}
-	if json.Unmarshal(raw, &rows) != nil || len(rows) != 21 {
+	if json.Unmarshal(raw, &rows) != nil || len(rows) != 26 {
 		t.Fatal("route vector fixture incomplete")
 	}
 	for _, row := range rows {
@@ -156,7 +156,7 @@ func TestNavigatorAuthNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth fixtures failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "# pass 28") || !strings.Contains(string(out), "# fail 0") || !strings.Contains(string(out), "# skipped 0") {
+	if !strings.Contains(string(out), "# pass 29") || !strings.Contains(string(out), "# fail 0") || !strings.Contains(string(out), "# skipped 0") {
 		t.Fatalf("auth fixtures incomplete:\n%s", out)
 	}
 }

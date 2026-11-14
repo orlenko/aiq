@@ -15,9 +15,14 @@
  {"route":"/sessions?dir=%2Fa%2F..%2Fb","ok":false},
  {"route":"/sessions?dir=%2Fa%2F","ok":false},
  {"route":"/asks?all=true&dir=%2Finvented","ok":false},
- {"route":"/sessions?all=true","ok":false},
+ {"route":"/sessions?all=true","ok":true},
  {"route":"/sessions?","ok":false},
  {"route":"//foreign.invalid/","ok":false},
  {"route":"/sessions/../asks","ok":false},
- {"route":"/s%65ssions","ok":false}
+ {"route":"/s%65ssions","ok":false},
+ {"route":"/sessions/claude/00000001-0000-4000-8000-000000000001?all=true","ok":true},
+ {"route":"/sessions/claude/00000001-0000-4000-8000-000000000001?all=true&at=123","ok":true},
+ {"route":"/sessions?all=true&dir=%2Finvented","ok":false},
+ {"route":"/help?all=true","ok":false},
+ {"route":"/sessions?all=false","ok":true}
 ]

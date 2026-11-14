@@ -117,6 +117,7 @@ func (h *navSessionsHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 type navListQuery struct {
 	dir     string
 	workers bool
+	all     bool
 }
 
 func navListDecode(req *http.Request) (navListQuery, navListResponse, bool) {
@@ -152,12 +153,16 @@ func navListDecode(req *http.Request) (navListQuery, navListResponse, bool) {
 		return navListQuery{}, bad, false
 	}
 	for k, v := range values {
-		if (k != "dir" && k != "workers") || len(v) != 1 {
+		if (k != "dir" && k != "workers" && k != "all") || len(v) != 1 {
 			return navListQuery{}, bad, false
 		}
 	}
 	dir := values.Get("dir")
-	if len(dir) == 0 || len(dir) > 4096 || !utf8.ValidString(dir) || strings.IndexByte(dir, 0) >= 0 || !filepath.IsAbs(dir) {
+	all := values.Get("all") == "1"
+	if value, exists := values["all"]; exists && value[0] != "1" {
+		return navListQuery{}, bad, false
+	}
+	if all && values.Has("dir") || !all && (len(dir) == 0 || len(dir) > 4096 || !utf8.ValidString(dir) || strings.IndexByte(dir, 0) >= 0 || !filepath.IsAbs(dir)) {
 		return navListQuery{}, bad, false
 	}
 	workers := false
@@ -167,7 +172,10 @@ func navListDecode(req *http.Request) (navListQuery, navListResponse, bool) {
 		}
 		workers = v[0] == "1"
 	}
-	return navListQuery{dir: filepath.Clean(dir), workers: workers}, navListResponse{}, true
+	if !all {
+		dir = filepath.Clean(dir)
+	}
+	return navListQuery{dir: dir, workers: workers, all: all}, navListResponse{}, true
 }
 
 func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out navListResponse) {
@@ -214,7 +222,13 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 			return navListError(http.StatusServiceUnavailable, "list_too_large")
 		}
 	}
-	result, err := transcript.ListWith(child, run, q.dir, run.summary)
+	var result transcript.ListResult
+	var err error
+	if q.all {
+		result, err = transcript.ListAll(child, run, run.summary)
+	} else {
+		result, err = transcript.ListWith(child, run, q.dir, run.summary)
+	}
 	diagnostic.Note(child, transcript.PanicOrigin(err))
 	// Dependency seams latched actual interruption, including empty discovery
 	// and names. Later child expiry must not rewrite completed collection.
@@ -247,7 +261,7 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 		}
 		return a.Provider < b.Provider
 	})
-	partial := result.Partial || flags.partial || len(eligible) > transcript.ListRows
+	partial := result.Partial || flags.partial || q.all && flags.unavailable || len(eligible) > transcript.ListRows
 	selected := make([]transcript.Summary, min(len(eligible), transcript.ListRows))
 	copy(selected, eligible)
 	clear(result.Rows)

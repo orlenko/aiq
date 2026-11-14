@@ -22,6 +22,22 @@ function row(more={}) {
 const sessions = (rows=[]) => ({dir:'/x',roots_searched:['r'],partial:true,scanned:3,of:7,unreadable_count:2,sessions:rows});
 const reject = fn => assert.throws(fn,{name:'TypeError',message:'could not capture navigator response'});
 
+test('full directory catalog owns knownness, default scope and complete text admission',()=>{
+  const value={source:'session index',partial:true,metadata_known:false,scanned:1,of:1,unreadable_count:0,unknown_directories:0,
+    default_dir:'/A',default_reason:'directory fallback',directories:[{path:'/A',updated_ms:0,updated_known:false,sessions:1,workers:0}]};
+  const out=captureDirectories(value,limits(1,35));assert.deepEqual(out,value);assert.notEqual(out.directories,value.directories);
+  reject(()=>captureDirectories(value,limits(1,34)));reject(()=>captureDirectories(value,limits(0,35)));
+  for(const change of [{partial:false},{metadata_known:true},{default_dir:'/missing'},{default_reason:'server command'},{scanned:2}])reject(()=>captureDirectories({...value,...change},limits()));
+  const bad=structuredClone(value);bad.directories[0].updated_ms=1;reject(()=>captureDirectories(bad,limits()));
+  let accessed=0;Object.defineProperty(value,'default_dir',{get(){accessed++;return '/A';}});reject(()=>captureDirectories(value,limits()));assert.equal(accessed,0);
+});
+test('all-session capture requires explicit all intent and an empty echoed directory',()=>{
+  const value={...sessions([row()]),dir:''};
+  assert.equal(captureSessions(value,'',limits(),true).sessions.length,1);
+  reject(()=>captureSessions(value,'',limits()));reject(()=>captureSessions(value,'/x',limits(),true));
+  reject(()=>captureSessions(sessions([row()]),'',limits(),true));
+});
+
 test('delta replaces the complete changing tail and re-admits the retained prefix',()=>{
   const base=detail();base.selection='A'.repeat(43);base.tail_turn=1;base.tail_key='a'.repeat(64);base.from_turn=0;
   const second=structuredClone(base.messages[0]);second.id='2'.padStart(32,'0');second.turn=1;second.groups[0].ordinal=1;base.messages.push(second);

@@ -48,7 +48,7 @@ func (f *navFactory) prepareDirectories(r *http.Request, release *func()) (out n
 			out = navListError(500, "internal_error")
 		}
 	}()
-	if r.URL == nil || r.URL.Path != "/api/nav/directories" || r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.Fragment != "" || r.URL.Opaque != "" || r.RequestURI != "" && r.RequestURI != "/api/nav/directories" || r.Method != http.MethodGet {
+	if r.URL == nil || r.URL.Path != "/api/nav/directories" || r.URL.RawPath != "" || r.URL.RawQuery != "" && r.URL.RawQuery != "catalog=1" || r.URL.ForceQuery || r.URL.Fragment != "" || r.URL.Opaque != "" || r.RequestURI != "" && r.RequestURI != r.URL.RequestURI() || r.Method != http.MethodGet {
 		return navListError(400, "invalid_request")
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), f.policy.timeout)
@@ -58,6 +58,9 @@ func (f *navFactory) prepareDirectories(r *http.Request, release *func()) (out n
 		*release = func() { <-f.sessionSlots }
 	case <-ctx.Done():
 		return navListError(503, "list_busy")
+	}
+	if r.URL.RawQuery == "catalog=1" {
+		return f.prepareDirectoryCatalog(ctx)
 	}
 	if f.input.metadata == nil {
 		return navListError(503, "directories_unavailable")
