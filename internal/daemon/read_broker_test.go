@@ -25,7 +25,7 @@ func TestNavigatorReadBrokerNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("broker fixtures failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"tests 9", "pass 9", "fail 0", "cancelled 0", "skipped 0"} {
+	for _, want := range []string{"tests 10", "pass 10", "fail 0", "cancelled 0", "skipped 0"} {
 		if !regexp.MustCompile(`(?m)^# ` + want + `$`).Match(out) {
 			t.Fatalf("broker fixtures incomplete:\n%s", out)
 		}

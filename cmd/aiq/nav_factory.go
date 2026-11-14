@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
@@ -47,6 +49,8 @@ func navProductionPolicy() navFactoryPolicy {
 type navFactoryInput struct {
 	roots    func(context.Context) (transcript.Roots, error)
 	metadata func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error)
+	witness  func(context.Context, string, state.NavigatorLease) (bool, error)
+	observe  func(context.Context, terminal.ObservationTarget) terminal.Observation
 	asksPath string
 	now      func() time.Time
 	location *time.Location
@@ -54,6 +58,7 @@ type navFactoryInput struct {
 type navFactoryBundle struct {
 	sessions, detail, asks, turn http.Handler
 	roots                        transcript.Roots
+	selections                   *navSelections
 }
 type navFactory struct {
 	mu                                  sync.Mutex
@@ -85,6 +90,16 @@ func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) 
 		sessionSlots: make(chan struct{}, p.sessions.builders), detailSlots: make(chan struct{}, p.detail.requests), askSlots: make(chan struct{}, p.asks.requests)}
 	mux := navroute.NewMux()
 	if err := mux.Handle(navroute.Directories, http.HandlerFunc(f.directories)); err != nil {
+		return nil, err
+	}
+	if err := mux.Handle(navroute.ConversationState, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// State observes only an already-admitted selection. It must not refresh
+		// roots, start discovery, or wait for a concurrent bundle builder.
+		f.mu.Lock()
+		bundle := f.bundle
+		f.mu.Unlock()
+		f.serveConversationState(bundle, w, r)
+	})); err != nil {
 		return nil, err
 	}
 	for _, kind := range []navroute.Route{navroute.Sessions, navroute.Conversation, navroute.Asks, navroute.AskTurn} {
@@ -200,6 +215,10 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 		return previous, nil
 	}
 	index := transcript.NewIndex(roots)
+	selections, err := newNavSelections(f.cache, rand.Reader)
+	if err != nil {
+		return nil, err
+	}
 	sessions, err := newNavSessionsHandler(navSessionsDeps{roots: roots, source: index, summary: f.cache.Summary}, f.policy.sessions)
 	if err != nil {
 		return nil, err
@@ -209,6 +228,7 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 		return index.Find(ctx, p, id, f.cache.Summary)
 	}
 	detail, err := newNavDetailHandler(navDetailDeps{cache: f.cache, resolve: resolve, now: f.input.now, location: f.input.location, build: daemon.NavigatorBuild(), skippedNote: transcript.SkippedNote(), liveMark: "▌",
+		selection: selections.register,
 		facts: func(ctx context.Context, hit transcript.Hit, selected *transcript.Session) (navDetailFacts, error) {
 			current, snap, err := f.cache.Session(ctx, hit.Path)
 			if err != nil {
@@ -218,8 +238,19 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 				return navDetailFacts{}, errNavDetailChanged
 			}
 			quiet := f.input.now().Sub(time.Unix(0, snap.Mtime))
-			// Manual snapshots do not infer live/ended/moved from backend refs.
-			return navDetailFacts{hold: selected.Unfinished && quiet >= 0 && quiet < convoQuiet}, nil
+			aux, err := f.liveFacts(ctx, selected, true)
+			if err != nil {
+				return navDetailFacts{}, err
+			}
+			hold := selected.Unfinished && quiet >= 0 && quiet < convoQuiet
+			known := aux.observation != terminal.Unknown && selected.Provider != "agy"
+			identity := ""
+			if known {
+				identity = aux.context
+			}
+			return navDetailFacts{hold: hold, live: known && aux.observation == terminal.Running,
+				stale:      known && aux.observation == terminal.Ended && !hold && selected.Unfinished,
+				leaseKnown: known, leaseIdentity: identity, selectionContext: aux.context, accounts: aux.accounts}, nil
 		}}, f.policy.detail)
 	if err != nil {
 		return nil, err
@@ -267,7 +298,8 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &navFactoryBundle{sessions: sessions, detail: detail, asks: asks, turn: turn, roots: roots}, nil
+	bundle := &navFactoryBundle{sessions: sessions, detail: detail, asks: asks, turn: turn, roots: roots, selections: selections}
+	return bundle, nil
 }
 func navFactoryAlias(ctx context.Context, key string) (navAsksAlias, error) {
 	if err := ctx.Err(); err != nil {
@@ -295,7 +327,7 @@ func navProductionInputWithIdentity(identity func(context.Context) (string, erro
 	claude, codex, agyHome := paths.RealClaudeHome(), paths.RealCodexHome(), agy.AppDataDir(paths.RealAgyHome())
 	parents := []string{paths.ClaudeHomesDir(), paths.CodexHomesDir()}
 	return navFactoryInput{asksPath: filepath.Join(paths.DataDir(), asksDBName), now: time.Now, location: time.Local,
-		metadata: navProductionMetadata(paths.StateDB(), identity),
+		metadata: navProductionMetadata(paths.StateDB(), identity), witness: navProductionWitness(paths.StateDB()), observe: terminal.Observe,
 		roots: func(ctx context.Context) (transcript.Roots, error) {
 			r := transcript.Roots{ClaudeProjects: []string{filepath.Join(claude, "projects")}, CodexSessions: []string{filepath.Join(codex, "sessions")}, CodexIndex: []string{filepath.Join(codex, "session_index.jsonl")}, AgyAppData: []string{agyHome}}
 			for _, parent := range parents {
@@ -334,6 +366,22 @@ func navProductionInputWithIdentity(identity func(context.Context) (string, erro
 			}
 			return r, ctx.Err()
 		}}
+}
+
+func navProductionWitness(path string) func(context.Context, string, state.NavigatorLease) (bool, error) {
+	return func(ctx context.Context, host string, lease state.NavigatorLease) (match bool, err error) {
+		store, err := state.OpenReadOnly(path)
+		if err != nil {
+			return false, state.ErrNavigatorSnapshotUnavailable
+		}
+		defer func() {
+			if e := store.Close(); e != nil && err == nil {
+				match = false
+				err = state.ErrNavigatorSnapshotUnavailable
+			}
+		}()
+		return store.NavigatorLeaseMatches(ctx, host, lease)
+	}
 }
 
 func navProductionMetadata(path string, identity func(context.Context) (string, error)) func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {

@@ -36,7 +36,7 @@ func navDetailRetainedBytes(v *navDetailView) (int64, bool) {
 	e := &v.envelope
 	s := &e.Session
 	if !add(uint64(unsafe.Sizeof(*v))) || !add(uint64(cap(v.body))) ||
-		!text(v.fingerprint, e.Build, s.Provider, s.ID, s.Cwd, s.Title, s.Model, s.Branch) ||
+		!text(v.fingerprint, e.Build, e.Selection, s.Provider, s.ID, s.Cwd, s.Title, s.Model, s.Branch) ||
 		!array(cap(e.Messages), unsafe.Sizeof(navConversationMessage{})) {
 		return 0, false
 	}

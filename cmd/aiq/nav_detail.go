@@ -209,6 +209,9 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 		// The selected transcript already exists. Auxiliary facts failures
 		// cannot establish that it disappeared or exceeded a parser limit.
 		code := navDetailInternal
+		if errors.Is(err, errNavAuxTooLarge) {
+			code = navDetailViewLarge
+		}
 		if errors.Is(err, transcript.ErrPreparing) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			code = navDetailPreparing
 		}
@@ -222,7 +225,17 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 	if err != nil {
 		return h.failure(navDetailInternal, started)
 	}
-	o := navConversationOptions{provider: q.provider, id: q.id, last: q.last, all: q.all, anchor: q.anchor, markup: q.markup,
+	selection := ""
+	if h.deps.selection != nil {
+		selection, err = h.deps.selection(ctx, hit, s, snap, facts.selectionContext)
+		if failure, stopped := check(); stopped {
+			return failure
+		}
+		if err != nil {
+			return h.failure(navDetailErrorCode(err), started)
+		}
+	}
+	o := navConversationOptions{provider: q.provider, id: q.id, selection: selection, last: q.last, all: q.all, anchor: q.anchor, markup: q.markup,
 		now: h.deps.now(), location: h.deps.location, live: facts.live, hold: facts.hold, stale: facts.stale,
 		accounts: facts.accounts, skippedNote: h.deps.skippedNote, liveMark: h.deps.liveMark, bodyBytes: h.limits.bodyBytes,
 		arrayEntries: h.limits.arrayEntries, stringUnits: h.limits.stringUnits}
@@ -319,7 +332,7 @@ func (h *navDetailHandler) buildViewWithDiagnostics(worker *diagnostic.Holder, s
 	if window == nil {
 		return nil, transcript.ErrUnshowable
 	}
-	e := navDetailEnvelope{Build: h.deps.build, Session: window.Session, EarlierHidden: window.EarlierHidden,
+	e := navDetailEnvelope{Build: h.deps.build, Selection: o.selection, Session: window.Session, EarlierHidden: window.EarlierHidden,
 		LaterHidden: window.LaterHidden, WindowStart: window.WindowStart, Reset: window.Reset, Markup: window.Markup, Messages: window.Messages}
 	if err := navDetailAdmitStructure(ctx, &e, h.limits.arrayEntries, h.limits.stringUnits); err != nil {
 		return nil, err

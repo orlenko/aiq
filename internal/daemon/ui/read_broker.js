@@ -1,4 +1,4 @@
-const channels = Object.freeze({directories:[],sessions:["dir","workers"], conversation:["provider","id","last","markup","anchor","etag"], asks:["mode","dir"], placement:["askId"]});
+const channels = Object.freeze({directories:[],sessions:["dir","workers"], conversation:["provider","id","last","markup","anchor","etag"], state:["provider","id","selection"], asks:["mode","dir"], placement:["askId"]});
 const unavailable = () => new TypeError("Navigator request unavailable");
 function queryCopy(kind, query) {
   if (!query || typeof query !== "object" || Array.isArray(query)) throw unavailable();

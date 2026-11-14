@@ -8,6 +8,7 @@ import (
 	"hash"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -17,6 +18,10 @@ func navDetailOwnFacts(f navDetailFacts, count int) (navDetailFacts, error) {
 		return navDetailFacts{}, errNavConversationInvalid
 	}
 	f.leaseIdentity = strings.Clone(f.leaseIdentity)
+	if len(f.selectionContext) > 128 {
+		return navDetailFacts{}, errNavConversationInvalid
+	}
+	f.selectionContext = strings.Clone(f.selectionContext)
 	in := f.accounts
 	f.accounts = make([]convoAccountFact, min(count, len(in)))
 	for i := range f.accounts {
@@ -83,6 +88,16 @@ func navDetailContextKey(parent, ctx context.Context, s *transcript.Session, sna
 	}
 	if o.arrayEntries != 0 || o.stringUnits != 0 {
 		if err := frame.add("browser-structure-v1", strconv.FormatInt(o.arrayEntries, 10), strconv.FormatInt(o.stringUnits, 10)); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
+	if o.selection != "" {
+		if err := frame.add("selection-v1", o.selection); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
+	if f.live && s.Unfinished {
+		if err := frame.add("working-clock-v1", o.now.Format(time.RFC3339Nano)); err != nil {
 			return transcript.ViewKey{}, err
 		}
 	}

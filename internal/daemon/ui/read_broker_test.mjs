@@ -12,8 +12,17 @@ function fixture() {
   active++;max=Math.max(max,active);
   calls.push({query,signal,resolve:value=>{active--;resolve(value);},reject:()=>{active--;reject(Error("invented"));}});
  });
- return {calls,broker:createReadBroker({directories:read,sessions:read,conversation:read,asks:read,placement:read}),max:()=>max};
+ return {calls,broker:createReadBroker({directories:read,sessions:read,conversation:read,state:read,asks:read,placement:read}),max:()=>max};
 }
+test('state binds an owned selection and shares the physical cleanup slot',async()=>{
+ const f=fixture(),r=f.broker.route(),query={provider:detail.provider,id:detail.id,selection:'A'.repeat(43)};
+ const pending=caught(r.read('state',query));query.selection='mutated';await tick();
+ assert.equal(f.calls[0].query.selection,'A'.repeat(43));
+ const next=f.broker.route(),loaded=next.read('conversation',detail);await tick();
+ assert.equal(f.calls.length,1);assert.equal(f.calls[0].signal.aborted,true);
+ f.calls[0].resolve('retired');assert.deepEqual(await pending,{failed:true});await tick();
+ f.calls[1].resolve('detail');assert.equal(await loaded,'detail');assert.equal(f.max(),1);f.broker.close();
+});
 test("list and detail remain current and complete fairly",async()=>{
  const f=fixture(),r=f.broker.route();
  const a=r.read("sessions",list),b=r.read("conversation",detail);await tick();

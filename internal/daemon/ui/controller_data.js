@@ -1,6 +1,6 @@
 import {captureConversation} from "./feed_data.js";
 import {lineClassNames} from "./dom.js";
-import {directory,route,encodeForm} from "./auth_codec.js";
+import {canonical32,directory,route,encodeForm} from "./auth_codec.js";
 
 // Admission units describe consumed input, not encoded bytes or total heap.
 const fail = () => { throw new TypeError("could not capture navigator response"); };
@@ -109,10 +109,35 @@ export function captureSessions(data, expectedCanonicalDir, limits) {
 // Full header and paint/raw facts are captured once from the same caller graph.
 export function captureDetail(data, expectedScope, limits) {
   try {
-    const owned = capture(data, detail, credits(limits));
+    const budget=credits(limits),owned = capture(data, detail, budget);
+    const selection=Object.getOwnPropertyDescriptor(data,"selection");
+    if(selection){
+      require(Object.hasOwn(selection,"value"));
+      owned.selection=capture(selection.value,"str",budget);
+      require(owned.selection===""||canonical32(owned.selection));
+    }
     validTime(owned.session.started); validTime(owned.session.updated);
     const body = captureConversation(owned, expectedScope);
     // The existing feed validator intentionally returns an identity-only session.
-    return {...body, session:owned.session};
+    return {...body, session:owned.session,...(selection?{selection:owned.selection}:{})};
   } catch { fail(); }
+}
+
+const stateBase={build:"str",provider:"str",id:"str",selection:"str",match:"bool"};
+const stateReady={...stateBase,cached:"bool",cached_turns:"uint",cached_updated:time,
+  disk_changed:"bool",live:"str",working_known:"bool",working:"bool",elapsed_ms:"uint"};
+export function captureState(data,expectedScope,limits){
+  try{
+    const match=field(data,"match");require(typeof match==="boolean");
+    const out=capture(data,match?stateReady:{...stateBase,reason:"str"},credits(limits));
+    require(["claude","codex","agy"].includes(out.provider)&&uuid.test(out.id)&&canonical32(out.selection));
+    for(const key of ["provider","id","selection"])require(out[key]===field(expectedScope,key));
+    if(!match){require(out.reason==="selection_changed");return out;}
+    validTime(out.cached_updated);require(out.cached&&["unknown","live","ended"].includes(out.live));
+    require(out.working_known||!out.working&&out.elapsed_ms===0);
+    require(!out.working||out.working_known&&out.live==="live");
+    require(out.working||out.elapsed_ms===0);
+    require(out.provider!=="agy"||!out.working_known);
+    return out;
+  }catch{fail();}
 }

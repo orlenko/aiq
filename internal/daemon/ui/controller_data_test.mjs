@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {captureSessions, captureDetail, captureDirectories} from './controller_data.js';
+import {captureSessions, captureDetail, captureDirectories, captureState} from './controller_data.js';
 
 const id = '00000001-0000-4000-8000-000000000001';
 const scope = {provider:'agy', id};
@@ -21,6 +21,29 @@ function row(more={}) {
 }
 const sessions = (rows=[]) => ({dir:'/x',roots_searched:['r'],partial:true,scanned:3,of:7,unreadable_count:2,sessions:rows});
 const reject = fn => assert.throws(fn,{name:'TypeError',message:'could not capture navigator response'});
+
+test('detail selection is optional for old hosts, owned, canonical and charged',()=>{
+  const d=detail();d.selection='A'.repeat(43);
+  assert.equal(captureDetail(d,scope,limits(8,208)).selection,d.selection);
+  reject(()=>captureDetail(d,scope,limits(8,207)));
+  d.selection='A'.repeat(42)+'B';reject(()=>captureDetail(d,scope,limits()));
+  let accessed=0;Object.defineProperty(d,'selection',{get(){accessed++;return 'A'.repeat(43);}});
+  reject(()=>captureDetail(d,scope,limits()));assert.equal(accessed,0);
+});
+test('state belongs to exact retained selection and never publishes mismatch facts',()=>{
+  const selected={...scope,provider:'claude',selection:'A'.repeat(43)};
+  const base={build:'b',...selected,match:true,cached:true,cached_turns:2,cached_updated:{ms:0,known:true},disk_changed:true,
+    live:'live',working_known:true,working:true,elapsed_ms:1000};
+  assert.deepEqual(captureState(base,selected,limits()),base);
+  for(const mutation of [{selection:'B'.repeat(42)+'A'},{id:'00000002-0000-4000-8000-000000000002'},
+    {live:'unknown'},{working_known:false},{working:false},{elapsed_ms:-1},{cached:false},
+    {cached_updated:{ms:1,known:false}}])reject(()=>captureState({...base,...mutation},selected,limits()));
+  const mismatch={build:'b',...selected,match:false,reason:'selection_changed'};
+  const hostile={...mismatch};Object.defineProperty(hostile,'cached_turns',{get(){throw Error('unused');}});
+  assert.deepEqual(captureState(hostile,selected,limits()),mismatch);
+  const agy={...selected,provider:'agy'};reject(()=>captureState({...base,provider:'agy'},agy,limits()));
+  reject(()=>captureState(base,selected,limits(1000,1)));
+});
 
 test('directory catalog owns complete metadata before publication and rejects wrong scope shapes',()=>{
   const input={source:'launch metadata',directories:[{path:'/invented/A',updated_ms:20},{path:'/invented/B',updated_ms:10}]};

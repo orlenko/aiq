@@ -24,19 +24,21 @@ const (
 	Asks
 	AskTurn
 	Directories
+	ConversationState
 )
 
 var patterns = [...]string{
-	Unregistered: "unregistered",
-	Hello:        "GET /api/nav/hello",
-	Login:        "POST /api/nav/login",
-	Revoke:       "POST /api/nav/revoke",
-	Info:         "GET /api/nav/info",
-	Sessions:     "GET /api/nav/sessions",
-	Conversation: "GET /api/nav/sessions/{provider}/{id}",
-	Asks:         "GET /api/nav/asks",
-	AskTurn:      "GET /api/nav/asks/{id}/turn",
-	Directories:  "GET /api/nav/directories",
+	Unregistered:      "unregistered",
+	Hello:             "GET /api/nav/hello",
+	Login:             "POST /api/nav/login",
+	Revoke:            "POST /api/nav/revoke",
+	Info:              "GET /api/nav/info",
+	Sessions:          "GET /api/nav/sessions",
+	Conversation:      "GET /api/nav/sessions/{provider}/{id}",
+	Asks:              "GET /api/nav/asks",
+	AskTurn:           "GET /api/nav/asks/{id}/turn",
+	Directories:       "GET /api/nav/directories",
+	ConversationState: "GET /api/nav/sessions/{provider}/{id}/state",
 }
 
 func (route Route) Key() string {
