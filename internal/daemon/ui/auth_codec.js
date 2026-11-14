@@ -40,7 +40,7 @@ export function route(value = "/sessions") {
   if (!["/sessions","/asks","/","/help"].includes(path) && !detail) refused();
   const query = pairs(raw,["all","dir","at"]);
   if (Object.hasOwn(query,"dir")) directory(query.dir);
-  if (Object.hasOwn(query,"all") && (path !== "/asks" || !["true","false"].includes(query.all))) refused();
+  if (Object.hasOwn(query,"all") && (!["/asks","/sessions"].includes(path)&&!detail || !["true","false"].includes(query.all))) refused();
   if (query.all === "true" && Object.hasOwn(query,"dir")) refused();
   if (Object.hasOwn(query,"at") && (!detail || !/^[1-9][0-9]{0,12}$/.test(query.at))) refused();
   return Object.freeze({path, dir:query.dir ?? "", all:query.all === "true", anchor:Number(query.at ?? 0), next:value});

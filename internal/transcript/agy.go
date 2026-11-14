@@ -58,12 +58,23 @@ func agyConversations(ctx context.Context, appData, dir string) []string {
 // (canonical) to the ids of its conversations: those its typed prompts name,
 // in order, then its latest conversation.
 func agyWorkspaces(ctx context.Context, appData string) map[string][]string {
+	return agyWorkspaceMap(ctx, appData, false)
+}
+
+func agyAbsoluteWorkspaces(ctx context.Context, appData string) map[string][]string {
+	return agyWorkspaceMap(ctx, appData, true)
+}
+
+func agyWorkspaceMap(ctx context.Context, appData string, absoluteOnly bool) map[string][]string {
 	ids := map[string][]string{}
 	seen := map[string]bool{}
 	canon := map[string]string{}
 	// An id names a folder under brain/, so only a well-formed one counts: a
 	// path or a pattern would name some other file.
 	add := func(ws, id string) {
+		if absoluteOnly && !filepath.IsAbs(ws) {
+			return
+		}
 		dir, ok := canon[ws]
 		if !ok {
 			dir = canonical(ws)

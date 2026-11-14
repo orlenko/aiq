@@ -19,8 +19,15 @@ function own(value, key) {
 }
 function integer(v,min,max) { if (!Number.isSafeInteger(v) || v < min || v > max) bad(); return v; }
 function requestPath(kind, query) {
-  if(kind==="directories")return "/api/nav/directories";
+  if(kind==="directories"){
+    const catalog=Object.getOwnPropertyDescriptor(query??{},"catalog");
+    if(catalog&&(!Object.hasOwn(catalog,"value")||typeof catalog.value!=="boolean"))bad();
+    return "/api/nav/directories"+(catalog?.value?"?catalog=1":"");
+  }
   if (kind === "sessions") {
+    const all=Object.getOwnPropertyDescriptor(query,"all");
+    if(all&&(!Object.hasOwn(all,"value")||typeof all.value!=="boolean"))bad();
+    if(all?.value){const workers=own(query,"workers");if(own(query,"dir")!==""||typeof workers!=="boolean")bad();return "/api/nav/sessions?all=1&workers="+(workers?"1":"0");}
     const dir = directory(own(query,"dir")), workers = own(query,"workers");
     if (typeof workers !== "boolean") bad();
     return "/api/nav/sessions?dir="+encodeForm(dir)+"&workers="+(workers?"1":"0");

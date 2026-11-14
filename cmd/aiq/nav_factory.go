@@ -61,6 +61,7 @@ type navFactoryBundle struct {
 	sessions, detail, asks, turn http.Handler
 	roots                        transcript.Roots
 	selections                   *navSelections
+	discovery                    *transcript.Index
 }
 type navFactory struct {
 	mu                                  sync.Mutex
@@ -301,7 +302,7 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	bundle := &navFactoryBundle{sessions: sessions, detail: detail, asks: asks, turn: turn, roots: roots, selections: selections}
+	bundle := &navFactoryBundle{sessions: sessions, detail: detail, asks: asks, turn: turn, roots: roots, selections: selections, discovery: index}
 	return bundle, nil
 }
 func navFactoryAlias(ctx context.Context, key string) (navAsksAlias, error) {

@@ -44,9 +44,26 @@ const row = {provider:"str", id:"str", cwd:"str", label:"str", title:"str", mode
 const list = {dir:"str", roots_searched:["str"], partial:"bool", scanned:"uint", of:"uint",
   unreadable_count:"uint", sessions:[row]};
 const catalog={source:"str",directories:[{path:"str",updated_ms:"uint"}]};
+const fullCatalog={source:"str",partial:"bool",metadata_known:"bool",scanned:"uint",of:"uint",unreadable_count:"uint",unknown_directories:"uint",
+  default_dir:"str",default_reason:"str",directories:[{path:"str",updated_ms:"int",updated_known:"bool",sessions:"uint",workers:"uint"}]};
 
 export function captureDirectories(data,limits){
   try{
+    const source=field(data,"source");
+    if(source==="session index"||source==="session index and launch metadata"){
+      const out=capture(data,fullCatalog,credits(limits));
+      require(out.metadata_known===(source==="session index and launch metadata")&&out.scanned<=out.of);
+      require(out.partial||out.metadata_known&&out.unreadable_count===0&&out.unknown_directories===0);
+      const seen=new Set();let previous=null;
+      for(const item of out.directories){
+        directory(item.path);route("/sessions?dir="+encodeForm(item.path));require(!seen.has(item.path));seen.add(item.path);
+        require(item.updated_known||item.updated_ms===0);
+        if(previous){require(!item.updated_known||previous.updated_known);require(!item.updated_known||previous.updated_ms>=item.updated_ms);}
+        previous=item;
+      }
+      require(out.default_dir===""?out.default_reason==="":seen.has(out.default_dir)&&["most recent activity","directory fallback"].includes(out.default_reason));
+      return out;
+    }
     const out=capture(data,catalog,credits(limits));require(out.source==="launch metadata");
     const seen=new Set();let previous=null;
     for(const item of out.directories){
@@ -94,9 +111,9 @@ function validTime(value) {
 }
 
 // The host supplies the server-native canonical directory independently of data.
-export function captureSessions(data, expectedCanonicalDir, limits) {
+export function captureSessions(data, expectedCanonicalDir, limits, all=false) {
   try {
-    require(typeof expectedCanonicalDir === "string" && expectedCanonicalDir !== "");
+    require(typeof all==="boolean"&&typeof expectedCanonicalDir === "string" && (all?expectedCanonicalDir==="":expectedCanonicalDir !== ""));
     const out = capture(data, list, credits(limits));
     require(out.dir === expectedCanonicalDir);
     for (const item of out.sessions) {

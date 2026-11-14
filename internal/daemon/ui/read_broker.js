@@ -1,4 +1,4 @@
-const channels = Object.freeze({directories:[],sessions:["dir","workers"], conversation:["provider","id","last","markup","anchor","etag","fromTurn","fromKey"], state:["provider","id","selection"], asks:["mode","dir"], placement:["askId"]});
+const channels = Object.freeze({directories:["catalog"],sessions:["dir","workers","all"], conversation:["provider","id","last","markup","anchor","etag","fromTurn","fromKey"], state:["provider","id","selection"], asks:["mode","dir"], placement:["askId"]});
 const unavailable = () => new TypeError("Navigator request unavailable");
 function queryCopy(kind, query) {
   if (!query || typeof query !== "object" || Array.isArray(query)) throw unavailable();
@@ -8,6 +8,7 @@ function queryCopy(kind, query) {
     // Asks all-scope has no directory. The fixed reader validates semantics.
     if (!field && kind === "asks" && key === "dir") continue;
     if (!field && kind === "conversation" && ["etag","fromTurn","fromKey"].includes(key)) continue;
+    if(!field&&(kind==="directories"&&key==="catalog"||kind==="sessions"&&key==="all"))continue;
     if (!field || !Object.hasOwn(field,"value") || !["string","number","boolean"].includes(typeof field.value)) throw unavailable();
     copy[key] = field.value;
   }

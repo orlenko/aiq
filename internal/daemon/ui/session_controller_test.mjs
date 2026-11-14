@@ -63,6 +63,16 @@ function fixture(extra={}) {
 function rows(f){return find(f,n=>n.tagName==='button'&&!['Refresh sessions','Refresh conversation','Copy message'].includes(n.textContent));}
 function painted(f){return find(f,n=>has(n,'nav-md-line')).map(n=>n.textContent);}
 
+test('all-session intent is explicit, retained on refresh and retired by directory scope',async()=>{
+  const f=fixture();f.mount();f.controller.loadSessions({dir:'',canonicalDir:'',workers:false,all:true});
+  assert.deepEqual(f.listCalls[0].q,{dir:'',workers:false,all:true});
+  f.listCalls[0].resolve(sessions('',[row('A'),row('B')]));await tick();assert.equal(find(f,n=>has(n,'nav-controller-select')).length,2);
+  f.controller.refresh('list');assert.deepEqual(f.listCalls[1].q,{dir:'',workers:false,all:true});
+  f.controller.loadSessions(query('/fixture/limited'));f.listCalls[1].resolve(sessions('',[row('C')]));await tick();
+  assert(!find(f,n=>n.textContent===`agy · row C · ${ids.C}`).length);
+  assert.deepEqual(f.listCalls[2].q,{dir:'/fixture/limited',workers:false});
+});
+
 function followFixture(extra={}){
   const states=[];const f=fixture({autoFollow:true,readState:(q,signal)=>{const d=deferred();states.push({q,signal,...d});return d.promise;},...extra});
   f.states=states;f.mount();f.controller.selectConversation(scope('A'));

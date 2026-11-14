@@ -95,7 +95,7 @@ func navPageRoute(u *url.URL) bool {
 		if key == "dir" && (v == "" || len(v) > 4096 || !utf8.ValidString(v) || !path.IsAbs(v) || path.Clean(v) != v || strings.Contains(v, "\\") || strings.IndexFunc(v, func(r rune) bool { return r < 32 || r == 127 }) >= 0) {
 			return false
 		}
-		if key == "all" && (u.Path != "/asks" || v != "true" && v != "false") {
+		if key == "all" && (u.Path != "/asks" && u.Path != "/sessions" && !navPageDetail.MatchString(u.Path) || v != "true" && v != "false") {
 			return false
 		}
 	}

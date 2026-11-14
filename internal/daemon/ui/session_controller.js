@@ -189,7 +189,7 @@ export function createSessionController(document, options) {
       if (!alive(op)) return;
       try {
         const data = field(envelope, "data");
-        const owned = op.channel === "list" ? captureSessions(data, op.query.canonicalDir, limits) : captureDetail(data, op.query, limits);
+        const owned = op.channel === "list" ? captureSessions(data, op.query.canonicalDir, limits,op.query.all) : captureDetail(data, op.query, limits);
         if (op.channel === "detail" && owned.markup !== detailQuery.markup) throw new TypeError("response mode");
         if(op.channel==="detail")op.etag=readETag(envelope);
         if (alive(op)) commit(op, owned);
@@ -199,7 +199,7 @@ export function createSessionController(document, options) {
   function listCommit(op, data) {
     const view = {root:node("div", "nav-controller-list"), rows:[], removes:[]};
     try {
-      view.root.append(node("p", "nav-controller-facts", `Directory: ${data.dir}`),
+      view.root.append(node("p", "nav-controller-facts", op.query.all?"All directories":`Directory: ${data.dir}`),
         node("p", "nav-controller-facts", `Scanned ${data.scanned} of ${data.of}; unreadable ${data.unreadable_count}; partial: ${data.partial ? "yes" : "no"}`));
       for (const rootPath of data.roots_searched) view.root.append(node("p", "nav-controller-facts", `Root searched: ${rootPath}`));
       const rows = node("ul", "nav-controller-rows"); view.root.append(rows);
@@ -214,7 +214,7 @@ export function createSessionController(document, options) {
           view.removes.push(() => item.button.removeEventListener("click", click));
         } else li.append(node("p", "nav-controller-unavailable", `${label} · Unavailable for selection`));
         commandControls(li,value,()=>mounted&&!disposed&&listView===view,view.removes);
-        li.append(node("p", "nav-controller-facts", `Title: ${value.title} · Directory: ${value.cwd}`),
+        li.append(node("p", "nav-controller-facts", `Title: ${value.title} · Directory: ${value.cwd||"Unknown"}`),
           node("p", "nav-controller-facts", `Model: ${value.model} · Branch: ${value.branch} · Updated: ${value.updated}`),
           node("p", "nav-controller-facts", `Turns: ${value.turns} · Tools: ${value.tools} · Worker: ${value.worker ? "yes" : "no"} · Bypass: ${value.bypass ? "yes" : "no"}`));
       }
@@ -233,7 +233,7 @@ export function createSessionController(document, options) {
   }
   function detailHeaderText(data){
     const s=data.session;
-    return [`${s.provider} · ${s.id}`,`Title: ${s.title} · Directory: ${s.cwd}`,`Model: ${s.model} · Branch: ${s.branch}`,
+    return [`${s.provider} · ${s.id}`,`Title: ${s.title} · Directory: ${s.cwd||"Unknown"}`,`Model: ${s.model} · Branch: ${s.branch}`,
       `Started: ${timeText(s.started)} · Updated: ${timeText(s.updated)}`,`Worker: ${s.worker ? "yes" : "no"} · Bypass: ${s.bypass ? "yes" : "no"}`,
       `Earlier hidden: ${data.earlier_hidden} · Later hidden: ${data.later_hidden} · Window start: ${data.window_start}`];
   }
@@ -368,11 +368,12 @@ export function createSessionController(document, options) {
     const {op, previous} = reserve("list"); let oldDetail = null;
     try {
       op.query = {dir:text(field(value, "dir")), canonicalDir:text(field(value, "canonicalDir")), workers:bool(field(value, "workers"))};
-      if (!op.query.dir || !op.query.canonicalDir) fail();
+      const all=Object.getOwnPropertyDescriptor(value,"all");op.query.all=all?bool(field(value,"all")):false;
+      if (op.query.all?(op.query.dir!==""||op.query.canonicalDir!==""):(!op.query.dir||!op.query.canonicalDir)) fail();
       if (!alive(op)) return;
-      if (!activeScope || activeScope.dir !== op.query.canonicalDir || activeScope.workers !== op.query.workers) {
+      if (!activeScope || activeScope.dir !== op.query.canonicalDir || activeScope.workers !== op.query.workers || activeScope.all!==op.query.all) {
         oldDetail = current.detail; current.detail = null; ++serial.detail;
-        activeScope = {dir:op.query.canonicalDir, workers:op.query.workers}; op.scope = activeScope;
+        activeScope = {dir:op.query.canonicalDir, workers:op.query.workers,all:op.query.all}; op.scope = activeScope;
         selection = null; clearList();
         detailPane.status.textContent = ""; detailPane.root.setAttribute("aria-busy", "false");
       }
@@ -381,7 +382,7 @@ export function createSessionController(document, options) {
     finally { retireMany(previous, oldDetail); }
     if (!alive(op)) return;
     status(op, listPane, listView ? "Refreshing sessions; showing previous results." : "Loading sessions.", true);
-    if (alive(op)) read(op, readSessions, {dir:op.query.dir, workers:op.query.workers}, listPane, listCommit);
+    if (alive(op)) read(op, readSessions, {dir:op.query.dir, workers:op.query.workers,...(op.query.all?{all:true}:{})}, listPane, listCommit);
   }
   function select(value, trigger = null) {
     if (!mounted || disposed) return;
