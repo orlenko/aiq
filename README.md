@@ -45,7 +45,8 @@ one a native session uses. aiq works out the project the way Claude Code
 leaves Claude Code's default alone when it cannot be sure, or when the user
 settings or the project's `.claude/settings.json` or `settings.local.json`
 already decide. It also adds nothing when Claude Code's own memory
-variables are set (a launcher's `env` counts), when a launcher's `args`
+variables are set, when a launcher's `env` configures the home, config home
+or a memory variable (even with an empty value), when a launcher's `args`
 carry `--settings`, or with `--project-config-root` or `--deep-link-cwd-b64`.
 An inline JSON `--settings` (cmux adds one) gets the key added; with a
 `--settings` file aiq adds nothing and says so. The folder is fixed at

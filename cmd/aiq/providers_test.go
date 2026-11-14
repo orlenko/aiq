@@ -316,6 +316,47 @@ func TestLaunchMemoryDirReadsTheLauncher(t *testing.T) {
 	}
 }
 
+// A launcher may expand its home or memory settings using variables that
+// only exist at execution, or using other entries in its Env map. In each
+// case the launch must retain the launcher's memory choice.
+func TestLaunchMemoryDirLeavesLauncherMemoryEnvironmentAlone(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	chosen := filepath.Join(home, ".claude-box")
+	if err := os.Mkdir(chosen, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chosen, "settings.json"), []byte(`{"autoMemoryDirectory":"/chosen-memory"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"HOME=" + home}
+	for _, name := range []string{"HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_REMOTE_MEMORY_DIR", "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", "CLAUDE_CODE_PROJECT_DIR_NAME", "CLAUDE_CODE_USE_COWORK_PLUGINS"} {
+		for _, value := range []string{"", "${AIQ_LAUNCHER}", "${AIQ_BINARY}", "${AIQ_LONG}", "${BOX_MEMORY}"} {
+			t.Run(name+"="+value, func(t *testing.T) {
+				l := config.Launcher{Env: map[string]string{name: value, "BOX_MEMORY": "/chosen-memory"}}
+				if got := launchMemoryDir(l, true, dir, env); got != "" {
+					t.Fatalf("launcher controls %s; memory override = %q", name, got)
+				}
+			})
+		}
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh here")
+	}
+	l := config.Launcher{Command: sh, Env: map[string]string{"CLAUDE_CONFIG_DIR": "${HOME}/.claude-${AIQ_LAUNCHER}"}}
+	if got := launchMemoryDir(l, true, dir, env); got != "" {
+		t.Fatalf("late config home received a memory override: %q", got)
+	}
+	_, _, actual, err := launcherCommand("box", l, "/bin/claude", nil, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(actual, "CLAUDE_CONFIG_DIR="+chosen) {
+		t.Fatalf("launcher config home did not expand to the chosen settings: %q", actual)
+	}
+}
+
 // A flag that moves the session's project leaves the memory folder alone.
 func TestOverlayMemoryLeavesAMovedProjectAlone(t *testing.T) {
 	for _, args := range [][]string{

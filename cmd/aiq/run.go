@@ -711,6 +711,15 @@ func memoryLauncher(cfg *config.Config, name, mode string) (config.Launcher, boo
 // after it and replace it.
 func launchMemoryDir(l config.Launcher, hasLauncher bool, dir string, env []string) string {
 	if hasLauncher {
+		// Launcher values expand later, after launch-only variables are set,
+		// and may depend on one another. Do not guess the effective home or
+		// memory namespace when the launcher configures either, even when a
+		// value looks empty before that expansion.
+		for _, name := range []string{"HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_REMOTE_MEMORY_DIR", "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", "CLAUDE_CODE_PROJECT_DIR_NAME", "CLAUDE_CODE_USE_COWORK_PLUGINS"} {
+			if _, configured := l.Env[name]; configured {
+				return ""
+			}
+		}
 		// A wrapper launcher often passes the CLI's own flags after "--",
 		// so its args are read whole, as the --settings scan below does.
 		if claude.MovesProject(slices.DeleteFunc(slices.Clone(l.Args), func(a string) bool { return a == "--" })) {
@@ -721,7 +730,6 @@ func launchMemoryDir(l config.Launcher, hasLauncher bool, dir string, env []stri
 				return ""
 			}
 		}
-		env = launcherEnv(env, l)
 	}
 	return claude.OverlayMemoryDirIn(dir, env)
 }
