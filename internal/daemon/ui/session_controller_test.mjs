@@ -1,6 +1,6 @@
 import test, {afterEach} from 'node:test';
 import assert from 'node:assert/strict';
-import {createSessionController,navigatorReadCommand} from './session_controller.js';
+import {createSessionController,navigatorReadCommand,navigatorResumeCommand,navigatorLeaseCommand} from './session_controller.js';
 import {createLongView} from './long_view.js';
 import {ids,scope,limits,query,row,sessions,detail} from './controller_values.mjs';
 
@@ -72,6 +72,7 @@ function longValue(name='A',full=true,extra={}){
 }
 function longFixture(dir='/fixture/A'){
   const f=fixture(),calls=[],states=[],announcements=[];
+  let clock=0;f.window.performance={now:()=>clock};f.longClock=value=>{clock=value;};
   const view=createLongView(f.document,{window:f.window,dir,idPrefix:'nav-long-1',limits:limits(),detailQuery:{last:50,markup:false,anchor:0},shortcutsEnabled:()=>true,
     readLong:(q,signal)=>{const d=deferred();calls.push({q,signal,...d});return d.promise;},readConversation:f.options.readConversation,
     readState:(q,signal)=>{const d=deferred();states.push({q,signal,...d});return d.promise;},copyText:f.options.copyText,announce:text=>announcements.push(text),onWorkspace:()=>{},onConversation:()=>{}});
@@ -435,4 +436,50 @@ test('read chip rejection is generic and preserves retry without stale controls'
   assert.ok(f.announcements.includes('Read command could not be copied.'));assert.ok(!f.document.body.textContent.includes('PRIVATE'));
   fail=false;button.click();await tick();assert.ok(f.announcements.includes('Read command copied. Paste it in a terminal.'));
   f.clean();button.click();assert.equal(f.copies.length,2);
+});
+
+test('resume and lease templates have fixed vocabularies and exclude every shell-bearing field',()=>{
+  for(const provider of ['claude','codex','agy'])for(const [variant,prefix]of [['resume','aiq resume'],['bare','aiq resume --bare'],['auto','aiq run auto resume'],['long','aiq long auto resume']])assert.equal(navigatorResumeCommand(provider,ids.A,variant),`${prefix} ${ids.A}`);
+  for(const value of ['',ids.A+'\n',ids.A+';echo invented','../fixture',null,{},5])assert.equal(navigatorResumeCommand('claude',value),null);
+  for(const variant of ['__proto__','constructor','resume; echo',{},null])assert.equal(navigatorResumeCommand('claude',ids.A,variant),null);
+  for(const verb of ['attach','drain'])assert.equal(navigatorLeaseCommand(verb,'0000000007','000000000123'),`aiq long ${verb} 0000000007 --started 000000000123`);
+  for(const value of ['','0','0000','7\n',' 7','+7','7;echo invented','７','10000000000',null,{},7])assert.equal(navigatorLeaseCommand('drain',value,'123'),null);
+  for(const value of ['','0','0000','123\n','+123','123;echo invented','1000000000000',null,{},123])assert.equal(navigatorLeaseCommand('attach','7',value),null);
+  for(const verb of ['stop','attach;echo',{},null])assert.equal(navigatorLeaseCommand(verb,'7','123'),null);
+});
+
+test('resume controls copy only fixed full-id templates and retire with their view',async()=>{
+  const f=fixture({resumeCommands:true});f.mount();f.controller.selectConversation(scope('A'));
+  const value=detail();value.session.cwd='/invented/$(directory)';f.detailCalls[0].resolve(value);await tick();
+  const controls=['Copy resume command','Copy bare resume command','Copy auto resume command','Copy long auto resume command'].map(label=>byText(f,label));
+  assert.equal(f.copies.length,0);
+  for(const control of controls){control.click();await tick();}
+  assert.deepEqual(f.copies,[`aiq resume ${ids.A}`,`aiq resume --bare ${ids.A}`,`aiq run auto resume ${ids.A}`,`aiq long auto resume ${ids.A}`]);
+  assert.ok(f.document.body.textContent.includes('/invented/$(directory)'));assert.ok(!f.copies.some(s=>s.includes('directory')));
+  f.clean();controls[0].click();assert.equal(f.copies.length,4);
+});
+
+test('workspace commands require fresh verified metadata and cannot copy while hidden or after retirement',async()=>{
+  const f=await readyLong(),attach=byText(f,'Copy attach command'),drain=byText(f,'Copy wrap-up command');
+  attach.click();await tick();drain.click();await tick();assert.deepEqual(f.copies,['aiq long attach 7 --started 1','aiq long drain 7 --started 1']);
+  f.document.hidden=true;f.document.emit('visibilitychange');attach.click();assert.equal(f.copies.length,2);assert.equal(attach.getAttribute('aria-disabled'),'true');
+  f.document.hidden=false;f.longClock(30000);f.document.emit('visibilitychange');await tick();drain.click();assert.equal(f.copies.length,2);
+  assert.ok(f.document.body.textContent.includes('waiting for fresh verified data'));
+  f.longCalls.at(-1).resolve(longValue('A',f.longCalls.at(-1).q.history));await tick();attach.click();await tick();assert.equal(f.copies.length,3,JSON.stringify({queries:f.longCalls.map(c=>c.q),announcements:f.longAnnouncements,text:find(f,n=>has(n,'nav-long-action-state'))[0].textContent}));
+  f.clean();drain.click();assert.equal(f.copies.length,3);
+});
+
+test('focused workspace command keeps its shown target and disables instead of retargeting after lease replacement',async()=>{
+  const f=await readyLong(),control=byText(f,'Copy wrap-up command');control.focus();
+  f.poll();await tick();f.longCalls.at(-1).resolve(longValue('B',false,{lease:{...longValue().lease,id:'8',started:'2',account:'Invented next account'}}));await tick();
+  assert.equal(f.document.activeElement,control);assert.equal(control.getAttribute('aria-disabled'),'true');control.click();assert.deepEqual(f.copies,[]);
+  assert.ok(find(f,n=>has(n,'nav-long-action-target'))[0].textContent.includes('Invented account'));
+  byText(f,'Refresh workspace').focus();find(f,n=>has(n,'nav-long-actions'))[0].emit('focusout');await tick();assert.equal(control.getAttribute('aria-disabled'),'false');control.click();await tick();assert.deepEqual(f.copies,['aiq long drain 8 --started 2']);
+  f.clean();
+});
+
+test('workspace unknown and malformed lease metadata cannot produce a command',async()=>{
+  for(const extra of [{state:'unknown',current:null,lease:{...longValue().lease,live:'unknown'}},{lease:{...longValue().lease,id:'7\n'}},{workspace_known:false}]){
+    const f=longFixture();await tick();f.longCalls[0].resolve(longValue('A',true,extra));await tick();byText(f,'Copy wrap-up command').click();byText(f,'Copy attach command').click();assert.deepEqual(f.copies,[]);f.clean();
+  }
 });
