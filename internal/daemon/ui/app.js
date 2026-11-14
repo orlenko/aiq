@@ -2,6 +2,7 @@ import {directory,encodeForm,route} from "./auth_codec.js";
 import {createReadBroker} from "./read_broker.js";
 import {createSessionController} from "./session_controller.js";
 import {createAsksController} from "./asks_controller.js";
+import {captureDirectories} from "./controller_data.js";
 
 const owners=new WeakMap();
 const copyFlights=new WeakMap(); // One physical clipboard operation per document.
@@ -41,7 +42,7 @@ export function createAppHost(document,options) {
   if (!window || document.defaultView!==window || root?.ownerDocument!==document || typeof isCurrent!=="function") throw refused();
   const limits={};for(const key of ["rows","arrayEntries","stringUnits"]){const n=options.limits?.[key];if(!Number.isSafeInteger(n)||n<=0)throw refused();limits[key]=n;}
   const initial=options.initialNext,broker=createReadBroker(readers),owner={},removes=[];
-  let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true,lastPrompts=50;
+  let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true,lastPrompts=50,scopeReason="";
   const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   const button=(text,cls="")=>{const n=node("button",cls,text);n.type="button";return n;};
   const shell=node("div","nav-shell"),header=node("header","nav-header"),nav=node("nav","nav-tabs");nav.setAttribute("aria-label","Navigator pages");
@@ -52,6 +53,8 @@ export function createAppHost(document,options) {
   dirInput.type="text";dirInput.autocomplete="off";dirInput.spellcheck=false;dirInput.placeholder="/absolute/project/path";dirLabel.append(dirInput);apply.type="submit";
   const allLabel=node("label","nav-toggle"),allInput=node("input");allInput.type="checkbox";allLabel.append(allInput,document.createTextNode(" All Asks"));
   toolbar.append(dirLabel,apply,allLabel);
+  const recentLabel=node("label","nav-directory-label","Recent directories"),recent=node("select","nav-recent-directories"),catalogStatus=node("p","nav-catalog-status");
+  recentLabel.append(recent);toolbar.append(recentLabel,catalogStatus);
   const controls=node("div","nav-controls"),searchLabel=node("label","nav-search-label","Search loaded results"),search=node("input","nav-search");search.type="search";search.autocomplete="off";searchLabel.append(search);
   const workersLabel=node("label","nav-toggle"),workers=node("input");workers.type="checkbox";workersLabel.append(workers,document.createTextNode(" Workers"));
   const marksLabel=node("label","nav-toggle"),marks=node("input");marks.type="checkbox";marksLabel.append(marks,document.createTextNode(" Markdown marks"));
@@ -112,10 +115,10 @@ export function createAppHost(document,options) {
     try{const marked=!replace||window.history.state?.aiqNavigator===1;window.history[replace?"replaceState":"pushState"]({aiqNavigator:marked?1:0},"",next);return alive();}
     catch{announce("The page address could not be updated.");return false;}
   }
-  function navigate(next,{replace=false,pop=false,focus=true}={}){
+  function navigate(next,{replace=false,pop=false,focus=true,automatic=false}={}){
     let parsed;try{parsed=route(next);}catch{announce("Choose a navigator page and an absolute directory.");return;}
     if(!alive())return;if(!pop&&!navHistory(parsed.next,replace))return;
-    render(parsed,focus);
+    scopeReason=automatic?"most recent":"";render(parsed,focus);
   }
   function selectionChanged(op,value){
     if(!active(op))return;
@@ -124,6 +127,20 @@ export function createAppHost(document,options) {
     if(previous&&previous.provider===value.provider&&previous.id===value.id)return;
     if(currentAddress.anchor&&(!previous||previous.provider!==value.provider||previous.id!==value.id)){navigate(next);return;}
     if(next!==currentAddress.next){if(!navHistory(next))throw refused();if(active(op)){currentAddress=route(next);title.textContent="Conversation";windowLabel.hidden=false;document.title=value.provider+" · "+value.id+" — aiq";}}
+  }
+  async function loadDirectories(op,parsed){
+    try{
+      const envelope=await op.lease.read("directories",{});if(!active(op))return;
+      const value=captureDirectories(envelope.data,limits);if(!active(op))return;
+      const fragment=document.createDocumentFragment(),placeholder=node("option","","Choose a recent directory");placeholder.value="";fragment.append(placeholder);
+      for(const item of value.directories){const option=node("option","",item.path);option.value=item.path;fragment.append(option);}
+      if(!active(op))return;recent.replaceChildren(fragment);recent.disabled=value.directories.length===0;
+      recent.value=value.directories.some(item=>item.path===parsed.dir)?parsed.dir:"";
+      catalogStatus.textContent=value.directories.length?"Recent directories · launch metadata":"No recent launch directories. Enter an absolute directory.";
+      if(parsed.path==="/sessions"&&!parsed.dir&&!selected(parsed)&&!op.scopeTouched&&value.directories.length){
+        navigate(address("/sessions",value.directories[0].path),{replace:true,focus:false,automatic:true});
+      }
+    }catch{if(active(op)){recent.disabled=true;catalogStatus.textContent="Recent directories unavailable. Enter an absolute directory.";}}
   }
   async function place(op,value){
     if(!active(op))return;
@@ -148,15 +165,18 @@ export function createAppHost(document,options) {
   function render(parsed,focus){
     clearRoute();if(!alive())return;
     currentAddress=parsed;if(parsed.dir)lastDirectory=parsed.dir;
-    const op={retired:false,controller:null,lease:null};current=op;op.lease=broker.route();
+    const op={retired:false,controller:null,lease:null,scopeTouched:false};current=op;op.lease=broker.route();
     if(!active(op))return;
     dirInput.value=parsed.dir||lastDirectory;allInput.checked=parsed.path==="/asks"&&parsed.all;dirInput.disabled=allInput.checked;
     allLabel.hidden=parsed.path!=="/asks";workersLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";marksLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";
     windowLabel.hidden=!selected(parsed);windowSelect.value=String(parsed.anchor?50:lastPrompts);
+    recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help";catalogStatus.textContent="";
     title.textContent=parsed.path==="/asks"?"Asks":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
+    if(parsed.path==="/sessions"&&scopeReason)title.textContent+=" · "+scopeReason;
     document.title=title.textContent+" — aiq";
     for(const[path,a]of links){a.href=address(path,parsed.dir||lastDirectory);if(path==="/sessions"&&parsed.path.startsWith("/sessions")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
     if(parsed.path==="/help"){content.append(help());if(focus)title.focus({preventScroll:true});return;}
+    recent.replaceChildren();recent.disabled=true;catalogStatus.textContent="Loading recent directories…";void loadDirectories(op,parsed);
     const announceCurrent=text=>{if(active(op))announce(text);};
     if(parsed.path==="/asks"){
       if(!parsed.all&&!parsed.dir){content.append(node("p","nav-empty","Choose a directory, or explicitly select All Asks."));if(focus)dirInput.focus();return;}
@@ -200,6 +220,8 @@ export function createAppHost(document,options) {
     try{if(!isCurrent())return false;}catch{return false;}
     mounted=true;owners.set(root,owner);root.replaceChildren(shell);if(!alive()){dispose();return false;}root.hidden=false;
     listen(toolbar,"submit",e=>{e.preventDefault();try{const dir=directory(dirInput.value);search.value="";navigate(address(currentAddress.path==="/asks"?"/asks":"/sessions",dir));}catch{announce("Enter a complete absolute directory without dot segments.");}});
+    listen(dirInput,"input",()=>{if(current)current.scopeTouched=true;});
+    listen(recent,"change",()=>{if(!recent.value)return;try{const dir=directory(recent.value);search.value="";navigate(address(currentAddress.path==="/asks"?"/asks":"/sessions",dir));}catch{announce("Choose an available directory.");}});
     for(const[path,a]of links)listen(a,"click",e=>{if(e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();search.value="";navigate(address(path,currentAddress?.dir||lastDirectory));});
     listen(allInput,"change",()=>{search.value="";navigate(address("/asks",allInput.checked?"":lastDirectory,allInput.checked));});
     listen(search,"input",filter);listen(workers,"change",()=>render(currentAddress,false));listen(marks,"change",()=>render(currentAddress,false));

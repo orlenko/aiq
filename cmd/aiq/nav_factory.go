@@ -15,6 +15,7 @@ import (
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/navroute"
 	"github.com/orlenko/aiq/internal/paths"
+	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/transcript"
@@ -45,6 +46,7 @@ func navProductionPolicy() navFactoryPolicy {
 
 type navFactoryInput struct {
 	roots    func(context.Context) (transcript.Roots, error)
+	metadata func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error)
 	asksPath string
 	now      func() time.Time
 	location *time.Location
@@ -82,6 +84,9 @@ func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) 
 	f := &navFactory{input: in, policy: p, cache: transcript.NewCache(), pages: pages,
 		sessionSlots: make(chan struct{}, p.sessions.builders), detailSlots: make(chan struct{}, p.detail.requests), askSlots: make(chan struct{}, p.asks.requests)}
 	mux := navroute.NewMux()
+	if err := mux.Handle(navroute.Directories, http.HandlerFunc(f.directories)); err != nil {
+		return nil, err
+	}
 	for _, kind := range []navroute.Route{navroute.Sessions, navroute.Conversation, navroute.Asks, navroute.AskTurn} {
 		kind := kind
 		if err := mux.Handle(kind, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -284,9 +289,13 @@ func navFactoryAlias(ctx context.Context, key string) (navAsksAlias, error) {
 // Capture configuration paths only. Overlay enumeration remains lazy and
 // authenticated; a failed enumeration is not converted to a complete empty set.
 func navProductionInput() navFactoryInput {
+	return navProductionInputWithIdentity(pool.HostnameContext)
+}
+func navProductionInputWithIdentity(identity func(context.Context) (string, error)) navFactoryInput {
 	claude, codex, agyHome := paths.RealClaudeHome(), paths.RealCodexHome(), agy.AppDataDir(paths.RealAgyHome())
 	parents := []string{paths.ClaudeHomesDir(), paths.CodexHomesDir()}
 	return navFactoryInput{asksPath: filepath.Join(paths.DataDir(), asksDBName), now: time.Now, location: time.Local,
+		metadata: navProductionMetadata(paths.StateDB(), identity),
 		roots: func(ctx context.Context) (transcript.Roots, error) {
 			r := transcript.Roots{ClaudeProjects: []string{filepath.Join(claude, "projects")}, CodexSessions: []string{filepath.Join(codex, "sessions")}, CodexIndex: []string{filepath.Join(codex, "session_index.jsonl")}, AgyAppData: []string{agyHome}}
 			for _, parent := range parents {
@@ -325,6 +334,29 @@ func navProductionInput() navFactoryInput {
 			}
 			return r, ctx.Err()
 		}}
+}
+
+func navProductionMetadata(path string, identity func(context.Context) (string, error)) func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
+	return func(ctx context.Context, limits state.NavigatorSnapshotLimits) (out *state.NavigatorSnapshot, err error) {
+		if identity == nil {
+			return nil, state.ErrNavigatorSnapshotUnavailable
+		}
+		host, err := identity(ctx)
+		if err != nil {
+			return nil, state.ErrNavigatorSnapshotUnavailable
+		}
+		store, err := state.OpenReadOnly(path)
+		if err != nil {
+			return nil, state.ErrNavigatorSnapshotUnavailable
+		}
+		defer func() {
+			if e := store.Close(); e != nil && err == nil {
+				out = nil
+				err = state.ErrNavigatorSnapshotUnavailable
+			}
+		}()
+		return store.ReadNavigatorSnapshot(ctx, host, limits)
+	}
 }
 func mountProductionNavigator(s *daemon.Server) {
 	f, err := newNavFactory(navProductionInput(), navProductionPolicy())
