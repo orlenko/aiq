@@ -545,6 +545,55 @@ Both go through `run-shell` because it is where tmux expands `#{pane_id}`:
 `display-popup` and `split-window` pass their command on unexpanded, and
 inside a popup `$TMUX_PANE` is empty.
 
+## Browser navigator
+
+On macOS and Linux, `aiq ui` opens this machine's Sessions and Asks in your
+browser. Choose a directory, open a session, or jump from an ask to its matching
+turn. A recent-directory picker uses this machine's interactive and long launch
+metadata; an unscoped Sessions page chooses its most recent directory. This is
+not a complete catalog of every transcript on disk. Conversations use the terminal's
+Go renderer and offer a prompt outline, Previous/Next, scoped `n`/`p` keys, Markdown
+copy and a marks toggle. Choose the last 50, 100 or 500 prompts, or Show all;
+reads exceeding the resource limits fail whole without truncating their text.
+Read-command buttons copy a full-ID `aiq convo` command for you to paste in a
+terminal, with a `--follow` option for Claude and Codex. Search filters
+only loaded results. The current browser app shows manual snapshots; use Refresh
+to read changes. Session control remains in the terminal.
+
+The navigator is off by default. To try it, add or update this section in your
+`~/.config/aiq/config.toml` (or your `AIQ_CONFIG` file):
+
+```toml
+[ui]
+navigator = true
+```
+
+After installing the current build, restart your daemon with `aiq daemon install`
+from your own login shell, then open a project:
+
+```bash
+aiq ui                          # this directory
+aiq ui /path/to/project          # an explicit directory
+aiq ui --info                    # authenticated host and data-directory information
+aiq ui --revoke                  # invalidate all browser logins and pending links
+```
+
+`aiq ui` verifies the local daemon and opens a private handoff file containing a
+one-use link, which expires after two minutes. It never starts or restarts the
+daemon. The page clears the link fragment before loading app code or accessing
+storage. Login is per tab, saved in session storage when available, and expires
+after 30 minutes idle or eight hours total. **Forget this tab** clears that tab's
+login and displayed data; use `--revoke` to invalidate every tab. If browser
+storage is blocked, the page explains whether login lasts only in memory.
+
+The navigator serves only on a numeric loopback address. Use a browser on the
+same machine; remote browsers and SSH forwarding are unsupported. Its data reads
+and responses use per-tab authentication. A tab stops requesting data after a
+terminal connection/protocol failure or daemon shutdown; run `aiq ui` again to
+reopen it. This local HTTP UI assumes trusted initial page loading and does not
+encrypt directory names or session IDs. Do not share login links or handoff files. Windows
+unlock remains disabled pending native validation.
+
 ## What the agents asked of you
 
 `aiq convo` shows one conversation. `aiq asks` is its sidekick across all of
@@ -1058,6 +1107,8 @@ aiq asks [--all] [--no-mouse] | list | dismiss | restore | watch | workspaces | 
 
 aiq shim install|uninstall|path
 aiq statusline install|uninstall|status   Claude status-line multiplexer
+aiq ui [directory] | --info | --revoke | --help
+                                     local browser Sessions and Asks (opt-in)
 aiq daemon run|install|uninstall|status
 aiq doctor [-v] [--device-auth|--browser]
                                      failed checks and how to fix them
@@ -1177,7 +1228,7 @@ Depth is 1, well under `max_depth`.
 | Shims | `~/.local/share/aiq/shims/` |
 | State (accounts, windows, leases, affinity, launches, events; no credentials) | `~/.local/share/aiq/state.db` |
 | Daemon log | `~/.local/share/aiq/log/daemon.log` |
-| Session navigator: its state at each daemon start, with a secret token while it is on; the ports it used lately (off by default, shows nothing yet) | `~/.local/share/aiq/ui-token`, `~/.local/share/aiq/ui-ports` |
+| Session navigator: its state at each daemon start, with a secret token while it is on; the ports it used lately (off by default) | `~/.local/share/aiq/ui-token`, `~/.local/share/aiq/ui-ports` |
 | `aiq asks` items, with quotes of the agents' messages | `~/.local/share/aiq/asks.db` |
 | `aiq asks` TypeSafe key | `~/.config/aiq/typesafe.key` |
 | Config | `~/.config/aiq/config.toml` |
@@ -1246,6 +1297,9 @@ idle_grace_seconds = 20
 idle_rotate_pct = 15.0          # move a quiet session off an account this low (0 = off)
 idle_rotate_minutes = 15        # ...once it has been quiet this long
 tmux_prefix = "aiq"
+
+[ui]
+navigator = false              # local browser Sessions and Asks; restart daemon after changing
 
 [updates]
 enabled = true                  # keep npm-installed codex/claude current
