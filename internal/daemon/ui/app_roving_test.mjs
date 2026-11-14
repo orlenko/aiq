@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setNavigatorRoving,bindNavigatorRoving} from './app.js';
+import {setNavigatorRoving,bindNavigatorRoving,navigateNavigatorRows} from './app.js';
 function control(extra={}){return{tagName:'BUTTON',tabIndex:7,disabled:false,hidden:false,visible:true,aria:null,href:null,getAttribute(n){return n==='aria-disabled'?this.aria:null;},hasAttribute(n){return n==='href'&&this.href!==null;},getClientRects(){return this.visible?[{}]:[];},...extra};}
 function row(controls=[],extra={}){return{hidden:false,dataset:{},querySelectorAll:()=>controls,contains:n=>controls.includes(n),...extra};}
 const group=rows=>({querySelectorAll:()=>rows});
@@ -46,4 +46,19 @@ test('retired visibility bindings cannot mutate a successor and remove both list
  const action=control(),g=group([row([action])]),listeners=new Map();let current=true;
  const content={ownerDocument:{activeElement:null},querySelectorAll:()=>[g],addEventListener:(n,f)=>listeners.set(n,f),removeEventListener:n=>listeners.delete(n)};
  const clean=bindNavigatorRoving(content,()=>current),late=listeners.get('click');current=false;action.tabIndex=5;late();assert.equal(action.tabIndex,5);clean();assert.equal(listeners.size,0);late();assert.equal(action.tabIndex,5);
+});
+
+test('switching off single-key shortcuts preserves native row access without taking Tab or Enter',()=>{
+ for(const kind of ['sessions','Asks','workspace history']){
+  let active=null,prevented=0;const a=control({focus(){active=this;}}),b=control({focus(){active=this;}}),g=group([row([a]),row([b])]);
+  const event=key=>({key,target:{closest:()=>g},preventDefault(){prevented++;}});
+  a.focus();setNavigatorRoving(g,active);assert.equal(b.tabIndex,-1,kind);
+  assert.equal(navigateNavigatorRows(event('ArrowDown'),active,false),true);assert.equal(active,b);assert.equal(a.tabIndex,-1);assert.equal(b.tabIndex,0);
+  assert.equal(navigateNavigatorRows(event('Home'),active,false),true);assert.equal(active,a);
+  for(const key of ['j','k','g','G','Tab','Enter',' '])assert.equal(navigateNavigatorRows(event(key),active,false),false,key);
+  assert.equal(active,a);assert.equal(prevented,2);
+  assert.equal(navigateNavigatorRows(event('j'),active,true),true);assert.equal(active,b);
+  assert.equal(navigateNavigatorRows(event('ArrowUp'),active,false),true);assert.equal(active,a);
+  assert.equal(navigateNavigatorRows(event('End'),active,false),true);assert.equal(active,b);
+ }
 });

@@ -26,6 +26,19 @@ export function bindNavigatorRoving(content,isCurrent) {
   content.addEventListener("focusin",update);content.addEventListener("click",update);
   return ()=>{content.removeEventListener("focusin",update);content.removeEventListener("click",update);};
 }
+export function navigateNavigatorRows(event,active,singleKeys=true){
+  if(!singleKeys&&!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return false;
+  const group=event.target.closest(".nav-controller-rows,.nav-asks-region");if(!group)return false;
+  const entries=setNavigatorRoving(group,active),index=entries.findIndex(e=>e.row.contains(active));
+  let next=index;
+  if(["j","ArrowDown"].includes(event.key))next=Math.min(entries.length-1,index+1);
+  else if(["k","ArrowUp"].includes(event.key))next=Math.max(0,index-1);
+  else if(["g","Home"].includes(event.key))next=0;
+  else if(["G","End"].includes(event.key))next=entries.length-1;
+  else return false;
+  const target=entries[next]?.controls[0];if(!target)return false;
+  event.preventDefault();target.focus();setNavigatorRoving(group,target);return true;
+}
 function address(path,dir="",all=false,anchor=0) {
   const values={};if(dir)values.dir=directory(dir);if(all)values.all="true";if(anchor)values.at=String(anchor);
   const query=Object.keys(values).sort().map(k=>encodeForm(k)+"="+encodeForm(values[k])).join("&");
@@ -234,14 +247,10 @@ export function createAppHost(document,options) {
   function keys(e){
     if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)||e.target.isContentEditable)return;
     if(e.key==="Escape"){e.preventDefault();if(helpDialog.open)helpDialog.close();else if(search.value){search.value="";filter();announce("Search cleared.");}else goBack();return;}
-    if(!shortcuts||!e.target.closest(".nav-controller,.nav-asks,.nav-feed,.nav-long"))return;
-    if(e.key==="/"){e.preventDefault();search.focus();return;}
-    if(e.key==="?"){e.preventDefault();helpDialog.showModal();return;}
-    const group=e.target.closest(".nav-controller-rows,.nav-asks-region");if(!group)return;
-    const entries=setNavigatorRoving(group,document.activeElement),index=entries.findIndex(e=>e.row.contains(document.activeElement));
-    const rows=entries.map(e=>e.row);
-    let next=index;if(["j","ArrowDown"].includes(e.key))next=Math.min(rows.length-1,index+1);else if(["k","ArrowUp"].includes(e.key))next=Math.max(0,index-1);else if(["g","Home"].includes(e.key))next=0;else if(["G","End"].includes(e.key))next=rows.length-1;else return;
-    const target=entries[next]?.controls[0];if(target){e.preventDefault();target.focus();roving();}
+    if(!e.target.closest(".nav-controller,.nav-asks,.nav-feed,.nav-long"))return;
+    if(shortcuts&&e.key==="/"){e.preventDefault();search.focus();return;}
+    if(shortcuts&&e.key==="?"){e.preventDefault();helpDialog.showModal();return;}
+    if(navigateNavigatorRows(e,document.activeElement,shortcuts))roving();
   }
   function mount(){
     if(disposed)return false;if(mounted)return alive();if(!root.isConnected)return false;

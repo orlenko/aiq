@@ -25,7 +25,7 @@ func TestNavigatorAppRovingNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("roving fixtures failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"tests 7", "pass 7", "fail 0", "cancelled 0", "skipped 0"} {
+	for _, want := range []string{"tests 8", "pass 8", "fail 0", "cancelled 0", "skipped 0"} {
 		if !regexp.MustCompile(`(?m)^# ` + want + `$`).Match(out) {
 			t.Fatalf("roving fixtures incomplete:\n%s", out)
 		}
