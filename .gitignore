@@ -8,3 +8,4 @@ initial-convo_files/
 .env
 .playwright-mcp/
 mise.toml
+.DS_Store
