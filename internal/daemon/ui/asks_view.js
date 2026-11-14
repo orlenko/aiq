@@ -266,7 +266,7 @@ export function createAsksView(document, data, options) {
 
   root.append(node("p", "nav-asks-scope", snapshot.scope.mode === "all" ? "All directories" : snapshot.scope.dir));
   if(snapshot.scope_counts)root.append(node("p","nav-asks-scope-counts",snapshot.scope_counts.open+" open here · "+snapshot.scope_counts.elsewhere_open+" open elsewhere"));
-  if(snapshot.scope.mode!=="all"){const all=node("a","nav-asks-all","Show all Asks");all.href="/asks?all=1";root.append(all);}
+  if(snapshot.scope.mode!=="all"){const all=node("a","nav-asks-all","Show all Asks");all.href="/asks?all=true";root.append(all);}
   if(snapshot.status_line){
     const value=snapshot.status_line,line=node("p","nav-asks-trust",(value.problem?"! ":"")+value.text);
     if(value.problem)line.setAttribute("data-problem","true");root.append(line);

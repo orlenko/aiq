@@ -266,6 +266,7 @@ test('independent totals remain visible apart from stored watcher facts',()=>{
 test('scope counts, fixed remedies and decimal command identities remain separate from stored wording',async()=>{
  const data=snapshot();data.scope_counts={open:4,elsewhere_open:7};data.status_line={known:true,problem:true,text:'Stored wording: never copy aiq asks reset --all',remedy:['watch','setup','service_install','watch','setup']};
  const f=fixture({},data);f.mount();assert.ok(f.document.body.textContent.includes('4 open here · 7 open elsewhere'));
+ assert.equal(find(f,'nav-asks-all')[0].href,'/asks?all=true');
  assert.equal(find(f,'nav-asks-trust')[0].textContent,'! Stored wording: never copy aiq asks reset --all');
  const remedies=find(f,'nav-asks-button').filter(n=>n.textContent.startsWith('Copy ')&&!['Copy quote','Copy dismiss command','Copy restore command'].includes(n.textContent));
  assert.deepEqual(remedies.map(n=>n.textContent),['Copy background watcher command','Copy setup command','Copy watch command (in its own window)']);
