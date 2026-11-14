@@ -26,6 +26,14 @@ func TestNavigatorStaticPagesBuildAndAllowlist(t *testing.T) {
 	for _, body := range [][]byte{navShellTemplate, navBootstrapJS, navSessionJS, navCodecJS, navAuthCSS} {
 		sum.Write(body)
 	}
+	// Independent explicit production closure, not the implementation's registry.
+	for _, name := range []string{"app.js", "tab_proof.js", "read_broker.js", "session_controller.js", "controller_data.js", "feed.js", "feed_data.js", "dom.js", "asks_controller.js", "asks_view.js", "asks_data.js", "app.css", "session_controller.css", "feed.css", "dom.css", "asks_controller.css", "asks_view.css"} {
+		body, err := os.ReadFile("ui/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum.Write(body)
+	}
 	if !strings.HasSuffix(build, "+"+hex.EncodeToString(sum.Sum(nil))[:12]) {
 		t.Fatal("getter does not cover exact served dependencies")
 	}

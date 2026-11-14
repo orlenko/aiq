@@ -21,6 +21,8 @@ const (
 	Info
 	Sessions
 	Conversation
+	Asks
+	AskTurn
 )
 
 var patterns = [...]string{
@@ -31,6 +33,8 @@ var patterns = [...]string{
 	Info:         "GET /api/nav/info",
 	Sessions:     "GET /api/nav/sessions",
 	Conversation: "GET /api/nav/sessions/{provider}/{id}",
+	Asks:         "GET /api/nav/asks",
+	AskTurn:      "GET /api/nav/asks/{id}/turn",
 }
 
 func (route Route) Key() string {

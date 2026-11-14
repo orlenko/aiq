@@ -11,10 +11,10 @@ function clock(value) {
 // A supplied snapshot only. Its parent owns readers, authentication and replacement.
 export function createAsksView(document, data, options) {
   const {window, idPrefix} = options || {};
-  let {copyText, announce, onConversation} = options || {};
+  let {copyText, announce, onConversation, onPlacement} = options || {};
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
       !/^[A-Za-z][A-Za-z0-9_-]*$/.test(idPrefix) ||
-      ![copyText, announce, onConversation].every(f => typeof f === "function")) {
+      ![copyText, announce, onConversation].every(f => typeof f === "function") || onPlacement!==undefined && typeof onPlacement!=="function") {
     throw new TypeError("could not configure Asks view");
   }
   let snapshot = captureAsks(data, options.expectedScope, options.limits);
@@ -215,7 +215,10 @@ export function createAsksView(document, data, options) {
   function navigate(row) {
     if (!eligible(row) || !row.data.selectable) return;
     const intent = row.ready;
-    try { onConversation({provider:row.data.provider, id:row.data.session_id}); }
+    try {
+      if (onPlacement) onPlacement(Object.freeze({askId:row.data.id,provider:row.data.provider,id:row.data.session_id}));
+      else onConversation({provider:row.data.provider, id:row.data.session_id});
+    }
     catch {
       if (eligible(row, intent)) {
         status.textContent = "Conversation unavailable";
@@ -244,7 +247,7 @@ export function createAsksView(document, data, options) {
     overview?.replaceChildren(); overview = null; overviewButtons.length = 0;
     for (const row of rows) for (const key of Object.keys(row)) row[key] = null;
     rows.length = 0; groups.length = 0; snapshot = null;
-    copyText = null; announce = null; onConversation = null;
+    copyText = null; announce = null; onConversation = null; onPlacement = null;
     for (const candidate of candidates) cleanup(candidate);
     if (dispose) root = null;
   }

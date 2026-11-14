@@ -80,7 +80,11 @@ var (
 			cancel()
 			daemon.CloseNavigatorDiagnostics(ctx)
 		}()
-		return daemon.New(a.cfg, a.pool, logger).Run()
+		s := daemon.New(a.cfg, a.pool, logger)
+		if a.cfg.UI.Navigator {
+			mountProductionNavigator(s)
+		}
+		return s.Run()
 	}
 )
 

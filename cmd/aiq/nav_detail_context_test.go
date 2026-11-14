@@ -147,7 +147,7 @@ func TestNavDetailEncodedLimitConstructorAndHeldEstimate(t *testing.T) {
 	if encoded.Load() != before {
 		t.Fatal("known overflow was marshaled")
 	}
-	for _, limits := range []navDetailLimits{{0, 1}, {1000, 0}, {1, 1}} {
+	for _, limits := range []navDetailLimits{{bodyBytes: 0, requests: 1}, {bodyBytes: 1000, requests: 0}, {bodyBytes: 1, requests: 1}} {
 		if _, err := newNavDetailHandler(f.deps, limits); err == nil {
 			t.Fatal("invalid limits accepted")
 		}
@@ -155,7 +155,7 @@ func TestNavDetailEncodedLimitConstructorAndHeldEstimate(t *testing.T) {
 	for _, build := range []string{"", strings.Repeat("a", 129), "space build", "line\nbuild", "é"} {
 		d := f.deps
 		d.build = build
-		if _, err := newNavDetailHandler(d, navDetailLimits{4096, 1}); err == nil {
+		if _, err := newNavDetailHandler(d, navDetailLimits{bodyBytes: 4096, requests: 1}); err == nil {
 			t.Fatal("invalid Build accepted")
 		}
 	}

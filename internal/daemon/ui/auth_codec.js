@@ -1,5 +1,5 @@
 const refused = () => { throw new TypeError("Navigator request unavailable"); };
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 export function canonical32(value) {
   return typeof value === "string" && /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(value);
 }
@@ -36,12 +36,14 @@ export function route(value = "/sessions") {
   const split = value.indexOf("?"), path = split < 0 ? value : value.slice(0,split), raw = split < 0 ? "" : value.slice(split+1);
   if (split >= 0 && raw === "") refused();
   const parts = path.split("/");
-  if (!["/sessions","/asks","/"].includes(path) && !(parts.length === 4 && parts[1] === "sessions" && ["claude","codex","agy"].includes(parts[2]) && uuid.test(parts[3]))) refused();
-  const query = pairs(raw,["all","dir"]);
+  const detail = parts.length === 4 && parts[1] === "sessions" && ["claude","codex","agy"].includes(parts[2]) && uuid.test(parts[3]);
+  if (!["/sessions","/asks","/","/help"].includes(path) && !detail) refused();
+  const query = pairs(raw,["all","dir","at"]);
   if (Object.hasOwn(query,"dir")) directory(query.dir);
   if (Object.hasOwn(query,"all") && (path !== "/asks" || !["true","false"].includes(query.all))) refused();
   if (query.all === "true" && Object.hasOwn(query,"dir")) refused();
-  return Object.freeze({path, dir:query.dir ?? "", all:query.all === "true", next:value});
+  if (Object.hasOwn(query,"at") && (!detail || !/^[1-9][0-9]{0,12}$/.test(query.at))) refused();
+  return Object.freeze({path, dir:query.dir ?? "", all:query.all === "true", anchor:Number(query.at ?? 0), next:value});
 }
 export function fragment(raw) {
   if (typeof raw !== "string" || raw.length > 8192) refused();

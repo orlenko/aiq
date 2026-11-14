@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -21,6 +22,7 @@ import (
 type navSessionsLimits struct {
 	rowBytes, bodyBytes int64
 	builders            int
+	arrayEntries        int64 // Optional for the unmounted component; positive in production.
 }
 
 type navSessionsDeps struct {
@@ -38,7 +40,7 @@ type navSessionsHandler struct {
 }
 
 func newNavSessionsHandler(deps navSessionsDeps, limits navSessionsLimits) (*navSessionsHandler, error) {
-	if deps.source == nil || deps.summary == nil || limits.rowBytes <= 0 || limits.bodyBytes <= 0 || limits.builders <= 0 {
+	if deps.source == nil || deps.summary == nil || limits.rowBytes <= 0 || limits.bodyBytes <= 0 || limits.builders <= 0 || limits.arrayEntries < 0 {
 		return nil, errors.New("invalid navigator list configuration")
 	}
 	for _, code := range []string{"invalid_request", "not_found", "method_not_allowed", "internal_error", "list_too_large", "request_cancelled", "list_busy"} {
@@ -103,13 +105,13 @@ func (h *navSessionsHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	}
 	// The writer is deliberately outside builder recovery. No second response
 	// is attempted if transport writes fail or panic; admission lasts through it.
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
+	headers := w.Header()
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Cache-Control", "no-store")
 	if p.allow != "" {
-		w.Header().Set("Allow", p.allow)
+		headers.Set("Allow", p.allow)
 	}
-	w.WriteHeader(p.status)
-	_, _ = w.Write(p.body)
+	daemon.WriteNavigatorBody(w, req, headers, p.status, p.body)
 }
 
 type navListQuery struct {
@@ -257,6 +259,9 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 		body.Sessions = append(body.Sessions, navSessionDTO(row))
 	}
 	clear(selected)
+	if h.limits.arrayEntries > 0 && int64(len(body.RootsSearched))+int64(len(body.Sessions)) > h.limits.arrayEntries {
+		return navListError(http.StatusServiceUnavailable, "list_too_large")
+	}
 	size, fits := navJSONSize(body, h.limits.bodyBytes)
 	if !fits {
 		return navListError(http.StatusServiceUnavailable, "list_too_large")

@@ -17,6 +17,9 @@ var (
 type navDetailLimits struct {
 	bodyBytes int64
 	requests  int
+	// Both zero preserves the unmounted component's earlier byte-only policy.
+	// The production factory must supply both positive structural allowances.
+	arrayEntries, stringUnits int64
 }
 
 type navDetailFacts struct {

@@ -38,7 +38,13 @@ func (denyAll) Proof(*http.Request) bool { return false }
 
 // navBuildAssets are the navigator's embedded files, which the build string covers so a
 // page can tell when it is served by another build.
-var navBuildAssets = [][]byte{navShellTemplate, navBootstrapJS, navSessionJS, navCodecJS, navAuthCSS}
+var navBuildAssets = func() [][]byte {
+	out := [][]byte{navShellTemplate, navBootstrapJS, navSessionJS, navCodecJS, navAuthCSS}
+	for _, a := range navAdditionalAssets {
+		out = append(out, a.body)
+	}
+	return out
+}()
 
 // navBuild is "<version>+<hash of the navigator's files>".
 func navBuild() string {
@@ -122,6 +128,17 @@ func (g *navGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case navRoute{http.MethodGet, "/api/nav/info"}:
 		g.proven(g.info, w, r)
+		return
+	}
+	if verifier, ok := g.verifier.(interface {
+		AuthorizeRead(*http.Request) (*http.Request, bool)
+	}); ok {
+		owned, accepted := verifier.AuthorizeRead(r)
+		if !accepted || owned == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		g.api.ServeHTTP(w, owned)
 		return
 	}
 	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
