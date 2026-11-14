@@ -1,5 +1,6 @@
 import {captureConversation} from "./feed_data.js";
 import {lineClassNames} from "./dom.js";
+import {directory,route,encodeForm} from "./auth_codec.js";
 
 // Admission units describe consumed input, not encoded bytes or total heap.
 const fail = () => { throw new TypeError("could not capture navigator response"); };
@@ -42,6 +43,19 @@ const row = {provider:"str", id:"str", cwd:"str", label:"str", title:"str", mode
   updated:"str", turns:"uint", tools:"uint", worker:"bool", bypass:"bool"};
 const list = {dir:"str", roots_searched:["str"], partial:"bool", scanned:"uint", of:"uint",
   unreadable_count:"uint", sessions:[row]};
+const catalog={source:"str",directories:[{path:"str",updated_ms:"uint"}]};
+
+export function captureDirectories(data,limits){
+  try{
+    const out=capture(data,catalog,credits(limits));require(out.source==="launch metadata");
+    const seen=new Set();let previous=null;
+    for(const item of out.directories){
+      directory(item.path);route("/sessions?dir="+encodeForm(item.path));require(item.updated_ms>0&&!seen.has(item.path));seen.add(item.path);
+      require(previous===null||previous.updated_ms>=item.updated_ms);previous=item;
+    }
+    return out;
+  }catch{fail();}
+}
 
 function capture(value, schema, budget, rowArray = false) {
   if (Array.isArray(schema)) {

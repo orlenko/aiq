@@ -12,7 +12,7 @@ function fixture() {
   active++;max=Math.max(max,active);
   calls.push({query,signal,resolve:value=>{active--;resolve(value);},reject:()=>{active--;reject(Error("invented"));}});
  });
- return {calls,broker:createReadBroker({sessions:read,conversation:read,asks:read,placement:read}),max:()=>max};
+ return {calls,broker:createReadBroker({directories:read,sessions:read,conversation:read,asks:read,placement:read}),max:()=>max};
 }
 test("list and detail remain current and complete fairly",async()=>{
  const f=fixture(),r=f.broker.route();
@@ -20,6 +20,12 @@ test("list and detail remain current and complete fairly",async()=>{
  assert.equal(f.calls.length,1);assert.equal(f.calls[0].signal.aborted,false);
  f.calls[0].resolve("list");assert.equal(await a,"list");await tick();
  assert.equal(f.calls.length,2);f.calls[1].resolve("detail");assert.equal(await b,"detail");assert.equal(f.max(),1);f.broker.close();
+});
+test("directory channel holds the same physical slot and retires with its route",async()=>{
+ const f=fixture(),a=f.broker.route(),old=caught(a.read('directories',{}));await tick();
+ const b=f.broker.route(),next=b.read('sessions',list);await tick();assert.equal(f.calls.length,1);assert.equal(f.calls[0].signal.aborted,true);
+ f.calls[0].resolve('stale catalog');assert.deepEqual(await old,{failed:true});await tick();assert.equal(f.calls.length,2);assert.equal(f.max(),1);
+ f.calls[1].resolve('current');assert.equal(await next,'current');f.broker.close();
 });
 test("retired physical cleanup holds new route list and detail",async()=>{
  const f=fixture(),a=f.broker.route();const old=caught(a.read("sessions",list));await tick();

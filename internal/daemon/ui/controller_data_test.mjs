@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {captureSessions, captureDetail} from './controller_data.js';
+import {captureSessions, captureDetail, captureDirectories} from './controller_data.js';
 
 const id = '00000001-0000-4000-8000-000000000001';
 const scope = {provider:'agy', id};
@@ -21,6 +21,24 @@ function row(more={}) {
 }
 const sessions = (rows=[]) => ({dir:'/x',roots_searched:['r'],partial:true,scanned:3,of:7,unreadable_count:2,sessions:rows});
 const reject = fn => assert.throws(fn,{name:'TypeError',message:'could not capture navigator response'});
+
+test('directory catalog owns complete metadata before publication and rejects wrong scope shapes',()=>{
+  const input={source:'launch metadata',directories:[{path:'/invented/A',updated_ms:20},{path:'/invented/B',updated_ms:10}]};
+  const out=captureDirectories(input,limits());input.directories[0].path='/changed';assert.equal(out.directories[0].path,'/invented/A');
+  const invalid=[{source:'complete catalog',directories:[]},{source:'launch metadata',directories:[{path:'relative',updated_ms:1}]},
+    {source:'launch metadata',directories:[{path:'/a/../b',updated_ms:1}]},{source:'launch metadata',directories:[{path:'/a',updated_ms:0}]},
+    {source:'launch metadata',directories:[{path:'/a',updated_ms:1},{path:'/a',updated_ms:1}]},
+    {source:'launch metadata',directories:[{path:'/a',updated_ms:1},{path:'/b',updated_ms:2}]}];
+  for(const value of invalid)reject(()=>captureDirectories(value,limits()));
+  const ties={source:'launch metadata',directories:[{path:'/\ue000',updated_ms:1},{path:'/😀',updated_ms:1}]};assert.equal(captureDirectories(ties,limits()).directories.length,2);
+});
+test('directory catalog charges the complete array and UTF16 strings without reading accessors',()=>{
+  const input={source:'launch metadata',directories:[{path:'/😀',updated_ms:1}]};
+  assert.equal(captureDirectories(input,limits(1,18)).directories[0].path,'/😀');
+  reject(()=>captureDirectories(input,limits(1,17)));reject(()=>captureDirectories(input,limits(0,18)));
+  let accessed=0;const bad={source:'launch metadata',directories:[Object.defineProperty({},'path',{get(){accessed++;return '/x';}})]};
+  reject(()=>captureDirectories(bad,limits()));assert.equal(accessed,0);
+});
 
 test('list has independent literal text, structure and row admission boundaries',()=>{
   assert.deepEqual(captureSessions(sessions(),'/x',limits(1,3,1)),
