@@ -599,3 +599,49 @@ func TestNavAsksHTTPAdmissionThroughTransportAndRelease(t *testing.T) {
 		}
 	}
 }
+
+func TestNavAsksKeyCheckOccursOnceOnlyAfterAdmissionAndSuccessfulRead(t *testing.T) {
+	for _, kind := range []string{"ready", "missing", "unavailable", "invalid", "cancelled"} {
+		t.Run(kind, func(t *testing.T) {
+			snapshot := responseSnapshot()
+			h, _, _, _ := asksHTTPFixture(t, &snapshot)
+			calls := 0
+			h.d.keyPresent = func() bool { calls++; return false }
+			switch kind {
+			case "missing":
+				h.d.read = func(context.Context, time.Time, state.AsksSnapshotLimits) (*state.AsksSnapshot, error) {
+					return nil, errNavAsksStoreMissing
+				}
+			case "unavailable":
+				h.d.read = func(context.Context, time.Time, state.AsksSnapshotLimits) (*state.AsksSnapshot, error) {
+					return nil, errNavAsksStoreUnavailable
+				}
+			}
+			req := asksHTTPGet("/api/nav/asks")
+			if kind == "invalid" {
+				req = asksHTTPGet("/api/nav/asks?invalid=1")
+			}
+			if kind == "cancelled" {
+				ctx, cancel := context.WithCancel(req.Context())
+				cancel()
+				req = req.WithContext(ctx)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			expected := 0
+			if kind == "ready" {
+				expected = 1
+			}
+			if calls != expected {
+				t.Fatal("key lookup outside admitted successful read", calls)
+			}
+			if kind == "missing" {
+				if w.Code != 200 || !strings.Contains(w.Body.String(), "Not set up") {
+					t.Fatal(w.Code, w.Body.String())
+				}
+			} else if kind == "unavailable" && w.Code != 503 {
+				t.Fatal("read error became not-setup", w.Code)
+			}
+		})
+	}
+}

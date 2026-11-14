@@ -232,3 +232,14 @@ test('malformed optional totals fail whole without string or numeric repair',()=
     }
   }
 });
+
+test('scope open counts must agree with complete supplied rows and all scope has no elsewhere',()=>{
+ const d=snapshot([item()]);d.scope_counts={open:1,elsewhere_open:0};assert.deepEqual(capture(d).scope_counts,d.scope_counts);
+ d.scope_counts.open=0;reject(()=>capture(d));d.scope_counts.open=1;d.scope_counts.elsewhere_open=-1;reject(()=>capture(d));d.scope_counts.elsewhere_open=7;reject(()=>capture(d));
+ const inherited=snapshot();Object.setPrototypeOf(inherited,{scope_counts:{open:99,elsewhere_open:99}});assert.equal(capture(inherited).scope_counts,undefined);
+});
+
+test('status line captures only data with fixed remedy vocabulary while allowing repeated reordered codes',()=>{
+ const d=snapshot();d.status_line={known:true,text:'stored arbitrary command-looking text',problem:true,remedy:['watch','setup','watch','service_install']};assert.deepEqual(capture(d).status_line,d.status_line);
+ d.status_line.remedy.push('reset');reject(()=>capture(d));d.status_line.remedy=[];Object.defineProperty(d.status_line,'text',{get(){throw Error('must not run');}});reject(()=>capture(d));
+});

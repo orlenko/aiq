@@ -153,8 +153,8 @@ func TestNavAsksMovedReferenceSharedLimitsBeforeRender(t *testing.T) {
 	o := responseOptions()
 	s := responseSnapshot()
 	s.Items = []state.Ask{movedAsk(1, state.AskClosed, "", o.now.Unix())}
-	// Header74 + closed-row metadata7 + reference1 + actual wording13 =95 units.
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 1, 20, 35, 9, 95
+	// Header100 + closed-row metadata7 + reference1 + actual wording13 =121 units.
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 1, 20, 35, 9, 121
 	body, err := buildNavAsksResponse(context.Background(), s, o)
 	if err != nil {
 		t.Fatal(err)

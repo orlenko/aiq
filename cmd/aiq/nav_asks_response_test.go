@@ -37,7 +37,7 @@ func responseRows() state.AsksSnapshot {
 
 // Frozen old root remains an independent historical projection oracle.
 const responseLegacyEmptyJSON = `{"scope":{"mode":"all","dir":""},"sections":[{"key":"asks","items":[]},{"key":"warnings","items":[]},{"key":"other_open","items":[]},{"key":"probably_done","items":[]},{"key":"closed_dismissed","items":[]}],"report":{"known":false},"totals":{"utc_day":"2031-04-06","skipped":0,"calls_today":0}}`
-const responseEmptyJSON = `{"scope":{"mode":"all","dir":""},"sections":[{"key":"asks","items":[]},{"key":"warnings","items":[]},{"key":"other_open","items":[]},{"key":"probably_done","items":[]},{"key":"closed_dismissed","items":[]}],"report":{"known":false},"totals":{"utc_day":"2031-04-06","skipped":0,"calls_today":0},"moved_today":{"local_day":"2031-04-06","start_at":{"ms":1933200000000,"known":true},"ids":[]}}`
+const responseEmptyJSON = `{"scope":{"mode":"all","dir":""},"sections":[{"key":"asks","items":[]},{"key":"warnings","items":[]},{"key":"other_open","items":[]},{"key":"probably_done","items":[]},{"key":"closed_dismissed","items":[]}],"report":{"known":false},"totals":{"utc_day":"2031-04-06","skipped":0,"calls_today":0},"moved_today":{"local_day":"2031-04-06","start_at":{"ms":1933200000000,"known":true},"ids":[]},"scope_counts":{"open":0,"elsewhere_open":0},"status_line":{"known":false,"text":"Watcher status unavailable","problem":false,"remedy":[]}}`
 
 func responseJSON(t *testing.T, body []byte) map[string]any {
 	t.Helper()
@@ -53,7 +53,7 @@ func responseItems(v map[string]any, group int) []any {
 
 func TestNavAsksResponseLiteralQuotasAndRoots(t *testing.T) {
 	o := responseOptions()
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits, o.bodyBytes = 1, 13, 1, 5, 74, int64(len(responseEmptyJSON))
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits, o.bodyBytes = 1, 13, 1, 5, 100, int64(len(responseEmptyJSON))
 	for _, present := range []bool{false, true} {
 		s := responseSnapshot()
 		s.ReportPresent = present
@@ -84,7 +84,7 @@ func TestNavAsksResponseLiteralQuotasAndRoots(t *testing.T) {
 	}
 	s := responseRows()
 	o = responseOptions()
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 110
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 136
 	body, err := buildNavAsksResponse(context.Background(), s, o)
 	if err != nil {
 		t.Fatal(err)
@@ -111,11 +111,11 @@ func TestNavAsksResponseLiteralQuotasAndRoots(t *testing.T) {
 	tail := func(string, int, bool) ([]webMarkdownLine, bool) {
 		return []webMarkdownLine{{kind: "text", spans: []webMarkdownSpan{{text: "z"}}}, {kind: "code", spans: []webMarkdownSpan{{text: "   ", classes: []string{"code"}}}}}, true
 	}
-	o.arrayEntries, o.stringUnits = 17, 132
+	o.arrayEntries, o.stringUnits = 17, 158
 	if _, e := buildNavAsksResponseWith(context.Background(), s, o, tail, json.Marshal); e != nil {
 		t.Fatal(e)
 	}
-	for _, mutate := range []func(*navAsksResponseOptions){func(o *navAsksResponseOptions) { o.arrayEntries = 16 }, func(o *navAsksResponseOptions) { o.stringUnits = 131 }} {
+	for _, mutate := range []func(*navAsksResponseOptions){func(o *navAsksResponseOptions) { o.arrayEntries = 16 }, func(o *navAsksResponseOptions) { o.stringUnits = 157 }} {
 		bad := o
 		mutate(&bad)
 		if b, e := buildNavAsksResponseWith(context.Background(), s, bad, tail, json.Marshal); b != nil || e != errNavAsksResponseTooLarge {
@@ -270,7 +270,7 @@ func TestNavAsksResponseOwnedCaptureAndConcurrency(t *testing.T) {
 	}
 	s = responseRows()
 	o = responseOptions()
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 110
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 136
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -445,6 +445,79 @@ if(raw.report.known){assert.equal(out.report.known,true);assert.deepEqual(out.re
 			o.aliases = map[string]string{"/other": "/other", "/fixture": "/fixture"}
 			if b, e := buildNavAsksResponse(context.Background(), *bad, o); b != nil || !errors.Is(e, diagnostic.Base(diagnostic.Unshowable)) {
 				t.Fatal("real-reader excluded invalid metadata silently repaired/dropped", e)
+			}
+		})
+	}
+}
+
+func TestNavAsksScopeCountsAndTypedStatusUseGlobalSnapshot(t *testing.T) {
+	for _, kind := range []string{"watching elsewhere", "no key", "not watching", "stale", "failing", "unknown key"} {
+		t.Run(kind, func(t *testing.T) {
+			s := responseSnapshot()
+			o := responseOptions()
+			o.scope = navAsksScope{"directory", "/invented/selected"}
+			o.keyKnown = true
+			o.keyOK = true
+			s.ReportPresent = true
+			s.Status.PassAt = o.now.Unix()
+			s.Status.Watched = 1
+			s.Items = []state.Ask{{ID: 1, Workspace: "/invented/elsewhere", State: state.AskOpen, FirstQuote: "invented quote"}, {ID: 2, Workspace: "/invented/selected", State: state.AskClosed, FirstQuote: "invented closed"}}
+			o.aliases = map[string]string{"/invented/selected": "/invented/selected", "/invented/elsewhere": "/invented/elsewhere"}
+			switch kind {
+			case "no key":
+				o.keyOK = false
+			case "not watching":
+				s.Status.PassAt = 0
+			case "stale":
+				s.Status.PassAt = o.now.Add(-10 * time.Minute).Unix()
+			case "failing":
+				s.Status.LastError = "stored error says aiq asks setup"
+				s.Status.NextTryAt = o.now.Add(time.Minute).Unix()
+				s.Status.ErrorAt = o.now.Unix()
+			case "unknown key":
+				o.keyKnown = false
+			}
+			b, err := buildNavAsksResponse(context.Background(), s, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body navAsksKnownBody
+			if err := json.Unmarshal(b, &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Counts.Open != 0 || body.Counts.Elsewhere != 1 {
+				t.Fatal("wrong scope count", body.Counts)
+			}
+			switch kind {
+			case "watching elsewhere":
+				if strings.Contains(body.Status.Text, "Nothing open") || body.Status.Problem || !body.Status.Known || len(body.Status.Remedy) != 0 {
+					t.Fatal("selected empty became global empty", body.Status)
+				}
+			case "no key":
+				if !body.Status.Problem || !reflect.DeepEqual(body.Status.Remedy, []string{"setup"}) || body.Status.Text != "Off: no key. Run aiq asks setup" {
+					t.Fatal(body.Status)
+				}
+			case "not watching", "stale":
+				if !body.Status.Problem || !reflect.DeepEqual(body.Status.Remedy, []string{"service_install", "watch"}) {
+					t.Fatal(body.Status)
+				}
+			case "failing":
+				if !body.Status.Problem || len(body.Status.Remedy) != 0 {
+					t.Fatal("error text created remedy", body.Status)
+				}
+			case "unknown key":
+				if body.Status.Known || body.Status.Text != "Watcher status unavailable" || len(body.Status.Remedy) != 0 {
+					t.Fatal(body.Status)
+				}
+			}
+			o.scope = navAsksScope{"all", ""}
+			o.aliases = nil
+			b, err = buildNavAsksResponse(context.Background(), s, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = json.Unmarshal(b, &body); err != nil || body.Counts.Open != 1 || body.Counts.Elsewhere != 0 {
+				t.Fatal("all scope", body.Counts, err)
 			}
 		})
 	}
