@@ -914,6 +914,8 @@ func (b *asksScreen) action(k keypress) (asksRequest, bool, bool) {
 
 type asksInput struct {
 	key          keypress
+	text         rune // original typed rune, when the tokenizer's literal option is on
+	erase        bool // Backspace, distinct from Escape in a text field
 	x, y, button int
 	mouse        bool
 	paste        bool // the start of pasted text, which is dropped
@@ -984,6 +986,9 @@ var (
 // asksTokenizer turns input bytes into events. Pasted text, between the bracketed-paste
 // marks, is dropped whole, so it can never act as keys.
 type asksTokenizer struct {
+	// literal retains text-field input beside navigation aliases. Other screens keep
+	// their existing key-only events.
+	literal bool
 	pending []byte
 	pasting bool
 	// afterEscape says a lone Escape was just flushed as the key. What follows it may still
@@ -1156,13 +1161,17 @@ func (p *asksTokenizer) tokens(buf []byte) []asksInput {
 		if !utf8.FullRune(b) {
 			break
 		}
-		_, n := utf8.DecodeRune(b)
+		r, n := utf8.DecodeRune(b)
 		for _, k := range parseKeys(b[:n]) {
 			// The resume browser uses g for Home. Here it is a plain key, which does nothing.
 			if b[0] == 'g' {
 				k = keypress{r: 'g'}
 			}
-			out = append(out, asksInput{key: k})
+			e := asksInput{key: k}
+			if p.literal {
+				e.text, e.erase = r, b[0] == 0x7f || b[0] == 0x08
+			}
+			out = append(out, e)
 		}
 		p.pending = b[n:]
 		p.typed = append(p.typed, b[:n]...)
