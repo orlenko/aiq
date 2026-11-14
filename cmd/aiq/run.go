@@ -190,7 +190,7 @@ func parseWait(s string) (time.Duration, error) {
 // workspaceID identifies the current project: git root if inside a
 // repository, otherwise the normalized working directory.
 func workspaceID() string {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	out, err := exec.Command("git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--show-toplevel").Output()
 	if err == nil {
 		if root := strings.TrimSpace(string(out)); root != "" {
 			return root

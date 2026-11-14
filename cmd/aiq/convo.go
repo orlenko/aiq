@@ -324,10 +324,12 @@ func page(text string) error {
 
 // convoTarget is the transcript a convo reads and where it was found.
 type convoTarget struct {
-	provider string
-	path     string
-	account  string // provider/name, when a lease says
-	pane     string
+	provider    string
+	path        string
+	account     string // provider/name, when a lease says
+	copyAccount string // unique owner of an exact lookup's newest overlay copy
+	copyRoot    string
+	pane        string
 	// stale says no running CLI is known to write the transcript (read by
 	// id), so a turn left open is one the CLI never finished.
 	stale    bool

@@ -65,6 +65,26 @@ func agyAbsoluteWorkspaces(ctx context.Context, appData string) map[string][]str
 	return agyWorkspaceMap(ctx, appData, true)
 }
 
+// AgyDirectory reports only a unique recorded absolute directory. AGY's
+// transcript itself carries no cwd; an ambiguous association is not a route.
+func AgyDirectory(ctx context.Context, appData, id string) (string, bool) {
+	if ctx == nil || ctx.Err() != nil || !validFullID("agy", id) {
+		return "", false
+	}
+	selected := ""
+	for dir, ids := range agyAbsoluteWorkspaces(ctx, appData) {
+		for _, candidate := range ids {
+			if candidate == id {
+				if selected != "" && selected != dir {
+					return "", false
+				}
+				selected = dir
+			}
+		}
+	}
+	return selected, ctx.Err() == nil && selected != ""
+}
+
 func agyWorkspaceMap(ctx context.Context, appData string, absoluteOnly bool) map[string][]string {
 	ids := map[string][]string{}
 	seen := map[string]bool{}
