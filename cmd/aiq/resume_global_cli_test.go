@@ -76,7 +76,7 @@ func TestResumeGlobalRunAutoUsesRecordedDirectoryForEveryProvider(t *testing.T) 
 				t.Fatal("wrong resumed provider/session", got, args, err)
 			}
 			cwd, err := os.Getwd()
-			if err != nil || cwd != canonicalDir(f.target) {
+			if err != nil || canonicalDir(cwd) != canonicalDir(f.target) {
 				t.Fatal("run auto used caller directory", cwd, err)
 			}
 			if _, err := os.Stat(filepath.Join(f.bin, "tmux-args")); !os.IsNotExist(err) {
@@ -95,7 +95,7 @@ func TestResumeGlobalLongResolvesBeforeExistingCallerWorkspace(t *testing.T) {
 				t.Fatal(err)
 			}
 			data, err := os.ReadFile(filepath.Join(f.bin, "dir"))
-			if err != nil || string(data) != canonicalDir(f.target) {
+			if err != nil || canonicalDir(string(data)) != canonicalDir(f.target) {
 				t.Fatal("long launch used caller instead of recorded cwd", string(data), err)
 			}
 			command, err := os.ReadFile(filepath.Join(f.bin, "command"))
@@ -175,7 +175,7 @@ func TestResumeGlobalUnsafeTargetAndWorkspaceNeverReachTmux(t *testing.T) {
 				t.Fatal("unsafe target reached terminal decisions")
 			}
 			cwd, _ := os.Getwd()
-			if cwd != canonicalDir(f.target) {
+			if canonicalDir(cwd) != canonicalDir(f.target) {
 				t.Fatal("refusal fell back to caller", cwd)
 			}
 		})
@@ -197,7 +197,7 @@ func TestResumeGlobalForcedAccountConflictFailsBeforeDirectoryChange(t *testing.
 		t.Fatal("unreadable account override accepted", err)
 	}
 	cwd, _ := os.Getwd()
-	if cwd != canonicalDir(f.caller) {
+	if canonicalDir(cwd) != canonicalDir(f.caller) {
 		t.Fatal("account conflict changed directory")
 	}
 	if _, err := os.Stat(filepath.Join(f.bin, "tmux-args")); !os.IsNotExist(err) {

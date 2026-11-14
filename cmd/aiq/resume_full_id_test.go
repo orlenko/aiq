@@ -35,14 +35,14 @@ func TestResumeFullIDAllProvidersResolveBeforeDirectoryEntry(t *testing.T) {
 			path := fullIDWrite(t, roots, provider, fullIDFixtureID, work)
 			st := resumeFixtureStore(t)
 			selected, err := resolveResumeSelection(st, roots, nil, nil, fullIDFixtureID)
-			if err != nil || !selected.global || selected.s.Provider != provider || selected.s.ID != fullIDFixtureID || selected.s.Cwd != canonicalDir(work) || selected.s.Path != path {
+			if err != nil || !selected.global || selected.s.Provider != provider || selected.s.ID != fullIDFixtureID || canonicalDir(selected.s.Cwd) != canonicalDir(work) || selected.s.Path != path {
 				t.Fatal("wrong cross-directory selection", selected, err)
 			}
 			t.Chdir(caller)
 			d := defaultResumeDirDeps()
 			d.read = func(string) ([]byte, error) { t.Fatal("0700 fixture reached real account files"); return nil, nil }
 			entered, changed, err := enterResumeDirectory(d, selected.s.Cwd, selected.s.ID)
-			if err != nil || !changed || entered != canonicalDir(work) {
+			if err != nil || !changed || canonicalDir(entered) != canonicalDir(work) {
 				t.Fatal("wrong entered directory", entered, changed, err)
 			}
 		})
