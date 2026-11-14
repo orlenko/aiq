@@ -226,7 +226,7 @@ func (s *Server) startNavigator(h navHandle) (*navGeneration, navHandle) {
 		}
 		return nil, next
 	}
-	slots, api := s.slots, s.navAPI
+	slots, api, pages := s.slots, s.navAPI, s.navPages
 	if slots == nil {
 		return nil, s.failNavigatorStart(h, nil, nil, "missing navigator connection owner")
 	}
@@ -277,7 +277,7 @@ func (s *Server) startNavigator(h navHandle) (*navGeneration, navHandle) {
 		g.handle = navHandle{id: h.id, scope: h.scope, gen: g}
 		core := navHandlerCore(navGate{verifier: auth,
 			hello: http.HandlerFunc(auth.Hello), login: http.HandlerFunc(auth.Login),
-			info: http.HandlerFunc(auth.Info), revoke: http.HandlerFunc(auth.Revoke), api: api,
+			info: http.HandlerFunc(auth.Info), revoke: http.HandlerFunc(auth.Revoke), api: api, pages: pages,
 		}, build)
 		refuse := connectionUnavailable()
 		refusal := navHandlerCore(navGate{verifier: denyAll{}, hello: refuse, login: refuse, info: refuse, revoke: refuse, api: refuse, pages: refuse}, build)

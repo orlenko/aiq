@@ -52,6 +52,9 @@ func newNavAuthHTTPFixture(t *testing.T) *navAuthHTTPFixture {
 func (f *navAuthHTTPFixture) request(t *testing.T, method, path, body string, proof bool) (*http.Request, navauth.Proof) {
 	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	if method == "GET" && body == "" {
+		r.Body = http.NoBody
+	}
 	if method == "POST" {
 		r.Header.Set("Content-Type", "application/json")
 	}
@@ -129,7 +132,7 @@ func TestNavAuthHTTPGateLifecycle(t *testing.T) {
 		t.Fatal("one-use link replay accepted")
 	}
 	r, _ = f.request(t, "GET", "/api/nav/synthetic", "", false)
-	r.Header.Set("Authorization", "Bearer "+credential.Credential)
+	r.Header.Set("Authorization", tabTestHeader(t, f.binding, r.Method, r.URL.RequestURI(), credential.Credential))
 	w = httptest.NewRecorder()
 	f.gate.ServeHTTP(w, r)
 	if w.Code != 204 {

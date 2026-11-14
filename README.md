@@ -37,6 +37,24 @@ things stay private per account: the credential, and `.claude.json` (Claude
 Code rewrites it with a rename on every change, so sharing it would lose
 writes). It is seeded from your `~/.claude.json` when the account is created,
 which means project trust and user-scoped MCP servers are per account.
+Claude Code refuses to write auto memory through the overlay's `projects`
+symlink, so an overlay launch passes `--settings` with `autoMemoryDirectory`
+naming the project's real folder, `~/.claude/projects/<project>/memory`, the
+one a native session uses. aiq works out the project the way Claude Code
+2.1.322 does (a linked worktree shares its main checkout's folder) and
+leaves Claude Code's default alone when it cannot be sure, or when the user
+settings or the project's `.claude/settings.json` or `settings.local.json`
+already decide. It also adds nothing when Claude Code's own memory
+variables are set, when a launcher's `env` configures the home, config home
+or a memory variable (even with an empty value), when a launcher's `args`
+carry `--settings`, or with `--project-config-root` or `--deep-link-cwd-b64`.
+An inline JSON `--settings` (cmux adds one) gets the key added; with a
+`--settings` file aiq adds nothing and says so. The folder is fixed at
+launch: after `/cd` to another project, the session keeps writing the first
+project's memory, where a native session may switch to the new project's.
+Likewise with `-w` and a WorktreeCreate hook that returns something other
+than a git worktree of the same repository: the session writes the
+original project's memory.
 
 The account matching the current `~/.claude` login is registered as
 *native* and launches without `CLAUDE_CONFIG_DIR` at all.
@@ -194,6 +212,8 @@ aiq long resume [--account <name>] [<id>]
                                     the same, as it ran: no forced bypass or tier
 aiq long list                       leases, pane, drain state, idle/busy, why it waits
 aiq long drain .                    move this workspace's session now
+aiq long drain <lease-id> --started <unix-seconds>
+                                    request wrap-up for that recorded lease
 aiq long attach                     re-attach
 aiq long attach <lease-id> [--started <unix-seconds>]
                                     attach the recorded local lease
@@ -205,6 +225,13 @@ that lease's Unix start time. Exact attachment reads existing state and prints
 the quoted workspace and account before opening the saved terminal. Tmux lookup
 uses the caller's current/default server; another server context refuses.
 The saved lease selects its backend, so omit `--backend` on this form.
+
+Guarded drain also checks the copied start time before preparing any handoff
+note. It prints the workspace and account, prepares the existing note's
+redaction, then checks the complete lease identity again before archiving the
+note and recording the request. A replaced lease leaves its note untouched.
+Existing archives are never overwritten. If archiving succeeds but the state
+commit fails, the command reports that partial result so you can list and retry.
 
 Choose the initial account with `aiq long codex --account acme -- --yolo`
 (or `--account=acme`). This also works with Claude and named launchers.
@@ -422,6 +449,33 @@ aiq resume --print [<id>]   the same lists as plain text, for scripts and agents
 aiq resume --bare <id>      resume without the launcher the session ran under
 ```
 
+A complete session UUID also works from another directory, including with
+`--bare`, `--launcher`, `aiq run auto resume` and `aiq long auto resume`.
+Prefixes stay local to the current directory. aiq resolves the session first,
+prints its recorded directory, then enters that directory before choosing a
+workspace or starting or attaching to a session. The newest transcript copy wins;
+a newest copy in one account's overlay pins that recorded account, while a
+newest real-home copy does not. Antigravity needs one
+unambiguous recorded directory association.
+
+On macOS and Linux, changing directory this way refuses a missing, unexaminable,
+foreign-owned or other-writable directory. Group write is allowed only on Linux
+when the directory has no access list and the local account files confirm a
+private group. A different workspace top level is checked too for long sessions
+and launchers. The refusal explains how to recover; reading with `aiq convo` does
+not need the project to exist. Running the command from inside the recorded
+directory retains the existing behavior.
+
+On macOS, extended ACL write grants are checked even when the mode bits are
+`0755`. Deny-only and read-only ACLs remain admissible; a write grant whose
+principal aiq cannot prove is limited to you refuses the directory change.
+
+When changing directories, aiq also refuses relative configuration/home paths
+or relative `PATH` entries, so the move cannot select another credential store
+or executable. Configured provider binaries must be absolute paths. Launcher
+commands must be absolute paths or bare names resolved through the absolute
+`PATH`. Use absolute paths, or enter the session's directory yourself.
+
 The first screen lists every Claude and Codex session whose working directory
 is the current one, newest first, with the model, turn and tool counts, and
 the session's name or first prompt. Enter opens a session's turns: each prompt
@@ -626,6 +680,88 @@ turned off. With no key nothing leaves the machine. The key lives in
 else can read; each request checks the key is still there.
 
 It watches only sessions running under `aiq long`, on this machine only.
+
+## Local session navigator
+
+On macOS or Linux, enable the optional navigator in your config and restart
+an updated daemon:
+
+```toml
+[ui]
+navigator = true
+```
+
+Then run `aiq ui` from your project directory. It opens a one-use browser
+handoff; the link expires after two minutes. Each tab has its own login,
+expiring after 30 minutes without successful requests or eight hours total.
+Background follow requests count as activity. Forget this tab signs out that
+tab; `aiq ui --revoke` invalidates every tab and pending link. After a daemon
+restart, run `aiq ui` again. The navigator stays off unless you enable it.
+Windows unlock, remote browsers and SSH forwarding are not supported.
+
+```bash
+aiq ui                        # this directory
+aiq ui /path/to/project        # an explicit directory
+aiq ui --info                  # authenticated host and data-directory information
+aiq ui --revoke                # invalidate all tabs and pending links
+```
+
+After installing an updated build, `aiq daemon install` restarts the daemon
+from your own login shell; `aiq ui` itself never starts or restarts one. The
+private browser handoff file delivers the one-use link. The page clears its
+link fragment before app code or storage access. Login uses session storage when available; blocked
+storage is reported and the login can remain in memory for the open page.
+The numeric-loopback HTTP connection assumes trusted initial page loading and
+does not encrypt directory names or session IDs.
+
+Sessions offers a recent directory catalog, All Sessions, workers, loaded-text
+search and a live/registered-open filter. Activity is a dated snapshot; Refresh
+checks it again. A managed live mark requires a positive terminal observation
+and an unchanged lease. A Claude PID registration is labelled separately, and
+recent Codex or Antigravity writes are hints rather than live proof. Unknown
+state stays visible; incomplete counts say so. Workspace links lead to the
+current managed session and recorded earlier sessions, including account spans.
+Herdr is a terminal backend, alongside tmux; it is not a transcript provider.
+
+Open a conversation to read prompts and replies, copy a message as Markdown,
+use its prompt outline, change Markdown marks, or choose the last 50, 100 or
+500 prompts or Show all. Claude and Codex follow while the page is visible.
+Scrolling up or focusing reading controls pauses automatic advancement; End or
+Jump to newest resumes it. Antigravity refreshes a snapshot. A workspace follows
+its successor session when you are at the tail; while you read an older session,
+it keeps that content and offers an explicit jump. An account change within the
+same session does not create another session boundary.
+
+Asks shows scoped questions, open counts elsewhere, watcher status, moved-today
+items and reasons for closed items. Open conversation locates the related turn
+when possible and offers the full session when placement is uncertain. A missing
+store is reported as not set up; read failures retain the last view. Remedy,
+dismiss and restore controls copy fixed terminal commands. They do not perform
+setup, start a watcher or change an ask. Existing Asks setup and privacy rules
+above still apply.
+
+Resume, bare resume, auto resume and long auto resume are also copy controls.
+Read-command buttons copy full-ID `aiq convo` commands, with `--follow` offered
+for Claude and Codex.
+For recorded safe launcher names, the Sessions row offers that launcher’s resume.
+Directories and account names are displayed beside commands and are never
+interpolated into them. Workspace attach and wrap-up commands include the lease
+start guard and are available only with fresh verified metadata. They remain
+terminal actions: the browser does not type into, start, attach, drain or stop
+an agent. Auto variants retain their CLI permission-bypass behavior.
+
+Keyboard help lists scoped shortcuts; single-key shortcuts can be switched off,
+and Tab keeps its browser meaning. Theme, reading and keyboard preferences last
+for the open page. Live status uses one polite announcement region; background
+updates do not move reading focus, and full transcript text is not a live region.
+Wide code and tables scroll within their own labelled areas. Whole-response
+resource failures never truncate labels or quotes; choose a smaller conversation
+window or Refresh to retry.
+
+Workspace mapping uses a bounded read-only Git root query, falling back to the
+recorded directory for a known non-repository. Unavailable mappings remain
+explicitly unknown, so their history can be partial. Handoff notes are represented
+only by metadata; their contents are not shown in this browser.
 
 ## Automatic provider and model selection
 
@@ -1019,7 +1155,12 @@ successful. For a manual pause, use `aiq account disable codex/<name>` and later
 Sign in as the intended account at each browser step: sign out of claude.ai
 or chatgpt.com first, or use a private window, so the browser does not hand
 back the account it is already signed in as. aiq warns when two accounts
-turn out to be the same login.
+turn out to be the same login. When a Claude account with a poll grant, or a
+Codex account, is logged in as someone other than the account aiq recorded,
+aiq keeps the recorded identity, warns, and does not route to the account
+until a login as the right person; if the account really changed hands, run
+`aiq account authorize <provider>/<name>` (for Codex it accepts the login in
+the home, with no browser).
 
 If you run [aiquota](https://github.com/orlenko/misc/tree/main/quota-monitor) on the same machine,
 `aiq account import` adopts its accounts instead: Codex `auth.json` files and
@@ -1045,6 +1186,7 @@ aiq account add <provider> <name> [--device-auth|--browser]
 aiq account login <provider>/<name> [--device-auth|--browser]
                                      redo the CLI login
 aiq account authorize claude/<name>  redo the quota poll grant
+aiq account authorize codex/<name>   accept a new login as the account's identity
 aiq account poll [<id>...]           poll now
 aiq account label <id> <text>        label shown on the status page
 aiq account order [<id>...]          display order within each provider column
@@ -1069,6 +1211,8 @@ aiq asks [--all] [--no-mouse] | list | dismiss | restore | watch | workspaces | 
 
 aiq shim install|uninstall|path
 aiq statusline install|uninstall|status   Claude status-line multiplexer
+aiq ui [directory] | --info | --revoke | --help
+                                     local browser Sessions and Asks (opt-in)
 aiq daemon run|install|uninstall|status
 aiq doctor [-v] [--device-auth|--browser]
                                      failed checks and how to fix them
@@ -1188,7 +1332,7 @@ Depth is 1, well under `max_depth`.
 | Shims | `~/.local/share/aiq/shims/` |
 | State (accounts, windows, leases, affinity, launches, events; no credentials) | `~/.local/share/aiq/state.db` |
 | Daemon log | `~/.local/share/aiq/log/daemon.log` |
-| Session navigator: its state at each daemon start, with a secret token while it is on; the ports it used lately (off by default, shows nothing yet) | `~/.local/share/aiq/ui-token`, `~/.local/share/aiq/ui-ports` |
+| Session navigator: its state at each daemon start, with a secret token while it is on; the ports it used lately (off by default) | `~/.local/share/aiq/ui-token`, `~/.local/share/aiq/ui-ports` |
 | `aiq asks` items, with quotes of the agents' messages | `~/.local/share/aiq/asks.db` |
 | `aiq asks` TypeSafe key | `~/.config/aiq/typesafe.key` |
 | Config | `~/.config/aiq/config.toml` |
@@ -1257,6 +1401,9 @@ idle_grace_seconds = 20
 idle_rotate_pct = 15.0          # move a quiet session off an account this low (0 = off)
 idle_rotate_minutes = 15        # ...once it has been quiet this long
 tmux_prefix = "aiq"
+
+[ui]
+navigator = false              # optional local browser navigator; restart daemon after changing
 
 [updates]
 enabled = true                  # keep npm-installed codex/claude current

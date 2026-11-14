@@ -132,6 +132,15 @@ func expandEnv(value string, env []string) string {
 	})
 }
 
+// launcherEnv is env with launcher l's Env applied, as the CLI it starts
+// sees it. env itself is not changed: SanitizeEnv builds a new slice.
+func launcherEnv(env []string, l config.Launcher) []string {
+	for k, v := range l.Env {
+		env = append(proc.SanitizeEnv(env, k), k+"="+expandEnv(v, env))
+	}
+	return env
+}
+
 // withoutShims returns env with aiq's shim directory dropped from PATH.
 func withoutShims(env []string) []string {
 	out := make([]string, 0, len(env))
@@ -205,18 +214,26 @@ func (a *app) execProvider(provider string, args []string, env []string, launche
 	if !ok {
 		return configErr("no-launcher", "no launcher %q; see: aiq launcher list", launcher)
 	}
-	path, err := resolveLauncher(launcher, l)
+	path, argv, env, err := launcherCommand(launcher, l, bin, args, env)
 	if err != nil {
-		return configErr("no-launcher", "%v", err)
+		return err
+	}
+	return proc.Exec(path, argv, env)
+}
+
+// launcherCommand is the program, argv and env that start the CLI at bin
+// through launcher l, with args after the launcher's own.
+func launcherCommand(name string, l config.Launcher, bin string, args, env []string) (string, []string, []string, error) {
+	path, err := resolveLauncher(name, l)
+	if err != nil {
+		return "", nil, nil, configErr("no-launcher", "%v", err)
 	}
 	// The launcher starts the CLI itself, usually by bare name, so the shim
 	// directory has to go before it looks: otherwise it re-enters routing.
-	env = append(withoutShims(env), binaryVar+"="+bin, launcherVar+"="+launcher)
-	for k, v := range l.Env {
-		env = append(proc.SanitizeEnv(env, k), k+"="+expandEnv(v, env))
-	}
+	env = append(withoutShims(env), binaryVar+"="+bin, launcherVar+"="+name)
+	env = launcherEnv(env, l)
 	argv := append([]string{path}, append(append([]string{}, l.Args...), args...)...)
-	return proc.Exec(path, argv, env)
+	return path, argv, env, nil
 }
 
 // providerCommand builds a child process that runs the provider binary via

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {captureSessions, captureDetail} from './controller_data.js';
+import {captureSessions, captureDetail, captureDetailResponse, captureDirectories, captureState, captureLong} from './controller_data.js';
 
 const id = '00000001-0000-4000-8000-000000000001';
 const scope = {provider:'agy', id};
@@ -21,6 +21,97 @@ function row(more={}) {
 }
 const sessions = (rows=[]) => ({dir:'/x',roots_searched:['r'],partial:true,scanned:3,of:7,unreadable_count:2,sessions:rows});
 const reject = fn => assert.throws(fn,{name:'TypeError',message:'could not capture navigator response'});
+
+test('workspace metadata owns nullable fields, scope, knownness and aggregate admission',()=>{
+  const value={build:'b',kind:'workspace',requested_dir:'/A/sub',workspace:'/A',workspace_known:true,state:'unknown',partial:true,unmapped_launches:1,history_present:true,observed:time(),
+    lease:null,current:null,current_spans:[],earlier:[{key:'a'.repeat(64),provider:'claude',session_id:'',transcript_available:false,workspace_known:false,last:time(),spans:[{account:'Invented A',launcher:'fixture',from:time(),until:time()}]}],
+    workspaces:[],note:{available:false,exists:false,updated:time(),archived:0}};
+  const out=captureLong(value,'/A/sub',true,limits());assert.deepEqual(out,value);value.earlier[0].spans[0].account='mutated';assert.equal(out.earlier[0].spans[0].account,'Invented A');
+  for(const change of [{current:{provider:'claude',id}},{requested_dir:'/B'},{history_present:false},{kind:'list'},{workspace:'relative'},{state:'ended'}])reject(()=>captureLong({...value,...change},'/A/sub',true,limits()));
+  reject(()=>captureLong(value,'/A/sub',true,limits(1)));reject(()=>captureLong(value,'/A/sub',true,limits(1000,2)));
+  let calls=0;Object.defineProperty(value,'lease',{get(){calls++;return null;}});reject(()=>captureLong(value,'/A/sub',true,limits()));assert.equal(calls,0);
+});
+test('workspace current requires positive backend and closed supported identity',()=>{
+  const value={build:'b',kind:'workspace',requested_dir:'/A',workspace:'/A',workspace_known:true,state:'live',partial:false,unmapped_launches:0,history_present:false,observed:time(),
+    lease:{id:'7',started:'1',provider:'agy',account:'Invented',launcher:'fixture',pane:'%1',live:'live',drain:'waiting',working_known:false,working:false,turn_started:time()},current:scope,current_spans:[],earlier:[],workspaces:[],note:{available:false,exists:false,updated:time(),archived:0}};
+  assert.deepEqual(captureLong(value,'/A',false,limits()),value);
+  for(const change of [{live:'unknown'},{drain:'server shell text'},{working_known:true},{working:true}])reject(()=>captureLong({...value,lease:{...value.lease,...change}},'/A',false,limits()));
+  reject(()=>captureLong({...value,current:{provider:'herdr',id}},'/A',false,limits()));
+  reject(()=>captureLong({...value,note:{...value.note,available:true}},'/A',false,limits()));
+});
+
+test('full directory catalog owns knownness, default scope and complete text admission',()=>{
+  const value={source:'session index',partial:true,metadata_known:false,scanned:1,of:1,unreadable_count:0,unknown_directories:0,
+    default_dir:'/A',default_reason:'directory fallback',directories:[{path:'/A',updated_ms:0,updated_known:false,sessions:1,workers:0}]};
+  const out=captureDirectories(value,limits(1,35));assert.deepEqual(out,value);assert.notEqual(out.directories,value.directories);
+  reject(()=>captureDirectories(value,limits(1,34)));reject(()=>captureDirectories(value,limits(0,35)));
+  for(const change of [{partial:false},{metadata_known:true},{default_dir:'/missing'},{default_reason:'server command'},{scanned:2}])reject(()=>captureDirectories({...value,...change},limits()));
+  const bad=structuredClone(value);bad.directories[0].updated_ms=1;reject(()=>captureDirectories(bad,limits()));
+  let accessed=0;Object.defineProperty(value,'default_dir',{get(){accessed++;return '/A';}});reject(()=>captureDirectories(value,limits()));assert.equal(accessed,0);
+});
+test('all-session capture requires explicit all intent and an empty echoed directory',()=>{
+  const value={...sessions([row()]),dir:''};
+  assert.equal(captureSessions(value,'',limits(),true).sessions.length,1);
+  reject(()=>captureSessions(value,'',limits()));reject(()=>captureSessions(value,'/x',limits(),true));
+  reject(()=>captureSessions(sessions([row()]),'',limits(),true));
+});
+
+test('delta replaces the complete changing tail and re-admits the retained prefix',()=>{
+  const base=detail();base.selection='A'.repeat(43);base.tail_turn=1;base.tail_key='a'.repeat(64);base.from_turn=0;
+  const second=structuredClone(base.messages[0]);second.id='2'.padStart(32,'0');second.turn=1;second.groups[0].ordinal=1;base.messages.push(second);
+  const tail={...structuredClone(base),reset:false,from_turn:1,tail_turn:2,tail_key:'b'.repeat(64),messages:[structuredClone(second)]};
+  tail.messages[0].raw='replacement raw';const last=structuredClone(second);last.id='3'.padStart(32,'0');last.turn=2;last.groups[0].ordinal=2;tail.messages.push(last);
+  const request={fromTurn:1,fromKey:base.tail_key},before=JSON.stringify(base);
+  const out=captureDetailResponse(tail,scope,limits(),base,request);
+  assert.equal(out.reset,true);assert.equal(out.from_turn,0);assert.equal(out.messages.length,3);assert.equal(out.messages[0].raw,base.messages[0].raw);assert.equal(out.messages[1].raw,'replacement raw');
+  assert.equal(JSON.stringify(base),before);assert.notEqual(out.messages[0],base.messages[0]);
+  // Each two-message input fits, but the three-message candidate does not.
+  captureDetail(base,scope,limits(16));reject(()=>captureDetailResponse(tail,scope,limits(16),base,request));
+  for(const change of [{from_turn:0},{window_start:1,earlier_hidden:1},{markup:true},{build:'other'},{later_hidden:1},{tail_turn:0}])reject(()=>captureDetailResponse({...tail,...change},scope,limits(),base,request));
+  reject(()=>captureDetailResponse(tail,scope,limits(),base,{...request,fromKey:'c'.repeat(64)}));
+  assert.equal(captureDetailResponse(base,scope,limits(),null,{}).messages.length,2);
+});
+
+test('detail selection is optional for old hosts, owned, canonical and charged',()=>{
+  const d=detail();d.selection='A'.repeat(43);
+  assert.equal(captureDetail(d,scope,limits(8,208)).selection,d.selection);
+  reject(()=>captureDetail(d,scope,limits(8,207)));
+  d.selection='A'.repeat(42)+'B';reject(()=>captureDetail(d,scope,limits()));
+  let accessed=0;Object.defineProperty(d,'selection',{get(){accessed++;return 'A'.repeat(43);}});
+  reject(()=>captureDetail(d,scope,limits()));assert.equal(accessed,0);
+});
+test('state belongs to exact retained selection and never publishes mismatch facts',()=>{
+  const selected={...scope,provider:'claude',selection:'A'.repeat(43)};
+  const base={build:'b',...selected,match:true,cached:true,cached_turns:2,cached_updated:{ms:0,known:true},disk_changed:true,
+    live:'live',working_known:true,working:true,elapsed_ms:1000};
+  assert.deepEqual(captureState(base,selected,limits()),base);
+  for(const mutation of [{selection:'B'.repeat(42)+'A'},{id:'00000002-0000-4000-8000-000000000002'},
+    {live:'unknown'},{working_known:false},{working:false},{elapsed_ms:-1},{cached:false},
+    {cached_updated:{ms:1,known:false}}])reject(()=>captureState({...base,...mutation},selected,limits()));
+  const mismatch={build:'b',...selected,match:false,reason:'selection_changed'};
+  const hostile={...mismatch};Object.defineProperty(hostile,'cached_turns',{get(){throw Error('unused');}});
+  assert.deepEqual(captureState(hostile,selected,limits()),mismatch);
+  const agy={...selected,provider:'agy'};reject(()=>captureState({...base,provider:'agy'},agy,limits()));
+  reject(()=>captureState(base,selected,limits(1000,1)));
+});
+
+test('directory catalog owns complete metadata before publication and rejects wrong scope shapes',()=>{
+  const input={source:'launch metadata',directories:[{path:'/invented/A',updated_ms:20},{path:'/invented/B',updated_ms:10}]};
+  const out=captureDirectories(input,limits());input.directories[0].path='/changed';assert.equal(out.directories[0].path,'/invented/A');
+  const invalid=[{source:'complete catalog',directories:[]},{source:'launch metadata',directories:[{path:'relative',updated_ms:1}]},
+    {source:'launch metadata',directories:[{path:'/a/../b',updated_ms:1}]},{source:'launch metadata',directories:[{path:'/a',updated_ms:0}]},
+    {source:'launch metadata',directories:[{path:'/a',updated_ms:1},{path:'/a',updated_ms:1}]},
+    {source:'launch metadata',directories:[{path:'/a',updated_ms:1},{path:'/b',updated_ms:2}]}];
+  for(const value of invalid)reject(()=>captureDirectories(value,limits()));
+  const ties={source:'launch metadata',directories:[{path:'/\ue000',updated_ms:1},{path:'/😀',updated_ms:1}]};assert.equal(captureDirectories(ties,limits()).directories.length,2);
+});
+test('directory catalog charges the complete array and UTF16 strings without reading accessors',()=>{
+  const input={source:'launch metadata',directories:[{path:'/😀',updated_ms:1}]};
+  assert.equal(captureDirectories(input,limits(1,18)).directories[0].path,'/😀');
+  reject(()=>captureDirectories(input,limits(1,17)));reject(()=>captureDirectories(input,limits(0,18)));
+  let accessed=0;const bad={source:'launch metadata',directories:[Object.defineProperty({},'path',{get(){accessed++;return '/x';}})]};
+  reject(()=>captureDirectories(bad,limits()));assert.equal(accessed,0);
+});
 
 test('list has independent literal text, structure and row admission boundaries',()=>{
   assert.deepEqual(captureSessions(sessions(),'/x',limits(1,3,1)),
@@ -175,4 +266,19 @@ test('limits require own positive safe-integer credits and are never consumed in
     let calls=0;const accessor=limits();Object.defineProperty(accessor,key,{get(){calls++;return 1000;}});
     reject(()=>captureDetail(detail(),scope,accessor));assert.equal(calls,0);
   }
+});
+
+test('activity owns proof categories and global counts without promoting recent or PID-only facts',()=>{
+ const activity={live:'live',pid:0,managed:true,workspace:'/workspace',account:'Invented',launcher:'fixture',pane:'%9',lease_id:'7',started:'123',drain:'requested',drain_manual:true,continued:false};
+ const data=sessions([row({provider:'claude',activity})]);data.activity={known:true,live:3,elsewhere:2,claude_open_known:true,observed:time()};
+ const out=captureSessions(data,'/x',limits());activity.account='changed';assert.equal(out.sessions[0].activity.account,'Invented');assert.equal(out.activity.elsewhere,2);
+ for(const patch of [{live:'live',managed:false},{live:'recent',managed:false},{live:'open',managed:false,pid:0},{workspace:'relative'},{live:'unknown',managed:true,lease_id:''}])reject(()=>captureSessions(sessions([row({provider:'claude',activity:{...activity,...patch}})]),'/x',limits()));
+ data.activity.elsewhere=4;reject(()=>captureSessions(data,'/x',limits()));
+});
+
+test('optional activity fields consume remaining shared units and refuse accessors before invocation',()=>{
+ const data=sessions([row()]);let calls=0;Object.defineProperty(data.sessions[0],'activity',{get(){calls++;throw Error('must not run');}});reject(()=>captureSessions(data,'/x',limits()));assert.equal(calls,0);
+ const valid=sessions([row({activity:{live:'recent',pid:0,managed:false,workspace:'',account:'',launcher:'',pane:'',lease_id:'',started:'',drain:'',drain_manual:false,continued:false}})]);
+ const base=sessions([row()]);let exact=0;while(true){try{captureSessions(base,'/x',limits(1000,++exact));break;}catch{}}
+ reject(()=>captureSessions(valid,'/x',limits(1000,exact)));
 });

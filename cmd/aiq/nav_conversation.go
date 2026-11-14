@@ -25,17 +25,21 @@ var (
 const navConversationSafeInteger int64 = 1<<53 - 1
 
 type navConversationOptions struct {
-	provider, id          string
-	last                  int
-	anchor                int64
-	markup                bool
-	now                   time.Time
-	location              *time.Location
-	live, hold, stale     bool
-	accounts              []convoAccountFact
-	skippedNote, liveMark string
-	bodyBytes             int64
-	faults                *diagnostic.Latch
+	provider, id              string
+	selection                 string
+	prefixScope               string
+	last                      int
+	all                       bool
+	anchor                    int64
+	markup                    bool
+	now                       time.Time
+	location                  *time.Location
+	live, hold, stale         bool
+	accounts                  []convoAccountFact
+	skippedNote, liveMark     string
+	bodyBytes                 int64
+	arrayEntries, stringUnits int64 // HTTP/browser admission, included in view identity
+	faults                    *diagnostic.Latch
 }
 
 type navConversationRender func(*transcript.Session, convoStyledOptions) ([]convoStyledMessage, error)
@@ -103,7 +107,7 @@ func projectNavConversationWith(s *transcript.Session, o navConversationOptions,
 		o.bodyBytes <= 0 || o.location == nil || o.skippedNote == "" || o.stale && (o.live || o.hold) || render == nil {
 		return nil, errNavConversationInvalid
 	}
-	start, end, err := navConversationBounds(s.Turns, o.last, o.anchor)
+	start, end, err := navConversationWindowBounds(s.Turns, o.last, o.anchor, o.all)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +180,17 @@ func navConversationBounds(turns []transcript.Turn, last int, anchor int64) (int
 		return i, len(turns), nil
 	}
 	return 0, 0, errNavConversationAnchor
+}
+
+// All is explicit: it never turns a numeric last=0 into a valid request.
+func navConversationWindowBounds(turns []transcript.Turn, last int, anchor int64, all bool) (int, int, error) {
+	if all {
+		if last != 0 || anchor != 0 {
+			return 0, 0, errNavConversationInvalid
+		}
+		return 0, len(turns), nil
+	}
+	return navConversationBounds(turns, last, anchor)
 }
 
 func navConversationTime(t time.Time) (navWireTime, error) {

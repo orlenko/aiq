@@ -29,7 +29,7 @@ func lifeHTTP(t *testing.T, g *navGeneration, method, path, body, bearer string,
 		r.Header.Set("Content-Type", "application/json")
 	}
 	if bearer != "" {
-		r.Header.Set("Authorization", "Bearer "+bearer)
+		setLifeTab(t, r, g, bearer)
 	}
 	if proof != nil {
 		r.Header.Set("X-Aiq-Proof", proof.String())
@@ -157,7 +157,7 @@ func TestNavigatorRetirementEndsCappedWaitBeforeAdmittedResponses(t *testing.T) 
 		defer tr.CloseIdleConnections()
 		c := &http.Client{Transport: tr, Timeout: 5 * time.Second}
 		r, _ := http.NewRequest("GET", "http://"+g.Addr().String()+"/api/nav/invented", nil)
-		r.Header.Set("Authorization", "Bearer "+credential)
+		setLifeTab(t, r, g, credential)
 		resp, err := c.Do(r)
 		clientErr = err
 		if err == nil {

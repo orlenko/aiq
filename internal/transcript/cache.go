@@ -120,6 +120,7 @@ type Cache struct {
 
 // parsed is one full parse.
 type parsed struct {
+	identity  *parseIdentity
 	snap      Snapshot
 	sess      *Session
 	bytes     int64
@@ -559,7 +560,7 @@ func (c *Cache) admitLocked(snap Snapshot, s *Session) {
 	} else {
 		snap.Path = strings.Clone(snap.Path)
 	}
-	p := &parsed{snap: snap, sess: s, bytes: sessionBytes(s), at: c.now()}
+	p := &parsed{snap: snap, sess: s, bytes: sessionBytes(s), at: c.now(), identity: &parseIdentity{}}
 	if snap.Path != s.Path {
 		p.bytes += int64(len(snap.Path))
 	}

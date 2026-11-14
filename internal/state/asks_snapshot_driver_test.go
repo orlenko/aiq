@@ -23,6 +23,7 @@ type asksSnapshotProbe struct {
 	pinned, resume       chan struct{}
 	fault                string
 	cancel               context.CancelFunc
+	pinQuery, fullPrefix string // Optional selectors for other read-only snapshot fixtures.
 }
 type asksSnapshotConnector struct {
 	path string
@@ -80,6 +81,9 @@ func (c *asksSnapshotConn) BeginTx(ctx context.Context, opts driver.TxOptions) (
 }
 func (c *asksSnapshotConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
 	full := strings.HasPrefix(q, "SELECT "+askColumns+" FROM asks") || strings.HasPrefix(q, "SELECT pass_at,")
+	if c.p.fullPrefix != "" {
+		full = strings.HasPrefix(q, c.p.fullPrefix)
+	}
 	if full {
 		c.p.full.Add(1)
 	}
@@ -87,7 +91,11 @@ func (c *asksSnapshotConn) QueryContext(ctx context.Context, q string, args []dr
 	if err != nil {
 		return nil, err
 	}
-	return &asksSnapshotDriverRows{Rows: r, p: c.p, pin: q == "SELECT COUNT(*) FROM asks", full: full, ctx: ctx}, nil
+	pinQuery := c.p.pinQuery
+	if pinQuery == "" {
+		pinQuery = "SELECT COUNT(*) FROM asks"
+	}
+	return &asksSnapshotDriverRows{Rows: r, p: c.p, pin: q == pinQuery, full: full, ctx: ctx}, nil
 }
 
 type asksSnapshotTx struct {

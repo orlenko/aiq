@@ -35,6 +35,9 @@ type Candidate struct {
 	// Root and Account are set by ByID: the root the file was found under,
 	// and that root's label in Roots.Labels.
 	Root, Account string
+	// Directory is an unambiguous external workspace association, used only
+	// when a transcript (currently Antigravity) does not record its own cwd.
+	Directory string
 }
 
 // Discovery finds the transcripts of a directory: Claude by project directory,
@@ -141,7 +144,10 @@ type ListResult struct {
 // its value dropped. parse runs on up to 8 goroutines at once. The list's
 // time is ctx's deadline.
 func ListWith(ctx context.Context, src Discovery, dir string, parse func(ctx context.Context, path string) (Summary, error)) (ListResult, error) {
-	dir = canonical(dir)
+	return listWith(ctx, src, canonical(dir), parse, true)
+}
+
+func listWith(ctx context.Context, src Discovery, dir string, parse func(ctx context.Context, path string) (Summary, error), scoped bool) (ListResult, error) {
 	var res ListResult
 	cands, err := src.Candidates(ctx, dir)
 	if err != nil {
@@ -163,8 +169,11 @@ func ListWith(ctx context.Context, src Discovery, dir string, parse func(ctx con
 		if errs[i] = err; err != nil || s.Provider != cands[i].Provider {
 			return
 		}
-		if s.Cwd != "" && canonical(s.Cwd) != dir {
+		if scoped && s.Cwd != "" && canonical(s.Cwd) != dir {
 			return // an encoded project name shared by two directories
+		}
+		if !scoped && s.Cwd == "" {
+			s.Cwd = cands[i].Directory
 		}
 		rows[i] = &s
 	})

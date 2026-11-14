@@ -17,3 +17,4 @@
 .nav-asks .nav-asks-moved-list { padding-inline-start: 1.5em; }
 .nav-asks .nav-asks-moved-button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .nav-asks .nav-asks-moved-target:focus { outline: 2px solid currentColor; outline-offset: 2px; }
+.nav-asks-trust[data-problem="true"]{font-weight:700}.nav-asks-scope-counts,.nav-asks-trust{overflow-wrap:anywhere;white-space:pre-wrap}

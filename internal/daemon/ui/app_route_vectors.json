@@ -1,0 +1,14 @@
+[
+ {"route":"/help","ok":true},
+ {"route":"/help?dir=%2Finvented","ok":true},
+ {"route":"/sessions/agy/ABCDEF00-0000-4000-8000-000000000001?at=100123&dir=%2Finvented","ok":true},
+ {"route":"/sessions/codex/00000000-0000-4000-8000-000000000001?at=9999999999999","ok":true},
+ {"route":"/sessions/claude/00000000-0000-4000-8000-000000000001?at=0","ok":false},
+ {"route":"/sessions/claude/00000000-0000-4000-8000-000000000001?at=01","ok":false},
+ {"route":"/sessions/claude/00000000-0000-4000-8000-000000000001?at=10000000000000","ok":false},
+ {"route":"/asks?at=1","ok":false},
+ {"route":"/sessions?at=1","ok":false},
+ {"route":"/sessions/agy/00000000-0000-4000-8000-000000000001?at=%31","ok":false},
+ {"route":"/sessions/agy/00000000-0000-4000-8000-000000000001?at=1&at=2","ok":false},
+ {"route":"/help?all=true","ok":false}
+]

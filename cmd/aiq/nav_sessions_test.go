@@ -211,6 +211,9 @@ func TestNavSessionsLiteralDTOAndOwnership(t *testing.T) {
 	w := navTestServe(h, navTestRequest("/fixture"))
 	out := navTestDecode(t, w)
 	want := map[string]any{"dir": "/fixture", "roots_searched": []any{"/configured/claude", "/configured/codex", "/configured/agy"}, "partial": false, "scanned": float64(1), "of": float64(1), "unreadable_count": float64(0), "sessions": []any{map[string]any{"provider": "claude", "id": navTestID, "cwd": "/fixture", "label": label, "title": "title", "model": "model", "branch": "branch", "started": "2026-01-02T02:04:05.000000006Z", "updated": "0001-01-01T00:00:00Z", "turns": float64(2), "tools": float64(3), "worker": false, "bypass": true, "commands": []any{map[string]any{"verb": "convo", "fresh_only": false}, map[string]any{"verb": "convo_follow", "fresh_only": false}}}}}
+
+	want["activity"] = map[string]any{"known": false, "live": float64(0), "elsewhere": float64(0), "claude_open_known": false, "observed": map[string]any{"ms": float64(0), "known": false}}
+	want["sessions"].([]any)[0].(map[string]any)["activity"] = map[string]any{"live": "unknown", "pid": float64(0), "managed": false, "workspace": "", "account": "", "launcher": "", "pane": "", "lease_id": "", "started": "", "drain": "", "drain_manual": false, "continued": false}
 	if !reflect.DeepEqual(out, want) {
 		t.Fatalf("literal DTO mismatch\ngot %#v\nwant %#v", out, want)
 	}
@@ -328,7 +331,7 @@ func TestNavSessionsTextAndBodyBoundaries(t *testing.T) {
 			navTestResponse(t, w, 503, `{"error":"list_too_large"}`)
 		}
 	}
-	const emptyBody = `{"dir":"/fixture","roots_searched":[],"partial":false,"scanned":0,"of":0,"unreadable_count":0,"sessions":[]}`
+	const emptyBody = `{"dir":"/fixture","roots_searched":[],"partial":false,"scanned":0,"of":0,"unreadable_count":0,"sessions":[],"activity":{"known":false,"live":0,"elsewhere":0,"claude_open_known":false,"observed":{"ms":0,"known":false}}}`
 	for _, size := range []int64{int64(len(emptyBody)), int64(len(emptyBody) - 1)} {
 		h := navTestHandler(t, nil, func(_ *navSessionsDeps, l *navSessionsLimits) { l.bodyBytes = size })
 		w := navTestServe(h, navTestRequest("/fixture"))
@@ -786,16 +789,16 @@ func TestNavSessionsConstructorAndRealCache(t *testing.T) {
 	for _, code := range []string{"invalid_request", "not_found", "method_not_allowed", "internal_error", "list_too_large", "request_cancelled", "list_busy"} {
 		minBody = max(minBody, len(`{"error":"`+code+`"}`))
 	}
-	for _, limits := range []navSessionsLimits{{0, 1024, 1}, {1024, 0, 1}, {1024, 1024, 0}, {1024, int64(minBody - 1), 1}} {
+	for _, limits := range []navSessionsLimits{{rowBytes: 0, bodyBytes: 1024, builders: 1}, {rowBytes: 1024, bodyBytes: 0, builders: 1}, {rowBytes: 1024, bodyBytes: 1024, builders: 0}, {rowBytes: 1024, bodyBytes: int64(minBody - 1), builders: 1}} {
 		if h, err := newNavSessionsHandler(base, limits); h != nil || err == nil {
 			t.Fatal("invalid limits accepted")
 		}
 	}
-	if _, err := newNavSessionsHandler(base, navSessionsLimits{1024, int64(minBody), 1}); err != nil {
+	if _, err := newNavSessionsHandler(base, navSessionsLimits{rowBytes: 1024, bodyBytes: int64(minBody), builders: 1}); err != nil {
 		t.Fatal("derived body minimum rejected")
 	}
 	for _, deps := range []navSessionsDeps{{source: base.source}, {summary: base.summary}} {
-		if h, err := newNavSessionsHandler(deps, navSessionsLimits{1024, 1024, 1}); h != nil || err == nil {
+		if h, err := newNavSessionsHandler(deps, navSessionsLimits{rowBytes: 1024, bodyBytes: 1024, builders: 1}); h != nil || err == nil {
 			t.Fatal("missing dependency accepted")
 		}
 	}
@@ -832,7 +835,7 @@ func TestNavSessionsConstructorAndRealCache(t *testing.T) {
 	roots := transcript.Roots{ClaudeProjects: []string{claudeRoot}, CodexSessions: []string{codexRoot}, AgyAppData: []string{agyRoot}}
 	cache := transcript.NewCache()
 	index := transcript.NewIndex(roots)
-	h, err := newNavSessionsHandler(navSessionsDeps{roots: roots, source: index, summary: cache.Summary}, navSessionsLimits{1 << 20, 1 << 20, 1})
+	h, err := newNavSessionsHandler(navSessionsDeps{roots: roots, source: index, summary: cache.Summary}, navSessionsLimits{rowBytes: 1 << 20, bodyBytes: 1 << 20, builders: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

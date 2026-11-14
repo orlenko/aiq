@@ -76,6 +76,7 @@ Pool:
     For Codex, add and login take --device-auth or --browser; with neither, an
     SSH session or a Linux machine with no display gets the device code.
   aiq account authorize claude/<name>      (re)mint the quota poll grant
+  aiq account authorize codex/<name>       accept the account the home is logged in as
   aiq account poll [<provider>/<name>...]  poll now
   aiq account label <provider>/<name> <text>
   aiq account order [<provider>/<name>...]  display order (per provider column)
@@ -120,6 +121,8 @@ Long-running sessions (supervised, moved between accounts before they run dry):
                                     attach the recorded local lease; optional copied-start guard
 
 Sessions in this directory (Claude, Codex and Antigravity transcripts):
+	aiq ui [directory]               open the local browser navigator (macOS/Linux)
+	aiq ui --info | --revoke         authenticate daemon metadata or revoke browser logins
   aiq handoff redact [--apply]      list secrets matching known formats in saved handoff
                                     notes, by kind and count; --apply rewrites the notes
   aiq resume [--all] [--launcher <name> | --bare] [<id>] [-- args]
@@ -209,6 +212,14 @@ func (a *app) binary(provider string) (string, error) {
 }
 
 func main() {
+	// Navigator admission and failures never consult launchers or their logs.
+	if len(os.Args) > 1 && os.Args[1] == "ui" {
+		if err := cmdUI(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "aiq:", errorText(err))
+			os.Exit(1)
+		}
+		return
+	}
 	// On Windows only some commands run yet; the rest stop here, before they read the
 	// config or write anything.
 	if quiet, err := windowsGate(os.Args[1:]); quiet {

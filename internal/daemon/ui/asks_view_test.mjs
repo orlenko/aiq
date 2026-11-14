@@ -1,6 +1,6 @@
 import test, {afterEach} from 'node:test';
 import assert from 'node:assert/strict';
-import {createAsksView} from './asks_view.js';
+import {createAsksView,navigatorAskCommand,navigatorRemedyCommands} from './asks_view.js';
 import {snapshot,scope,limits,firstCopy,latestCopy,sourceID} from './asks_values.mjs';
 
 // Synthetic event/resource ownership only; supplied geometry is NOT browser evidence.
@@ -261,4 +261,32 @@ test('independent totals remain visible apart from stored watcher facts',()=>{
     f.view.teardown();assert.equal(root.textContent,'');assert.equal(f.document.activeElement,neighbor);
     f.clean();
   }
+});
+
+test('scope counts, fixed remedies and decimal command identities remain separate from stored wording',async()=>{
+ const data=snapshot();data.scope_counts={open:4,elsewhere_open:7};data.status_line={known:true,problem:true,text:'Stored wording: never copy aiq asks reset --all',remedy:['watch','setup','service_install','watch','setup']};
+ const f=fixture({},data);f.mount();assert.ok(f.document.body.textContent.includes('4 open here · 7 open elsewhere'));
+ assert.equal(find(f,'nav-asks-all')[0].href,'/asks?all=true');
+ assert.equal(find(f,'nav-asks-trust')[0].textContent,'! Stored wording: never copy aiq asks reset --all');
+ const remedies=find(f,'nav-asks-button').filter(n=>n.textContent.startsWith('Copy ')&&!['Copy quote','Copy dismiss command','Copy restore command'].includes(n.textContent));
+ assert.deepEqual(remedies.map(n=>n.textContent),['Copy background watcher command','Copy setup command','Copy watch command (in its own window)']);
+ for(const control of remedies){control.click();await tick();}
+ click(f,'Copy dismiss command');await tick();assert.deepEqual(f.copies,['aiq asks service install','aiq asks setup','aiq asks watch','aiq asks dismiss 9007199254740993']);
+ const restore=find(f,'nav-asks-button').find(n=>n.textContent==='Copy restore command');restore.click();await tick();assert.equal(f.copies.length,4);
+ click(f,'Probably done (1)');restore.click();await tick();assert.equal(f.copies.at(-1),'aiq asks restore 4');
+ f.clean();remedies[0].click();assert.equal(f.copies.length,5);
+});
+
+test('command and quote copies share one pending slot and retire without stale announcements',async()=>{
+ const d=deferred(),f=fixture({copyText:text=>{f.copies.push(text);return d.promise;}});f.mount();
+ click(f,'Copy dismiss command');click(f,'Copy quote');assert.deepEqual(f.copies,['aiq asks dismiss 9007199254740993']);
+ assert.equal(find(f,'nav-asks-button').find(n=>n.textContent==='Copy quote').getAttribute('aria-disabled'),'true');
+ f.clean();const before=f.announcements.length;d.resolve();await tick();assert.equal(f.announcements.length,before);
+});
+
+test('ask commands preserve maximum int64 decimal text and reject shell or rounded identities',()=>{
+ assert.equal(navigatorAskCommand('9223372036854775807','open'),'aiq asks dismiss 9223372036854775807');
+ for(const id of ['0','01','1\n','1;echo invented','9223372036854775808',9223372036854775807,null,{}])assert.equal(navigatorAskCommand(id,'open'),null);
+ assert.equal(navigatorAskCommand('7','unknown'),null);
+ assert.deepEqual(navigatorRemedyCommands(['watch','__proto__','setup','watch']).map(x=>x[0]),['setup','watch']);
 });

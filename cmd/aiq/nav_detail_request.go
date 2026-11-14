@@ -92,8 +92,11 @@ func navDetailScanCondition(raw, fingerprint string) (matched, valid, wildcard b
 type navDetailQuery struct {
 	provider, id string
 	last         int
+	all          bool
 	markup       bool
 	anchor       int64
+	fromTurn     int64
+	fromKey      string
 	condition    navDetailCondition
 }
 
@@ -136,19 +139,24 @@ func navDetailDecode(req *http.Request) (navDetailQuery, navDetailCode, bool) {
 		return q, navDetailInvalid, false
 	}
 	for key, value := range values {
-		if len(value) != 1 || key != "last" && key != "markup" && key != "at" {
+		if len(value) != 1 || key != "last" && key != "markup" && key != "at" && key != "from_turn" && key != "from_key" {
 			return q, navDetailInvalid, false
 		}
 	}
 	if value, exists := values["last"]; exists {
-		if !attachDigits(value[0], 5) {
-			return q, navDetailInvalid, false
+		if value[0] == "all" {
+			q.all = true
+			q.last = 0
+		} else {
+			if !attachDigits(value[0], 5) {
+				return q, navDetailInvalid, false
+			}
+			n, err := strconv.Atoi(value[0])
+			if err != nil || n < 1 || n > 10000 {
+				return q, navDetailInvalid, false
+			}
+			q.last = n
 		}
-		n, err := strconv.Atoi(value[0])
-		if err != nil || n < 1 || n > 10000 {
-			return q, navDetailInvalid, false
-		}
-		q.last = n
 	}
 	if value, exists := values["markup"]; exists {
 		if value[0] != "0" && value[0] != "1" {
@@ -164,6 +172,24 @@ func navDetailDecode(req *http.Request) (navDetailQuery, navDetailCode, bool) {
 		if err != nil || q.anchor < 1 || q.anchor > 9999999999999 {
 			return q, navDetailInvalid, false
 		}
+	}
+	if q.all && q.anchor != 0 {
+		return q, navDetailInvalid, false
+	}
+	turn, hasTurn := values["from_turn"]
+	key, hasKey := values["from_key"]
+	if hasTurn != hasKey || hasTurn && q.anchor != 0 {
+		return q, navDetailInvalid, false
+	}
+	if hasTurn {
+		if turn[0] != "0" && (!attachDigits(turn[0], 16) || turn[0][0] == '0') || !navDeltaKey(key[0]) {
+			return q, navDetailInvalid, false
+		}
+		q.fromTurn, err = strconv.ParseInt(turn[0], 10, 64)
+		if err != nil || q.fromTurn < 0 || q.fromTurn > navConversationSafeInteger {
+			return q, navDetailInvalid, false
+		}
+		q.fromKey = key[0]
 	}
 	q.condition, err = navDetailConditions(req.Header.Values("If-None-Match"))
 	if err != nil {

@@ -75,7 +75,7 @@ func resolveGlobalConvo(ctx context.Context, src transcript.Discovery, id string
 			}
 			return fail(err)
 		}
-		hits = append(hits, convoTarget{provider: provider, path: hit.Path, id: id, global: true})
+		hits = append(hits, convoTarget{provider: provider, path: hit.Path, id: id, global: true, copyAccount: hit.Account, copyRoot: hit.Root})
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(err)

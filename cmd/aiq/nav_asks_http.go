@@ -14,11 +14,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/state"
 )
 
 var errNavAsksAliasUnavailable = errors.New("asks aliases unavailable")
+var errNavAsksStoreUnavailable = errors.New("asks store unavailable")
+var errNavAsksStoreMissing = errors.New("asks store missing")
 
 // Injected and unmounted. Authentication, the filesystem adapter, production
 // limits and registered observer delivery belong to the guarded factory.
@@ -28,11 +31,12 @@ type navAsksAlias struct {
 }
 type navAsksResolve func(context.Context, string) (navAsksAlias, error)
 type navAsksHTTPDeps struct {
-	read    func(context.Context, time.Time, state.AsksSnapshotLimits) (*state.AsksSnapshot, error)
-	resolve navAsksResolve
-	now     func() time.Time
-	render  navAsksWordingRender
-	marshal func(any) ([]byte, error)
+	read       func(context.Context, time.Time, state.AsksSnapshotLimits) (*state.AsksSnapshot, error)
+	resolve    navAsksResolve
+	now        func() time.Time
+	keyPresent func() bool
+	render     navAsksWordingRender
+	marshal    func(any) ([]byte, error)
 }
 type navAsksHTTPLimits struct {
 	response navAsksResponseOptions // Only numerical allowances are retained.
@@ -50,6 +54,7 @@ const (
 	askHTTPCancelled
 	askHTTPInternal
 	askHTTPUnshowable
+	askHTTPUnavailable
 )
 
 var navAsksHTTPCodes = [...]struct {
@@ -59,6 +64,7 @@ var navAsksHTTPCodes = [...]struct {
 	{400, "invalid_request"}, {404, "not_found"}, {405, "method_not_allowed"},
 	{503, "asks_busy"}, {503, "asks_too_large"}, {503, "request_cancelled"},
 	{500, "internal_error"}, {500, "unshowable"},
+	{503, "asks_unavailable"},
 }
 
 type navAsksOutcome uint8
@@ -229,8 +235,7 @@ func (h *navAsksHandler) serve(w http.ResponseWriter, req *http.Request, f *navA
 		headers.Set("Allow", http.MethodGet)
 	}
 	headers.Set("Content-Length", strconv.Itoa(len(p.body)))
-	w.WriteHeader(p.status)
-	_, _ = w.Write(p.body)
+	daemon.WriteNavigatorBody(w, req, headers, p.status, p.body)
 }
 func (h *navAsksHandler) prepare(req *http.Request, release *func(), f *navAsksFaultState) (out navAsksHTTPResponse) {
 	defer func() {
@@ -275,6 +280,11 @@ func (h *navAsksHandler) prepare(req *http.Request, release *func(), f *navAsksF
 		return h.failure(askHTTPUnshowable, askOrdinary)
 	}
 	s, err := h.d.read(ctx, o.now, h.limits.reader)
+	if err == errNavAsksStoreMissing {
+		o.notSetup = true
+		s = &state.AsksSnapshot{UTCDay: state.AsksDay(o.now)}
+		err = nil
+	}
 	f.external(err)
 	if f.current {
 		return h.failure(askHTTPInternal, askPanicFinal)
@@ -283,6 +293,9 @@ func (h *navAsksHandler) prepare(req *http.Request, release *func(), f *navAsksF
 		return h.failure(askHTTPCancelled, askOrdinary)
 	}
 	if err != nil {
+		if err == errNavAsksStoreUnavailable {
+			return h.failure(askHTTPUnavailable, askOrdinary)
+		}
 		if err == context.Canceled || err == context.DeadlineExceeded {
 			return h.failure(askHTTPCancelled, askOrdinary)
 		}
@@ -293,6 +306,10 @@ func (h *navAsksHandler) prepare(req *http.Request, release *func(), f *navAsksF
 	}
 	if s == nil {
 		return h.failure(askHTTPInternal, askOrdinary)
+	}
+	if !o.notSetup && h.d.keyPresent != nil {
+		o.keyKnown = true
+		o.keyOK = h.d.keyPresent()
 	}
 	r, err := newNavAsksRun(ctx, *s, o, f)
 	if err == nil {

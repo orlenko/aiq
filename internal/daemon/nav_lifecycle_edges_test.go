@@ -219,7 +219,7 @@ func TestNavigatorRetainedKeepaliveCannotBorrowReplacementCredentials(t *testing
 		var header strings.Builder
 		fmt.Fprintf(&header, "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, a.Addr().String())
 		if credential != "" {
-			fmt.Fprintf(&header, "Authorization: Bearer %s\r\n", credential)
+			fmt.Fprintf(&header, "Authorization: %s\r\n", tabTestHeader(t, navauth.Binding{Port: a.port, Build: a.auth.build}, method, path, credential))
 		}
 		if proof != nil {
 			fmt.Fprintf(&header, "X-Aiq-Proof: %s\r\n", proof.String())

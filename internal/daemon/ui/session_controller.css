@@ -10,3 +10,6 @@
 .nav-controller .nav-controller-select[aria-current="true"] { font-weight: bold; outline: 1px solid currentColor; }
 .nav-controller button:focus-visible, .nav-controller .nav-controller-heading:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 @media (max-width: 48em) { .nav-controller { grid-template-columns: minmax(0, 1fr); } }
+.nav-controller-follow-content { max-height: 72vh; overflow: auto; overscroll-behavior: contain; }
+.nav-follow-status { white-space: pre-wrap; overflow-wrap: anywhere; }
+.nav-follow-newest { font: inherit; min-height: 2.5em; max-width: 100%; }

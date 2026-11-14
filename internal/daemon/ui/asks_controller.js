@@ -16,6 +16,9 @@ export function createAsksController(document, options) {
   const window = field(options, "window"), idPrefix = field(options, "idPrefix");
   let readAsks = field(options, "readAsks"), copyText = field(options, "copyText"),
     announce = field(options, "announce"), onConversation = field(options, "onConversation");
+  const placementOption=Object.getOwnPropertyDescriptor(options,"onPlacement");
+  let onPlacement=placementOption?.value;
+  if (placementOption && (!Object.hasOwn(placementOption,"value") || typeof onPlacement!=="function")) fail();
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
       !/^[A-Za-z][A-Za-z0-9_-]*$/.test(idPrefix) ||
       ![readAsks, copyText, announce, onConversation].every(f => typeof f === "function")) fail();
@@ -153,7 +156,8 @@ export function createAsksController(document, options) {
         expectedScope:{mode:op.mode, dir:op.dir}, limits:{...limits},
         copyText:text => copy(c, text),
         announce:message => { if (eligible(c)) announce(message); },
-        onConversation:value => { if (eligible(c)) onConversation(value); }});
+        onConversation:value => { if (eligible(c)) onConversation(value); },
+        onPlacement:onPlacement ? value=>{if(eligible(c))onPlacement(value);} : undefined});
       if (!current(op) || candidate !== c) return;
       c.root.append(c.child.fragment);
       const ok = c.child.mount() === true;
@@ -219,7 +223,7 @@ export function createAsksController(document, options) {
       retire(old, null, false); root.remove(); root.replaceChildren();
       refreshButton.removeEventListener("click", refresh);
       abort(flight);
-      readAsks = null; copyText = null; announce = null; onConversation = null;
+      readAsks = null; copyText = null; announce = null; onConversation = null; onPlacement = null;
     });
   }
   refreshButton.addEventListener("click", refresh);

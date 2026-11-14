@@ -92,6 +92,16 @@ func (m *navJSONMeter) value(v reflect.Value) bool {
 		return false
 	}
 	switch v.Kind() {
+	case reflect.Pointer:
+		// Only these two closed, nonrecursive optional wire objects are
+		// admitted. Arbitrary pointers and interface graphs remain refused.
+		if t != reflect.TypeFor[*navLongLease]() && t != reflect.TypeFor[*navLongScope]() {
+			return false
+		}
+		if v.IsNil() {
+			return m.add(4)
+		}
+		return m.value(v.Elem())
 	case reflect.String:
 		return m.text(v.String())
 	case reflect.Bool:

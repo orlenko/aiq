@@ -8,6 +8,7 @@ import (
 	"hash"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -17,6 +18,10 @@ func navDetailOwnFacts(f navDetailFacts, count int) (navDetailFacts, error) {
 		return navDetailFacts{}, errNavConversationInvalid
 	}
 	f.leaseIdentity = strings.Clone(f.leaseIdentity)
+	if len(f.selectionContext) > 128 {
+		return navDetailFacts{}, errNavConversationInvalid
+	}
+	f.selectionContext = strings.Clone(f.selectionContext)
 	in := f.accounts
 	f.accounts = make([]convoAccountFact, min(count, len(in)))
 	for i := range f.accounts {
@@ -71,7 +76,7 @@ func (f navDetailFrame) add(fields ...string) error {
 }
 
 func navDetailContextKey(parent, ctx context.Context, s *transcript.Session, snap transcript.Snapshot, q navDetailQuery, f navDetailFacts, o navConversationOptions, build string) (transcript.ViewKey, error) {
-	start, end, err := navConversationBounds(s.Turns, q.last, q.anchor)
+	start, end, err := navConversationWindowBounds(s.Turns, q.last, q.anchor, q.all)
 	if err != nil {
 		return transcript.ViewKey{}, err
 	}
@@ -80,6 +85,31 @@ func navDetailContextKey(parent, ctx context.Context, s *transcript.Session, sna
 		strconv.FormatInt(q.anchor, 10), navDetailBool(f.live), o.skippedNote, o.liveMark,
 		navDetailBool(f.leaseKnown), f.leaseIdentity); err != nil {
 		return transcript.ViewKey{}, err
+	}
+	if o.arrayEntries != 0 || o.stringUnits != 0 {
+		if err := frame.add("browser-structure-v1", strconv.FormatInt(o.arrayEntries, 10), strconv.FormatInt(o.stringUnits, 10)); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
+	if o.selection != "" {
+		if err := frame.add("selection-v1", o.selection); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
+	if o.prefixScope != "" {
+		if err := frame.add("delta-prefix-scope-v1", o.prefixScope); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
+	if f.live && s.Unfinished {
+		if err := frame.add("working-clock-v1", o.now.Format(time.RFC3339Nano)); err != nil {
+			return transcript.ViewKey{}, err
+		}
+	}
+	if q.all {
+		if err := frame.add("all-prompts-v1"); err != nil {
+			return transcript.ViewKey{}, err
+		}
 	}
 	for i := start; i < end; i++ {
 		account := convoAccountFact{}

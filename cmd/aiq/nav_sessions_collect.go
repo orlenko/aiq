@@ -14,6 +14,7 @@ var errNavListFatal = errors.New("navigator list build failed")
 
 type navListFlags struct {
 	internal, resource, discovery, partial bool
+	unavailable                            bool
 }
 
 // R meters admitted owned text and conservative overhead, not heap/RSS. Raw
@@ -82,6 +83,36 @@ func (r *navListRun) reserve(overhead int64, fields ...string) bool {
 
 func (r *navListRun) Candidates(ctx context.Context, dir string) ([]transcript.Candidate, error) {
 	rows, err := r.Discovery.Candidates(ctx, dir)
+	r.discoveryResult(ctx, err)
+	return rows, err
+}
+
+func (r *navListRun) AllCandidates(ctx context.Context) ([]transcript.Candidate, error) {
+	source, ok := r.Discovery.(transcript.AllDiscovery)
+	if !ok {
+		r.internalFailure()
+		return nil, errNavListFatal
+	}
+	rows, err := source.AllCandidates(ctx)
+	r.discoveryResult(ctx, err)
+	for i := range rows {
+		if ctx.Err() != nil {
+			r.interrupted()
+			return rows, ctx.Err()
+		}
+		// Directory associations become admitted row text even when parsing
+		// subsequently fails or deduplication discards this candidate.
+		if rows[i].Directory != "" {
+			if !r.reserve(128, rows[i].Directory) {
+				return nil, errNavListFatal
+			}
+			rows[i].Directory = strings.Clone(rows[i].Directory)
+		}
+	}
+	return rows, err
+}
+
+func (r *navListRun) discoveryResult(ctx context.Context, err error) {
 	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		// ListWith may otherwise suppress this failure when child expiry races
@@ -93,7 +124,6 @@ func (r *navListRun) Candidates(ctx context.Context, dir string) ([]transcript.C
 	} else if err != nil || ctx.Err() != nil {
 		r.interrupted()
 	}
-	return rows, err
 }
 
 func (r *navListRun) summary(ctx context.Context, path string) (out transcript.Summary, err error) {
@@ -110,6 +140,10 @@ func (r *navListRun) summary(ctx context.Context, path string) (out transcript.S
 	if err != nil {
 		if errors.Is(err, transcript.ErrBudget) {
 			r.interrupted()
+		} else {
+			r.mu.Lock()
+			r.state.unavailable = true
+			r.mu.Unlock()
 		}
 		return transcript.Summary{}, err
 	}
