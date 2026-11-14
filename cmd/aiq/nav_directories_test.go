@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/state"
 )
 
@@ -128,7 +129,7 @@ func TestNavDirectoriesShareSessionSlotThroughWrite(t *testing.T) {
 
 func TestNavDirectoriesProductionMissingAndReadOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	read := navProductionMetadata(path, func() (string, error) { return "fixture-host", nil })
+	read := navProductionMetadata(path, func(context.Context) (string, error) { return "fixture-host", nil })
 	if v, err := read(context.Background(), state.NavigatorSnapshotLimits{Rows: 20, TextBytes: 4096}); v != nil || err != state.ErrNavigatorSnapshotUnavailable {
 		t.Fatal("missing DB fabricated empty snapshot")
 	}
@@ -147,5 +148,51 @@ func TestNavDirectoriesProductionMissingAndReadOnly(t *testing.T) {
 	v, err := read(context.Background(), state.NavigatorSnapshotLimits{Rows: 20, TextBytes: 4096})
 	if err != nil || len(v.Launches) != 1 || v.Launches[0].Cwd != "/invented/catalog" {
 		t.Fatalf("production read-only: %#v %v", v, err)
+	}
+}
+
+func TestNavDirectoriesUseRecordedMachineIdentityRatherThanNetworkHostname(t *testing.T) {
+	for _, identity := range []string{strings.Repeat("a", 64), "invented-fallback-hostname"} {
+		t.Run(identity[:8], func(t *testing.T) {
+			t.Setenv("AIQ_DATA_DIR", t.TempDir())
+			store, err := state.Open(paths.StateDB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			for _, row := range []state.Launch{
+				{Hostname: identity, Provider: "claude", Cwd: "/invented/recorded-machine", Mode: state.ModeInteractive, StartedAt: time.Unix(100, 0)},
+				{Hostname: "invented-network-hostname", Provider: "claude", Cwd: "/invented/wrong-machine", Mode: state.ModeInteractive, StartedAt: time.Unix(900, 0)},
+			} {
+				if _, err := store.AddLaunch(row); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			in := navProductionInputWithIdentity(func(ctx context.Context) (string, error) {
+				calls++
+				if ctx.Err() != nil {
+					return "", ctx.Err()
+				}
+				return identity, nil
+			})
+			if calls != 0 {
+				t.Fatal("identity read before authenticated request")
+			}
+			f, err := newNavFactory(in, navProductionPolicy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := factoryGet(t, f, "/api/nav/directories")
+			var body navDirectoriesBody
+			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body.Directories) != 1 || body.Directories[0].Path != "/invented/recorded-machine" || calls != 1 {
+				t.Fatalf("wrong identity catalog: %d %s", w.Code, w.Body.String())
+			}
+			in.metadata = navProductionMetadata(paths.StateDB(), func(context.Context) (string, error) { return "", errors.New("INVENTED-IDENTITY-UNAVAILABLE") })
+			f.input = in
+			if w := factoryGet(t, f, "/api/nav/directories"); w.Code != 503 || strings.Contains(w.Body.String(), "IDENTITY-UNAVAILABLE") {
+				t.Fatal("failed identity fabricated empty catalog or leaked cause")
+			}
+		})
 	}
 }
