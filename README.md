@@ -670,6 +670,21 @@ tab; `aiq ui --revoke` invalidates every tab and pending link. After a daemon
 restart, run `aiq ui` again. The navigator stays off unless you enable it.
 Windows unlock, remote browsers and SSH forwarding are not supported.
 
+```bash
+aiq ui                        # this directory
+aiq ui /path/to/project        # an explicit directory
+aiq ui --info                  # authenticated host and data-directory information
+aiq ui --revoke                # invalidate all tabs and pending links
+```
+
+After installing an updated build, `aiq daemon install` restarts the daemon
+from your own login shell; `aiq ui` itself never starts or restarts one. The
+private browser handoff file delivers the one-use link. The page clears its
+link fragment before app code or storage access. Login uses session storage when available; blocked
+storage is reported and the login can remain in memory for the open page.
+The numeric-loopback HTTP connection assumes trusted initial page loading and
+does not encrypt directory names or session IDs.
+
 Sessions offers a recent directory catalog, All Sessions, workers, loaded-text
 search and a live/registered-open filter. Activity is a dated snapshot; Refresh
 checks it again. A managed live mark requires a positive terminal observation
@@ -697,6 +712,8 @@ setup, start a watcher or change an ask. Existing Asks setup and privacy rules
 above still apply.
 
 Resume, bare resume, auto resume and long auto resume are also copy controls.
+Read-command buttons copy full-ID `aiq convo` commands, with `--follow` offered
+for Claude and Codex.
 For recorded safe launcher names, the Sessions row offers that launcher’s resume.
 Directories and account names are displayed beside commands and are never
 interpolated into them. Workspace attach and wrap-up commands include the lease
@@ -1159,6 +1176,8 @@ aiq asks [--all] [--no-mouse] | list | dismiss | restore | watch | workspaces | 
 
 aiq shim install|uninstall|path
 aiq statusline install|uninstall|status   Claude status-line multiplexer
+aiq ui [directory] | --info | --revoke | --help
+                                     local browser Sessions and Asks (opt-in)
 aiq daemon run|install|uninstall|status
 aiq doctor [-v] [--device-auth|--browser]
                                      failed checks and how to fix them
@@ -1347,6 +1366,9 @@ idle_grace_seconds = 20
 idle_rotate_pct = 15.0          # move a quiet session off an account this low (0 = off)
 idle_rotate_minutes = 15        # ...once it has been quiet this long
 tmux_prefix = "aiq"
+
+[ui]
+navigator = false              # optional local browser navigator; restart daemon after changing
 
 [updates]
 enabled = true                  # keep npm-installed codex/claude current
