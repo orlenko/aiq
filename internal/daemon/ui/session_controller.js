@@ -4,9 +4,19 @@ import {createConversationFeed} from "./feed.js";
 const fail = () => { throw new TypeError("could not configure session controller"); };
 const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 export function navigatorReadCommand(provider, id, follow = false) {
-  if (!["claude", "codex", "agy"].includes(provider) || typeof id !== "string" || !uuid.test(id) ||
+  if (!["claude", "codex", "agy"].includes(provider) || typeof id !== "string" || id.length!==36 || !uuid.test(id) ||
       typeof follow !== "boolean" || follow && provider === "agy") return null;
   return `aiq convo ${id}${follow ? " --follow" : ""}`;
+}
+export function navigatorResumeCommand(provider,id,variant="resume") {
+  if(navigatorReadCommand(provider,id)===null)return null;
+  const templates={resume:`aiq resume ${id}`,bare:`aiq resume --bare ${id}`,auto:`aiq run auto resume ${id}`,long:`aiq long auto resume ${id}`};
+  return typeof variant==="string"&&Object.hasOwn(templates,variant)?templates[variant]:null;
+}
+export function navigatorLeaseCommand(verb,id,started) {
+  if(!["attach","drain"].includes(verb)||typeof id!=="string"||typeof started!=="string"||
+    id.length<1||id.length>10||started.length<1||started.length>12||/[^0-9]/.test(id)||/[^0-9]/.test(started)||Number(id)<=0||Number(started)<=0)return null;
+  return `aiq long ${verb} ${id} --started ${started}`;
 }
 function field(value, key) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail();
@@ -44,6 +54,8 @@ export function createSessionController(document, options) {
   let shortcutsEnabled=shortcutOption ? shortcutOption.value : ()=>true;
   const commandOption=Object.getOwnPropertyDescriptor(options ?? {},"readCommands");
   const readCommands=commandOption ? commandOption.value : false;
+  const resumeOption=Object.getOwnPropertyDescriptor(options??{},"resumeCommands"),resumeCommands=resumeOption?.value??false;
+  if(resumeOption&&(!Object.hasOwn(resumeOption,"value")||typeof resumeCommands!=="boolean"))fail();
   if(commandOption&&(!Object.hasOwn(commandOption,"value")||typeof readCommands!=="boolean"))fail();
   if (readingOption && (!Object.hasOwn(readingOption,"value") || typeof readingControls!=="boolean") ||
       shortcutOption && (!Object.hasOwn(shortcutOption,"value") || typeof shortcutsEnabled!=="function")) fail();
@@ -148,23 +160,25 @@ export function createSessionController(document, options) {
     }
   }
   function commandControls(parent, value, current, cleanup) {
-    if(!readCommands)return;
+    if(!readCommands&&!resumeCommands)return;
     const group=node("div","nav-read-commands"), buttons=[];
     let busy=false;
-    for(const [follow,label]of [[false,"Copy read command"],[true,"Copy follow command"]]) {
-      const command=navigatorReadCommand(value.provider,value.id,follow);
+    const commands=[];
+    if(readCommands)for(const [follow,label]of [[false,"Copy read command"],[true,"Copy follow command"]])commands.push([navigatorReadCommand(value.provider,value.id,follow),label,"Read"]);
+    if(resumeCommands)for(const [variant,label]of [["resume","Copy resume command"],["bare","Copy bare resume command"],["auto","Copy auto resume command"],["long","Copy long auto resume command"]])commands.push([navigatorResumeCommand(value.provider,value.id,variant),label,"Resume"]);
+    for(const [command,label,kind]of commands) {
       if(command===null)continue;
       const button=node("button","nav-command-copy",label);button.type="button";button.title=command;buttons.push(button);group.append(button);
       const click=async()=>{
         if(!current()||busy)return;
         busy=true;for(const item of buttons)item.setAttribute("aria-disabled","true");
-        try { await copyText(command); if(current())announce("Read command copied. Paste it in a terminal."); }
-        catch { if(current())announce("Read command could not be copied."); }
+        try { await copyText(command); if(current())announce(kind+" command copied. Paste it in a terminal."); }
+        catch { if(current())announce(kind+" command could not be copied."); }
         finally { busy=false;if(current())for(const item of buttons)item.removeAttribute("aria-disabled"); }
       };
       button.addEventListener("click",click);cleanup.push(()=>button.removeEventListener("click",click));
     }
-    if(buttons.length){group.append(node("p","nav-controller-facts",`Terminal only · Directory: ${value.cwd}`));parent.append(group);}
+    if(buttons.length){group.append(node("p","nav-controller-facts",`Terminal only · Directory: ${value.cwd}`));if(resumeCommands)group.append(node("p","nav-controller-facts","Resume may open another copy of a running session. Auto variants allow the agent to run without permission prompts."));parent.append(group);}
   }
   function failed(op, target) {
     if (!alive(op)) return;

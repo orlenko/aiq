@@ -19,3 +19,6 @@ body{background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif}.n
 .nav-long button { font: inherit; min-height: 2.5em; max-width: 100%; }
 .nav-long-newest { position: sticky; top: 0; z-index: 2; background: Canvas; color: CanvasText; }
 .nav-long-divider { border-block: 2px solid currentColor; padding-block: .75em; }
+.nav-long-actions { border: 1px solid var(--border); padding: .75rem; margin-block: .75rem; }
+.nav-long-moves { border-inline-start: 3px solid var(--accent); padding-inline-start: .75rem; margin-block-start: .75rem; }
+.nav-command-copy[aria-disabled="true"] { cursor: default; border-style: dashed; }

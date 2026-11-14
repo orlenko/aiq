@@ -209,7 +209,7 @@ export function createAppHost(document,options) {
         onPlacement:v=>{void place(op,v);}});
     }else{
       op.controller=createSessionController(document,{window,idPrefix:"nav-app-session-"+(++generation),limits,
-        readingControls:true,readCommands:true,autoFollow:true,shortcutsEnabled:()=>shortcuts,
+        readingControls:true,readCommands:true,resumeCommands:true,autoFollow:true,shortcutsEnabled:()=>shortcuts,
         detailQuery:{last:parsed.anchor?50:lastPrompts,markup:marks.checked,anchor:parsed.anchor},
         readSessions:(q,s)=>op.lease.read("sessions",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),readState:(q,s)=>op.lease.read("state",q,s),
         onNewest:v=>{if(active(op))navigate(address("/sessions/"+v.provider+"/"+v.id,parsed.dir,parsed.all),{replace:true});},
