@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	_ "embed"
@@ -45,10 +46,35 @@ type Server struct {
 	log    *log.Logger
 	pollCh chan []string
 
+	// started is when this daemon took the instance lock; with the pid it tells this
+	// start's navigator token file from an earlier one's.
+	started time.Time
+
 	mu       sync.Mutex
 	lastPoll time.Time
 	lastErr  string
 	polling  bool
+	// navPort is the navigator's port while it is served, else 0. navToken is its
+	// secret for this start.
+	navPort  int
+	navToken string
+
+	navLifeMu    sync.Mutex
+	navOwner     *navIdentity
+	navCurrent   *navGeneration
+	navLifecycle *navLifecycleDeps // optional, configured before Run
+
+	// navVerifier decides who may use the navigator's API, and navAPI is what it serves
+	// there. Both are set before Run.
+	navVerifier NavVerifier
+	navAPI      http.Handler
+	navPages    http.Handler
+	// Optional instance dependency, configured before serving; production uses
+	// the stable process owner when absent.
+	navObservations *navObserver
+
+	// slots counts the connections of the status page and the navigator together.
+	slots *connSlots
 }
 
 func New(cfg *config.Config, p *pool.Pool, logger *log.Logger) *Server {
@@ -57,6 +83,9 @@ func New(cfg *config.Config, p *pool.Pool, logger *log.Logger) *Server {
 		cfg:    cfg,
 		log:    logger,
 		pollCh: make(chan []string, 8),
+		// Generic handler construction stays nil/deny safe. A live listener
+		// captures its own authentication adapter instead of repointing this.
+		navVerifier: denyAll{},
 	}
 }
 
@@ -119,7 +148,20 @@ const identityHeader = "X-Aiq-Daemon"
 // Identity is the identity header's value on this machine. It is keyed because health
 // output gets pasted around, and a machine ID should not be shown directly.
 func Identity() string {
-	id := pool.Hostname()
+	return identityValue(pool.Hostname())
+}
+
+// IdentityContext is the bounded fresh acquisition used by manual navigator
+// commands. It preserves Identity's exact HMAC, without its legacy cache.
+func IdentityContext(ctx context.Context) (string, error) {
+	id, err := pool.HostnameContext(ctx)
+	if err != nil {
+		return "", pool.ErrIdentityUnavailable
+	}
+	return identityValue(id), nil
+}
+
+func identityValue(id string) string {
 	if id == "" {
 		return ""
 	}
@@ -235,12 +277,18 @@ var (
 	}
 	// waitWithoutHTTP is what a daemon with a refused address does in place of serving.
 	waitWithoutHTTP = func() { select {} }
+	// serveStatus and serveNav serve the status page and the navigator, so a test can
+	// stop either.
+	serveStatus = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
+	serveNav    = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
 )
 
 // Run serves until the listener fails. With a listen address it must refuse, it
 // serves nothing and leaves polling and session supervision running, so a bad
-// setting for the status page does not strand long sessions. A listener failure
-// on an accepted address still ends the process.
+// setting for the status page does not strand long sessions. An accepted address it
+// cannot bind gets the same, and it serves once the address can be bound. A listener
+// failure after that still ends the process. The navigator, when it is on, is served
+// beside the status page, and its failure leaves the daemon running without it.
 func (s *Server) Run() error {
 	// This comes before the lock, so a daemon about to stop is never seen holding it.
 	if olderDaemonAnswers(s.cfg.Daemon.Listen) {
@@ -250,11 +298,17 @@ func (s *Server) Run() error {
 	if err := holdInstanceLock(); err != nil {
 		return err
 	}
+	s.started = time.Now()
+	navOwner := s.beginNavigator()
 	listenErr := CheckListen(s.cfg.Daemon.Listen)
 	if FixPATH() {
 		s.log.Printf("PATH: moved %s to the front; a service installed with the shims buried mid-PATH cannot find any provider CLI", paths.ShimsDir())
 	}
 	if listenErr != nil {
+		_, _, failed := s.finishNavigator(navOwner, navRefused, nil)
+		if failed {
+			s.log.Print("navigator: could not record that it is not served")
+		}
 		startLoops(s)
 		s.log.Printf("not serving the status page or API: %v", listenErr)
 		waitWithoutHTTP()
@@ -263,25 +317,88 @@ func (s *Server) Run() error {
 	// Read once here, so the handler never reads it while a loop first sets it.
 	mux := s.routes(Identity())
 	ln, err := net.Listen("tcp", s.cfg.Daemon.Listen)
+	loopsStarted := false
 	if err != nil {
-		return err
+		// The navigator is served only beside the status page, so an earlier start's
+		// token file must not say it is served meanwhile.
+		navOwner = s.navigatorEnds(navOwner, "the status page could not listen")
+		if ln, err = s.listenWhileSupervising(err); err != nil {
+			return err
+		}
+		loopsStarted = true
 	}
 	if a, ok := ln.Addr().(*net.TCPAddr); !ok || !a.IP.IsLoopback() {
 		ln.Close()
-		return fmt.Errorf("daemon.listen %q bound to %v, which is not loopback", s.cfg.Daemon.Listen, ln.Addr())
+		err := fmt.Errorf("daemon.listen %q bound to %v, which is not loopback", s.cfg.Daemon.Listen, ln.Addr())
+		s.navigatorEnds(navOwner, "the status page endpoint was refused")
+		return err
 	}
-	// Only now, so a daemon restarting because it cannot bind never polls or supervises.
-	startLoops(s)
+	s.slots = newConnSlots(connCap, s.log.Printf)
+	nav, navOwner := s.startNavigator(navOwner)
+	// Publication is complete. Schedule serving before any logger or loop can
+	// block this Run; the worker owns only this immutable generation.
+	if nav != nil {
+		go s.serveNavigator(nav)
+	}
+	if !loopsStarted {
+		startLoops(s)
+	}
 	s.log.Printf("aiq daemon listening on http://%s/", s.cfg.Daemon.Listen)
-	return statusServer(localOnly(mux)).Serve(ln)
+	if nav != nil {
+		s.log.Printf("aiq navigator listening on http://127.0.0.1:%d/", nav.port)
+	}
+	err = serveStatus(s.slots.server(localOnly(mux), localOnly(connectionUnavailable())), s.slots.listener(ln))
+	s.navigatorEnds(navOwner, "the status page stopped")
+	return err
 }
 
-// statusServer is the status page's server. Its deadlines bound how long a
-// connection stays open while a request is slow to arrive, its answer is slow to
-// be read, or it sits idle between requests. They are far above what the page's
-// 5 s poll and its kept-alive connection need; an answer that takes longer is
-// lost, and no handler streams or waits. OPTIONS * goes to the handler too, so
-// every request meets its checks.
+// listenRetryPause is how long a daemon that cannot bind its address waits before
+// trying again. It is a variable so a test can free the port in between.
+var listenRetryPause = func() { time.Sleep(listenRetry) }
+
+const listenRetry = 30 * time.Second
+
+// listenWhileSupervising polls and supervises without the status page until the
+// address, which failed with err, can be bound. Exiting instead would leave long
+// sessions unsupervised while the service restarted the process. The instance lock
+// keeps a second daemon of this version away; a daemon from before the lock that was
+// too slow for the first probe is stopped only by this check, so it runs before the
+// loops start and again before each try. Its two requests carry no token or identity.
+func (s *Server) listenWhileSupervising(err error) (net.Listener, error) {
+	listen := s.cfg.Daemon.Listen
+	_, port, _ := net.SplitHostPort(listen)
+	logged, started := "", false
+	for {
+		if olderDaemonAnswers(listen) {
+			s.log.Printf("stopping, so not polling or supervising: what answers on the port of %s looks like an older aiq daemon on this machine. Under the service, this keeps retrying and takes over once that one stops. To find it: lsof -nP -a -c aiq -iTCP -sTCP:LISTEN", listen)
+			return nil, fmt.Errorf("not running beside what looks like an older aiq daemon")
+		}
+		if err.Error() != logged {
+			logged = err.Error()
+			s.log.Printf("not serving the status page or API, but polling and supervising: %v. Trying again every %v. To see what holds the port: lsof -nP -iTCP:%s -sTCP:LISTEN", err, listenRetry, port)
+		}
+		if !started {
+			startLoops(s)
+			started = true
+		}
+		listenRetryPause()
+		ln, lerr := net.Listen("tcp", listen)
+		if lerr == nil {
+			s.log.Printf("%s can be bound now", listen)
+			return ln, nil
+		}
+		err = lerr
+	}
+}
+
+// statusServer is the server of the status page and of the navigator. Its deadlines
+// bound how long a connection stays open while a request is slow to arrive, its
+// answer is slow to be read, or it sits idle between requests. They are far above
+// what the page's 5 s poll and its kept-alive connection need; an answer that takes
+// longer is lost, and no handler of either streams or waits. A navigator that does
+// needs its own settings, and the test that the two match changes with it.
+// OPTIONS * goes to the handler too, so every request meets its checks. Both
+// servers share one count of connections (connSlots).
 func statusServer(h http.Handler) *http.Server {
 	return &http.Server{
 		Handler:                      h,
@@ -295,6 +412,7 @@ func statusServer(h http.Handler) *http.Server {
 }
 
 func (s *Server) routes(identity string) *http.ServeMux {
+	nav := fmt.Sprintf("pid=%d; start=%d; nav=%d", os.Getpid(), s.started.Unix(), navProtocol)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleUI)
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -306,6 +424,7 @@ func (s *Server) routes(identity string) *http.ServeMux {
 	mux.HandleFunc("/api/poll", s.handlePoll)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(identityHeader, identity)
+		w.Header().Set(navHeader, nav)
 		w.Write([]byte("ok\n"))
 	})
 	return mux
@@ -444,6 +563,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		"listen":        s.cfg.Daemon.Listen,
 	}
 	s.mu.Unlock()
+	if port := s.navigatorPort(); port != 0 {
+		extra["navigator_port"] = port
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"daemon": extra, "view": doc})
 }

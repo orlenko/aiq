@@ -341,7 +341,7 @@ func TestPlaceLongSession(t *testing.T) {
 		wantErr string // substring of the error
 	}{
 		{name: "dead aiq pane, from outside", panes: []tmux.Pane{deadAiq}},
-		{name: "live aiq pane, from outside", panes: []tmux.Pane{aiq}, self: "%3"},
+		{name: "live aiq pane, from outside", panes: []tmux.Pane{aiq}, self: "%3", wantErr: "no lease holds yet"},
 		{name: "dead shell", panes: []tmux.Pane{deadAiq, deadShell}},
 		// The recordings: claude exited, its pane was killed, the lease
 		// was pruned, and resume ran from the pane split off beside it.

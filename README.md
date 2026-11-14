@@ -102,8 +102,9 @@ with the daemon down they route on the last poll.
 ## Long-running sessions
 
 A QC loop or an orchestration overseer can run for days and burn a week of
-quota. `aiq long claude` / `aiq long codex` starts such a session in a tmux
-session named after the workspace and supervises it:
+quota. `aiq long claude` / `aiq long codex` supervises such a session in
+the direct Herdr terminal it starts in, or otherwise in a tmux session named
+after the workspace:
 
 - **Hooks, not a startup instruction.** The session is launched with aiq's
   `SessionStart`, `UserPromptSubmit` and `Stop` hooks (per launch, via
@@ -210,9 +211,26 @@ aiq long resume [--account <name>] [<id>]
                                     the same, as it ran: no forced bypass or tier
 aiq long list                       leases, pane, drain state, idle/busy, why it waits
 aiq long drain .                    move this workspace's session now
+aiq long drain <lease-id> --started <unix-seconds>
+                                    request wrap-up for that recorded lease
 aiq long attach                     re-attach
+aiq long attach <lease-id> [--started <unix-seconds>]
+                                    attach the recorded local lease
 aiq long stop .                     end it
 ```
+
+`aiq long list` supplies the lease ID. A copied `--started` value must match
+that lease's Unix start time. Exact attachment reads existing state and prints
+the quoted workspace and account before opening the saved terminal. Tmux lookup
+uses the caller's current/default server; another server context refuses.
+The saved lease selects its backend, so omit `--backend` on this form.
+
+Guarded drain also checks the copied start time before preparing any handoff
+note. It prints the workspace and account, prepares the existing note's
+redaction, then checks the complete lease identity again before archiving the
+note and recording the request. A replaced lease leaves its note untouched.
+Existing archives are never overwritten. If archiving succeeds but the state
+commit fails, the command reports that partial result so you can list and retry.
 
 Choose the initial account with `aiq long codex --account acme -- --yolo`
 (or `--account=acme`). This also works with Claude and named launchers.
@@ -247,12 +265,12 @@ finds the transcript.
 
 `aiq run auto resume` is the same command for this terminal: the same
 browser, flags and defaults (bypass on, tier 1, `--account` on the session's
-provider), but the session reopens here instead of in tmux. `aiq long resume`
+provider), but the session reopens here without long supervision. `aiq long resume`
 is the other way round, the long twin of `aiq resume`: the session reopens in
-tmux as it ran, with the bypass only if it had one and the CLI's own model
+a supervised terminal as it ran, with the bypass only if it had one and the CLI's own model
 unless `--model-tier` or `--effort` say otherwise. Each start has both forms:
 
-| | this terminal | tmux, supervised |
+| | this terminal | supervised (Herdr or tmux) |
 | --- | --- | --- |
 | new, on any pool | `aiq run auto` | `aiq long auto` |
 | resume, as auto starts | `aiq run auto resume` | `aiq long auto resume` |
@@ -297,6 +315,88 @@ or by a takeover, gets the new one. While a reinstall runs, a marker in
 `~/.local/share/aiq/updating/` holds every launch (up to five minutes) so
 nothing starts a half-installed CLI. Claude Code from the native installer
 updates itself and is left alone. `[updates] enabled = false` turns this off.
+
+### Native Herdr terminals
+
+Start a long session directly in a Herdr-core terminal and aiq automatically
+uses that terminal. Elsewhere, including nested tmux or screen panes, it uses
+tmux. Menu starts and both long-resume forms use the same default. Explicit
+backend flags go **before** the provider or subcommand:
+
+```sh
+aiq long auto                    # native inside Herdr, tmux elsewhere
+aiq long --backend tmux auto     # explicitly request tmux for a new session
+aiq long --backend herdr auto    # explicitly require a direct Herdr terminal
+aiq long --backend herdr codex --account example
+aiq long --backend herdr resume <session-id>
+aiq long attach                  # finds the workspace's existing backend
+aiq long list
+aiq long drain .
+aiq long stop .
+```
+
+Automatic native selection attaches to existing live long sessions rather than
+converting them; uncertain ownership blocks a new native session. Backend flags
+select a creation preference, not a conversion of a running terminal. Native sessions are discovered
+by the menu and both resume paths. Native startup
+requires a direct Herdr-core terminal (tested with `hc 0.1.20`, protocol
+generation 1), with terminal stdin and stdout. The older Herdr TUI uses a
+different API and is not supported by this backend. An explicit native start in
+a nested tmux/screen pane is rejected rather than addressing the wrong terminal.
+Stale or incomplete native terminal markers cause a validation error, not a
+silent tmux start. To request tmux explicitly, use
+`aiq long --backend tmux auto` (or `aiq long --backend tmux auto resume`).
+An exported `HC_SOCKET` client selector alone does not select the native default.
+From outside Herdr,
+open a Herdr terminal first, or use `hc run --cwd /path/to/workspace -- aiq
+long --backend herdr codex` and attach to the returned terminal with `hc attach`.
+
+A small aiq process owns the provider process group inside that terminal.
+The daemon keeps choosing accounts and constructing resumes/handoffs as above;
+rollover replaces the provider while keeping the same Herdr terminal. The
+runner keeps workspace ownership through startup and rollover gaps, so a
+second start attaches instead of creating a duplicate. A failed control query
+means unknown, and blocks another start. `long list` shows `herdr/tN` and
+reports unknown/starting ownership even before a lease registers. The displayed
+`herdr/tN` is a label; lease pane references are opaque and generation-specific.
+Conversation following tracks the stable terminal. A saved resume selection that
+has moved to another generation refuses attachment; use `aiq long attach` from
+its workspace to inspect the current terminal before explicitly resuming.
+
+Turn hooks report working/idle through Herdr's Program Status Protocol;
+permission-dialog detection is not provided by these hooks. The quota/move
+label is also available as the core terminal label `aiq.status`. Hook replies
+remain provider JSON. Conversation following and asks still read transcripts;
+no navigator/browser authentication or API changes are needed.
+
+A normal provider exit, a rejected resume, and `aiq long stop` are final for
+a native session. Native sessions do not use tmux's eight-second failed-resume
+retry that starts fresh; use an explicit resume after inspecting the error.
+Viewer detach and a normal core restart leave the terminal running. Desktop
+window lifetime depends on whether the app detaches or kills its terminal; direct
+desktop-window closure has not been verified here. Closing/killing the terminal ends its active group. Processes
+that deliberately detach into other sessions are outside that group. A runner
+crash or uncertain cleanup retains ownership until its runner and child/group
+are confirmed gone; it does not automatically resume after a reboot. Inspect
+the original Herdr terminal before clearing an uncertain workspace descriptor.
+Orphan adoption requires the original launch row (aiq retains at most 50,000).
+An adopted child stays conservatively busy until a later matching Stop hook;
+an earlier or missing Stop can delay idle rollover. Inspect it, then use existing
+stop and explicit resume commands when needed. Exhausted-account takeover still
+follows the existing long-session policy.
+
+This native reference format has not shipped before this backend. Untagged
+prototype leases cannot authorize mutations; inspect the original core terminal
+for recovery. Rolling back aiq while native sessions run can lose native control;
+end those sessions first. The existing tmux format and database schema are unchanged.
+
+Private runner descriptors live under `$AIQ_DATA_DIR/herdr/` (the normal aiq
+data directory when unset), one per workspace, with an ended record replaced
+on the next start. They contain endpoint/process/launch identifiers and fallback
+policy, not argv, environment values, credentials or transcript contents. Local
+control sockets live in short-lived owner-only temporary directories. Herdr
+itself can inspect foreground arguments and retain terminal output; its private
+state has the same sensitivity as the agent terminal.
 
 ## Antigravity
 
@@ -347,6 +447,33 @@ aiq resume <id>             resume one directly (a unique prefix is enough)
 aiq resume --print [<id>]   the same lists as plain text, for scripts and agents
 aiq resume --bare <id>      resume without the launcher the session ran under
 ```
+
+A complete session UUID also works from another directory, including with
+`--bare`, `--launcher`, `aiq run auto resume` and `aiq long auto resume`.
+Prefixes stay local to the current directory. aiq resolves the session first,
+prints its recorded directory, then enters that directory before choosing a
+workspace or starting or attaching to a session. The newest transcript copy wins;
+a newest copy in one account's overlay pins that recorded account, while a
+newest real-home copy does not. Antigravity needs one
+unambiguous recorded directory association.
+
+On macOS and Linux, changing directory this way refuses a missing, unexaminable,
+foreign-owned or other-writable directory. Group write is allowed only on Linux
+when the directory has no access list and the local account files confirm a
+private group. A different workspace top level is checked too for long sessions
+and launchers. The refusal explains how to recover; reading with `aiq convo` does
+not need the project to exist. Running the command from inside the recorded
+directory retains the existing behavior.
+
+On macOS, extended ACL write grants are checked even when the mode bits are
+`0755`. Deny-only and read-only ACLs remain admissible; a write grant whose
+principal aiq cannot prove is limited to you refuses the directory change.
+
+When changing directories, aiq also refuses relative configuration/home paths
+or relative `PATH` entries, so the move cannot select another credential store
+or executable. Configured provider binaries must be absolute paths. Launcher
+commands must be absolute paths or bare names resolved through the absolute
+`PATH`. Use absolute paths, or enter the session's directory yourself.
 
 The first screen lists every Claude and Codex session whose working directory
 is the current one, newest first, with the model, turn and tool counts, and
@@ -542,6 +669,88 @@ else can read; each request checks the key is still there.
 
 It watches only sessions running under `aiq long`, on this machine only.
 
+## Local session navigator
+
+On macOS or Linux, enable the optional navigator in your config and restart
+an updated daemon:
+
+```toml
+[ui]
+navigator = true
+```
+
+Then run `aiq ui` from your project directory. It opens a one-use browser
+handoff; the link expires after two minutes. Each tab has its own login,
+expiring after 30 minutes without successful requests or eight hours total.
+Background follow requests count as activity. Forget this tab signs out that
+tab; `aiq ui --revoke` invalidates every tab and pending link. After a daemon
+restart, run `aiq ui` again. The navigator stays off unless you enable it.
+Windows unlock, remote browsers and SSH forwarding are not supported.
+
+```bash
+aiq ui                        # this directory
+aiq ui /path/to/project        # an explicit directory
+aiq ui --info                  # authenticated host and data-directory information
+aiq ui --revoke                # invalidate all tabs and pending links
+```
+
+After installing an updated build, `aiq daemon install` restarts the daemon
+from your own login shell; `aiq ui` itself never starts or restarts one. The
+private browser handoff file delivers the one-use link. The page clears its
+link fragment before app code or storage access. Login uses session storage when available; blocked
+storage is reported and the login can remain in memory for the open page.
+The numeric-loopback HTTP connection assumes trusted initial page loading and
+does not encrypt directory names or session IDs.
+
+Sessions offers a recent directory catalog, All Sessions, workers, loaded-text
+search and a live/registered-open filter. Activity is a dated snapshot; Refresh
+checks it again. A managed live mark requires a positive terminal observation
+and an unchanged lease. A Claude PID registration is labelled separately, and
+recent Codex or Antigravity writes are hints rather than live proof. Unknown
+state stays visible; incomplete counts say so. Workspace links lead to the
+current managed session and recorded earlier sessions, including account spans.
+Herdr is a terminal backend, alongside tmux; it is not a transcript provider.
+
+Open a conversation to read prompts and replies, copy a message as Markdown,
+use its prompt outline, change Markdown marks, or choose the last 50, 100 or
+500 prompts or Show all. Claude and Codex follow while the page is visible.
+Scrolling up or focusing reading controls pauses automatic advancement; End or
+Jump to newest resumes it. Antigravity refreshes a snapshot. A workspace follows
+its successor session when you are at the tail; while you read an older session,
+it keeps that content and offers an explicit jump. An account change within the
+same session does not create another session boundary.
+
+Asks shows scoped questions, open counts elsewhere, watcher status, moved-today
+items and reasons for closed items. Open conversation locates the related turn
+when possible and offers the full session when placement is uncertain. A missing
+store is reported as not set up; read failures retain the last view. Remedy,
+dismiss and restore controls copy fixed terminal commands. They do not perform
+setup, start a watcher or change an ask. Existing Asks setup and privacy rules
+above still apply.
+
+Resume, bare resume, auto resume and long auto resume are also copy controls.
+Read-command buttons copy full-ID `aiq convo` commands, with `--follow` offered
+for Claude and Codex.
+For recorded safe launcher names, the Sessions row offers that launcher’s resume.
+Directories and account names are displayed beside commands and are never
+interpolated into them. Workspace attach and wrap-up commands include the lease
+start guard and are available only with fresh verified metadata. They remain
+terminal actions: the browser does not type into, start, attach, drain or stop
+an agent. Auto variants retain their CLI permission-bypass behavior.
+
+Keyboard help lists scoped shortcuts; single-key shortcuts can be switched off,
+and Tab keeps its browser meaning. Theme, reading and keyboard preferences last
+for the open page. Live status uses one polite announcement region; background
+updates do not move reading focus, and full transcript text is not a live region.
+Wide code and tables scroll within their own labelled areas. Whole-response
+resource failures never truncate labels or quotes; choose a smaller conversation
+window or Refresh to retry.
+
+Workspace mapping uses a bounded read-only Git root query, falling back to the
+recorded directory for a known non-repository. Unavailable mappings remain
+explicitly unknown, so their history can be partial. Handoff notes are represented
+only by metadata; their contents are not shown in this browser.
+
 ## Automatic provider and model selection
 
 ```bash
@@ -664,7 +873,8 @@ command list:
 
 Three rows cover most starts: a new session or one of this directory's to
 resume, any agent or a named one (your launchers included), and short (this
-terminal) or long (supervised in tmux). `m` opens the rest: model tier,
+terminal) or long (supervised in Herdr when started directly there, otherwise
+tmux). `m` opens the rest: model tier,
 effort, a specific account, and the permission bypass. Rows that do not
 apply to the current choice dim and say why, and the line under the rows
 explains the focused choice, including which account a routed start would
@@ -700,11 +910,12 @@ sent.
 ### Leave a long job running
 
 ```bash
-aiq long auto
+aiq long --backend tmux auto
 ```
 
 For work that will outlast one account's quota (an overnight refactor, a QC
-loop, an overseer that babysits PRs), start it as a long session instead. aiq
+loop, an overseer that babysits PRs), this recipe explicitly requests tmux so
+its detach and disconnection behavior applies even when started from Herdr. aiq
 picks the account as `aiq run auto` does and opens the CLI in a tmux session
 named after the repository. Type the task there, then detach (tmux prefix,
 then `d`; `Ctrl-b d` by default). The session keeps running after you close
@@ -719,8 +930,8 @@ aiq long drain .   # move it to another account now
 aiq long stop .    # end it
 ```
 
-`aiq long auto --model-tier 0` keeps the strongest model, on whichever
-provider it moves to; providers with no tier-0 model are passed over. Run `aiq long auto` again in the same repository and it
+`aiq long --backend tmux auto --model-tier 0` keeps the strongest model, on whichever
+provider it moves to; providers with no tier-0 model are passed over. Run `aiq long --backend tmux auto` again in the same repository and it
 attaches to the running session rather than starting a second one.
 
 ### Turn a session into a long one
@@ -729,14 +940,15 @@ A session started with `aiq run auto` sometimes turns into hours of work.
 Exit it (`/exit`), then:
 
 ```bash
-aiq long auto resume
+aiq long --backend tmux auto resume
 ```
 
 The browser from `aiq resume` opens on this directory's sessions. Pick the
 one you left and press `r`: the same conversation reopens in a supervised
 tmux session, on an account aiq picks. It continues on other accounts, as in
 the previous recipe. If you already know the id, skip the browser:
-`aiq long auto resume 3f2a`.
+`aiq long --backend tmux auto resume 3f2a`. Omit `--backend tmux` to use the
+current terminal's default, including native supervision directly inside Herdr.
 
 ### `aip`: ask from the shell prompt
 
@@ -931,7 +1143,12 @@ successful. For a manual pause, use `aiq account disable codex/<name>` and later
 Sign in as the intended account at each browser step: sign out of claude.ai
 or chatgpt.com first, or use a private window, so the browser does not hand
 back the account it is already signed in as. aiq warns when two accounts
-turn out to be the same login.
+turn out to be the same login. When a Claude account with a poll grant, or a
+Codex account, is logged in as someone other than the account aiq recorded,
+aiq keeps the recorded identity, warns, and does not route to the account
+until a login as the right person; if the account really changed hands, run
+`aiq account authorize <provider>/<name>` (for Codex it accepts the login in
+the home, with no browser).
 
 If you run [aiquota](https://github.com/orlenko/misc/tree/main/quota-monitor) on the same machine,
 `aiq account import` adopts its accounts instead: Codex `auth.json` files and
@@ -957,6 +1174,7 @@ aiq account add <provider> <name> [--device-auth|--browser]
 aiq account login <provider>/<name> [--device-auth|--browser]
                                      redo the CLI login
 aiq account authorize claude/<name>  redo the quota poll grant
+aiq account authorize codex/<name>   accept a new login as the account's identity
 aiq account poll [<id>...]           poll now
 aiq account label <id> <text>        label shown on the status page
 aiq account order [<id>...]          display order within each provider column
@@ -981,6 +1199,8 @@ aiq asks [--all] [--no-mouse] | list | dismiss | restore | watch | workspaces | 
 
 aiq shim install|uninstall|path
 aiq statusline install|uninstall|status   Claude status-line multiplexer
+aiq ui [directory] | --info | --revoke | --help
+                                     local browser Sessions and Asks (opt-in)
 aiq daemon run|install|uninstall|status
 aiq doctor [-v] [--device-auth|--browser]
                                      failed checks and how to fix them
@@ -1100,6 +1320,7 @@ Depth is 1, well under `max_depth`.
 | Shims | `~/.local/share/aiq/shims/` |
 | State (accounts, windows, leases, affinity, launches, events; no credentials) | `~/.local/share/aiq/state.db` |
 | Daemon log | `~/.local/share/aiq/log/daemon.log` |
+| Session navigator: its state at each daemon start, with a secret token while it is on; the ports it used lately (off by default) | `~/.local/share/aiq/ui-token`, `~/.local/share/aiq/ui-ports` |
 | `aiq asks` items, with quotes of the agents' messages | `~/.local/share/aiq/asks.db` |
 | `aiq asks` TypeSafe key | `~/.config/aiq/typesafe.key` |
 | Config | `~/.config/aiq/config.toml` |
@@ -1168,6 +1389,9 @@ idle_grace_seconds = 20
 idle_rotate_pct = 15.0          # move a quiet session off an account this low (0 = off)
 idle_rotate_minutes = 15        # ...once it has been quiet this long
 tmux_prefix = "aiq"
+
+[ui]
+navigator = false              # optional local browser navigator; restart daemon after changing
 
 [updates]
 enabled = true                  # keep npm-installed codex/claude current

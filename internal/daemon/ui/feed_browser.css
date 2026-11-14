@@ -1,0 +1,4 @@
+body { --nav-muted: rgb(91,92,93); --nav-code: rgb(11,12,13); --nav-accent: rgb(21,22,23); --nav-agent: rgb(31,32,33); --nav-you: rgb(41,42,43); --nav-band: rgb(221,222,223); color: rgb(1,2,3); }
+#fixture { width: 280px; }
+.fixture-zoom #fixture { width: 140px; font-size: 200%; }
+#neighbor { color: rgb(71,72,73); }

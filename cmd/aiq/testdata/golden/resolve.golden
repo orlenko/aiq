@@ -1,0 +1,41 @@
+dir <root>/work/demo: error: 3 live sessions in ~/work/demo; name one:
+  aiq convo 019a0000-0000-7000-8000-0000000000a1   (or --pane %4)   codex/b
+  aiq convo 019b0000-0000-7000-8000-0000000000b2   codex/c
+  aiq convo c0ffee02-0000-4000-8000-000000000002   (or --pane %5)   claude
+dir <root>/work/demo/sub: error: 3 live sessions in ~/work/demo/sub; name one:
+  aiq convo 019a0000-0000-7000-8000-0000000000a1   (or --pane %4)   codex/b
+  aiq convo 019b0000-0000-7000-8000-0000000000b2   codex/c
+  aiq convo c0ffee02-0000-4000-8000-000000000002   (or --pane %5)   claude
+dir <root>/work: error: no live agent session in ~/work; aiq resume --print lists its sessions, aiq convo <session-id> reads one
+dir <root>/other: error: no live agent session in ~/other; aiq resume --print lists its sessions, aiq convo <session-id> reads one
+id c0ffee01: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee01-0000-4000-8000-000000000001.jsonl, account "", pane "", stale true, id "c0ffee01-0000-4000-8000-000000000001"
+id c0ffee02-0000-4000-8000-000000000002: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee02-0000-4000-8000-000000000002.jsonl, account "", pane "", stale false, id "c0ffee02-0000-4000-8000-000000000002"
+id 019a0000-0000-7000-8000-0000000000a1: provider codex, path <root>/codex/sessions/2025/09/09/rollout-2025-09-09T10-00-00-019a0000-0000-7000-8000-0000000000a1.jsonl, account "", pane "", stale false, id "019a0000-0000-7000-8000-0000000000a1"
+id c0ffee: error: "c0ffee" matches 2 sessions; give more of the id
+id 0000: error: no session "0000" in this directory (aiq resume --print --all lists them)
+pane %4: provider codex, path <root>/codex/sessions/2025/09/09/rollout-2025-09-09T10-00-00-019a0000-0000-7000-8000-0000000000a1.jsonl, account "codex/b", pane "%4", stale false, id ""
+pane %5: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee02-0000-4000-8000-000000000002.jsonl, account "", pane "%5", stale false, id ""
+pane %8: error: terminal %8 is unavailable: tmux display-message -p -t %8 #{pane_id}:#{pane_pid}:#{pane_dead}:#{session_name}:#{pane_current_command}: exit status 1: can't find pane: %8
+resolve here: error: 3 live sessions in ~/work/demo; name one:
+  aiq convo 019a0000-0000-7000-8000-0000000000a1   (or --pane %4)   codex/b
+  aiq convo 019b0000-0000-7000-8000-0000000000b2   codex/c
+  aiq convo c0ffee02-0000-4000-8000-000000000002   (or --pane %5)   claude
+resolve --pane %5: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee02-0000-4000-8000-000000000002.jsonl, account "", pane "%5", stale false, id ""
+resolve c0ffee01: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee01-0000-4000-8000-000000000001.jsonl, account "", pane "", stale true, id "c0ffee01-0000-4000-8000-000000000001"
+resolve in pane %8: error: 3 live sessions in ~/work/demo; name one:
+  aiq convo 019a0000-0000-7000-8000-0000000000a1   (or --pane %4)   codex/b
+  aiq convo 019b0000-0000-7000-8000-0000000000b2   codex/c
+  aiq convo c0ffee02-0000-4000-8000-000000000002   (or --pane %5)   claude
+resolve in pane %5: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee02-0000-4000-8000-000000000002.jsonl, account "", pane "%5", stale false, id ""
+stale 019a0000-0000-7000-8000-0000000000a1: false
+stale 019b0000-0000-7000-8000-0000000000b2: false
+stale c0ffee01-0000-4000-8000-000000000001: true
+id c0ffee01, c0ffee03 unreadable: provider claude, path <root>/claude/projects/<root as a project>-work-demo/c0ffee01-0000-4000-8000-000000000001.jsonl, account "", pane "", stale true, id "c0ffee01-0000-4000-8000-000000000001"
+id c0ffee03, c0ffee03 unreadable: error: no readable session "c0ffee03" in this directory; the transcripts named above could not be read
+--- ended processes and an old transcript
+dir <root>/work/demo: error: 3 live sessions in ~/work/demo; name one:
+  aiq convo 019a0000-0000-7000-8000-0000000000a1   (or --pane %4)   codex/b
+  aiq convo 019b0000-0000-7000-8000-0000000000b2   codex/c
+  aiq convo c0ffee02-0000-4000-8000-000000000002   (or --pane %5)   claude
+stale c0ffee01-0000-4000-8000-000000000001: true
+stale 019d0000-0000-7000-8000-0000000000d1: true

@@ -14,7 +14,9 @@ import (
 
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/daemon"
+	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/longrun"
+	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
@@ -28,17 +30,42 @@ import (
 // aiq long resume [--account <name>] [<id>]       the same, as the session ran
 // aiq long list                   long sessions and their drain state
 // aiq long drain <lease-id|.>     ask a session to wrap up and move now
-// aiq long attach [.]             attach to this workspace's session
+// aiq long attach [.|<id> [--started <unix>]] attach the workspace or an exact lease
 // aiq long stop <lease-id|.>      end the session and its tmux session
 func cmdLong(args []string) error {
+	explicitBackend := len(args) > 0 && (args[0] == "--backend" || strings.HasPrefix(args[0], "--backend="))
+	backend, args, err := longBackendArgs(args)
+	if err != nil {
+		return configErr("bad-flags", "%v", err)
+	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aiq long %s|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | [auto] resume [--account <name>] [<id>] | list | drain <id|.> | attach [.] | stop <id|.>", config.ProviderList("|"))
+		return fmt.Errorf("usage: aiq long %s|<launcher> [--account <name>] [--model-tier N] [--effort N] [--] [args...] | auto [--model-tier N] [--effort N] | [auto] resume [--account <name>] [<id>] | list | drain <id|.> | attach [.|<id> [--started <unix-seconds>]] | stop <id|.>", config.ProviderList("|"))
+	}
+	if args[0] == "attach" {
+		o, err := parseLongAttachArgs(args[1:], explicitBackend)
+		if err != nil {
+			return configErr("bad-flags", "%v", err)
+		}
+		if !o.legacy {
+			return runLongAttach(o, os.Stdout)
+		}
+	}
+	if args[0] == "drain" {
+		o, err := parseLongDrainArgs(args[1:], explicitBackend)
+		if err != nil {
+			return configErr("bad-flags", "%v", err)
+		}
+		if o.guarded {
+			return runLongDrain(o, os.Stdout)
+		}
+		args = []string{"drain", o.ref}
 	}
 	a, err := openApp()
 	if err != nil {
 		return err
 	}
 	defer a.close()
+	a.longBackend = backend
 	switch args[0] {
 	case "claude", "codex", "agy":
 		return a.longStart(args[0], "", args[1:])
@@ -59,27 +86,39 @@ func cmdLong(args []string) error {
 		if err != nil {
 			return err
 		}
+		fmt.Printf("wrap-up target %q · %q\n", l.Workspace, l.AccountID)
 		longrun.ArchiveNote(l.Workspace, time.Now())
-		if err := a.st.RequestDrainByUser(l.ID, time.Now()); err != nil {
+		if err := longLeaseStore(a.st, l).RequestDrainByUser(l.ID, time.Now()); err != nil {
 			return err
 		}
 		a.st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: drain requested by user", l.ID), time.Now())
 		fmt.Printf("lease %d (%s in %s): wrap-up requested; the daemon moves it at the next safe point\n", l.ID, l.AccountID, l.Pane)
 		return nil
 	case "attach":
-		ws := workspaceID()
-		name := longrun.SessionName(a.cfg.Long.TmuxPrefix, ws)
-		if !tmux.HasSession(name) {
-			return fmt.Errorf("no long session for %s (tmux session %s)", oneLine(ws), oneLine(name))
-		}
-		return tmux.Attach(name)
+		return a.attachLongWorkspace(workspaceID())
 	case "stop":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: aiq long stop <lease-id|.>")
 		}
 		l, err := a.longFind(args[1])
 		if err != nil {
+			if args[1] == "." {
+				if r, owned, e := herdr.Workspace(workspaceID()); owned {
+					if e != nil {
+						return e
+					}
+					return herdr.Stop(r.Target(), r.PID)
+				}
+			}
 			return err
+		}
+		if herdr.IsRef(l.Pane) {
+			if err := herdr.Stop(l.Pane, l.PID); err != nil {
+				return err
+			}
+			a.st.ForLease(l, 0).ReleaseLease(l.ID)
+			a.st.LogEvent(l.Provider, l.AccountID, "long", fmt.Sprintf("lease %d: stopped by user", l.ID), time.Now())
+			return nil
 		}
 		name := longrun.SessionName(a.cfg.Long.TmuxPrefix, l.Workspace)
 		a.st.ReleaseLease(l.ID)
@@ -189,6 +228,7 @@ func (a *app) longStart(provider, launcher string, args []string) error {
 	}
 	ws := workspaceID()
 	target, attached, err := a.longExisting(ws)
+	defer target.unlock()
 	if attached || err != nil {
 		return err
 	}
@@ -272,15 +312,19 @@ func (a *app) checkLongAccount(provider, name string) error {
 // longTarget is where a workspace's long session starts: a new tmux
 // session, or, with pane set, that pane of an existing one, in place.
 type longTarget struct {
-	name   string // tmux session
-	pane   string
-	inside bool // this command runs in a pane of the session
+	native  bool
+	core    herdr.Core
+	release func()
+	name    string // tmux session
+	pane    string
+	inside  bool // this command runs in a pane of the session
 }
 
 // longExisting returns where workspace ws's long session starts, attaching
 // to one already running there instead. A stale tmux session with no lease
 // is removed, or reused when the user has panes of their own in it.
-func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
+func (a *app) longExistingTmux(ws string, release func()) (t longTarget, attached bool, err error) {
+	t.release = release
 	if !tmux.Available() {
 		return t, false, fmt.Errorf("tmux is required for long sessions (not found on PATH)")
 	}
@@ -307,9 +351,11 @@ func (a *app) longExisting(ws string) (t longTarget, attached bool, err error) {
 		}
 		if t.inside && l.Pane != "" {
 			longNote(os.Stderr, "aiq: long session already running for %s on %s (lease %d) in pane %s of this tmux session", ws, l.AccountID, l.ID, l.Pane)
+			t.unlock()
 			return t, true, tmux.SelectPane(l.Pane)
 		}
 		longNote(os.Stderr, "aiq: long session already running for %s on %s (lease %d); attaching", ws, l.AccountID, l.ID)
+		t.unlock()
 		return t, true, tmux.Attach(t.name)
 	}
 	if t.pane, err = placeLongSession(t.name, panes, self); err != nil || t.pane != "" {
@@ -349,7 +395,7 @@ func placeLongSession(name string, panes []tmux.Pane, self string) (string, erro
 		}
 	}
 	switch {
-	case len(liveAiq) > 0 && (inside || len(foreign) > 0):
+	case len(liveAiq) > 0:
 		return "", fmt.Errorf(
 			"pane %s of tmux session %s runs an aiq long session that no lease holds yet; the daemon takes it back within a minute. Use that pane rather than start a second session",
 			liveAiq[0], name)
@@ -375,6 +421,9 @@ func aiqLongPane(p tmux.Pane) bool {
 // longLaunch starts cmdArgs in dir, in t's pane or a new tmux session, and
 // attaches.
 func (a *app) longLaunch(t longTarget, ws, dir, what, launcher string, cmdArgs []string) error {
+	if t.native {
+		return a.longLaunchHerdr(t, ws, dir, what, cmdArgs)
+	}
 	if t.pane != "" {
 		return a.longLaunchInPlace(t, ws, dir, what, launcher, cmdArgs)
 	}
@@ -386,6 +435,7 @@ func (a *app) longLaunch(t longTarget, ws, dir, what, launcher string, cmdArgs [
 	if launcher != "" {
 		fmt.Fprintf(os.Stderr, "aiq: takeover order: %s\n", strings.Join(a.launcherFallbackProviders(launcher), " → "))
 	}
+	t.unlock()
 	if term.IsTerminal(int(os.Stdout.Fd())) {
 		return tmux.Attach(t.name)
 	}
@@ -423,7 +473,11 @@ func (a *app) longLaunchInPlace(t longTarget, ws, dir, what, launcher string, cm
 	if launcher != "" {
 		fmt.Fprintf(os.Stderr, "aiq: takeover order: %s\n", strings.Join(a.launcherFallbackProviders(launcher), " → "))
 	}
-	if err := tmux.RespawnLong(t.pane, dir, tmux.Quote(cmdArgs)); err != nil || t.inside {
+	// In self-respawn tmux kills this caller, closing the lock only after
+	// accepting the serialized respawn. Otherwise release after the command.
+	err := tmux.RespawnLong(t.pane, dir, tmux.Quote(cmdArgs))
+	t.unlock()
+	if err != nil || t.inside {
 		return err
 	}
 	if term.IsTerminal(int(os.Stdout.Fd())) {
@@ -490,6 +544,7 @@ func splitResumeArgs(args []string) (account string, tierArgs, rest []string, er
 
 // resumeRequest is a parsed run or long resume command line.
 type resumeRequest struct {
+	verb     string
 	auto     bool // auto's bypass and default tier
 	account  string
 	tierArgs []string
@@ -501,7 +556,7 @@ type resumeRequest struct {
 // bad flag fails here and not in a tmux pane that closes before it can be
 // read.
 func (a *app) parseResume(verb string, auto bool, args []string) (resumeRequest, error) {
-	r := resumeRequest{auto: auto}
+	r := resumeRequest{auto: auto, verb: verb}
 	usage := resumeUsageFor(verb, auto)
 	// Bypass runs on the real home and ignores routing and --account, and a
 	// long session never gets its lease, so an auto or long resume refuses
@@ -544,12 +599,14 @@ func (a *app) parseResume(verb string, auto bool, args []string) (resumeRequest,
 
 // resumePick is the session a resume reopens, and how.
 type resumePick struct {
-	s        transcript.Session
-	dir      string
-	launcher string
-	why      string
-	forced   string   // account name; "" routes
-	cliArgs  []string // the bypass and the extra CLI args, without the resume verb
+	changedDir bool
+	workspace  string
+	s          transcript.Session
+	dir        string
+	launcher   string
+	why        string
+	forced     string   // account name; "" routes
+	cliArgs    []string // the bypass and the extra CLI args, without the resume verb
 }
 
 // pickResume finds the session to resume in this directory, by id or in
@@ -560,18 +617,46 @@ func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
 		return p, false, err
 	}
 	sessions, unreadable, err := transcript.List(defaultRoots(), p.dir)
-	reportUnreadable(os.Stderr, unreadable)
 	if err != nil {
+		reportUnreadable(os.Stderr, unreadable)
 		return p, false, err
 	}
-	live := a.liveSessions()
-	origins := a.loadOrigins(p.dir, sessions)
+	if r.o.id == "" {
+		reportUnreadable(os.Stderr, unreadable)
+	}
+	if r.o.id != "" {
+		selected, e := resolveResumeSelection(a.st, defaultRoots(), sessions, unreadable, r.o.id)
+		if e != nil {
+			var load *convoLoadError
+			path := ""
+			if errors.As(e, &load) {
+				path = load.path
+			}
+			reportResumeUnreadable(os.Stderr, unreadable, path)
+			return p, false, e
+		}
+		reportResumeUnreadable(os.Stderr, unreadable, selected.s.Path)
+		p.s = selected.s
+		if selected.global || selected.forced != "" {
+			if p.forced, err = a.resumeCopyAccount(p.s.Provider, selected.forced, r.account); err != nil {
+				return p, false, err
+			}
+		}
+		if selected.global {
+			p.dir, p.changedDir, err = enterResumeDirectory(a.resumeDirectoryDeps(), p.s.Cwd, p.s.ID)
+			if err != nil {
+				return p, false, err
+			}
+			sessions = append(sessions, p.s)
+			resumeGlobalEcho(os.Stderr, p.s, p.dir, p.forced)
+		}
+	}
+	live := liveSessions(a.st, paths.RealClaudeHome(), a.cfg.Long.TmuxPrefix)
+	origins := loadOrigins(a.st, hostname(), os.Getenv("PWD"), p.dir, sessions)
 	o := r.o
 	switch {
 	case o.id != "":
-		if p.s, err = findSession(sessions, unreadable, o.id); err != nil {
-			return p, false, err
-		}
+		// Exact global lookup and directory admission precede live decisions.
 	case !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())):
 		return p, false, configErr("bad-flags", "no terminal to browse sessions on; give a session id (aiq resume --print lists them)")
 	default:
@@ -591,20 +676,12 @@ func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
 		return p, false, err
 	}
 
-	note := live[s.ID]
-	if note.tmux != "" && tmux.HasSession(note.tmux) {
-		resumeNote(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, note.note)
-		return p, true, tmux.Attach(note.tmux)
-	}
-	if note.pid > 0 {
-		resumeNote(os.Stderr, "aiq: note: session %s is also %s\n", s.ID, note.note)
-	}
 	org := originOf(origins, s)
 	if p.launcher, p.why, err = resumeLauncher(a.cfg, s, org, o); err != nil {
 		return p, false, err
 	}
 	// The pick fixes the provider, so a forced account can be checked now.
-	if r.account != "" {
+	if r.account != "" && p.forced == "" {
 		if p.forced, err = a.longAccountName(s.Provider, r.account); err != nil {
 			return p, false, err
 		}
@@ -622,6 +699,26 @@ func (a *app) pickResume(r resumeRequest) (p resumePick, done bool, err error) {
 	f.rest = p.cliArgs
 	if _, err := modelFlags(s.Provider, f); err != nil {
 		return p, false, configErr("bad-flags", "%v", err)
+	}
+	if p.changedDir && (r.verb == "long" || p.launcher != "") {
+		p.workspace = workspaceID()
+		if err := checkResumeWorkspace(resumeDirectoryRuntime(), p.dir, p.workspace, s.ID, true); err != nil {
+			return p, false, err
+		}
+	}
+	note := live[s.ID]
+	if note.native != "" {
+		err := herdr.Attach(note.native)
+		if !errors.Is(err, herdr.ErrEnded) {
+			return p, true, err
+		}
+	}
+	if note.tmux != "" && tmux.HasSession(note.tmux) {
+		resumeNote(os.Stderr, "aiq: session %s is %s; attaching instead of starting a second copy\n", s.ID, note.note)
+		return p, true, tmux.Attach(note.tmux)
+	}
+	if note.pid > 0 {
+		resumeNote(os.Stderr, "aiq: note: session %s is also %s\n", s.ID, note.note)
 	}
 	return p, false, nil
 }
@@ -682,14 +779,32 @@ func (a *app) longResume(args []string, auto bool) error {
 	if err != nil {
 		return err
 	}
-	ws := workspaceID()
-	target, attached, err := a.longExisting(ws)
-	if attached || err != nil {
-		return err
+	var ws string
+	var target longTarget
+	if r.o.id == "" {
+		ws = workspaceID()
+		var attached bool
+		target, attached, err = a.longExisting(ws)
+		defer target.unlock()
+		if attached || err != nil {
+			return err
+		}
 	}
 	p, done, err := a.pickResume(r)
 	if done || err != nil {
 		return err
+	}
+	if r.o.id != "" {
+		ws = p.workspace
+		if ws == "" {
+			ws = workspaceID()
+		}
+		var attached bool
+		target, attached, err = a.longExisting(ws)
+		defer target.unlock()
+		if attached || err != nil {
+			return err
+		}
 	}
 	s, launcher := p.s, p.launcher
 
@@ -774,7 +889,12 @@ func (a *app) longList() error {
 	if err != nil {
 		return err
 	}
-	if len(leases) == 0 {
+	native, records, err := listNativeOwnership(leases)
+	if err != nil {
+		return err
+	}
+	represented := map[string]bool{}
+	if len(leases) == 0 && len(records) == 0 {
 		fmt.Printf("no long sessions — start one with: aiq long %s [args]\n", config.ProviderList("|"))
 		return nil
 	}
@@ -795,7 +915,26 @@ func (a *app) longList() error {
 		if launcher == "" {
 			launcher = "-"
 		}
-		fmt.Printf("%-5d %-20s %-12s %-9s %-10s %-6s %-8s %s\n", l.ID, l.AccountID, launcher, l.Pane, drain, turn, fmtAgo(l.StartedAt, now), oneLine(l.Workspace))
+		pane := l.Pane
+		if herdr.IsRef(l.Pane) {
+			view := native[listingFamily(l.Pane)]
+			r := view.record
+			pane = "herdr"
+			if r.Core.Terminal != "" {
+				pane += "/" + r.Core.Terminal
+			}
+			if view.err != nil {
+				turn = "unknown"
+			} else if r.Target() != l.Pane {
+				turn = "stale"
+			} else if r.State != "running" {
+				turn = r.State
+			}
+			if r.Target() == l.Pane {
+				represented[r.Target()] = true
+			}
+		}
+		fmt.Printf("%-5d %-20s %-12s %-9s %-10s %-6s %-8s %s\n", l.ID, l.AccountID, launcher, pane, drain, turn, fmtAgo(l.StartedAt, now), oneLine(l.Workspace))
 		why, ok := whys[state.LeaseRef{ID: l.ID, StartedAt: l.StartedAt}]
 		if !ok {
 			continue
@@ -809,6 +948,19 @@ func (a *app) longList() error {
 			fmt.Println(indent + line)
 		}
 	}
+	for _, saved := range records {
+		view := native[saved.Ref]
+		r := view.record
+		if represented[r.Target()] {
+			continue
+		}
+		status := r.State
+		if view.err != nil {
+			status = "unknown (" + r.State + ")"
+		}
+		fmt.Printf("%-5s %-20s %-12s %-9s %-10s %-6s %-8s %s\n", "-", "-", "-", "herdr/"+r.Core.Terminal, "-", status, "-", oneLine(r.Workspace))
+	}
+
 	// The daemon writes these lines; without it they stand as it left them.
 	if held, err := daemon.LockHeld(); shown && err == nil && !held {
 		fmt.Println("(the daemon is not running; these may be out of date)")

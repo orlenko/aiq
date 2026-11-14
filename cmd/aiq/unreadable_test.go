@@ -270,7 +270,7 @@ func TestLongAndConvoNameAnUnreadableTranscript(t *testing.T) {
 			return err
 		},
 		"convo": func() error {
-			_, err := (&convoResolver{roots: defaultRoots()}).resolveID(work, "5e551011-0000-4000-8000-000000000001")
+			_, err := newConvoResolver(nil, defaultRoots()).resolveID(work, "5e551011-0000-4000-8000-000000000001")
 			return err
 		},
 	} {
@@ -293,7 +293,7 @@ func TestLongAndConvoNameAnUnreadableTranscript(t *testing.T) {
 // An id that matches no readable session says the transcripts named above
 // could not be read, and gives no --all hint, which would not list them.
 func TestNoReadableSessionGivesNoAllHint(t *testing.T) {
-	work, bad := listHome(t)
+	_, bad := listHome(t)
 	a, err := openApp()
 	if err != nil {
 		t.Fatal(err)
@@ -304,40 +304,61 @@ func TestNoReadableSessionGivesNoAllHint(t *testing.T) {
 		if unreadable {
 			panicOn(t, bad)
 		}
-		id := "5e551011-0000-4000-8000-000000000002"
-		if !unreadable {
-			id = "5e551011-0000-4000-8000-0000000000ee"
-		}
-		want := fmt.Sprintf("no session %q in this directory (aiq resume --print --all lists them)", id)
-		if unreadable {
-			want = fmt.Sprintf("no readable session %q in this directory; the transcripts named above could not be read", id)
-		}
-		for name, run := range map[string]func() error{
-			"resume --print": func() error { return cmdResume([]string{"--print", id}) },
-			"long resume": func() error {
-				_, _, err := a.pickResume(resumeRequest{o: resumeOpts{id: id}})
-				return err
-			},
-			"convo": func() error {
-				_, err := (&convoResolver{roots: defaultRoots()}).resolveID(work, id)
-				return err
-			},
-		} {
-			r, w, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
+		for _, full := range []bool{false, true} {
+			id := "nonexistent-prefix"
+			if full {
+				id = "5e551011-0000-4000-8000-0000000000ee"
+				if unreadable {
+					id = "5e551011-0000-4000-8000-000000000002"
+				}
 			}
-			stdout, stderr := os.Stdout, os.Stderr
-			os.Stdout, os.Stderr = w, w
-			runErr := run()
-			os.Stdout, os.Stderr = stdout, stderr
-			w.Close()
-			out, _ := io.ReadAll(r)
-			if runErr == nil || runErr.Error() != want {
-				t.Errorf("%s, unreadable %v: error %v, want %q", name, unreadable, runErr, want)
+			want := fmt.Sprintf("no session %q in this directory (aiq resume --print --all lists them)", id)
+			wantOut := ""
+			if unreadable {
+				want = fmt.Sprintf("no readable session %q in this directory; the transcripts named above could not be read", id)
+				wantOut = line
 			}
-			if unreadable != (string(out) == line) || !unreadable && len(out) != 0 {
-				t.Errorf("%s, unreadable %v: printed %q", name, unreadable, out)
+			var cause error
+			if full {
+				want = fmt.Sprintf("no readable session %q under configured roots", id)
+				cause = transcript.ErrNoSuchSession
+				if unreadable {
+					want = fmt.Sprintf("could not read transcript %q", bad)
+					cause = transcript.ErrUnreadable
+					wantOut = ""
+				}
+			}
+			for name, run := range map[string]func() error{
+				"resume --print": func() error { return cmdResume([]string{"--print", id}) },
+				"long resume":    func() error { _, _, err := a.pickResume(resumeRequest{o: resumeOpts{id: id}}); return err },
+				"convo":          func() error { return cmdConvo([]string{id}) },
+			} {
+				r, w, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				stdout, stderr := os.Stdout, os.Stderr
+				os.Stdout, os.Stderr = w, w
+				runErr := run()
+				os.Stdout, os.Stderr = stdout, stderr
+				w.Close()
+				out, _ := io.ReadAll(r)
+				r.Close()
+				if runErr == nil || runErr.Error() != want {
+					t.Errorf("%s full=%v unreadable=%v: error %v, want %q", name, full, unreadable, runErr, want)
+				}
+				if full && !errors.Is(runErr, cause) {
+					t.Errorf("%s lost global lookup/load cause: %v", name, runErr)
+				}
+				if full && unreadable {
+					var load *convoLoadError
+					if !errors.As(runErr, &load) {
+						t.Errorf("%s unreadable full UUID did not return selected-load error", name)
+					}
+				}
+				if string(out) != wantOut {
+					t.Errorf("%s full=%v unreadable=%v: printed %q, want %q", name, full, unreadable, out, wantOut)
+				}
 			}
 		}
 	}

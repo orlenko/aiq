@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,9 +20,11 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/state"
+	"github.com/orlenko/aiq/internal/terminal"
 	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -32,9 +35,11 @@ const convoUsage = `usage: aiq convo [--pane <id>] [--follow] [--last N] [--them
   no id, elsewhere  the one live session here: a Claude session or a session
                     aiq launched, whose directory is this one or holds it (a
                     Codex session started without aiq is found by id only)
-  <session-id>      that session of this directory (a unique prefix is enough)
+  <session-id>      this directory first (a unique prefix is enough); a full UUID
+                    also searches every configured root if no local session matches
   --pane <id>       the agent in tmux pane <id> (key bindings pass #{pane_id})
-  --follow          keep showing the conversation as it goes on (for a side split)
+  --follow          keep reading the selected file as it grows (for a side split);
+                    Antigravity supports snapshots only
   --last N          only the last N prompts you typed
   --theme T         colours for a light or dark background (also AIQ_THEME; the
                     flag wins); auto, the default, asks the terminal for its
@@ -150,6 +155,9 @@ func parseConvoArgs(args []string) (convoOpts, error) {
 	if o.id != "" && o.pane != "" {
 		return o, fmt.Errorf("--pane and a session id contradict each other")
 	}
+	if err := validateConvoID(o.id); err != nil {
+		return o, err
+	}
 	return o, nil
 }
 
@@ -185,17 +193,22 @@ func cmdConvo(args []string) error {
 	if err != nil {
 		return configErr("bad-flags", "%v", err)
 	}
-	r := &convoResolver{roots: defaultRoots()}
+	r := newConvoResolver(nil, defaultRoots())
 	// Leases are only read: the viewer never creates or migrates the
 	// database, and works without one for plain Claude sessions.
 	if st, err := state.OpenReadOnly(paths.StateDB()); err == nil {
 		r.st = st
 		defer st.Close()
 	}
-	tgt, err := r.resolve(o)
+	dir, pane, err := convoHere()
 	if err != nil {
 		return err
 	}
+	tgt, err := r.resolve(o, dir, pane)
+	if err != nil {
+		return err
+	}
+	defer tgt.flushWarnings(false)
 	if o.follow && tgt.provider == "agy" {
 		// ParseAgy has no notion of a running turn or of narration, so a
 		// live follow would print every planner message as an answer.
@@ -311,14 +324,18 @@ func page(text string) error {
 
 // convoTarget is the transcript a convo reads and where it was found.
 type convoTarget struct {
-	provider string
-	path     string
-	account  string // provider/name, when a lease says
-	pane     string
+	provider    string
+	path        string
+	account     string // provider/name, when a lease says
+	copyAccount string // unique owner of an exact lookup's newest overlay copy
+	copyRoot    string
+	pane        string
 	// stale says no running CLI is known to write the transcript (read by
 	// id), so a turn left open is one the CLI never finished.
-	stale bool
-	id    string // the session id it was asked for by, if any
+	stale    bool
+	id       string // the session id it was asked for by, if any
+	global   bool   // exact lookup outside the readable current-directory list
+	warnings *convoWarnings
 }
 
 func (t convoTarget) label() string {
@@ -328,23 +345,52 @@ func (t convoTarget) label() string {
 	return t.provider
 }
 
+// convoHere is where aiq convo runs: the working directory and terminal reference, if any.
+func convoHere() (dir, pane string, err error) {
+	dir, err = os.Getwd()
+	return dir, terminal.Current(), err
+}
+
+// convoResolver finds the transcript aiq convo reads. Make one with newConvoResolver,
+// then replace what a caller gives its own: a zero convoResolver has nothing to read the
+// machine with.
 type convoResolver struct {
 	st    *state.Store // nil without a database
 	roots transcript.Roots
+	// src finds the transcripts of leases no hook reported; nil walks the
+	// roots each time, as the CLI does.
+	src transcript.Discovery
+	// What it reads of the machine: this host's name, the home directory, the Claude
+	// sessions running, a tmux pane, every process's parent, whether a process lives, and
+	// the clock. warn hears the transcripts a list could not read.
+	host     func() string
+	home     string
+	claude   func() []claudeLive
+	paneInfo func(pane string) (tmux.Pane, error)
+	parents  func() map[int]int
+	alive    func(pid int) bool
+	now      func() time.Time
+	warn     io.Writer
 }
 
-func (r *convoResolver) resolve(o convoOpts) (convoTarget, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return convoTarget{}, err
-	}
+// newConvoResolver is a resolver that reads this machine, as aiq convo does.
+func newConvoResolver(st *state.Store, roots transcript.Roots) *convoResolver {
+	home, _ := os.UserHomeDir()
+	return &convoResolver{st: st, roots: roots, host: hostname, home: home,
+		claude:   func() []claudeLive { return liveClaude(paths.RealClaudeHome(), paths.ClaudeHomesDir(), proc.Alive) },
+		paneInfo: terminal.Info, parents: processParents, alive: proc.Alive, now: time.Now, warn: os.Stderr}
+}
+
+// resolve finds what o names, from the working directory dir and the tmux
+// pane aiq runs in, if any.
+func (r *convoResolver) resolve(o convoOpts, dir, pane string) (convoTarget, error) {
 	if o.id != "" {
 		return r.resolveID(dir, o.id)
 	}
 	if o.pane != "" {
 		return r.resolvePane(o.pane)
 	}
-	if pane := os.Getenv("TMUX_PANE"); pane != "" {
+	if pane != "" {
 		t, err := r.resolvePane(pane)
 		if err == nil {
 			return t, nil
@@ -366,16 +412,16 @@ func (r *convoResolver) resolve(o convoOpts) (convoTarget, error) {
 // after a tmux restart, so a Claude session file or lease that names the
 // pane counts only while its process lives inside that pane.
 func (r *convoResolver) resolvePane(pane string) (convoTarget, error) {
-	info, err := tmux.PaneInfo(pane)
+	info, err := r.paneInfo(pane)
 	if err != nil {
-		return convoTarget{}, fmt.Errorf("no tmux pane %s", pane)
+		return convoTarget{}, fmt.Errorf("terminal %s is unavailable: %w", oneLine(pane), err)
 	}
-	parents := processParents()
+	parents := r.parents()
 	lease, leased := r.paneLease(info, parents)
 	// The agent is the Claude closest to the pane's shell; one started
 	// under it (an interactive claude a tool opened) runs deeper.
 	var in []claudeLive
-	for _, c := range liveClaude() {
+	for _, c := range r.claude() {
 		// A Claude that a leased Codex or Antigravity agent started is
 		// that agent's tool, not the pane's agent.
 		if leased && leaseProvider(lease) != "claude" && c.PID != lease.PID && descends(parents, c.PID, lease.PID) {
@@ -422,7 +468,7 @@ func (r *convoResolver) paneLease(p tmux.Pane, parents map[int]int) (state.Lease
 		return state.Lease{}, false
 	}
 	l, err := r.st.LongLeaseByPane(p.ID)
-	if err != nil || l.Hostname != hostname() || !proc.Alive(l.PID) || !descends(parents, l.PID, p.PID) {
+	if err != nil || l.Hostname != r.host() || !r.alive(l.PID) || !descends(parents, l.PID, p.PID) {
 		return state.Lease{}, false
 	}
 	return l, true
@@ -436,8 +482,7 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 	// A session counts here when it runs in dir or in a directory holding
 	// it (but not the home directory or /, which hold everything); the
 	// sessions closest to dir win.
-	home, _ := os.UserHomeDir()
-	home = canonicalPath(home)
+	home := canonicalPath(r.home)
 	best := -1
 	add := func(cwd string, t convoTarget) {
 		cwd = canonicalPath(cwd)
@@ -467,7 +512,7 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 		leases, _ := r.st.ListLeases()
 		var bare []state.Lease
 		for _, l := range leases {
-			if l.Hostname != hostname() || !proc.Alive(l.PID) {
+			if l.Hostname != r.host() || !r.alive(l.PID) {
 				continue
 			}
 			if l.Transcript == "" {
@@ -483,26 +528,27 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 			}
 		}
 	}
-	for _, c := range liveClaude() {
+	for _, c := range r.claude() {
 		if p := claudeTranscript(r.roots.ClaudeProjects, c.Cwd, c.SessionID); p != "" {
 			add(c.Cwd, convoTarget{provider: "claude", path: p, pane: c.pane()})
 		}
 	}
 	switch len(found) {
 	case 0:
-		return convoTarget{}, fmt.Errorf("no live agent session in %s; aiq resume --print lists its sessions, aiq convo <session-id> reads one", oneLine(homeRel(dir)))
+		return convoTarget{}, fmt.Errorf("no live agent session in %s; aiq resume --print lists its sessions, aiq convo <session-id> reads one", oneLine(homeRelTo(r.home, dir)))
 	case 1:
 		return found[0], nil
 	}
-	return convoTarget{}, liveSessionsErr(dir, found)
+	return convoTarget{}, liveSessionsErr(r.home, dir, found)
 }
 
 // liveSessionsErr asks which of several live sessions in dir to read, one
-// line a session. The directory and the id from a transcript's file name
-// print as one line each, so neither can add a line of its own.
-func liveSessionsErr(dir string, found []convoTarget) error {
+// line a session, dir shown under home. The directory and the id from a
+// transcript's file name print as one line each, so neither can add a line
+// of its own.
+func liveSessionsErr(home, dir string, found []convoTarget) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d live sessions in %s; name one:", len(found), oneLine(homeRel(dir)))
+	fmt.Fprintf(&b, "%d live sessions in %s; name one:", len(found), oneLine(homeRelTo(home, dir)))
 	for _, t := range found {
 		fmt.Fprintf(&b, "\n  aiq convo %s", oneLine(sessionIDOf(t.path)))
 		if t.pane != "" {
@@ -527,7 +573,7 @@ func (r *convoResolver) unreported(bare []state.Lease) map[int64]string {
 	held := map[string]bool{}
 	if leases, err := r.st.ListLeases(); err == nil {
 		for _, l := range leases {
-			if l.Transcript != "" && l.Hostname == hostname() && proc.Alive(l.PID) {
+			if l.Transcript != "" && l.Hostname == r.host() && r.alive(l.PID) {
 				held[canonicalPath(l.Transcript)] = true
 			}
 		}
@@ -538,7 +584,7 @@ func (r *convoResolver) unreported(bare []state.Lease) map[int64]string {
 		if l.Mode == state.ModeWorker || l.Cwd == "" {
 			continue
 		}
-		for _, p := range transcript.Written(r.roots, leaseProvider(l), l.Cwd, time.Unix(l.StartedAt, 0)) {
+		for _, p := range r.discovery().Written(context.Background(), leaseProvider(l), l.Cwd, time.Unix(l.StartedAt, 0)) {
 			if !held[canonicalPath(p)] {
 				held[canonicalPath(p)] = true
 				out[l.ID] = p
@@ -549,19 +595,44 @@ func (r *convoResolver) unreported(bare []state.Lease) map[int64]string {
 	return out
 }
 
+func (r *convoResolver) discovery() transcript.Discovery {
+	if r.src != nil {
+		return r.src
+	}
+	return transcript.DirectWalk(r.roots)
+}
+
 // ambiguousErr is resolveDir finding more than one live session.
 type ambiguousErr string
 
 func (e ambiguousErr) Error() string { return string(e) }
 
-// resolveID finds a session of dir by id, the way aiq resume does.
+// resolveID prefers the directory's readable sessions, then an exact full ID.
 func (r *convoResolver) resolveID(dir, id string) (convoTarget, error) {
+	if err := validateConvoID(id); err != nil {
+		return convoTarget{}, err
+	}
 	sessions, unreadable, err := transcript.List(r.roots, dir)
-	reportUnreadable(os.Stderr, unreadable)
+	deferred := false
+	defer func() {
+		if !deferred {
+			reportUnreadable(r.warn, unreadable)
+		}
+	}()
 	if err != nil {
 		return convoTarget{}, err
 	}
 	s, err := findSession(sessions, unreadable, id)
+	if errors.Is(err, errSessionNoMatch) && transcript.IsFullID("claude", id) {
+		t, err := resolveGlobalConvo(context.Background(), r.discovery(), id, transcript.ParseSummary)
+		if err != nil {
+			return convoTarget{}, err
+		}
+		t.stale = r.stale(t)
+		t.warnings = &convoWarnings{paths: unreadable, selected: t.path, warn: r.warn}
+		deferred = true
+		return t, nil
+	}
 	if err != nil {
 		return convoTarget{}, err
 	}
@@ -585,12 +656,12 @@ func (r *convoResolver) stale(t convoTarget) bool {
 		return true
 	}
 	_, mod := statFile(t.path)
-	return time.Since(mod) > staleAfter
+	return r.now().Sub(mod) > staleAfter
 }
 
 // running reports whether a live Claude process or a lease holds session id.
 func (r *convoResolver) running(id string) bool {
-	for _, c := range liveClaude() {
+	for _, c := range r.claude() {
 		if c.SessionID == id {
 			return true
 		}
@@ -600,7 +671,7 @@ func (r *convoResolver) running(id string) bool {
 	}
 	leases, _ := r.st.ListLeases()
 	for _, l := range leases {
-		if l.SessionID == id && l.Hostname == hostname() && proc.Alive(l.PID) {
+		if l.SessionID == id && l.Hostname == r.host() && r.alive(l.PID) {
 			return true
 		}
 	}
@@ -610,15 +681,26 @@ func (r *convoResolver) running(id string) bool {
 func loadConvo(t convoTarget) (*transcript.Session, error) {
 	var s *transcript.Session
 	var err error
-	switch t.provider {
-	case "claude":
-		s, err = transcript.ParseClaude(t.path)
-	case "codex":
-		s, err = transcript.ParseCodex(t.path)
-	case "agy":
-		s, err = transcript.ParseAgy(t.path)
-	default:
-		return nil, fmt.Errorf("aiq convo cannot read %s transcripts", t.provider)
+	if t.global {
+		t.flushWarnings(true)
+		s, err = transcript.ParseFile(t.path)
+		if err == nil && (s == nil || s.Provider != t.provider || s.ID != t.id) {
+			err = errConvoIdentity
+		}
+		if err != nil {
+			return nil, &convoLoadError{path: t.path, cause: err}
+		}
+	} else {
+		switch t.provider {
+		case "claude":
+			s, err = transcript.ParseClaude(t.path)
+		case "codex":
+			s, err = transcript.ParseCodex(t.path)
+		case "agy":
+			s, err = transcript.ParseAgy(t.path)
+		default:
+			return nil, fmt.Errorf("aiq convo cannot read %s transcripts", t.provider)
+		}
 	}
 	if err == nil && t.stale && len(s.Turns) > 0 && s.Turns[len(s.Turns)-1].Open {
 		// The turn ended with the CLI: its last answer is its reply.
@@ -681,13 +763,14 @@ type claudeLive struct {
 }
 
 // liveClaude reads the session files of running Claude processes, from the
-// real home and from any overlay home whose sessions/ is not linked to it.
-// It reads only regular files, so a pipe or a device there cannot hold it.
-func liveClaude() []claudeLive {
-	dirs := []string{filepath.Join(paths.RealClaudeHome(), "sessions")}
-	homes, _ := os.ReadDir(paths.ClaudeHomesDir())
+// real home realClaude and from any overlay home in homesDir whose sessions/
+// is not linked to it; alive says which processes run. It reads only regular
+// files, so a pipe or a device there cannot hold it.
+func liveClaude(realClaude, homesDir string, alive func(pid int) bool) []claudeLive {
+	dirs := []string{filepath.Join(realClaude, "sessions")}
+	homes, _ := os.ReadDir(homesDir)
 	for _, h := range homes {
-		d := filepath.Join(paths.ClaudeHomesDir(), h.Name(), "sessions")
+		d := filepath.Join(homesDir, h.Name(), "sessions")
 		if info, err := os.Lstat(d); err == nil && info.IsDir() {
 			dirs = append(dirs, d)
 		}
@@ -704,7 +787,7 @@ func liveClaude() []claudeLive {
 			var c claudeLive
 			// A session id aiq would not resume is not one it reads either: it names a
 			// file, and must not reach outside the projects folder or match others.
-			if json.Unmarshal(data, &c) != nil || c.PID <= 0 || !transcript.ValidID(c.SessionID) || seen[c.PID] || !proc.Alive(c.PID) || strings.HasPrefix(c.Entrypoint, "sdk") {
+			if json.Unmarshal(data, &c) != nil || c.PID <= 0 || !transcript.ValidID(c.SessionID) || seen[c.PID] || !alive(c.PID) || strings.HasPrefix(c.Entrypoint, "sdk") {
 				continue
 			}
 			seen[c.PID] = true
@@ -799,9 +882,15 @@ const (
 // convoPrinter writes a conversation append-only: each piece once, in the
 // order it turned up, so a snapshot and a --follow run print the same text.
 type convoPrinter struct {
-	provider string
-	color    bool
-	marks    bool
+	palette                         convoPalette
+	renderer                        convoMarkdownRenderer
+	capture                         *convoPaintCapture // nil for ordinary printers
+	liveMark, itemBand, skippedNote string
+	promptHead                      func(time.Time) string
+	clock                           func(time.Time) string
+	provider                        string
+	color                           bool
+	marks                           bool
 	// width is the terminal's, for rendering the agent's Markdown (with
 	// colour only); 0 means unknown.
 	width int
@@ -827,6 +916,11 @@ type convoPrinter struct {
 	// track has emit record where each thing it prints ends, in cuts, for the screen.
 	track bool
 	cuts  []convoCut
+	facts convoFacts
+	// Sticky for one emit, including failures followed by successful renders.
+	renderFailed bool
+	faults       *diagnostic.Latch
+	sharedFaults bool // projection owns the outer invocation's latch
 }
 
 // convoCut is one thing emit printed: where it ends in emit's output, the turn it belongs to,
@@ -838,11 +932,16 @@ type convoPrinter struct {
 type convoCut struct {
 	end             int
 	key, kind, text string
+	facts           convoFacts
 }
 
 func (p *convoPrinter) cut(b *strings.Builder, key, kind, text string) {
 	if p.track {
-		p.cuts = append(p.cuts, convoCut{end: b.Len(), key: key, kind: kind, text: text})
+		cut := convoCut{end: b.Len(), key: key, kind: kind, text: text, facts: p.facts}
+		if p.capture != nil {
+			p.capture.cut(b, cut, len(p.cuts))
+		}
+		p.cuts = append(p.cuts, cut)
 	}
 }
 
@@ -859,10 +958,6 @@ type turnSeen struct {
 	msgMode map[string]string // how a said message's first part printed: reply or line; its later parts follow suit
 	noReply bool
 	skipped int // records over the line cap shown as skipped
-}
-
-func newConvoPrinter(provider string, color, marks bool) *convoPrinter {
-	return &convoPrinter{provider: provider, color: color, marks: marks, markup: convoMarkup, seen: map[string]*turnSeen{}}
 }
 
 // convoMarkup is what new printers do with the Markdown marks: keep them,
@@ -891,6 +986,14 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 	var b strings.Builder
 	p.pending = false
 	p.cuts = nil
+	p.renderFailed = false
+	if !p.sharedFaults {
+		p.faults = &diagnostic.Latch{}
+	}
+	if p.capture != nil {
+		p.capture.reset()
+	}
+	p.facts = convoFacts{turn: -1, sub: "skipped"}
 	if len(s.Turns) == 0 || p.seen[turnKey(0, s.Turns[0])] == nil || !p.seen[turnKey(0, s.Turns[0])].hidden {
 		for ; p.skipped < s.Skipped; p.skipped++ {
 			p.skippedLine(&b, "")
@@ -906,6 +1009,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		if seen.hidden || idleNotice(t) {
 			continue
 		}
+		p.facts = turnConvoFacts(i, t)
 		pieces := turnPieces(t)
 		human := t.Source == transcript.Human
 		if !seen.head {
@@ -913,17 +1017,28 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				continue // a local command: the parser drops it if nothing comes of it
 			}
 			kind, text := "you", t.Prompt
+			p.facts.sub, p.facts.at = "prompt", t.Started
+			p.facts.head = convoHead{mode: "prompt", who: "you"}
+			if !t.Started.IsZero() {
+				p.facts.head.clockMode, p.facts.head.at = "relative", t.Started
+			}
 			switch {
 			case t.PromptSkipped:
 				// The prompt was a record too long to read: the line saying so
 				// stands in its place, and is that record's one line.
-				text = transcript.SkippedNote()
-				p.block(&b, true, pal.you, youHeader(t.Started), pal.dim, "  · "+text)
+				text = p.skippedNote
+				p.facts.sub, p.facts.at = "skipped_prompt", time.Time{}
+				p.block(&b, true, p.palette.you, p.promptHead(t.Started), p.palette.dim, "  · "+text)
 				seen.skipped = 1
 			case human:
-				p.human(&b, youHeader(t.Started), t.Prompt)
+				p.human(&b, p.promptHead(t.Started), t.Prompt)
 			default:
-				b.WriteString("\n" + p.paint(pal.dim, "· "+promptLine(t)) + "\n")
+				line, head := promptPresentation(t, p.clock)
+				p.facts.head = head
+				if p.capture != nil {
+					p.capture.literal(p.palette.dim, "· "+line)
+				}
+				b.WriteString("\n" + p.paint(p.palette.dim, "· "+line) + "\n")
 				kind = "notice"
 			}
 			p.note(k, "prompt", text)
@@ -953,6 +1068,8 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 		for _, pc := range pieces {
 			if pc.kind == transcript.ItemSteer {
 				if steers++; steers > seen.steers {
+					p.facts.sub, p.facts.at = "steer", pc.at
+					p.facts.head = convoHead{mode: "steer", who: "you, while it worked"}
 					p.human(&b, "▌ you, while it worked", pc.text)
 					p.note(k, "steer", pc.text)
 					p.cut(&b, k, "steer", pc.text)
@@ -977,6 +1094,7 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 				// reply it belongs to, and adds nothing to a one-liner.
 				if !printed {
 					seen.done[id] = true
+					p.facts.sub, p.facts.at, p.facts.head = "continuation", pc.at, convoHead{}
 					switch seen.msgMode[pc.msg] {
 					case "reply":
 						p.answer(&b, "", "", "", pc.text)
@@ -1006,15 +1124,20 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			}
 			seen.done[id] = true
 			shown := "answer"
+			p.facts.at = pc.at
 			switch {
 			case pc.final:
-				p.answer(&b, pal.agent, head, "", pc.text)
+				p.facts.sub, p.facts.head = "final", finalConvoHead(p.provider, t)
+				p.answer(&b, p.palette.agent, head, "", pc.text)
 			case pc.kind == transcript.ItemAnswer:
-				p.answer(&b, pal.dim, "▌ "+p.provider+" · earlier", pal.dim, pc.text)
+				p.facts.sub, p.facts.head = "earlier", convoHead{mode: "earlier", who: p.provider}
+				p.answer(&b, p.palette.dim, "▌ "+p.provider+" · earlier", p.palette.dim, pc.text)
 			case reply:
-				p.answer(&b, pal.agent, "▌ "+p.provider+" · "+clockLabel(pc.at), "", pc.text)
+				p.facts.sub, p.facts.head = "reply", convoHead{mode: "reply", who: p.provider, clockMode: "reply", at: pc.at}
+				p.answer(&b, p.palette.agent, "▌ "+p.provider+" · "+p.clock(pc.at), "", pc.text)
 				seen.msgMode[pc.msg] = "reply"
 			default:
+				p.facts.sub, p.facts.head = "said", convoHead{}
 				p.said(&b, pc.text)
 				seen.msgMode[pc.msg] = "line"
 				shown = "line"
@@ -1023,10 +1146,12 @@ func (p *convoPrinter) emit(s *transcript.Session) string {
 			p.cut(&b, k, shown, pc.text)
 		}
 		for ; seen.skipped < t.Skipped; seen.skipped++ {
+			p.facts.sub, p.facts.at, p.facts.head = "skipped", time.Time{}, convoHead{}
 			p.skippedLine(&b, k)
 		}
 		if human && !t.Open && len(seen.done) == 0 && !seen.noReply && !(p.live && last) {
-			p.block(&b, false, pal.agent, head, pal.dim, "(no reply)")
+			p.facts.sub, p.facts.at, p.facts.head = "none", time.Time{}, finalConvoHead(p.provider, t)
+			p.block(&b, false, p.palette.agent, head, p.palette.dim, "(no reply)")
 			p.note(k, "none", "")
 			p.cut(&b, k, "none", "")
 			seen.noReply = true
@@ -1110,13 +1235,16 @@ func turnPieces(t transcript.Turn) []piece {
 			return out
 		}
 	}
-	return append(out, piece{kind: transcript.ItemAnswer, text: t.Reply, final: true})
+	return append(out, piece{kind: transcript.ItemAnswer, text: t.Reply, at: t.ReplyAt, final: true})
 }
 
 // skippedLine writes a record the parser read past as one dim line.
 func (p *convoPrinter) skippedLine(b *strings.Builder, key string) {
-	text := transcript.SkippedNote()
-	b.WriteString(p.paint(pal.dim, "  · "+text) + "\n")
+	text := p.skippedNote
+	if p.capture != nil {
+		p.capture.literal(p.palette.dim, "  · "+text)
+	}
+	b.WriteString(p.paint(p.palette.dim, "  · "+text) + "\n")
 	p.note(key, "skipped", text)
 	p.cut(b, key, "skipped", text)
 }
@@ -1132,7 +1260,10 @@ func (p *convoPrinter) said(b *strings.Builder, text string) {
 			line = truncate("  · "+firstLineWhole(text), 100)
 		}
 	}
-	b.WriteString(p.paint(pal.dim, line) + "\n")
+	if p.capture != nil {
+		p.capture.literal(p.palette.dim, line)
+	}
+	b.WriteString(p.paint(p.palette.dim, line) + "\n")
 }
 
 // multiline reports whether s holds more than one line.
@@ -1151,10 +1282,14 @@ func firstLineWhole(s string) string {
 
 // clockLabel is the time of day a reply came, to the second.
 func clockLabel(t time.Time) string {
+	return clockLabelIn(t, time.Local)
+}
+
+func clockLabelIn(t time.Time, location *time.Location) string {
 	if t.IsZero() {
 		return "reply"
 	}
-	return t.Local().Format("15:04:05")
+	return t.In(location).Format("15:04:05")
 }
 
 func (p *convoPrinter) note(key, kind, text string) {
@@ -1166,6 +1301,9 @@ func (p *convoPrinter) note(key, kind, text string) {
 // block writes a header line and its text after a blank line. A human
 // block carries the prompt mark.
 func (p *convoPrinter) block(b *strings.Builder, human bool, headSGR, head, bodySGR, body string) {
+	if p.capture != nil {
+		p.capture.literal(bodySGR, strings.TrimRight(body, "\n"))
+	}
 	if p.color && !human {
 		b.WriteString(p.agentHead(headSGR, head))
 		b.WriteString(p.paint(bodySGR, strings.TrimRight(body, "\n")) + "\n")
@@ -1187,7 +1325,7 @@ const sgrBand = "\x1b[48;5;236m"
 // stands apart from the agent's answers at a glance.
 func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 	if !p.color {
-		p.block(b, true, pal.you, head, sgrBold, body)
+		p.block(b, true, p.palette.you, head, sgrBold, body)
 		return
 	}
 	width := p.width
@@ -1199,18 +1337,22 @@ func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 	width = max(width, 10)
 	// One style per line, so the only reset is the last thing on it: the
 	// grey has no holes and never bleeds into what comes next.
-	line := func(sgr, text string) string {
-		return pal.band + sgr + text + strings.Repeat(" ", max(0, width-cells(text))) + sgrReset + "\n"
+	line := func(sgr, text string, body bool) string {
+		padding := strings.Repeat(" ", max(0, width-cells(text)))
+		if body && p.capture != nil {
+			p.capture.literal(p.palette.band+sgr, text+padding)
+		}
+		return p.palette.band + sgr + text + padding + sgrReset + "\n"
 	}
 	b.WriteString("\n")
 	if p.marks {
 		b.WriteString(osc133Prompt)
 	}
-	b.WriteString(line(pal.you, truncate(sanitize(head), width)))
+	b.WriteString(line(p.palette.you, truncate(sanitize(head), width), false))
 	for _, l := range wrap(sanitize(strings.TrimRight(body, "\n")), width) {
-		b.WriteString(line(sgrBold, l))
+		b.WriteString(line(sgrBold, l, true))
 	}
-	b.WriteString(line("", ""))
+	b.WriteString(line("", "", true))
 }
 
 // answer writes an agent's answer under its header. With colour it renders
@@ -1229,8 +1371,12 @@ func (p *convoPrinter) answer(b *strings.Builder, headSGR, head, base, body stri
 	if width <= 0 {
 		width = 100
 	}
-	rendered, ok := safeRender(sanitize(strings.TrimRight(body, "\n")), width, base, p.markup)
+	rendered, ok, origin := safeRenderOrigin(p.renderer, sanitize(strings.TrimRight(body, "\n")), width, base, p.markup)
+	if p.faults != nil {
+		p.faults.Note(origin)
+	}
 	if !ok {
+		p.renderFailed = true
 		p.block(b, false, headSGR, head, base, body)
 		return
 	}
@@ -1249,24 +1395,31 @@ func (p *convoPrinter) agentHead(sgr, head string) string {
 	if width <= 0 {
 		width = 100
 	}
-	text := kitMarksFor(os.Getenv).live + strings.TrimPrefix(head, "▌")
-	return "\n" + kitLine([]kitSeg{{style: sgr, text: text}}, kitThemeFor(false).itemBand, max(width, 10)) + "\n"
+	text := p.liveMark + strings.TrimPrefix(head, "▌")
+	return "\n" + kitLine([]kitSeg{{style: sgr, text: text}}, p.itemBand, max(width, 10)) + "\n"
 }
 
 // safeRender renders Markdown that was cleaned before (the escapes the
 // renderer writes are its own), and reports false if the renderer panics,
 // so a bug in it costs one answer its styling, not the whole view.
-func safeRender(text string, width int, base string, markup bool) (out string, ok bool) {
+func safeRender(renderer convoMarkdownRenderer, text string, width int, base string, markup bool) (string, bool) {
+	out, ok, _ := safeRenderOrigin(renderer, text, width, base, markup)
+	return out, ok
+}
+
+func safeRenderOrigin(renderer convoMarkdownRenderer, text string, width int, base string, markup bool) (out string, ok bool, origin diagnostic.Origin) {
 	defer func() {
-		if recover() != nil {
+		if value := recover(); value != nil {
+			origin = diagnostic.Capture(value)
 			out, ok = "", false
 		}
 	}()
-	return markdownRenderer(text, width, base, markup), true
+	return renderer(text, width, base, markup), true, diagnostic.Origin{}
 }
 
-// markdownRenderer is renderMarkdown; tests swap it.
-var markdownRenderer = renderMarkdown
+// markdownRenderer is an optional CLI override used by tests. Nil binds the
+// selected palette's Markdown renderer at printer construction.
+var markdownRenderer convoMarkdownRenderer
 
 // paint colours each line on its own, so a pager that starts mid-block
 // still shows it right. Everything it paints is cleaned of control
@@ -1356,13 +1509,26 @@ func idleNotice(t transcript.Turn) bool {
 // as. An Orchestra notice says nothing but how to read the inbox, so it
 // shows as where it came from and when.
 func promptLine(t transcript.Turn) string {
+	return promptLineWithClock(t, clockLabel)
+}
+
+func promptLineWithClock(t transcript.Turn, clock func(time.Time) string) string {
+	line, _ := promptPresentation(t, clock)
+	return line
+}
+
+// Capture the presentation at the same branch that chooses its text.
+func promptPresentation(t transcript.Turn, clock func(time.Time) string) (string, convoHead) {
+	head := convoHead{mode: "notice", who: sourceLabel(t.Source)}
 	if t.Source == transcript.Notice && strings.HasPrefix(strings.TrimSpace(t.Prompt), transcript.OrchestraNotice) {
+		head.who = "orchestra inbox"
 		if t.Started.IsZero() {
-			return "orchestra inbox"
+			return "orchestra inbox", head
 		}
-		return "orchestra inbox · " + clockLabel(t.Started)
+		head.clockMode, head.at = "reply", t.Started
+		return "orchestra inbox · " + clock(t.Started), head
 	}
-	return sourceLabel(t.Source) + ": " + firstLine(t.Prompt)
+	return sourceLabel(t.Source) + ": " + firstLine(t.Prompt), head
 }
 
 func sourceLabel(s transcript.Source) string {
@@ -1512,6 +1678,13 @@ func (f *convoFollow) run(stop <-chan struct{}) error {
 }
 
 func (f *convoFollow) loop(stop <-chan struct{}) error {
+	if f.tgt.global {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+	}
 	// The file is looked at before each parse, never after, so a write
 	// that lands during a parse shows as a change on the next tick.
 	size, mod := statFile(f.tgt.path)
@@ -1594,6 +1767,11 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 				} else {
 					f.print(f.emit(p, s, mod))
 				}
+			} else if f.tgt.global {
+				if f.send == nil {
+					f.setStatus("")
+				}
+				return err
 			}
 			dirty = p.pending
 		}
