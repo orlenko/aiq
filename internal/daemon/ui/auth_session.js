@@ -1,6 +1,6 @@
 import {canonical32, credential, directory, encodeForm, fragment, origin} from "./auth_codec.js";
 import {createAppHost} from "./app.js";
-import {prepareTabRead} from "./tab_proof.js";
+import {prepareTabRead2} from "./tab_proof.js";
 
 const LINK = "Link invalid, expired or already used; run aiq ui again.";
 const LOCKED = "This tab is locked; run aiq ui again.";
@@ -116,7 +116,7 @@ export function createTabSession(options) {
     read = storageCall(e,"getItem",key);
     return !read.stale && read.ok && (read.value === null || read.value === "");
   }
-  async function send(e,path,method,body,byteLimit,bearer,parent,decode) {
+  async function send(e,path,method,body,byteLimit,bearer,parent,decode,condition="") {
     if (!live(e)) throw failure("cancelled");
     const controller = new AbortController(), started=now();
     const valid = () => {
@@ -133,8 +133,9 @@ export function createTabSession(options) {
       const headers = method === "POST" ? {"Content-Type":"application/json"} : {};
       let proof=null;
       if (bearer !== null) {
-        proof=await prepareTabRead(bearer,base,build,path,valid,options.crypto ?? globalThis.crypto);bearer=null;
+        proof=await prepareTabRead2(bearer,base,build,path,condition,valid,options.crypto ?? globalThis.crypto);bearer=null;
         if(!valid())bad();headers.Authorization=proof.authorization;
+        if(condition)headers["If-None-Match"]=condition;
       }
       response=await fetcher(base+path,{method,headers,body,signal:controller.signal,redirect:"error",credentials:"omit",cache:"no-store"});
       const status = response.status;
@@ -143,23 +144,25 @@ export function createTabSession(options) {
         throw failure("cancelled");
       }
       if (!valid()) throw failure(parent?.aborted || !live(e) ? "cancelled" : "terminal");
-      if (response.headers.get("X-Aiq-Build") !== build ||
-          !/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get("Content-Type") ?? "") || response.headers.has("Content-Encoding") || !response.body) bad();
-      if (status !== 200 && !(proof && [400,404,409,413,500,503].includes(status))) throw failure("terminal");
-      reader=response.body.getReader();
+      const notModified=status===304,mime=response.headers.get("Content-Type"),etag=response.headers.get("ETag")??"";
+      if (response.headers.get("X-Aiq-Build") !== build || response.headers.has("Content-Encoding"))bad();
+      if(notModified){if(!proof||!condition||mime!==null)bad();if(response.body===null)complete=true;}
+      else if(!/^application\/json(?:;\s*charset=utf-8)?$/i.test(mime??"")||!response.body)bad();
+      if (status !== 200 && !notModified && !(proof && [400,404,409,413,500,503].includes(status))) throw failure("terminal");
+      if(response.body!==null)reader=response.body.getReader();
       const chunks=[];let total=0;
-      for (;;) {
+      while(reader) {
         const next=await reader.read();
         if (!valid()) bad();
         if (next.done) { complete=true;break; }
-        if (!(next.value instanceof Uint8Array) || next.value.byteLength > byteLimit-total) bad();
+        if (!(next.value instanceof Uint8Array) || next.value.byteLength > (notModified?0:byteLimit)-total) bad();
         chunks.push(next.value.slice()); total+=next.value.byteLength;
       }
       const raw=new Uint8Array(total);let offset=0;
       for (const chunk of chunks) { raw.set(chunk,offset);offset+=chunk.byteLength; }
-      if(proof) { await proof.verify(response.headers.get("X-Aiq-Tab-Proof"),status,response.headers.get("Content-Type"),response.headers.get("X-Aiq-Build"),raw);if(!valid())bad(); }
-      if(status!==200)throw failure("request");
-      const value=decode(raw);
+      if(proof) { await proof.verify(response.headers.get("X-Aiq-Tab-Proof"),status,mime??"",response.headers.get("X-Aiq-Build"),raw,etag);if(!valid())bad(); }
+      if(status!==200&&!notModified)throw failure("request");
+      const value=decode(raw,{status,etag});
       if (!valid()) bad();
       return value;
     } catch (error) {
@@ -249,10 +252,18 @@ export function createTabSession(options) {
       let path;
       try { path=requestPath(route,query); } catch { throw failure("request"); }
       if (!live(e)) throw failure("cancelled");
-      const data=await send(e,path,"GET",undefined,limits[route],token,abortSignal,raw=>JSON.parse(new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(raw)));
+      let condition="";
+      try{if(route==="conversation"){
+        const d=Object.getOwnPropertyDescriptor(query,"etag");if(d){if(!Object.hasOwn(d,"value")||typeof d.value!=="string"||!/^"[0-9a-f]{64}"$/.test(d.value))bad();condition=d.value;}
+      }}catch{throw failure("request");}
+      const result=await send(e,path,"GET",undefined,limits[route],token,abortSignal,(raw,meta)=>{
+        if(meta.status===304)return {notModified:true,etag:meta.etag};
+        const data=JSON.parse(new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(raw));
+        return route==="conversation"&&meta.etag?{data,etag:meta.etag}:{data};
+      },condition);
       if (!live(e)) bad();
       if (kind === "restoring") { kind="unlocked";message="Navigator unlocked.";emit();if(!live(e))bad(); }
-      return {data};
+      return result;
     } catch (error) {
       const category=failures.get(error) ?? "terminal";
       if (live(e)) {

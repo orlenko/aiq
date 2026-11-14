@@ -62,14 +62,18 @@ func TabResponseMAC(key [32]byte, b Binding, p TabProof, status int, body []byte
 // TabFacts belongs to the admitting generation and one credential incarnation.
 // It exposes no key, identifier or credential; only a complete response signer.
 type TabFacts struct {
-	state *State
-	key   [32]byte
-	proof TabProof
-	epoch uint64
-	born  int64
+	state       *State
+	key         [32]byte
+	proof       TabProof
+	epoch       uint64
+	born        int64
+	conditional bool
 }
 
 func (s *State) AdmitTab(method, target string, p TabProof) (*TabFacts, error) {
+	return s.admitTab(method, target, "", p, false)
+}
+func (s *State) admitTab(method, target, condition string, p TabProof, conditional bool) (*TabFacts, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now, ok := s.nowLocked()
@@ -90,7 +94,13 @@ func (s *State) AdmitTab(method, target string, p TabProof) (*TabFacts, error) {
 	if matches != 1 {
 		return nil, ErrInvalid
 	}
-	mac, err := TabRequestMAC(key, s.binding, method, target, p)
+	var mac [32]byte
+	var err error
+	if conditional {
+		mac, err = TabConditionalRequestMAC(key, s.binding, method, target, condition, ConditionalTabProof{p})
+	} else {
+		mac, err = TabRequestMAC(key, s.binding, method, target, p)
+	}
 	if err != nil || !EqualMAC(mac, p.MAC) {
 		return nil, ErrInvalid
 	}
@@ -101,10 +111,10 @@ func (s *State) AdmitTab(method, target string, p TabProof) (*TabFacts, error) {
 	selected.used = now
 	selected.sequence = sequence
 	s.credentials[key] = selected
-	return &TabFacts{state: s, key: key, proof: p, epoch: s.epoch, born: selected.born}, nil
+	return &TabFacts{state: s, key: key, proof: p, epoch: s.epoch, born: selected.born, conditional: conditional}, nil
 }
 func (f *TabFacts) SignResponse(status int, body []byte) ([32]byte, error) {
-	if f == nil || f.state == nil {
+	if f == nil || f.state == nil || f.conditional {
 		return [32]byte{}, ErrInvalid
 	}
 	s := f.state
