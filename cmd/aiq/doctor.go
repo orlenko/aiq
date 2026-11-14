@@ -350,6 +350,19 @@ func (a *app) checkAccount(r *doctorReport, acc state.Account, now time.Time, st
 			}
 		}
 	}
+	// Codex polls on the home's own login, so a login as someone else is
+	// read from auth.json and compared with the account's identity.
+	if acc.Provider == "codex" && hasCred {
+		email, _ := codex.Identity(codex.AuthPath(acc.Home))
+		acc, _ = a.pool.RecordCodexLogin(acc, email, now)
+		u, _, _ := a.st.GetUsage(acc.ID)
+		switch why := pool.CLILoginProblem(acc, u); {
+		case why != "":
+			check(false, &need.login, "%s: %s (or, if the account really changed hands: aiq account authorize %s)", acc.ID, why, shellQuote(acc.ID))
+		case email != "":
+			check(true, nil, "%s: CLI logged in as %s", acc.ID, email)
+		}
+	}
 	if acc.Provider == "claude" {
 		has := claude.HasGrant(acc.Home)
 		var bad error

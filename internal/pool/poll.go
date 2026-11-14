@@ -145,7 +145,9 @@ func (p *Pool) pollOne(a state.Account, timeout time.Duration) error {
 		prev, _, _ := p.St.GetUsage(a.ID)
 		p.St.SetUsageMeta(a.ID, firstNonEmpty(u.Plan, prev.Plan), u.ResetCredits, "", now)
 		p.St.SetResetCreditDetail(a.ID, u.ResetCreditExpiry, u.ResetCreditID)
-		p.updateIdentity(a, u.Identity)
+		// The poll runs on whoever is logged in to the home, so its identity
+		// is the CLI's, not necessarily the account's.
+		p.RecordCodexLogin(a, u.Identity, now)
 		return nil
 	case "copilot":
 		// Copilot polling not implemented yet.
@@ -182,6 +184,48 @@ func (p *Pool) ProbeClaudeLogin(a state.Account, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+// RecordCodexLogin records the email a Codex home's auth.json is logged in
+// as. A Codex account has no credential of aiq's own, so the first email
+// seen becomes its identity; after that a different email is kept only as
+// the CLI's login, which holds the account from routing until a login as
+// the right person or `aiq account authorize` settles it. An empty email
+// (auth.json unreadable, or no email claim) changes nothing. It returns the
+// account as stored and whether the login is someone else.
+func (p *Pool) RecordCodexLogin(a state.Account, email string, now time.Time) (state.Account, bool) {
+	if email == "" {
+		return a, false
+	}
+	prev, _, _ := p.St.GetUsage(a.ID)
+	before := CLILoginProblem(a, prev)
+	identity, mismatch := ReconcileIdentity(a.Identity, email)
+	if identity != a.Identity {
+		a.Identity = identity
+		p.St.UpdateAccount(a)
+	}
+	p.St.SetCLILogin(a.ID, true, email, now)
+	if u, ok, _ := p.St.GetUsage(a.ID); ok {
+		if why := CLILoginProblem(a, u); why != "" && why != before {
+			p.St.LogEvent(a.Provider, a.ID, "login", why, now)
+		}
+	}
+	return a, mismatch
+}
+
+// ReconcileIdentity decides an account's identity after its CLI reports
+// observed: an empty stored identity takes the observed one, the same
+// address in another case takes the new spelling, and a different address
+// keeps the stored one and reports a mismatch. An empty observed identity
+// changes nothing.
+func ReconcileIdentity(stored, observed string) (identity string, mismatch bool) {
+	switch {
+	case observed == "":
+		return stored, false
+	case stored == "" || strings.EqualFold(stored, observed):
+		return observed, false
+	}
+	return stored, true
 }
 
 // UnreadableLogin checks, at launch, that a Claude account's stored login
