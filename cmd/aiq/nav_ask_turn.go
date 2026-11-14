@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/transcript"
@@ -62,14 +63,14 @@ func (h *navAskTurnHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	if req != nil && req.Context().Err() != nil {
 		status, body = 503, []byte(`{"error":"request_cancelled"}`)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
+	headers := w.Header()
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Cache-Control", "no-store")
 	if status == 405 {
-		w.Header().Set("Allow", "GET")
+		headers.Set("Allow", "GET")
 	}
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
+	headers.Set("Content-Length", strconv.Itoa(len(body)))
+	daemon.WriteNavigatorBody(w, req, headers, status, body)
 }
 func (h *navAskTurnHandler) prepare(req *http.Request, release *func()) (status int, body []byte) {
 	defer func() {

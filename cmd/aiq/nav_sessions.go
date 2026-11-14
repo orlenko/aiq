@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -104,13 +105,13 @@ func (h *navSessionsHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	}
 	// The writer is deliberately outside builder recovery. No second response
 	// is attempted if transport writes fail or panic; admission lasts through it.
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
+	headers := w.Header()
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Cache-Control", "no-store")
 	if p.allow != "" {
-		w.Header().Set("Allow", p.allow)
+		headers.Set("Allow", p.allow)
 	}
-	w.WriteHeader(p.status)
-	_, _ = w.Write(p.body)
+	daemon.WriteNavigatorBody(w, req, headers, p.status, p.body)
 }
 
 type navListQuery struct {

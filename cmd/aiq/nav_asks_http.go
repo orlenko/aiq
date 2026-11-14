@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/state"
 )
@@ -232,8 +233,7 @@ func (h *navAsksHandler) serve(w http.ResponseWriter, req *http.Request, f *navA
 		headers.Set("Allow", http.MethodGet)
 	}
 	headers.Set("Content-Length", strconv.Itoa(len(p.body)))
-	w.WriteHeader(p.status)
-	_, _ = w.Write(p.body)
+	daemon.WriteNavigatorBody(w, req, headers, p.status, p.body)
 }
 func (h *navAsksHandler) prepare(req *http.Request, release *func(), f *navAsksFaultState) (out navAsksHTTPResponse) {
 	defer func() {

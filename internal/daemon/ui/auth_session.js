@@ -1,4 +1,6 @@
 import {canonical32, credential, directory, encodeForm, fragment, origin} from "./auth_codec.js";
+import {createAppHost} from "./app.js";
+import {prepareTabRead} from "./tab_proof.js";
 
 const LINK = "Link invalid, expired or already used; run aiq ui again.";
 const LOCKED = "This tab is locked; run aiq ui again.";
@@ -126,7 +128,11 @@ export function createTabSession(options) {
       timer=setTimer(()=>controller.abort(),10000);
       if (!valid()) bad();
       const headers = method === "POST" ? {"Content-Type":"application/json"} : {};
-      if (bearer !== null) headers.Authorization="Bearer "+bearer;
+      let proof=null;
+      if (bearer !== null) {
+        proof=await prepareTabRead(bearer,base,build,path,valid,options.crypto ?? globalThis.crypto);bearer=null;
+        if(!valid())bad();headers.Authorization=proof.authorization;
+      }
       response=await fetcher(base+path,{method,headers,body,signal:controller.signal,redirect:"error",credentials:"omit",cache:"no-store"});
       const status = response.status;
       if (status === 401 && live(e)) {
@@ -136,7 +142,7 @@ export function createTabSession(options) {
       if (!valid()) throw failure(parent?.aborted || !live(e) ? "cancelled" : "terminal");
       if (response.headers.get("X-Aiq-Build") !== build ||
           !/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get("Content-Type") ?? "") || response.headers.has("Content-Encoding") || !response.body) bad();
-      if (status !== 200) throw failure(method === "GET" && [400,404,409,413,500,503].includes(status) ? "request" : "terminal");
+      if (status !== 200 && !(proof && [400,404,409,413,500,503].includes(status))) throw failure("terminal");
       reader=response.body.getReader();
       const chunks=[];let total=0;
       for (;;) {
@@ -148,6 +154,8 @@ export function createTabSession(options) {
       }
       const raw=new Uint8Array(total);let offset=0;
       for (const chunk of chunks) { raw.set(chunk,offset);offset+=chunk.byteLength; }
+      if(proof) { await proof.verify(response.headers.get("X-Aiq-Tab-Proof"),status,response.headers.get("Content-Type"),response.headers.get("X-Aiq-Build"),raw);if(!valid())bad(); }
+      if(status!==200)throw failure("request");
       const value=decode(raw);
       if (!valid()) bad();
       return value;
@@ -307,11 +315,10 @@ export function start(options) {
     const {arrayEntries,stringUnits,rows}=pageLimits;
     session.ready.then(async ready=>{
       if(!ready||!current()||!["unlocked","restoring"].includes(session.snapshot().kind))return;
-      const module=await import("./app.js");
       if(!current()||!["unlocked","restoring"].includes(session.snapshot().kind))return;
       // A separate reader session is unnecessary: all fixed capabilities below
       // use the original private credential and its epoch.
-      const app=module.createAppHost(document,{window,root:document.getElementById("nav-app-root"),isCurrent:current,
+      const app=createAppHost(document,{window,root:document.getElementById("nav-app-root"),isCurrent:current,
         limits:{arrayEntries,stringUnits,rows},initialNext:session.selection()?.next,
         readers:{sessions:session.sessions,conversation:session.conversation,asks:session.asks,placement:session.placement}});
       if(!current()||!session.attachHost(()=>{

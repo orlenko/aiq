@@ -81,6 +81,9 @@ func lifeProof(t *testing.T, g *navGeneration, method, path, body string, seed b
 }
 func lifeRequest(method, path, body string) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	if method == "GET" && body == "" {
+		r.Body = http.NoBody
+	}
 	r.RemoteAddr, r.Host = "127.0.0.1:12345", "127.0.0.1"
 	if method == "POST" {
 		r.Header.Set("Content-Type", "application/json")
@@ -166,7 +169,7 @@ func TestNavigatorOldGenerationCannotTouchReplacementOrEmptyState(t *testing.T) 
 	}
 	for _, h := range []http.Handler{oldHandler, b.server.Handler} {
 		r := lifeRequest("GET", "/api/nav/invented", "")
-		r.Header.Set("Authorization", "Bearer "+credential)
+		setLifeTab(t, r, b, credential)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		if w.Code != 401 {
@@ -175,14 +178,14 @@ func TestNavigatorOldGenerationCannotTouchReplacementOrEmptyState(t *testing.T) 
 	}
 	newCredential := lifeCredential(t, b, 2)
 	oldRequest := lifeRequest("GET", "/api/nav/invented", "")
-	oldRequest.Header.Set("Authorization", "Bearer "+newCredential)
+	setLifeTab(t, oldRequest, b, newCredential)
 	oldReply := httptest.NewRecorder()
 	oldHandler.ServeHTTP(oldReply, oldRequest)
 	if oldReply.Code != 401 {
 		t.Fatal("retained handler borrowed replacement credential")
 	}
 	r := lifeRequest("GET", "/api/nav/invented", "")
-	r.Header.Set("Authorization", "Bearer "+newCredential)
+	setLifeTab(t, r, b, newCredential)
 	w := httptest.NewRecorder()
 	b.server.Handler.ServeHTTP(w, r)
 	if w.Code != 200 || w.Body.String() != "invented" {
@@ -360,7 +363,7 @@ func TestNavigatorChosenConnectionNeverCallsLiveAuthentication(t *testing.T) {
 			credentials = append(credentials, lifeCredential(t, g, byte(i)))
 		}
 		r := lifeRequest("GET", "/api/nav/invented", "")
-		r.Header.Set("Authorization", "Bearer "+credentials[0])
+		setLifeTab(t, r, g, credentials[0])
 		r = r.WithContext(context.WithValue(r.Context(), slotKey{}, &slotConn{slots: s.slots, chosen: true}))
 		w := httptest.NewRecorder()
 		g.server.Handler.ServeHTTP(w, r)
@@ -390,7 +393,11 @@ func TestNavigatorProductionInfoRootHasNoSelectedProject(t *testing.T) {
 	credential := lifeCredential(t, g, 2)
 	for _, path := range []string{"/", "/api/nav/unregistered"} {
 		r = lifeRequest("GET", path, "")
-		r.Header.Set("Authorization", "Bearer "+credential)
+		if strings.HasPrefix(path, "/api/") {
+			setLifeTab(t, r, g, credential)
+		} else {
+			r.Header.Set("Authorization", "Bearer "+credential)
+		}
 		w = httptest.NewRecorder()
 		g.server.Handler.ServeHTTP(w, r)
 		if w.Code != 404 {
