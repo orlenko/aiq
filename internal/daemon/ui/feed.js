@@ -24,6 +24,8 @@ export function createConversationFeed(document, data, options) {
   fragment.append(root);
   const helpers = [], controls = [], removes = [];
   const messages = [], prompts = [];
+  const records = [];
+  const expectedScope={...snapshot.session};
   let position = -1;
   let mounted = false, disposed = false, busy = false;
   function node(tag, className, text) {
@@ -104,6 +106,8 @@ export function createConversationFeed(document, data, options) {
     if (disposed) return;
     disposed = true; mounted = false;
     for (const remove of removes) remove(); removes.length = 0;
+    for (const record of records) for(const remove of record.removes)remove();
+    records.length=0;
     for (const helper of helpers) helper.teardown(); helpers.length = 0;
     for (const control of controls) control.raw = "";
     controls.length = messages.length = prompts.length = 0; position = -1; shortcutsEnabled = null; snapshot = null;
@@ -112,8 +116,71 @@ export function createConversationFeed(document, data, options) {
   }
   let outline = null, previous = null, next = null;
   let stream = readingControls ? node("div", "nav-feed-stream") : root;
+  let order=0;
+  function signature(message,markup,finals){
+    // Ordinals describe positions in one wire window, not message identity.
+    return JSON.stringify([markup,{...message,groups:message.groups.map(({ordinal,...group})=>group)},finals.get(message.turn)??null]);
+  }
+  function renderMessage(message,markup,finals){
+      const article = node("article", "nav-feed-message");
+      const record={article,signature:signature(message,markup,finals),id:message.id,helpers:[],controls:[],prompts:[],removes:[]};
+      article.id = `${idPrefix}-${message.id}`;
+      const messagePosition = {node:article,position:++order};record.position=messagePosition;
+      const body = node("div", "nav-feed-body");
+      body.id = `${article.id}-body`; article.append(body);
+      let visible = false,groupIndex=0;
+      try{
+      for (const group of message.groups) {
+        const index=groupIndex++;
+        if (!group.visible) continue;
+        visible = true;
+        if (group.leading_break) body.append(node("div", "nav-feed-break"));
+        const head = heading(group.head); if (head) body.append(head);
+        if (readingControls && head && ["prompt","steer"].includes(group.head.mode)) {
+          head.id = `${article.id}-prompt-${index}`; head.tabIndex = -1;
+          const button = node("button", "nav-feed-outline-prompt", head.textContent); button.type = "button";
+          button.setAttribute("aria-controls",head.id);
+          const item = node("li", "nav-feed-outline-item"); item.append(button);
+          const final = finals.get(message.turn);
+          if (final) {
+            const facts = [final.duration_known ? durationText(final.duration_ms) : "",`${final.tools} tool${final.tools === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
+            item.append(node("span", "nav-feed-outline-facts", facts));
+          }
+          messagePosition.position = ++order;
+          record.prompts.push({heading:head,button,item,position:order});
+        }
+        const rows = group.empty_body_line ? [...group.lines, {kind:"text", spans:[]}] : group.lines;
+        const helper = renderLines(document, rows, {window, markup, base:group.base});
+        record.helpers.push(helper); body.append(helper.fragment);
+      }
+      if (visible) {
+        const toolbar = node("div", "nav-feed-actions"); article.append(toolbar);
+        const button = node("button", "nav-feed-copy", "Copy message");
+        button.type = "button"; button.setAttribute("aria-describedby", body.id); toolbar.append(button);
+        if (message.account_known && message.account !== "") toolbar.append(node("span", "nav-feed-account", message.account));
+        record.controls.push({button, raw:message.raw});
+      }
+      return record;
+      }catch(error){cleanRecord(record);throw error;}
+  }
+  function cleanRecord(record){
+    for(const remove of record.removes)remove();record.removes.length=0;
+    for(const helper of record.helpers)helper.teardown();
+    for(const control of record.controls)control.raw="";
+    record.article.remove();for(const p of record.prompts)p.item.remove();
+  }
+  function activateRecord(record){
+    for(const helper of record.helpers)if(!helper.mount())throw new Error("line activation failed");
+    for(const p of record.prompts){const click=()=>moveTo(p);p.button.addEventListener("click",click);record.removes.push(()=>p.button.removeEventListener("click",click));}
+    for(const control of record.controls){const click=()=>copy(control);control.button.addEventListener("click",click);record.removes.push(()=>control.button.removeEventListener("click",click));}
+  }
+  function remember(record){
+    for(const helper of record.helpers)helpers.push(helper);
+    for(const control of record.controls)controls.push(control);
+    if(readingControls)messages.push(record.position);
+    for(const prompt of record.prompts)prompts.push(prompt);
+  }
   try {
-    let order = 0;
     const finals = new Map();
     if (readingControls) {
       for (const m of snapshot.messages) for (const g of m.groups) if (g.visible && g.head.mode === "final") finals.set(m.turn,g.head);
@@ -124,43 +191,7 @@ export function createConversationFeed(document, data, options) {
       root.append(navigation,outline,stream);
     }
     for (const message of snapshot.messages) {
-      const article = node("article", "nav-feed-message");
-      article.id = `${idPrefix}-${message.id}`;
-      stream.append(article);
-      const messagePosition = {node:article,position:++order};
-      if (readingControls) messages.push(messagePosition);
-      const body = node("div", "nav-feed-body");
-      body.id = `${article.id}-body`; article.append(body);
-      let visible = false;
-      for (const group of message.groups) {
-        if (!group.visible) continue;
-        visible = true;
-        if (group.leading_break) body.append(node("div", "nav-feed-break"));
-        const head = heading(group.head); if (head) body.append(head);
-        if (readingControls && head && ["prompt","steer"].includes(group.head.mode)) {
-          head.id = `${article.id}-prompt-${group.ordinal}`; head.tabIndex = -1;
-          const button = node("button", "nav-feed-outline-prompt", head.textContent); button.type = "button";
-          button.setAttribute("aria-controls",head.id);
-          const item = node("li", "nav-feed-outline-item"); item.append(button);
-          const final = finals.get(message.turn);
-          if (final) {
-            const facts = [final.duration_known ? durationText(final.duration_ms) : "",`${final.tools} tool${final.tools === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
-            item.append(node("span", "nav-feed-outline-facts", facts));
-          }
-          messagePosition.position = ++order;
-          prompts.push({heading:head,button,item,position:order});
-        }
-        const rows = group.empty_body_line ? [...group.lines, {kind:"text", spans:[]}] : group.lines;
-        const helper = renderLines(document, rows, {window, markup:snapshot.markup, base:group.base});
-        helpers.push(helper); body.append(helper.fragment);
-      }
-      if (visible) {
-        const toolbar = node("div", "nav-feed-actions"); article.append(toolbar);
-        const button = node("button", "nav-feed-copy", "Copy message");
-        button.type = "button"; button.setAttribute("aria-describedby", body.id); toolbar.append(button);
-        if (message.account_known && message.account !== "") toolbar.append(node("span", "nav-feed-account", message.account));
-        const control = {button, raw:message.raw}; controls.push(control);
-      }
+      const record=renderMessage(message,snapshot.markup,finals);records.push(record);remember(record);stream.append(record.article);
     }
     if (readingControls) {
       const list = node("ol", "nav-feed-outline-list"); for (const p of prompts) list.append(p.item);
@@ -178,19 +209,13 @@ export function createConversationFeed(document, data, options) {
     if (mounted) return true;
     if (!root.isConnected || root.ownerDocument !== document) return false;
     try {
-      for (const helper of helpers) if (!helper.mount()) throw new Error("line activation failed");
+      for (const record of records) activateRecord(record);
       mounted = true;
       if (readingControls) {
         const listen = (target,type,handler) => { target.addEventListener(type,handler); removes.push(() => target.removeEventListener(type,handler)); };
         listen(previous,"click",() => step(-1)); listen(next,"click",() => step(1));
         listen(root,"keydown",readingKeys);
         listen(root,"focusin",event => { if(active()) { const p=focusedPosition(event.target); if(p>=0)position=p; } });
-        for (const p of prompts) listen(p.button,"click",() => moveTo(p));
-      }
-      for (const control of controls) {
-        const click = () => copy(control);
-        control.button.addEventListener("click", click);
-        removes.push(() => control.button.removeEventListener("click", click));
       }
       return true;
     } catch {
@@ -200,5 +225,42 @@ export function createConversationFeed(document, data, options) {
   function refresh() {
     if (!disposed && mounted) for (const helper of helpers) helper.refresh();
   }
-  return {fragment, mount, refresh, teardown};
+  function update(data){
+    const value=captureConversation(data,expectedScope);
+    if(!active()||busy||root.contains(document.activeElement))return false;
+    const finals=new Map();if(readingControls)for(const m of value.messages)for(const g of m.groups)if(g.visible&&g.head.mode==="final")finals.set(m.turn,g.head);
+    const old=new Map(records.map(r=>[r.id,r])),prepared=[],nextRecords=[];
+    let staging=null;
+    try{
+      for(const message of value.messages){
+        let record=old.get(message.id);
+        if(!record||record.signature!==signature(message,value.markup,finals)){record=renderMessage(message,value.markup,finals);prepared.push(record);}
+        nextRecords.push(record);
+      }
+      if(!active())return false;
+      staging=node("div","");staging.hidden=true;root.append(staging);
+      for(const record of prepared){staging.append(record.article);activateRecord(record);if(!active())return false;}
+      root.setAttribute("aria-busy","true");
+      const retained=new Set(nextRecords);
+      for(const record of records)if(!retained.has(record))cleanRecord(record);
+      records.length=helpers.length=controls.length=messages.length=prompts.length=0;order=0;
+      const list=readingControls?outline.children[1]:null;
+      for(let i=0;i<nextRecords.length;i++){
+        const record=nextRecords[i];records.push(record);record.position.position=++order;
+        for(const p of record.prompts){p.position=++order;record.position.position=p.position;}
+        remember(record);
+        if(stream.children[i]!==record.article)stream.insertBefore(record.article,stream.children[i]??null);
+      }
+      if(readingControls){
+        for(let i=0;i<prompts.length;i++)if(list.children[i]!==prompts[i].item)list.insertBefore(prompts[i].item,list.children[i]??null);
+        outline.children[0].textContent=`Prompts (${prompts.length})`;previous.disabled=next.disabled=prompts.length===0;
+      }
+      position=-1;prepared.length=0;
+      return true;
+    }finally{
+      for(const record of prepared)cleanRecord(record);
+      staging?.remove();if(active())root.setAttribute("aria-busy","false");
+    }
+  }
+  return {fragment, mount, refresh, update, hasFocus:()=>active()&&root.contains(document.activeElement), teardown};
 }

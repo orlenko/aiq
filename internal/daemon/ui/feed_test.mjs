@@ -22,6 +22,7 @@ class Element extends Target {
     if(n.tagName==='#fragment') {this.append(...n.children);n.children=[];continue;}
     n.remove();n.parentNode=this;this.children.push(n);
   } }
+  insertBefore(n,before){n.remove();const at=before===null?this.children.length:this.children.indexOf(before);assert(at>=0);n.parentNode=this;this.children.splice(at,0,n);return n;}
   remove() { if(this.parentNode) this.parentNode.children=this.parentNode.children.filter(n=>n!==this);this.parentNode=null; }
   set textContent(v) {assert.equal(typeof v,'string');this.value=v;this.children=[];}
   get textContent() {return this.value+this.children.map(n=>n.textContent).join('');}
@@ -49,6 +50,30 @@ const has=(n,c)=>n.className.split(' ').includes(c);
 const buttons=n=>all(n).filter(n=>n.tagName==='button');
 const tick=async()=>{await Promise.resolve();await Promise.resolve();};
 function mounted(f,data,options) {const feed=f.feed(data,options);f.document.body.append(feed.fragment);assert.equal(feed.mount(),true);return feed;}
+
+test('incremental snapshots retain unchanged message DOM and replace changed copy facts',async()=>{
+  const f=fixture(),one=fixtureMessage(1,[fixtureGroup(0,fixtureHead('prompt'))]);
+  const feed=mounted(f,fixtureWindow([one]),{readingControls:true});
+  const first=all(f.document.body).find(n=>n.tagName==='article');
+  const two=fixtureMessage(2,[fixtureGroup(1,fixtureHead('reply'),[fixtureLine('new answer')])]);
+  assert.equal(feed.update(fixtureWindow([one,two])),true);
+  assert.equal(all(f.document.body).find(n=>n.tagName==='article'),first);
+  const second=all(f.document.body).filter(n=>n.tagName==='article')[1];
+  const changed=structuredClone(two);changed.raw='changed raw';changed.groups[0].lines=[fixtureLine('changed answer')];
+  assert.equal(feed.update(fixtureWindow([one,changed])),true);
+  assert.equal(all(f.document.body).find(n=>n.tagName==='article'),first);
+  assert(!second.isConnected);assert.equal(second.count()+all(second).slice(1).reduce((sum,n)=>sum+n.count(),0),0);
+  feed.teardown();assert.equal(f.document.body.children.length,0);assert(f.observers.every(o=>o.disconnected));
+});
+test('focused or copying feeds retain the snapshot and invalid updates leave it usable',async()=>{
+  const f=fixture(),feed=mounted(f,fixtureWindow(),{readingControls:true});
+  const first=all(f.document.body).find(n=>n.tagName==='article'),copy=buttons(first).find(n=>has(n,'nav-feed-copy'));
+  copy.focus();assert.equal(feed.update(fixtureWindow([])),false);assert(first.isConnected);
+  f.document.activeElement=null;
+  const bad=fixtureWindow();bad.session.id='00000002-0000-4000-8000-000000000002';assert.throws(()=>feed.update(bad));assert(first.isConnected);
+  assert.equal(feed.update(fixtureWindow([])),true);assert(!first.isConnected);
+  feed.teardown();assert(f.observers.every(o=>o.disconnected));
+});
 
 test('wire snapshot rejects mismatched scope, aliases and malformed final group before allocation',()=>{
   for(const mutate of [d=>d.session.id='00000002-0000-4000-8000-000000000002',d=>d.reset=false,d=>d.earlier_hidden=1,d=>d.messages.push(d.messages[0]),
