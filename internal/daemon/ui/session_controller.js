@@ -294,10 +294,14 @@ export function createSessionController(document, options) {
     const label=node("p","nav-follow-status",op.query.provider==="agy"?"Snapshot · no live turn tracking for Antigravity.":op.older?`${data.later_hidden} newer prompts not shown as of ${new Date().toLocaleTimeString()} · jump to newest`:"Following.");
     // The timer is visual text, deliberately outside the polite live region.
     const jump=node("button","nav-follow-newest","Jump to newest");jump.type="button";
-    op.followLabel=label;op.candidate.root.prepend(label,jump);
+    op.followLabel=label;op.candidate.root.prepend(label);op.candidate.root.append(jump);
     const resume=()=>{
       if(!alive(op))return;
       if(op.older){onNewest(Object.freeze({...op.query}));return;}
+      // Explicit resume leaves the reading/copy focus guard. Keep focus on a
+      // stable control at the newest content; poll completions never move it.
+      jump.focus({preventScroll:true});
+      if(!alive(op))return;
       op.following=true;detailPane.content.scrollTop=detailPane.content.scrollHeight;
       if(!op.followFlight){if(op.timer!==undefined){window.clearTimeout(op.timer);op.timer=undefined;}void pollFollow(op);}
     };

@@ -25,7 +25,7 @@ func TestNavigatorSessionControllerNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("controller fixtures failed: %v\n%s", err, out)
 	}
-	for _, expected := range []string{"tests 22", "pass 22", "fail 0", "cancelled 0", "skipped 0"} {
+	for _, expected := range []string{"tests 23", "pass 23", "fail 0", "cancelled 0", "skipped 0"} {
 		if !regexp.MustCompile(`(?m)^# ` + expected + `$`).Match(out) {
 			t.Fatalf("controller fixtures did not complete all literal cases:\n%s", out)
 		}

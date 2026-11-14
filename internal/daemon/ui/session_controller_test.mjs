@@ -115,6 +115,21 @@ test('hidden cancellation of a full read keeps its slot through delayed completi
   const value=detail();value.selection='A'.repeat(43);value.messages[0].groups[0].lines[0].spans[0].t='aborted full response';f.detailCalls[1].resolve(value);await tick();
   assert(!painted(f).includes('aborted full response'));assert.equal(f.timers.size,1);assert.equal(f.detailCalls.length,2);
 });
+test('explicit keyboard resume leaves each feed focus pause and preserves later focus intent',async()=>{
+  for(const target of ['prompt','copy','code'])for(const key of ['End','G']){
+    const f=followFixture();await tick();
+    const article=find(f,n=>n.tagName==='article')[0],content=find(f,n=>has(n,'nav-controller-follow-content'))[0];
+    const focused=target==='prompt'?find(f,n=>has(n,'nav-feed-prompt'))[0]:target==='copy'?find(f,n=>has(n,'nav-feed-copy'))[0]:find(f,n=>has(n,'nav-md-scroll'))[0];
+    focused.focus();content.scrollHeight=1000;content.scrollTop=0;content.emit('scroll');
+    let prevented=false;const pane=content.parentNode;
+    pane.emit('keydown',{target:focused,key,shiftKey:key==='G',preventDefault(){prevented=true;}});
+    assert(prevented);assert.equal(f.document.activeElement,byText(f,'Jump to newest'));await tick();
+    assert.equal(f.states.length,1);f.states[0].resolve(cachedState({disk_changed:true}));await tick();assert.equal(f.detailCalls.length,2);
+    // A new focus intent after resume still wins over the in-flight response.
+    focused.focus();const value=detail();value.selection='A'.repeat(43);value.messages[0].groups[0].lines[0].spans[0].t='focus must win';f.detailCalls[1].resolve(value);await tick();
+    assert(article.isConnected);assert(!painted(f).includes('focus must win'));assert.equal(f.document.activeElement,focused);f.clean();
+  }
+});
 
 // No direct DTO is returned through a promise: even deliberately hostile DTOs
 // are nested in the trusted inert envelope.
