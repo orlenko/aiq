@@ -267,3 +267,18 @@ test('limits require own positive safe-integer credits and are never consumed in
     reject(()=>captureDetail(detail(),scope,accessor));assert.equal(calls,0);
   }
 });
+
+test('activity owns proof categories and global counts without promoting recent or PID-only facts',()=>{
+ const activity={live:'live',pid:0,managed:true,workspace:'/workspace',account:'Invented',launcher:'fixture',pane:'%9',lease_id:'7',started:'123',drain:'requested',drain_manual:true,continued:false};
+ const data=sessions([row({provider:'claude',activity})]);data.activity={known:true,live:3,elsewhere:2,claude_open_known:true,observed:time()};
+ const out=captureSessions(data,'/x',limits());activity.account='changed';assert.equal(out.sessions[0].activity.account,'Invented');assert.equal(out.activity.elsewhere,2);
+ for(const patch of [{live:'live',managed:false},{live:'recent',managed:false},{live:'open',managed:false,pid:0},{workspace:'relative'},{live:'unknown',managed:true,lease_id:''}])reject(()=>captureSessions(sessions([row({provider:'claude',activity:{...activity,...patch}})]),'/x',limits()));
+ data.activity.elsewhere=4;reject(()=>captureSessions(data,'/x',limits()));
+});
+
+test('optional activity fields consume remaining shared units and refuse accessors before invocation',()=>{
+ const data=sessions([row()]);let calls=0;Object.defineProperty(data.sessions[0],'activity',{get(){calls++;throw Error('must not run');}});reject(()=>captureSessions(data,'/x',limits()));assert.equal(calls,0);
+ const valid=sessions([row({activity:{live:'recent',pid:0,managed:false,workspace:'',account:'',launcher:'',pane:'',lease_id:'',started:'',drain:'',drain_manual:false,continued:false}})]);
+ const base=sessions([row()]);let exact=0;while(true){try{captureSessions(base,'/x',limits(1000,++exact));break;}catch{}}
+ reject(()=>captureSessions(valid,'/x',limits(1000,exact)));
+});

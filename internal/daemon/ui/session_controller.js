@@ -1,5 +1,6 @@
 import {captureSessions, captureDetail, captureDetailResponse, captureState} from "./controller_data.js";
 import {createConversationFeed} from "./feed.js";
+import {directory,encodeForm} from "./auth_codec.js";
 
 const fail = () => { throw new TypeError("could not configure session controller"); };
 const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -17,6 +18,10 @@ export function navigatorLeaseCommand(verb,id,started) {
   if(!["attach","drain"].includes(verb)||typeof id!=="string"||typeof started!=="string"||
     id.length<1||id.length>10||started.length<1||started.length>12||/[^0-9]/.test(id)||/[^0-9]/.test(started)||Number(id)<=0||Number(started)<=0)return null;
   return `aiq long ${verb} ${id} --started ${started}`;
+}
+export function navigatorLauncherResumeCommand(provider,id,launcher){
+  if(navigatorReadCommand(provider,id)===null||typeof launcher!=="string"||launcher.length<1||launcher.length>64||/[^a-z0-9._-]/.test(launcher)||!/^[a-z0-9]/.test(launcher))return null;
+  return `aiq resume --launcher ${launcher} ${id}`;
 }
 function field(value, key) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail();
@@ -166,6 +171,7 @@ export function createSessionController(document, options) {
     const commands=[];
     if(readCommands)for(const [follow,label]of [[false,"Copy read command"],[true,"Copy follow command"]])commands.push([navigatorReadCommand(value.provider,value.id,follow),label,"Read"]);
     if(resumeCommands)for(const [variant,label]of [["resume","Copy resume command"],["bare","Copy bare resume command"],["auto","Copy auto resume command"],["long","Copy long auto resume command"]])commands.push([navigatorResumeCommand(value.provider,value.id,variant),label,"Resume"]);
+    if(resumeCommands&&value.activity?.launcher)commands.push([navigatorLauncherResumeCommand(value.provider,value.id,value.activity.launcher),"Copy recorded launcher resume command","Resume"]);
     for(const [command,label,kind]of commands) {
       if(command===null)continue;
       const button=node("button","nav-command-copy",label);button.type="button";button.title=command;buttons.push(button);group.append(button);
@@ -217,10 +223,17 @@ export function createSessionController(document, options) {
     try {
       view.root.append(node("p", "nav-controller-facts", op.query.all?"All directories":`Directory: ${data.dir}`),
         node("p", "nav-controller-facts", `Scanned ${data.scanned} of ${data.of}; unreadable ${data.unreadable_count}; partial: ${data.partial ? "yes" : "no"}`));
+      if(data.activity){
+        const value=data.activity,date=new Date(value.observed.ms),stamp=value.observed.known&&Number.isFinite(date.getTime())?date.toLocaleString():"unknown time";
+        view.root.append(node("p","nav-controller-facts",`Activity snapshot: ${stamp}. Refresh to check again.`),node("p","nav-controller-elsewhere",`${value.known?"":"At least "}${value.live} verified managed sessions · ${value.elsewhere} elsewhere${value.known?"":" · other managed state unknown"}${value.claude_open_known?"":" · Claude registrations incomplete"}`));
+      }
       for (const rootPath of data.roots_searched) view.root.append(node("p", "nav-controller-facts", `Root searched: ${rootPath}`));
       const rows = node("ul", "nav-controller-rows"); view.root.append(rows);
       for (const value of data.sessions) {
         const li = node("li", "nav-controller-row"), item = {button:null}; view.rows.push(item); rows.append(li);
+        const activity=value.activity,live=activity?.live??"unknown";li.setAttribute("data-nav-live",live);
+        const labels={unknown:"Live state unknown",recent:"Recent activity (not verified live)",open:`Registered open in pid ${activity?.pid??0} (process exists; session not verified)`,live:"Verified running · aiq long",ended:"Managed session verified ended"};
+        li.append(node("p","nav-controller-activity",labels[live]));
         const label = `${value.provider} · ${value.label} · ${value.id}`;
         if (value.selectable) {
           item.button = node("button", "nav-controller-select", label); item.button.type = "button"; li.append(item.button);
@@ -230,6 +243,9 @@ export function createSessionController(document, options) {
           view.removes.push(() => item.button.removeEventListener("click", click));
         } else li.append(node("p", "nav-controller-unavailable", `${label} · Unavailable for selection`));
         commandControls(li,value,()=>mounted&&!disposed&&listView===view,view.removes);
+        const drainLabels={"":"no wrap-up recorded",requested:"wrapping up · moves at turn end",draining:"wrapping up · moves at turn end",ready:"wrap-up ready",waiting:"waiting for an account"};
+        if(activity?.managed)li.append(node("p","nav-controller-facts",`Recorded account: ${activity.account} · launcher: ${activity.launcher||"bare"} · terminal: ${activity.pane} · ${Object.hasOwn(drainLabels,activity.drain)?drainLabels[activity.drain]:"drain state unknown"}${activity.drain_manual?" · requested by you":""}`));
+        if(activity?.workspace){const link=node("a","nav-controller-workspace",activity.continued?"Current session in workspace →":"Workspace history and terminal controls →");link.href="/long?dir="+encodeForm(activity.workspace);link.rel="noreferrer";li.append(link);}
         li.append(node("p", "nav-controller-facts", `Title: ${value.title} · Directory: ${value.cwd||"Unknown"}`),
           node("p", "nav-controller-facts", `Model: ${value.model} · Branch: ${value.branch} · Updated: ${value.updated}`),
           node("p", "nav-controller-facts", `Turns: ${value.turns} · Tools: ${value.tools} · Worker: ${value.worker ? "yes" : "no"} · Bypass: ${value.bypass ? "yes" : "no"}`));
@@ -261,6 +277,7 @@ export function createSessionController(document, options) {
       candidate.headers=detailHeaderText(data).map(text=>node("p","nav-controller-facts",text));
       candidate.root.append(...candidate.headers);
       commandControls(candidate.root,s,()=>alive(op)&&!candidate.retired,candidate.removes);
+      if(!conversationOnly&&s.cwd){try{directory(s.cwd);const link=node("a","nav-controller-workspace","Workspace history and terminal controls →");link.href="/long?dir="+encodeForm(s.cwd);link.rel="noreferrer";candidate.root.append(link);}catch{}}
       candidate.child = createConversationFeed(document, data, {window,
         idPrefix:`${idPrefix}-feed-${op.version}`, expectedScope:op.query,
         readingControls, shortcutsEnabled:()=>alive(op)&&!candidate.retired&&shortcutsEnabled(),

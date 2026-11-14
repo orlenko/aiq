@@ -211,6 +211,9 @@ func TestNavSessionsLiteralDTOAndOwnership(t *testing.T) {
 	w := navTestServe(h, navTestRequest("/fixture"))
 	out := navTestDecode(t, w)
 	want := map[string]any{"dir": "/fixture", "roots_searched": []any{"/configured/claude", "/configured/codex", "/configured/agy"}, "partial": false, "scanned": float64(1), "of": float64(1), "unreadable_count": float64(0), "sessions": []any{map[string]any{"provider": "claude", "id": navTestID, "cwd": "/fixture", "label": label, "title": "title", "model": "model", "branch": "branch", "started": "2026-01-02T02:04:05.000000006Z", "updated": "0001-01-01T00:00:00Z", "turns": float64(2), "tools": float64(3), "worker": false, "bypass": true, "commands": []any{map[string]any{"verb": "convo", "fresh_only": false}, map[string]any{"verb": "convo_follow", "fresh_only": false}}}}}
+
+	want["activity"] = map[string]any{"known": false, "live": float64(0), "elsewhere": float64(0), "claude_open_known": false, "observed": map[string]any{"ms": float64(0), "known": false}}
+	want["sessions"].([]any)[0].(map[string]any)["activity"] = map[string]any{"live": "unknown", "pid": float64(0), "managed": false, "workspace": "", "account": "", "launcher": "", "pane": "", "lease_id": "", "started": "", "drain": "", "drain_manual": false, "continued": false}
 	if !reflect.DeepEqual(out, want) {
 		t.Fatalf("literal DTO mismatch\ngot %#v\nwant %#v", out, want)
 	}
@@ -328,7 +331,7 @@ func TestNavSessionsTextAndBodyBoundaries(t *testing.T) {
 			navTestResponse(t, w, 503, `{"error":"list_too_large"}`)
 		}
 	}
-	const emptyBody = `{"dir":"/fixture","roots_searched":[],"partial":false,"scanned":0,"of":0,"unreadable_count":0,"sessions":[]}`
+	const emptyBody = `{"dir":"/fixture","roots_searched":[],"partial":false,"scanned":0,"of":0,"unreadable_count":0,"sessions":[],"activity":{"known":false,"live":0,"elsewhere":0,"claude_open_known":false,"observed":{"ms":0,"known":false}}}`
 	for _, size := range []int64{int64(len(emptyBody)), int64(len(emptyBody) - 1)} {
 		h := navTestHandler(t, nil, func(_ *navSessionsDeps, l *navSessionsLimits) { l.bodyBytes = size })
 		w := navTestServe(h, navTestRequest("/fixture"))

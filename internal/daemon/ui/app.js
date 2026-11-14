@@ -60,11 +60,12 @@ export function createAppHost(document,options) {
   toolbar.append(allSessions);
   const controls=node("div","nav-controls"),searchLabel=node("label","nav-search-label","Search loaded results"),search=node("input","nav-search");search.type="search";search.autocomplete="off";searchLabel.append(search);
   const workersLabel=node("label","nav-toggle"),workers=node("input");workers.type="checkbox";workersLabel.append(workers,document.createTextNode(" Workers"));
+  const liveLabel=node("label","nav-toggle"),liveOnly=node("input","nav-live-only");liveOnly.type="checkbox";liveLabel.append(liveOnly,document.createTextNode(" Live or registered open only"));
   const marksLabel=node("label","nav-toggle"),marks=node("input");marks.type="checkbox";marksLabel.append(marks,document.createTextNode(" Markdown marks"));
   const windowLabel=node("label","nav-window-label","Conversation window"),windowSelect=node("select","nav-window");
   for(const [value,label]of [["50","Last 50 prompts"],["100","Last 100 prompts"],["500","Last 500 prompts"],["all","Show all"]]){const option=node("option","",label);option.value=value;windowSelect.append(option);}windowLabel.append(windowSelect);
   const themeLabel=node("label","nav-theme-label","Theme"),theme=node("select","nav-theme");for(const [value,label]of [["system","System"],["light","Light"],["dark","Dark"]]){const o=node("option","",label);o.value=value;theme.append(o);}themeLabel.append(theme);
-  controls.append(searchLabel,workersLabel,marksLabel,windowLabel,themeLabel);
+  controls.append(searchLabel,liveLabel,workersLabel,marksLabel,windowLabel,themeLabel);
   const status=node("p","nav-app-status");status.setAttribute("role","status");status.setAttribute("aria-live","polite");
   const note=node("p","nav-snapshot-note","Claude and Codex conversations update while visible. Scroll up to pause; End or Jump to newest resumes. Antigravity is a refreshing snapshot. Unverified live state stays unknown.");
   const placement=node("aside","nav-placement");placement.hidden=true;
@@ -81,7 +82,7 @@ export function createAppHost(document,options) {
   function announce(text){if(!alive())return;normalizeStatuses();filter();status.textContent=text;}
   function filter(){
     if(!alive())return;const q=search.value.toLocaleLowerCase();
-    for(const row of content.querySelectorAll(".nav-controller-row,.nav-asks-item"))row.hidden=q!==""&&!row.textContent.toLocaleLowerCase().includes(q);
+    for(const row of content.querySelectorAll(".nav-controller-row,.nav-asks-item"))row.hidden=q!==""&&!row.textContent.toLocaleLowerCase().includes(q)||liveOnly.checked&&currentAddress?.path.startsWith("/sessions")&&row.classList.contains("nav-controller-row")&&!["live","open"].includes(row.getAttribute("data-nav-live"));
     roving();
   }
   function roving(){
@@ -189,6 +190,7 @@ export function createAppHost(document,options) {
     windowLabel.hidden=!selected(parsed)&&!(parsed.path==="/long"&&parsed.dir);windowSelect.value=String(parsed.anchor?50:lastPrompts);
     recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help"||parsed.path==="/long";catalogStatus.textContent="";directoryTree.replaceChildren();directoryTree.hidden=true;allSessions.hidden=["/asks","/long","/help"].includes(parsed.path);
     title.textContent=parsed.path==="/long"?"Workspaces":parsed.path==="/asks"?"Asks":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
+    liveLabel.hidden=parsed.path!=="/sessions"||Boolean(selected(parsed));
     if(parsed.path==="/sessions"&&scopeReason)title.textContent+=" · "+scopeReason;
     document.title=title.textContent+" — aiq";
     for(const[path,a]of links){a.href=address(path,parsed.dir||lastDirectory);if(path==="/sessions"&&parsed.path.startsWith("/sessions")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
@@ -251,7 +253,7 @@ export function createAppHost(document,options) {
     for(const[path,a]of links)listen(a,"click",e=>{if(e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();search.value="";navigate(address(path,currentAddress?.dir||lastDirectory));});
     listen(allInput,"change",()=>{search.value="";navigate(address("/asks",allInput.checked?"":lastDirectory,allInput.checked));});
     listen(allSessions,"click",()=>{if(current)current.scopeTouched=true;search.value="";navigate(address("/sessions","",true));});
-    listen(search,"input",filter);listen(workers,"change",()=>render(currentAddress,false));listen(marks,"change",()=>render(currentAddress,false));
+    listen(search,"input",filter);listen(liveOnly,"change",filter);listen(workers,"change",()=>render(currentAddress,false));listen(marks,"change",()=>render(currentAddress,false));
     listen(windowSelect,"change",()=>{const value=windowSelect.value;if(!["50","100","500","all"].includes(value)){announce("Choose a conversation window.");return;}lastPrompts=value==="all"?"all":Number(value);navigate(address(currentAddress.path,currentAddress.dir,currentAddress.all),{replace:true,focus:false});});
     listen(search,"keydown",e=>{if(e.key==="Escape"){e.preventDefault();search.value="";filter();announce("Search cleared.");}});
     listen(theme,"change",()=>{if(["system","light","dark"].includes(theme.value))document.documentElement.dataset.navTheme=theme.value;});

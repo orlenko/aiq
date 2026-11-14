@@ -233,6 +233,9 @@ func (f *navFactory) build(ctx context.Context) (out *navFactoryBundle, err erro
 		return nil, err
 	}
 	sessions.slots = f.sessionSlots
+	sessions.deps.activity = func(ctx context.Context, q navListQuery, rows []transcript.Summary, run *navListRun) ([]navSessionActivity, navActivitySummary, error) {
+		return f.listActivity(ctx, roots, q, rows, run)
+	}
 	resolve := func(ctx context.Context, p, id string) (transcript.Hit, error) {
 		return index.Find(ctx, p, id, f.cache.Summary)
 	}

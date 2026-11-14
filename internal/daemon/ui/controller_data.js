@@ -39,10 +39,12 @@ const message = {id:"str", key:"str", kind:"str", sub:"str", turn:"int", at:time
   source_known:"bool", source:"str", account_known:"bool", account:"str", raw:"str", groups:[group]};
 const detail = {build:"str", session, earlier_hidden:"uint", later_hidden:"uint", window_start:"uint",
   reset:"bool", markup:"bool", messages:[message]};
+const activity={live:"str",pid:"uint",managed:"bool",workspace:"str",account:"str",launcher:"str",pane:"str",lease_id:"str",started:"str",drain:"str",drain_manual:"bool",continued:"bool"};
+const activitySummary={known:"bool",live:"uint",elsewhere:"uint",claude_open_known:"bool",observed:time};
 const row = {provider:"str", id:"str", cwd:"str", label:"str", title:"str", model:"str", branch:"str",
-  updated:"str", turns:"uint", tools:"uint", worker:"bool", bypass:"bool"};
+  updated:"str", turns:"uint", tools:"uint", worker:"bool", bypass:"bool",activity:{optional:activity}};
 const list = {dir:"str", roots_searched:["str"], partial:"bool", scanned:"uint", of:"uint",
-  unreadable_count:"uint", sessions:[row]};
+  unreadable_count:"uint", sessions:[row],activity:{optional:activitySummary}};
 const catalog={source:"str",directories:[{path:"str",updated_ms:"uint"}]};
 const fullCatalog={source:"str",partial:"bool",metadata_known:"bool",scanned:"uint",of:"uint",unreadable_count:"uint",unknown_directories:"uint",
   default_dir:"str",default_reason:"str",directories:[{path:"str",updated_ms:"int",updated_known:"bool",sessions:"uint",workers:"uint"}]};
@@ -129,6 +131,9 @@ function capture(value, schema, budget, rowArray = false) {
     if(Object.hasOwn(schema,"nullable"))return value===null?null:capture(value,schema.nullable,budget);
     const out = {};
     for (const [key, child] of Object.entries(schema)) {
+      if(child&&typeof child==="object"&&Object.hasOwn(child,"optional")){
+        const d=Object.getOwnPropertyDescriptor(value,key);if(!d)continue;require(Object.hasOwn(d,"value"));out[key]=capture(d.value,child.optional,budget);continue;
+      }
       out[key] = capture(field(value, key), child, budget, schema === list && key === "sessions");
     }
     return out;
@@ -151,8 +156,19 @@ export function captureSessions(data, expectedCanonicalDir, limits, all=false) {
     require(typeof all==="boolean"&&typeof expectedCanonicalDir === "string" && (all?expectedCanonicalDir==="":expectedCanonicalDir !== ""));
     const out = capture(data, list, credits(limits));
     require(out.dir === expectedCanonicalDir);
+    if(out.activity){validTime(out.activity.observed);require(out.activity.elsewhere<=out.activity.live&&(!all||out.activity.elsewhere===0));}
     for (const item of out.sessions) {
       item.selectable = ["claude", "codex", "agy"].includes(item.provider) && uuid.test(item.id);
+      const value=item.activity;
+      if(value){
+        require(["unknown","recent","open","live","ended"].includes(value.live)&&value.pid<=2147483647);
+        if(value.workspace)directory(value.workspace);
+        require(value.live!=="open"||item.provider==="claude"&&!value.managed&&value.pid>0);
+        require(!["live","ended"].includes(value.live)||value.managed);
+        require(value.live!=="recent"||["codex","agy"].includes(item.provider)&&!value.managed);
+        require(!item.worker||!value.managed&&value.live!=="live"&&value.live!=="open");
+        require(!value.managed||value.workspace!==""&&value.lease_id!==""&&value.started!=="");
+      }
     }
     return out;
   } catch { fail(); }
