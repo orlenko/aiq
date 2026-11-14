@@ -27,6 +27,7 @@ const navConversationSafeInteger int64 = 1<<53 - 1
 type navConversationOptions struct {
 	provider, id              string
 	selection                 string
+	prefixScope               string
 	last                      int
 	all                       bool
 	anchor                    int64

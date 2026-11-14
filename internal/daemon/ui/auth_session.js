@@ -46,7 +46,12 @@ function requestPath(kind, query) {
   const rawLast=own(query,"last"), last=rawLast==="all"?"all":integer(rawLast,1,10000), markup = own(query,"markup"), anchor = integer(own(query,"anchor"),0,9999999999999);
   if (typeof markup !== "boolean") bad();
   if (last==="all"&&anchor!==0)bad();
-  return "/api/nav/sessions/"+provider+"/"+id+"?"+(anchor===0?"":"at="+anchor+"&")+"last="+last+"&markup="+(markup?"1":"0");
+  const from=Object.getOwnPropertyDescriptor(query,"fromTurn"),key=Object.getOwnPropertyDescriptor(query,"fromKey");let delta="";
+  if(from||key){
+    if(!from||!key||!Object.hasOwn(from,"value")||!Object.hasOwn(key,"value")||anchor!==0||typeof key.value!=="string"||!/^[0-9a-f]{64}$/.test(key.value))bad();
+    delta="from_key="+key.value+"&from_turn="+integer(from.value,0,Number.MAX_SAFE_INTEGER)+"&";
+  }
+  return "/api/nav/sessions/"+provider+"/"+id+"?"+(anchor===0?"":"at="+anchor+"&")+delta+"last="+last+"&markup="+(markup?"1":"0");
 }
 
 // No global session and no exposed bearer. The host must supply finite immutable

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {captureSessions, captureDetail, captureDirectories, captureState} from './controller_data.js';
+import {captureSessions, captureDetail, captureDetailResponse, captureDirectories, captureState} from './controller_data.js';
 
 const id = '00000001-0000-4000-8000-000000000001';
 const scope = {provider:'agy', id};
@@ -21,6 +21,22 @@ function row(more={}) {
 }
 const sessions = (rows=[]) => ({dir:'/x',roots_searched:['r'],partial:true,scanned:3,of:7,unreadable_count:2,sessions:rows});
 const reject = fn => assert.throws(fn,{name:'TypeError',message:'could not capture navigator response'});
+
+test('delta replaces the complete changing tail and re-admits the retained prefix',()=>{
+  const base=detail();base.selection='A'.repeat(43);base.tail_turn=1;base.tail_key='a'.repeat(64);base.from_turn=0;
+  const second=structuredClone(base.messages[0]);second.id='2'.padStart(32,'0');second.turn=1;second.groups[0].ordinal=1;base.messages.push(second);
+  const tail={...structuredClone(base),reset:false,from_turn:1,tail_turn:2,tail_key:'b'.repeat(64),messages:[structuredClone(second)]};
+  tail.messages[0].raw='replacement raw';const last=structuredClone(second);last.id='3'.padStart(32,'0');last.turn=2;last.groups[0].ordinal=2;tail.messages.push(last);
+  const request={fromTurn:1,fromKey:base.tail_key},before=JSON.stringify(base);
+  const out=captureDetailResponse(tail,scope,limits(),base,request);
+  assert.equal(out.reset,true);assert.equal(out.from_turn,0);assert.equal(out.messages.length,3);assert.equal(out.messages[0].raw,base.messages[0].raw);assert.equal(out.messages[1].raw,'replacement raw');
+  assert.equal(JSON.stringify(base),before);assert.notEqual(out.messages[0],base.messages[0]);
+  // Each two-message input fits, but the three-message candidate does not.
+  captureDetail(base,scope,limits(16));reject(()=>captureDetailResponse(tail,scope,limits(16),base,request));
+  for(const change of [{from_turn:0},{window_start:1,earlier_hidden:1},{markup:true},{build:'other'},{later_hidden:1},{tail_turn:0}])reject(()=>captureDetailResponse({...tail,...change},scope,limits(),base,request));
+  reject(()=>captureDetailResponse(tail,scope,limits(),base,{...request,fromKey:'c'.repeat(64)}));
+  assert.equal(captureDetailResponse(base,scope,limits(),null,{}).messages.length,2);
+});
 
 test('detail selection is optional for old hosts, owned, canonical and charged',()=>{
   const d=detail();d.selection='A'.repeat(43);

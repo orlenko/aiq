@@ -1,4 +1,4 @@
-import {captureSessions, captureDetail, captureState} from "./controller_data.js";
+import {captureSessions, captureDetail, captureDetailResponse, captureState} from "./controller_data.js";
 import {createConversationFeed} from "./feed.js";
 
 const fail = () => { throw new TypeError("could not configure session controller"); };
@@ -103,6 +103,7 @@ export function createSessionController(document, options) {
   function retireMany(...operations) {
     const old = operations.filter(Boolean).map(op => {
       op.retired = true;
+      op.baseline=null;
       if(op.timer!==undefined){window.clearTimeout(op.timer);op.timer=undefined;}
       if (op.candidate) op.candidate.retired = true;
       const abort = op.abort; op.abort = null;
@@ -287,6 +288,7 @@ export function createSessionController(document, options) {
     op.timer=window.setTimeout(()=>{op.timer=undefined;void pollFollow(op);},2000);
   }
   function startFollowing(op,data){
+    op.baseline=data;
     op.selectionToken=data.selection;op.older=data.later_hidden>0||detailQuery.anchor!==0;
     op.shownTurns=data.window_start;for(const message of data.messages)op.shownTurns=Math.max(op.shownTurns,message.turn+1);
     op.following=!op.older;op.changed=false;
@@ -342,15 +344,17 @@ export function createSessionController(document, options) {
       }
       if(op.older||!op.following||!atBottom()||op.candidate.child.hasFocus())return;
       const request={...op.query,...detailQuery};if(op.etag)request.etag=op.etag;
+      if(op.query.provider!=="agy"&&op.baseline?.tail_key){request.fromTurn=op.baseline.tail_turn;request.fromKey=op.baseline.tail_key;}
       const envelope=await readConversation(request,op.abort.signal);if(!alive(op)||document.hidden||op.abort.signal.aborted)return;
       const notModified=Object.getOwnPropertyDescriptor(envelope,"notModified");
       if(notModified){if(!Object.hasOwn(notModified,"value")||notModified.value!==true||readETag(envelope)!==op.etag)fail();return;}
-      const value=captureDetail(field(envelope,"data"),op.query,limits);
+      const value=captureDetailResponse(field(envelope,"data"),op.query,limits,op.baseline,request);
       if(value.markup!==detailQuery.markup)fail();
       // User scrolling or focus movement during the fetch wins over completion.
       if(op.older||!op.following||!atBottom()||op.candidate.child.hasFocus()){op.changed=true;return;}
       const etag=readETag(envelope);
       if(!op.candidate.child.update(value)){op.changed=true;return;}
+      op.baseline=value;
       const headers=detailHeaderText(value);for(let i=0;i<headers.length;i++)if(op.candidate.headers[i].textContent!==headers[i])op.candidate.headers[i].textContent=headers[i];
       op.etag=etag;op.selectionToken=value.selection;op.changed=false;
       op.shownTurns=value.window_start;for(const message of value.messages)op.shownTurns=Math.max(op.shownTurns,message.turn+1);

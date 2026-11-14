@@ -34,6 +34,7 @@ type navDetailDeps struct {
 	resolve     func(context.Context, string, string) (transcript.Hit, error)
 	facts       func(context.Context, transcript.Hit, *transcript.Session) (navDetailFacts, error)
 	selection   func(context.Context, transcript.Hit, *transcript.Session, transcript.Snapshot, string) (string, error)
+	prefixScope func(transcript.Hit, transcript.Snapshot, string) string
 	now         func() time.Time
 	location    *time.Location
 	build       string
@@ -51,6 +52,9 @@ type navDetailDeps struct {
 type navDetailEnvelope struct {
 	Build         string                   `json:"build"`
 	Selection     string                   `json:"selection"`
+	TailTurn      int                      `json:"tail_turn"`
+	TailKey       string                   `json:"tail_key"`
+	FromTurn      int64                    `json:"from_turn"`
 	Session       navConversationSession   `json:"session"`
 	EarlierHidden int                      `json:"earlier_hidden"`
 	LaterHidden   int                      `json:"later_hidden"`
