@@ -62,8 +62,10 @@ export function createSessionController(document, options) {
   const fragment = document.createDocumentFragment();
   const root = node("div", "nav-controller"); fragment.append(root);
   const listPane = pane("Sessions", "sessions"), detailPane = pane("Conversation", "conversation");
+  const conversationOnly=options?.conversationOnly??false;if(typeof conversationOnly!=="boolean")fail();
+  listPane.root.hidden=conversationOnly;
   root.append(listPane.root, detailPane.root);
-  let mounted = false, disposed = false, activeScope = null, listQuery = null, selection = null, listView = null;
+  let mounted = false, disposed = false, frozen=false, activeScope = null, listQuery = null, selection = null, listView = null;
   const current = {list:null, detail:null}, serial = {list:0n, detail:0n}, removes = [];
   function node(tag, className, value) {
     const n = document.createElement(tag); n.className = className;
@@ -186,7 +188,7 @@ export function createSessionController(document, options) {
     } catch { failed(op, target); return; }
     // Even synchronous reader/thenable reentry must consume the returned rejection.
     promise.then(envelope => {
-      if (!alive(op)) return;
+      if (!alive(op)||op.channel==="detail"&&frozen) return;
       try {
         const data = field(envelope, "data");
         const owned = op.channel === "list" ? captureSessions(data, op.query.canonicalDir, limits,op.query.all) : captureDetail(data, op.query, limits);
@@ -284,7 +286,7 @@ export function createSessionController(document, options) {
     if(op.followLabel.textContent!==text){op.followLabel.textContent=text;if(announceChange)try{announce(text);}catch{}}
   }
   function scheduleFollow(op){
-    if(!alive(op)||!op.selectionToken||op.timer!==undefined||op.followFlight||document.hidden)return;
+    if(!alive(op)||frozen||!op.selectionToken||op.timer!==undefined||op.followFlight||document.hidden)return;
     op.timer=window.setTimeout(()=>{op.timer=undefined;void pollFollow(op);},2000);
   }
   function startFollowing(op,data){
@@ -298,7 +300,7 @@ export function createSessionController(document, options) {
     const jump=node("button","nav-follow-newest","Jump to newest");jump.type="button";
     op.followLabel=label;op.candidate.root.prepend(label);op.candidate.root.append(jump);
     const resume=()=>{
-      if(!alive(op))return;
+      if(!alive(op)||frozen)return;
       if(op.older){onNewest(Object.freeze({...op.query}));return;}
       // Explicit resume leaves the reading/copy focus guard. Keep focus on a
       // stable control at the newest content; poll completions never move it.
@@ -319,14 +321,14 @@ export function createSessionController(document, options) {
     scheduleFollow(op);
   }
   async function pollFollow(op){
-    if(!alive(op)||document.hidden||op.followFlight)return;
+    if(!alive(op)||frozen||document.hidden||op.followFlight)return;
     op.followFlight=true;
     try{
       op.abort=new window.AbortController();
       const paused=op.older||!op.following||!atBottom()||op.candidate.child.hasFocus();
       if(op.selectionToken){
         const request={...op.query,selection:op.selectionToken};
-        const envelope=await readState(request,op.abort.signal);if(!alive(op)||document.hidden||op.abort.signal.aborted)return;
+        const envelope=await readState(request,op.abort.signal);if(!alive(op)||frozen||document.hidden||op.abort.signal.aborted)return;
         const value=captureState(field(envelope,"data"),request,limits);
         if(!value.match){
           op.changed=true;op.etag="";
@@ -345,7 +347,7 @@ export function createSessionController(document, options) {
       if(op.older||!op.following||!atBottom()||op.candidate.child.hasFocus())return;
       const request={...op.query,...detailQuery};if(op.etag)request.etag=op.etag;
       if(op.query.provider!=="agy"&&op.baseline?.tail_key){request.fromTurn=op.baseline.tail_turn;request.fromKey=op.baseline.tail_key;}
-      const envelope=await readConversation(request,op.abort.signal);if(!alive(op)||document.hidden||op.abort.signal.aborted)return;
+      const envelope=await readConversation(request,op.abort.signal);if(!alive(op)||frozen||document.hidden||op.abort.signal.aborted)return;
       const notModified=Object.getOwnPropertyDescriptor(envelope,"notModified");
       if(notModified){if(!Object.hasOwn(notModified,"value")||notModified.value!==true||readETag(envelope)!==op.etag)fail();return;}
       const value=captureDetailResponse(field(envelope,"data"),op.query,limits,op.baseline,request);
@@ -385,7 +387,7 @@ export function createSessionController(document, options) {
     if (alive(op)) read(op, readSessions, {dir:op.query.dir, workers:op.query.workers,...(op.query.all?{all:true}:{})}, listPane, listCommit);
   }
   function select(value, trigger = null) {
-    if (!mounted || disposed) return;
+    if (!mounted || disposed || frozen) return;
     const {op, previous} = reserve("detail");
     selection = null; markers();
     try {
@@ -408,7 +410,7 @@ export function createSessionController(document, options) {
     if (alive(op)) read(op, readConversation, {...op.query, ...detailQuery}, detailPane, detailCommit);
   }
   function refresh(which = "all") {
-    if (!mounted || disposed) return;
+    if (!mounted || disposed || frozen) return;
     const list = listQuery && {...listQuery}, selected = selection, beforeScope = activeScope;
     const listVersion = serial.list + ((which === "all" || which === "list") && list ? 1n : 0n);
     if ((which === "all" || which === "list") && list) loadSessions(list);
@@ -424,6 +426,21 @@ export function createSessionController(document, options) {
     clearList(); for (const remove of removes) remove(); removes.length = 0;
     retireMany(oldList, oldDetail); root.remove();
     readSessions = readConversation = readState = onNewest = copyText = announce = onSelection = shortcutsEnabled = null;
+  }
+  // Workspace rollover preserves the last good feed and its copy controls.
+  // A frozen controller can never publish a late initial read or follow read.
+  function freeze(){
+    if(disposed||frozen)return;frozen=true;
+    detailPane.refresh.disabled=true;listPane.refresh.disabled=true;
+    const op=current.detail;
+    if(op?.timer!==undefined){window.clearTimeout(op.timer);op.timer=undefined;}
+    try{op?.abort?.abort();}catch{}
+    if(op?.followLabel)op.followLabel.textContent="Frozen session snapshot.";
+    for(const button of root.querySelectorAll(".nav-follow-newest"))button.disabled=true;
+  }
+  function canFollow(){
+    const op=current.detail;
+    return Boolean(op&&alive(op)&&!frozen&&op.candidate?.child&&op.following&&!op.older&&atBottom()&&!root.contains(document.activeElement));
   }
   function mount() {
     if (disposed) return false;
@@ -445,5 +462,5 @@ export function createSessionController(document, options) {
       return true;
     } catch { teardown(); return false; }
   }
-  return {fragment, mount, loadSessions, selectConversation:value => select(value), refresh, teardown};
+  return {fragment, mount, loadSessions, selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
 }

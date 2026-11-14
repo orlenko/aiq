@@ -37,7 +37,7 @@ export function route(value = "/sessions") {
   if (split >= 0 && raw === "") refused();
   const parts = path.split("/");
   const detail = parts.length === 4 && parts[1] === "sessions" && ["claude","codex","agy"].includes(parts[2]) && uuid.test(parts[3]);
-  if (!["/sessions","/asks","/","/help"].includes(path) && !detail) refused();
+  if (!["/sessions","/asks","/long","/","/help"].includes(path) && !detail) refused();
   const query = pairs(raw,["all","dir","at"]);
   if (Object.hasOwn(query,"dir")) directory(query.dir);
   if (Object.hasOwn(query,"all") && (!["/asks","/sessions"].includes(path)&&!detail || !["true","false"].includes(query.all))) refused();

@@ -2,6 +2,7 @@ import {directory,encodeForm,route} from "./auth_codec.js";
 import {createReadBroker} from "./read_broker.js";
 import {createSessionController} from "./session_controller.js";
 import {createAsksController} from "./asks_controller.js";
+import {createLongView} from "./long_view.js";
 import {captureDirectories} from "./controller_data.js";
 
 const owners=new WeakMap();
@@ -47,7 +48,7 @@ export function createAppHost(document,options) {
   const button=(text,cls="")=>{const n=node("button",cls,text);n.type="button";return n;};
   const shell=node("div","nav-shell"),header=node("header","nav-header"),nav=node("nav","nav-tabs");nav.setAttribute("aria-label","Navigator pages");
   const title=node("h2","nav-page-title","Sessions");title.tabIndex=-1;
-  const links=new Map();for(const [path,label]of [["/sessions","Sessions"],["/asks","Asks"],["/help","Help"]]){const a=node("a","nav-tab",label);a.href=path;a.rel="noreferrer";links.set(path,a);nav.append(a);}
+  const links=new Map();for(const [path,label]of [["/sessions","Sessions"],["/long","Workspaces"],["/asks","Asks"],["/help","Help"]]){const a=node("a","nav-tab",label);a.href=path;a.rel="noreferrer";links.set(path,a);nav.append(a);}
   const back=button("← Back","nav-back");header.append(back,nav);
   const toolbar=node("form","nav-toolbar"),dirLabel=node("label","nav-directory-label","Directory"),dirInput=node("input","nav-directory"),apply=button("Show directory");
   dirInput.type="text";dirInput.autocomplete="off";dirInput.spellcheck=false;dirInput.placeholder="/absolute/project/path";dirLabel.append(dirInput);apply.type="submit";
@@ -184,17 +185,23 @@ export function createAppHost(document,options) {
     const op={retired:false,controller:null,lease:null,scopeTouched:false};current=op;op.lease=broker.route();
     if(!active(op))return;
     dirInput.value=parsed.dir||lastDirectory;allInput.checked=parsed.path==="/asks"&&parsed.all;dirInput.disabled=allInput.checked;
-    allLabel.hidden=parsed.path!=="/asks";workersLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";marksLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";
-    windowLabel.hidden=!selected(parsed);windowSelect.value=String(parsed.anchor?50:lastPrompts);
-    recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help";catalogStatus.textContent="";directoryTree.replaceChildren();directoryTree.hidden=true;allSessions.hidden=parsed.path==="/asks"||parsed.path==="/help";
-    title.textContent=parsed.path==="/asks"?"Asks":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
+    allLabel.hidden=parsed.path!=="/asks";workersLabel.hidden=["/asks","/long","/help"].includes(parsed.path);marksLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";
+    windowLabel.hidden=!selected(parsed)&&!(parsed.path==="/long"&&parsed.dir);windowSelect.value=String(parsed.anchor?50:lastPrompts);
+    recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help"||parsed.path==="/long";catalogStatus.textContent="";directoryTree.replaceChildren();directoryTree.hidden=true;allSessions.hidden=["/asks","/long","/help"].includes(parsed.path);
+    title.textContent=parsed.path==="/long"?"Workspaces":parsed.path==="/asks"?"Asks":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
     if(parsed.path==="/sessions"&&scopeReason)title.textContent+=" · "+scopeReason;
     document.title=title.textContent+" — aiq";
     for(const[path,a]of links){a.href=address(path,parsed.dir||lastDirectory);if(path==="/sessions"&&parsed.path.startsWith("/sessions")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
     if(parsed.path==="/help"){content.append(help());if(focus)title.focus({preventScroll:true});return;}
-    recent.replaceChildren();recent.disabled=true;catalogStatus.textContent="Loading recent directories…";void loadDirectories(op,parsed);
+    if(parsed.path!=="/long"){recent.replaceChildren();recent.disabled=true;catalogStatus.textContent="Loading recent directories…";void loadDirectories(op,parsed);}
     const announceCurrent=text=>{if(active(op))announce(text);};
-    if(parsed.path==="/asks"){
+    if(parsed.path==="/long"){
+      op.controller=createLongView(document,{window,dir:parsed.dir,idPrefix:"nav-long-"+(++generation),limits,
+        detailQuery:{last:lastPrompts,markup:marks.checked,anchor:0},shortcutsEnabled:()=>shortcuts,
+        readLong:(q,s)=>op.lease.read("long",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),readState:(q,s)=>op.lease.read("state",q,s),
+        copyText:t=>copy(t,op),announce:announceCurrent,onWorkspace:dir=>{if(active(op))navigate(address("/long",dir));},
+        onConversation:(value,dir)=>{if(active(op))navigate(address("/sessions/"+value.provider+"/"+value.id,dir));}});
+    }else if(parsed.path==="/asks"){
       if(!parsed.all&&!parsed.dir){content.append(node("p","nav-empty","Choose a directory, or explicitly select All Asks."));if(focus)dirInput.focus();return;}
       op.controller=createAsksController(document,{window,idPrefix:"nav-app-asks-"+(++generation),limits,
         readAsks:(q,s)=>op.lease.read("asks",q,s),copyText:t=>copy(t,op),announce:announceCurrent,
@@ -211,6 +218,7 @@ export function createAppHost(document,options) {
     if(!active(op)){op.controller.teardown();return;}
     content.append(op.controller.fragment);
     if(!active(op)||!op.controller.mount()){try{op.controller.teardown();}catch{}return;}
+    if(parsed.path==="/long"){normalizeStatuses();if(focus&&active(op))title.focus({preventScroll:true});return;}
     if(parsed.path==="/asks")op.controller.loadScope({mode:parsed.all?"all":"directory",dir:parsed.dir});
     else{
       if(parsed.all)op.controller.loadSessions({dir:"",canonicalDir:"",workers:workers.checked,all:true});
@@ -224,7 +232,7 @@ export function createAppHost(document,options) {
   function keys(e){
     if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)||e.target.isContentEditable)return;
     if(e.key==="Escape"){e.preventDefault();if(helpDialog.open)helpDialog.close();else if(search.value){search.value="";filter();announce("Search cleared.");}else goBack();return;}
-    if(!shortcuts||!e.target.closest(".nav-controller,.nav-asks,.nav-feed"))return;
+    if(!shortcuts||!e.target.closest(".nav-controller,.nav-asks,.nav-feed,.nav-long"))return;
     if(e.key==="/"){e.preventDefault();search.focus();return;}
     if(e.key==="?"){e.preventDefault();helpDialog.showModal();return;}
     const group=e.target.closest(".nav-controller-rows,.nav-asks-region");if(!group)return;
@@ -237,7 +245,7 @@ export function createAppHost(document,options) {
     if(disposed)return false;if(mounted)return alive();if(!root.isConnected)return false;
     try{if(!isCurrent())return false;}catch{return false;}
     mounted=true;owners.set(root,owner);root.replaceChildren(shell);if(!alive()){dispose();return false;}root.hidden=false;
-    listen(toolbar,"submit",e=>{e.preventDefault();try{const dir=directory(dirInput.value);search.value="";navigate(address(currentAddress.path==="/asks"?"/asks":"/sessions",dir));}catch{announce("Enter a complete absolute directory without dot segments.");}});
+    listen(toolbar,"submit",e=>{e.preventDefault();try{const dir=directory(dirInput.value);search.value="";navigate(address(currentAddress.path==="/long"?"/long":currentAddress.path==="/asks"?"/asks":"/sessions",dir));}catch{announce("Enter a complete absolute directory without dot segments.");}});
     listen(dirInput,"input",()=>{if(current)current.scopeTouched=true;});
     listen(recent,"change",()=>{if(!recent.value)return;try{const dir=directory(recent.value);search.value="";navigate(address(currentAddress.path==="/asks"?"/asks":"/sessions",dir));}catch{announce("Choose an available directory.");}});
     for(const[path,a]of links)listen(a,"click",e=>{if(e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();search.value="";navigate(address(path,currentAddress?.dir||lastDirectory));});

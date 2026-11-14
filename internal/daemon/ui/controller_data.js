@@ -46,6 +46,40 @@ const list = {dir:"str", roots_searched:["str"], partial:"bool", scanned:"uint",
 const catalog={source:"str",directories:[{path:"str",updated_ms:"uint"}]};
 const fullCatalog={source:"str",partial:"bool",metadata_known:"bool",scanned:"uint",of:"uint",unreadable_count:"uint",unknown_directories:"uint",
   default_dir:"str",default_reason:"str",directories:[{path:"str",updated_ms:"int",updated_known:"bool",sessions:"uint",workers:"uint"}]};
+const longSpan={account:"str",launcher:"str",from:time,until:time};
+const longData={build:"str",kind:"str",requested_dir:"str",workspace:"str",workspace_known:"bool",state:"str",partial:"bool",unmapped_launches:"uint",history_present:"bool",observed:time,
+  lease:{nullable:{id:"str",started:"str",provider:"str",account:"str",launcher:"str",pane:"str",live:"str",drain:"str",working_known:"bool",working:"bool",turn_started:time}},
+  current:{nullable:{provider:"str",id:"str"}},current_spans:[longSpan],
+  earlier:[{key:"str",provider:"str",session_id:"str",transcript_available:"bool",workspace_known:"bool",last:time,spans:[longSpan]}],
+  workspaces:[{workspace:"str",recorded_leases:"uint",sessions:"uint"}],note:{available:"bool",exists:"bool",updated:time,archived:"uint"}};
+
+export function captureLong(data,expectedDir,history,limits){
+  try{
+    require(typeof expectedDir==="string"&&typeof history==="boolean");if(expectedDir)directory(expectedDir);
+    const out=capture(data,longData,credits(limits));
+    require(out.requested_dir===expectedDir&&out.history_present===history);validTime(out.observed);validTime(out.note.updated);
+    const seen=new Set();
+    for(const item of out.workspaces){directory(item.workspace);require(!seen.has(item.workspace));seen.add(item.workspace);}
+    if(expectedDir==="")require(history&&out.kind==="list"&&out.workspace===""&&!out.workspace_known&&out.state==="records"&&out.lease===null&&out.current===null&&out.earlier.length===0&&out.current_spans.length===0);
+    else{directory(out.workspace);require(out.kind==="workspace"&&["live","none","never","unknown"].includes(out.state)&&out.workspaces.length===0);}
+    if(out.lease){
+      const lease=out.lease;require(["live","ended","unknown"].includes(lease.live)&&["","requested","draining","ready","waiting","unknown"].includes(lease.drain));
+      require(lease.working_known||!lease.working);validTime(lease.turn_started);
+      require(!lease.working_known||lease.live==="live"&&lease.provider!=="agy"&&lease.turn_started.known);
+      require(out.state===(lease.live==="live"?"live":lease.live==="ended"?"none":"unknown"));
+    }
+    if(out.current)require(out.lease?.live==="live"&&out.current.provider===out.lease.provider&&["claude","codex","agy"].includes(out.current.provider)&&uuid.test(out.current.id));
+    const keys=new Set();
+    for(const item of out.earlier){
+      require(/^[0-9a-f]{64}$/.test(item.key)&&!keys.has(item.key));keys.add(item.key);validTime(item.last);
+      require(item.session_id===""||["claude","codex","agy"].includes(item.provider)&&uuid.test(item.session_id));
+      require(!item.transcript_available||item.session_id!=="");
+    }
+    for(const spans of [out.current_spans,...out.earlier.map(item=>item.spans)])for(const span of spans){validTime(span.from);validTime(span.until);require(!span.from.known||!span.until.known||span.until.ms>=span.from.ms);}
+    require(history||out.earlier.length===0&&out.current_spans.length===0&&!out.note.available);
+    return out;
+  }catch{fail();}
+}
 
 export function captureDirectories(data,limits){
   try{
@@ -92,6 +126,7 @@ function capture(value, schema, budget, rowArray = false) {
     return out;
   }
   if (typeof schema === "object") {
+    if(Object.hasOwn(schema,"nullable"))return value===null?null:capture(value,schema.nullable,budget);
     const out = {};
     for (const [key, child] of Object.entries(schema)) {
       out[key] = capture(field(value, key), child, budget, schema === list && key === "sessions");

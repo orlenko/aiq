@@ -1,6 +1,7 @@
 import test, {afterEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {createSessionController,navigatorReadCommand} from './session_controller.js';
+import {createLongView} from './long_view.js';
 import {ids,scope,limits,query,row,sessions,detail} from './controller_values.mjs';
 
 // Supplied geometry/explicit event dispatch: synthetic ownership evidence only.
@@ -26,6 +27,7 @@ class Element extends Target {
   getAttribute(n){return this.attrs.get(n)??null;}
   removeAttribute(n){this.attrs.delete(n);}
   contains(n){return this===n||this.children.some(c=>c.contains(n));}
+  querySelectorAll(selector){assert.equal(selector,'.nav-follow-newest');return walk(this).filter(n=>has(n,'nav-follow-newest'));}
   get isConnected(){return this===this.ownerDocument.body||Boolean(this.parentNode?.isConnected);}
   getClientRects(){return this.isConnected?[{}]:[];}
   focus(){const doc=this.ownerDocument,old=doc.activeElement;if(old===this)return;doc.activeElement=this;old?.emit('focusout',{relatedTarget:this});this.emit('focusin',{relatedTarget:old});doc.focusCalls.push(this);}
@@ -62,6 +64,74 @@ function fixture(extra={}) {
 }
 function rows(f){return find(f,n=>n.tagName==='button'&&!['Refresh sessions','Refresh conversation','Copy message'].includes(n.textContent));}
 function painted(f){return find(f,n=>has(n,'nav-md-line')).map(n=>n.textContent);}
+
+function longValue(name='A',full=true,extra={}){
+  return {build:'invented-build',kind:'workspace',requested_dir:'/fixture/A',workspace:'/fixture/A',workspace_known:true,state:'live',partial:false,unmapped_launches:0,history_present:full,observed:{ms:0,known:true},
+    lease:{id:'7',started:'1',provider:'agy',account:'Invented account',launcher:'fixture',pane:'%1',live:'live',drain:'',working_known:false,working:false,turn_started:{ms:0,known:false}},
+    current:scope(name),current_spans:[],earlier:[],workspaces:[],note:{available:full,exists:false,updated:{ms:0,known:false},archived:0},...extra};
+}
+function longFixture(dir='/fixture/A'){
+  const f=fixture(),calls=[],states=[],announcements=[];
+  const view=createLongView(f.document,{window:f.window,dir,idPrefix:'nav-long-1',limits:limits(),detailQuery:{last:50,markup:false,anchor:0},shortcutsEnabled:()=>true,
+    readLong:(q,signal)=>{const d=deferred();calls.push({q,signal,...d});return d.promise;},readConversation:f.options.readConversation,
+    readState:(q,signal)=>{const d=deferred();states.push({q,signal,...d});return d.promise;},copyText:f.options.copyText,announce:text=>announcements.push(text),onWorkspace:()=>{},onConversation:()=>{}});
+  const originalClean=f.clean;f.clean=()=>{view.teardown();originalClean();};
+  f.document.body.append(view.fragment);assert.equal(view.mount(),true);
+  return Object.assign(f,{view,longCalls:calls,states,longAnnouncements:announcements});
+}
+async function readyLong(){
+  const f=longFixture();await tick();f.longCalls[0].resolve(longValue());await tick();
+  const value=detail();value.selection='A'.repeat(43);f.detailCalls[0].resolve(value);await tick();return f;
+}
+
+test('workspace rollover at the tail replaces one feed and shows a session divider without focus movement',async()=>{
+  const f=await readyLong(),first=find(f,n=>n.tagName==='article')[0],focusCount=f.document.focusCalls.length;
+  f.poll();await tick();assert.deepEqual(f.longCalls[1].q,{dir:'/fixture/A',history:false});
+  f.longCalls[1].resolve(longValue('B',false));await tick();assert.equal(f.detailCalls.length,2);assert.equal(first.isConnected,false);
+  const next=detail('B');next.selection='B'.repeat(42)+'A';f.detailCalls[1].resolve(next);await tick();assert(painted(f).includes('paint B group 0'));
+  assert.equal(find(f,n=>has(n,'nav-long-divider')).length,1);assert.equal(f.document.focusCalls.length,focusCount);
+  assert.deepEqual(f.longCalls[2].q,{dir:'/fixture/A',history:true});
+});
+test('workspace rollover while reading freezes the old DOM until explicit current-session activation',async()=>{
+  const f=await readyLong(),first=find(f,n=>n.tagName==='article')[0],content=find(f,n=>has(n,'nav-controller-follow-content'))[0];
+  content.scrollHeight=1000;content.scrollTop=0;content.emit('scroll');f.poll();await tick();
+  f.longCalls[1].resolve(longValue('B',false));await tick();assert(first.isConnected);assert.equal(f.detailCalls.length,1);assert(f.states[0].signal.aborted);
+  f.states[0].resolve(cachedState());await tick();assert.equal(f.detailCalls.length,1);
+  assert.equal(find(f,n=>has(n,'nav-follow-newest'))[0].disabled,true);
+  const jump=find(f,n=>has(n,'nav-long-newest'))[0];jump.click();await tick();assert.equal(f.detailCalls.length,2);assert.equal(first.isConnected,false);assert.equal(f.document.activeElement,jump);assert.equal(jump.hidden,false);
+});
+test('same-session account change announces inline and never creates a session divider',async()=>{
+  const f=await readyLong(),first=find(f,n=>n.tagName==='article')[0];f.poll();await tick();
+  const value=longValue('A',false);value.lease.account='Invented successor';f.longCalls[1].resolve(value);await tick();
+  assert(first.isConnected);assert.equal(f.detailCalls.length,1);assert.equal(find(f,n=>has(n,'nav-long-divider')).length,0);
+  assert(f.longAnnouncements.some(text=>text.includes('Account changed to Invented successor')));
+});
+test('ended workspace freezes last good content and a later tail successor can advance',async()=>{
+  const f=await readyLong(),first=find(f,n=>n.tagName==='article')[0];f.poll();await tick();
+  const value=longValue('A',false,{state:'none',current:null});value.lease.live='ended';f.longCalls[1].resolve(value);await tick();
+  assert(first.isConnected);assert.equal(find(f,n=>has(n,'nav-follow-newest'))[0].disabled,true);
+  const next=longValue('B',true);next.lease.id='8';f.longCalls[2].resolve(next);await tick();assert.equal(f.detailCalls.length,2);assert.equal(first.isConnected,false);
+});
+test('workspace physical metadata read waits through hidden cancellation and retirement ignores late results',async()=>{
+  const f=longFixture();await tick();assert.equal(f.longCalls.length,1);
+  f.document.hidden=true;f.document.emit('visibilitychange');assert(f.longCalls[0].signal.aborted);
+  f.document.hidden=false;f.document.emit('visibilitychange');await tick();assert.equal(f.longCalls.length,1);
+  f.longCalls[0].resolve(longValue());await tick();assert.equal(f.longCalls.length,2);assert.equal(f.detailCalls.length,0);
+  f.view.teardown();f.longCalls[1].resolve(longValue());await tick();assert.equal(f.detailCalls.length,0);assert.equal(f.timers.size,0);
+});
+test('workspace list is explicit and missing metadata never becomes a false empty result',async()=>{
+  const f=longFixture('');await tick();assert.deepEqual(f.longCalls[0].q,{dir:'',history:true});
+  f.longCalls[0].reject(new Error('INVENTED PRIVATE CAUSE'));await tick();assert(f.document.body.textContent.includes('metadata unavailable'));assert(!f.document.body.textContent.includes('PRIVATE'));
+  assert.equal(f.timers.size,0);byText(f,'Refresh workspace').click();await tick();
+  f.longCalls[1].resolve({...longValue('A',true),kind:'list',requested_dir:'',workspace:'',workspace_known:false,state:'records',lease:null,current:null,workspaces:[{workspace:'/fixture/A',recorded_leases:1,sessions:2}]});await tick();
+  assert(f.document.body.textContent.includes('2 recorded sessions'));assert.equal(f.detailCalls.length,0);
+});
+test('freezing before the initial conversation completes refuses its late publication',async()=>{
+  const f=fixture({autoFollow:true,readState:async()=>{throw new Error('not used');}});f.mount();f.controller.selectConversation(scope('A'));
+  assert.equal(f.detailCalls.length,1);f.controller.freeze();assert(f.detailCalls[0].signal.aborted);
+  const value=detail();value.selection='A'.repeat(43);f.detailCalls[0].resolve(value);await tick();assert.equal(painted(f).length,0);assert.equal(f.timers.size,0);
+  f.controller.refresh();f.controller.selectConversation(scope('B'));assert.equal(f.detailCalls.length,1);
+});
 
 test('all-session intent is explicit, retained on refresh and retired by directory scope',async()=>{
   const f=fixture();f.mount();f.controller.loadSessions({dir:'',canonicalDir:'',workers:false,all:true});
