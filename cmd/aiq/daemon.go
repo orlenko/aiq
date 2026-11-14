@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 
 	"github.com/orlenko/aiq/internal/binpath"
@@ -28,6 +29,14 @@ func listenRefusedAdvice() string {
 // findDaemonListeners is how to see a daemon aiq cannot detect, such as an older one
 // started by hand, which the service can neither stop nor replace.
 const findDaemonListeners = "To see what aiq processes of yours listen on, run `lsof -nP -a -c aiq -iTCP -sTCP:LISTEN`; it finds nothing under another name or user, or a daemon serving no HTTP. Stop one started by hand yourself."
+
+// portHeldAdvice is for a daemon that holds the lock, and so polls and supervises,
+// but cannot serve on listen. It tries the address again every 30 s and logs why it
+// failed, so freeing the port is enough.
+func portHeldAdvice(listen string) string {
+	_, port, _ := net.SplitHostPort(listen)
+	return fmt.Sprintf("Another program may hold the port, or the address cannot be used here; %s says which. To see what holds the port, run `lsof -nP -iTCP:%s -sTCP:LISTEN` and stop it, or set daemon.listen in %s to another free loopback port and run: aiq daemon install. Once the port is free the daemon serves within 30 s, without a restart.", daemon.LogPath(), port, paths.ConfigFile())
+}
 
 // lockFinding says what the lock shows, as an observation: see daemon.LockHeld for
 // what it cannot show.
@@ -58,12 +67,14 @@ func daemonState(listen string) string {
 		return fmt.Sprintf("running at http://%s/, though no daemon holds the lock in %s, so that one probably uses another data directory", listen, paths.DataDir())
 	case identified:
 		return fmt.Sprintf("running at http://%s/", listen)
+	case alive && held:
+		return fmt.Sprintf("a daemon holds the lock, so one is polling and supervising, but something else answers on http://%s/ that does not identify as a daemon of this version on this machine, such as a tunnel, so this one serves no status page. %s", listen, portHeldAdvice(listen))
 	case alive:
-		return fmt.Sprintf("something answers on http://%s/ that does not identify as a daemon of this version on this machine, so it may be an older one or a tunnel. If it is a tunnel, close it or give it another local port, as no daemon here can serve, poll or supervise while it holds this one. Otherwise run: aiq daemon install. If it still answers, the service did not start it. %s", listen, findDaemonListeners)
+		return fmt.Sprintf("something answers on http://%s/ that does not identify as a daemon of this version on this machine, so it may be an older one or a tunnel. If it is a tunnel, close it or give it another local port, as no daemon here can serve the status page while it holds this one. Otherwise run: aiq daemon install. If it still answers, the service did not start it. %s", listen, findDaemonListeners)
 	case unknown != "":
 		return fmt.Sprintf("no daemon answers on %s, and %s", listen, unknown)
 	case held:
-		return fmt.Sprintf("a daemon holds the lock, but none answers on %s; see %s", listen, daemon.LogPath())
+		return fmt.Sprintf("a daemon holds the lock, so one is polling and supervising, but none answers on %s, so it serves no status page. %s", listen, portHeldAdvice(listen))
 	}
 	return fmt.Sprintf("no daemon answers on %s; see %s", listen, daemon.LogPath())
 }

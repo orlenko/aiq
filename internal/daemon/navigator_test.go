@@ -769,13 +769,29 @@ func TestRefusedAndFailedStartsSayWhyInTheTokenFile(t *testing.T) {
 	defer taken.Close()
 	cfg.Daemon.Listen = taken.Addr().String()
 	s = New(cfg, nil, log.New(io.Discard, "", 0))
+	// While the status port is held, the daemon supervises and serves no navigator.
+	waits := freeAfter(t, taken, 1, func() {
+		wantNavState(t, s, navFailed)
+		if _, err := os.Lstat(navPortsPath()); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a start that could not serve drew a navigator port: %v", err)
+		}
+	})
+	// Once the port is free, the navigator is served beside the status page.
+	defer func(saved func(*http.Server, net.Listener) error) { serveStatus = saved }(serveStatus)
+	serveStatus = func(_ *http.Server, ln net.Listener) error {
+		if line := navFile(t); !strings.HasPrefix(line, navOn+" ") {
+			t.Errorf("the navigator is not served beside the status page: ui-token starts %q", strings.Fields(line + " ")[0])
+		}
+		ln.Close()
+		return errors.New("stopped by the test")
+	}
 	if err := s.Run(); err == nil {
 		t.Fatal("Run returned no error")
 	}
-	wantNavState(t, s, navFailed)
-	if _, err := os.Lstat(navPortsPath()); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a start that could not serve drew a navigator port: %v", err)
+	if *waits != 1 {
+		t.Errorf("%d waits for the port, want 1", *waits)
 	}
+	wantNavState(t, s, navFailed)
 }
 
 // fakeListener stands in for a navigator bind.
@@ -866,7 +882,7 @@ func distinctPorts(ports []navPort) bool {
 	return true
 }
 
-// A daemon restarting over a taken status port, with the navigator off, says nothing
+// A daemon waiting for a taken status port, with the navigator off, says nothing
 // about the navigator, but still leaves no earlier start's line behind.
 func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 	useDataDir(t)
@@ -885,6 +901,8 @@ func TestAStatusFailureWithTheNavigatorOffIsQuietAboutIt(t *testing.T) {
 	cfg.Daemon.Listen = taken.Addr().String()
 	logged := &lockedBuffer{}
 	s := New(cfg, nil, log.New(logged, "", 0))
+	freeAfter(t, taken, 1, func() { wantNavState(t, s, navFailed) })
+	serveStops(t)
 	if err := s.Run(); err == nil {
 		t.Fatal("Run returned no error")
 	}
