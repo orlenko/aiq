@@ -1,4 +1,4 @@
-import {captureSessions, captureDetail} from "./controller_data.js";
+import {captureSessions, captureDetail, captureState} from "./controller_data.js";
 import {createConversationFeed} from "./feed.js";
 
 const fail = () => { throw new TypeError("could not configure session controller"); };
@@ -31,6 +31,11 @@ function scope(value) {
 export function createSessionController(document, options) {
   const {window, idPrefix} = options || {};
   let {readSessions, readConversation, copyText, announce} = options || {};
+  const followOption=Object.getOwnPropertyDescriptor(options??{},"autoFollow");
+  const autoFollow=followOption?.value??false;
+  let readState=options?.readState,onNewest=options?.onNewest??(()=>{});
+  if(followOption&&(!Object.hasOwn(followOption,"value")||typeof autoFollow!=="boolean")||autoFollow&&
+    (typeof readState!=="function"||typeof onNewest!=="function"||typeof window?.setTimeout!=="function"||typeof window?.clearTimeout!=="function"))fail();
   const selectedCallback=Object.getOwnPropertyDescriptor(options ?? {},"onSelection");
   let onSelection=selectedCallback?.value ?? (()=>{});
   if (selectedCallback && (!Object.hasOwn(selectedCallback,"value") || typeof selectedCallback.value!=="function")) fail();
@@ -98,6 +103,7 @@ export function createSessionController(document, options) {
   function retireMany(...operations) {
     const old = operations.filter(Boolean).map(op => {
       op.retired = true;
+      if(op.timer!==undefined){window.clearTimeout(op.timer);op.timer=undefined;}
       if (op.candidate) op.candidate.retired = true;
       const abort = op.abort; op.abort = null;
       return {op, abort};
@@ -184,6 +190,7 @@ export function createSessionController(document, options) {
         const data = field(envelope, "data");
         const owned = op.channel === "list" ? captureSessions(data, op.query.canonicalDir, limits) : captureDetail(data, op.query, limits);
         if (op.channel === "detail" && owned.markup !== detailQuery.markup) throw new TypeError("response mode");
+        if(op.channel==="detail")op.etag=readETag(envelope);
         if (alive(op)) commit(op, owned);
       } catch { failed(op, target); }
     }, () => failed(op, target));
@@ -223,17 +230,19 @@ export function createSessionController(document, options) {
     const date = new Date(value.ms);
     return Number.isFinite(date.getTime()) ? date.toISOString() : `${value.ms} ms since Unix epoch`;
   }
+  function detailHeaderText(data){
+    const s=data.session;
+    return [`${s.provider} · ${s.id}`,`Title: ${s.title} · Directory: ${s.cwd}`,`Model: ${s.model} · Branch: ${s.branch}`,
+      `Started: ${timeText(s.started)} · Updated: ${timeText(s.updated)}`,`Worker: ${s.worker ? "yes" : "no"} · Bypass: ${s.bypass ? "yes" : "no"}`,
+      `Earlier hidden: ${data.earlier_hidden} · Later hidden: ${data.later_hidden} · Window start: ${data.window_start}`];
+  }
   function detailCommit(op, data) {
     const candidate = {root:node("div", "nav-controller-conversation"), child:null, busy:true, retired:false, cleaned:false, removes:[]};
     op.candidate = candidate;
     try {
       const s = data.session;
-      candidate.root.append(node("p", "nav-controller-facts", `${s.provider} · ${s.id}`),
-        node("p", "nav-controller-facts", `Title: ${s.title} · Directory: ${s.cwd}`),
-        node("p", "nav-controller-facts", `Model: ${s.model} · Branch: ${s.branch}`),
-        node("p", "nav-controller-facts", `Started: ${timeText(s.started)} · Updated: ${timeText(s.updated)}`),
-        node("p", "nav-controller-facts", `Worker: ${s.worker ? "yes" : "no"} · Bypass: ${s.bypass ? "yes" : "no"}`),
-        node("p", "nav-controller-facts", `Earlier hidden: ${data.earlier_hidden} · Later hidden: ${data.later_hidden} · Window start: ${data.window_start}`));
+      candidate.headers=detailHeaderText(data).map(text=>node("p","nav-controller-facts",text));
+      candidate.root.append(...candidate.headers);
       commandControls(candidate.root,s,()=>alive(op)&&!candidate.retired,candidate.removes);
       candidate.child = createConversationFeed(document, data, {window,
         idPrefix:`${idPrefix}-feed-${op.version}`, expectedScope:op.query,
@@ -250,6 +259,7 @@ export function createSessionController(document, options) {
       if (!alive(op) || candidate.retired) cleanCandidate(candidate);
     }
     if (!alive(op)) return;
+    if(autoFollow)startFollowing(op,data);
     status(op, detailPane, data.messages.length ? "Conversation ready." : "No messages in this window.", false);
     if (!alive(op)) return;
     const intent = op.intent;
@@ -257,6 +267,97 @@ export function createSessionController(document, options) {
       cancelFocus(op);
       detailPane.heading.focus();
     } else cancelFocus(op);
+  }
+  function readETag(envelope){
+    const value=Object.getOwnPropertyDescriptor(envelope,"etag");
+    if(!value)return "";
+    if(!Object.hasOwn(value,"value")||typeof value.value!=="string"||!/^"[0-9a-f]{64}"$/.test(value.value))fail();
+    return value.value;
+  }
+  function atBottom(){
+    const el=detailPane.content;
+    return el.scrollHeight-el.scrollTop-el.clientHeight<=48;
+  }
+  function followText(op,text,announceChange=false){
+    if(!alive(op)||!op.followLabel)return;
+    if(op.followLabel.textContent!==text){op.followLabel.textContent=text;if(announceChange)try{announce(text);}catch{}}
+  }
+  function scheduleFollow(op){
+    if(!alive(op)||!op.selectionToken||op.timer!==undefined||op.followFlight||document.hidden)return;
+    op.timer=window.setTimeout(()=>{op.timer=undefined;void pollFollow(op);},2000);
+  }
+  function startFollowing(op,data){
+    op.selectionToken=data.selection;op.older=data.later_hidden>0||detailQuery.anchor!==0;
+    op.shownTurns=data.window_start;for(const message of data.messages)op.shownTurns=Math.max(op.shownTurns,message.turn+1);
+    op.following=!op.older;op.changed=false;
+    detailPane.content.classList.add("nav-controller-follow-content");
+    const label=node("p","nav-follow-status",op.query.provider==="agy"?"Snapshot · no live turn tracking for Antigravity.":op.older?`${data.later_hidden} newer prompts not shown as of ${new Date().toLocaleTimeString()} · jump to newest`:"Following.");
+    // The timer is visual text, deliberately outside the polite live region.
+    const jump=node("button","nav-follow-newest","Jump to newest");jump.type="button";
+    op.followLabel=label;op.candidate.root.prepend(label);op.candidate.root.append(jump);
+    const resume=()=>{
+      if(!alive(op))return;
+      if(op.older){onNewest(Object.freeze({...op.query}));return;}
+      // Explicit resume leaves the reading/copy focus guard. Keep focus on a
+      // stable control at the newest content; poll completions never move it.
+      jump.focus({preventScroll:true});
+      if(!alive(op))return;
+      op.following=true;detailPane.content.scrollTop=detailPane.content.scrollHeight;
+      if(!op.followFlight){if(op.timer!==undefined){window.clearTimeout(op.timer);op.timer=undefined;}void pollFollow(op);}
+    };
+    const scroll=()=>{if(!alive(op))return;op.following=!op.older&&atBottom();if(!op.following)followText(op,"Following paused · jump to newest.");};
+    const keys=e=>{
+      if(!alive(op)||e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||e.shiftKey&&e.key!=="G"||!["End","G"].includes(e.key)||
+        ["INPUT","TEXTAREA","SELECT"].includes(e.target?.tagName?.toUpperCase())||e.target?.isContentEditable)return;
+      if(!shortcutsEnabled())return;e.preventDefault();resume();
+    };
+    jump.addEventListener("click",resume);detailPane.content.addEventListener("scroll",scroll);detailPane.root.addEventListener("keydown",keys);
+    op.candidate.removes.push(()=>jump.removeEventListener("click",resume),()=>detailPane.content.removeEventListener("scroll",scroll),()=>detailPane.root.removeEventListener("keydown",keys));
+    if(!op.older)detailPane.content.scrollTop=detailPane.content.scrollHeight;
+    scheduleFollow(op);
+  }
+  async function pollFollow(op){
+    if(!alive(op)||document.hidden||op.followFlight)return;
+    op.followFlight=true;
+    try{
+      op.abort=new window.AbortController();
+      const paused=op.older||!op.following||!atBottom()||op.candidate.child.hasFocus();
+      if(op.selectionToken){
+        const request={...op.query,selection:op.selectionToken};
+        const envelope=await readState(request,op.abort.signal);if(!alive(op)||document.hidden||op.abort.signal.aborted)return;
+        const value=captureState(field(envelope,"data"),request,limits);
+        if(!value.match){
+          op.changed=true;op.etag="";
+          if(paused){followText(op,"Conversation selection changed · jump to newest to refresh.",true);return;}
+        }else{
+          op.clock=value.working_known&&value.working?`Working · ${Math.floor(value.elapsed_ms/1000)}s.`:value.live==="ended"?"Ended.":value.live==="unknown"?"Following transcript · live state unknown.":"Following.";
+          op.changed=op.changed||value.disk_changed;
+          const newer=Math.max(0,value.cached_turns-op.shownTurns);
+          if(paused){
+            if(newer||op.changed)followText(op,newer?`${newer} new prompts below · jump to newest.`:"New activity below · jump to newest.",true);
+            return;
+          }
+          if(op.query.provider!=="agy")followText(op,op.clock);
+        }
+      }
+      if(op.older||!op.following||!atBottom()||op.candidate.child.hasFocus())return;
+      const request={...op.query,...detailQuery};if(op.etag)request.etag=op.etag;
+      const envelope=await readConversation(request,op.abort.signal);if(!alive(op)||document.hidden||op.abort.signal.aborted)return;
+      const notModified=Object.getOwnPropertyDescriptor(envelope,"notModified");
+      if(notModified){if(!Object.hasOwn(notModified,"value")||notModified.value!==true||readETag(envelope)!==op.etag)fail();return;}
+      const value=captureDetail(field(envelope,"data"),op.query,limits);
+      if(value.markup!==detailQuery.markup)fail();
+      // User scrolling or focus movement during the fetch wins over completion.
+      if(op.older||!op.following||!atBottom()||op.candidate.child.hasFocus()){op.changed=true;return;}
+      const etag=readETag(envelope);
+      if(!op.candidate.child.update(value)){op.changed=true;return;}
+      const headers=detailHeaderText(value);for(let i=0;i<headers.length;i++)if(op.candidate.headers[i].textContent!==headers[i])op.candidate.headers[i].textContent=headers[i];
+      op.etag=etag;op.selectionToken=value.selection;op.changed=false;
+      op.shownTurns=value.window_start;for(const message of value.messages)op.shownTurns=Math.max(op.shownTurns,message.turn+1);
+      detailPane.content.scrollTop=detailPane.content.scrollHeight;
+      followText(op,op.query.provider==="agy"?"Snapshot refreshed · no live turn tracking for Antigravity.":op.clock??"Following.");
+    }catch{if(alive(op)&&!document.hidden)followText(op,"Updates unavailable · showing the last conversation.",true);}
+    finally{op.followFlight=false;if(alive(op))scheduleFollow(op);}
   }
   function loadSessions(value) {
     if (!mounted || disposed) return;
@@ -317,7 +418,7 @@ export function createSessionController(document, options) {
     selection = listQuery = activeScope = null;
     clearList(); for (const remove of removes) remove(); removes.length = 0;
     retireMany(oldList, oldDetail); root.remove();
-    readSessions = readConversation = copyText = announce = onSelection = shortcutsEnabled = null;
+    readSessions = readConversation = readState = onNewest = copyText = announce = onSelection = shortcutsEnabled = null;
   }
   function mount() {
     if (disposed) return false;
@@ -325,6 +426,14 @@ export function createSessionController(document, options) {
     if (!root.isConnected || root.ownerDocument !== document) return false;
     try {
       mounted = true;
+      if(autoFollow){
+        const visibility=()=>{
+          const op=current.detail;if(!alive(op))return;
+          if(document.hidden){if(op.timer!==undefined){window.clearTimeout(op.timer);op.timer=undefined;}if(op.followFlight)op.abort?.abort();}
+          else scheduleFollow(op);
+        };
+        document.addEventListener("visibilitychange",visibility);removes.push(()=>document.removeEventListener("visibilitychange",visibility));
+      }
       for (const [button, callback] of [[listPane.refresh, () => refresh("list")], [detailPane.refresh, () => refresh("detail")]]) {
         button.addEventListener("click", callback); removes.push(() => button.removeEventListener("click", callback));
       }

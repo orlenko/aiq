@@ -26,7 +26,7 @@ func TestNavigatorFeedNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("feed fixtures failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "# pass 20") || !strings.Contains(string(out), "# fail 0") {
+	if !strings.Contains(string(out), "# pass 22") || !strings.Contains(string(out), "# fail 0") {
 		t.Fatalf("feed fixtures did not complete all literal cases:\n%s", out)
 	}
 }

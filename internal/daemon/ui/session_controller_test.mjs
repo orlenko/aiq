@@ -16,6 +16,8 @@ class Element extends Target {
     this.classList={add:(...names)=>{this.className=[...new Set([...this.className.split(' ').filter(Boolean),...names])].join(' ');}};}
   append(...nodes){for(const n of nodes){if(n.tagName==='#fragment'){this.append(...n.children);n.children=[];continue;}n.remove();n.parentNode=this;this.children.push(n);}}
   appendChild(n){this.append(n);return n;}
+  prepend(...nodes){for(const n of nodes.reverse()){n.remove();n.parentNode=this;this.children.unshift(n);}}
+  insertBefore(n,before){n.remove();const at=before===null?this.children.length:this.children.indexOf(before);assert(at>=0);n.parentNode=this;this.children.splice(at,0,n);return n;}
   replaceChildren(...nodes){for(const n of [...this.children])n.remove();this.value='';this.append(...nodes);}
   remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(n=>n!==this);this.parentNode=null;}
   set textContent(v){assert.equal(typeof v,'string');this.replaceChildren();this.value=v;}
@@ -38,11 +40,12 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve
 const fixtures=new Set();
 afterEach(()=>{for(const f of fixtures)f.clean();});
 function fixture(extra={}) {
-  const window=new Target(),nodes=[],frames=new Map(),observers=[],aborts=[];let serial=0,observerHook=()=>{};
-  const document={defaultView:window,activeElement:null,focusCalls:[],fonts:new Target(),createElement(tag){const n=new Element(document,tag);nodes.push(n);return n;},createDocumentFragment(){return new Element(document,'#fragment');}};
+  const window=new Target(),nodes=[],frames=new Map(),timers=new Map(),observers=[],aborts=[];let serial=0,observerHook=()=>{};
+  const document=Object.assign(new Target(),{defaultView:window,hidden:false,activeElement:null,focusCalls:[],fonts:new Target(),createElement(tag){const n=new Element(document,tag);Object.assign(n,{scrollHeight:100,clientHeight:100,scrollTop:0});nodes.push(n);return n;},createDocumentFragment(){return new Element(document,'#fragment');}});
   document.body=new Element(document,'body');let fontsReady;document.fonts.ready=new Promise(r=>fontsReady=r);
   window.visualViewport=new Target();window.requestAnimationFrame=fn=>{const id=++serial;frames.set(id,fn);return id;};window.cancelAnimationFrame=id=>frames.delete(id);
   window.AbortController=class extends AbortController {constructor(){super();aborts.push(this);}};
+  window.setTimeout=(fn,delay)=>{assert.equal(delay,2000);const id=++serial;timers.set(id,fn);return id;};window.clearTimeout=id=>timers.delete(id);
   window.ResizeObserver=class {constructor(fn){this.callback=fn;this.disconnected=false;observers.push(this);observerHook('constructor',this);}observe(node){this.node=node;observerHook('observe',this,node);}disconnect(){this.disconnected=true;}};
   const listCalls=[],detailCalls=[],announcements=[],copies=[];
   const options={window,idPrefix:'controllerFixture',limits:limits(),detailQuery:{last:50,markup:false,anchor:0},
@@ -50,14 +53,83 @@ function fixture(extra={}) {
     readConversation:(q,signal)=>{const d=deferred();detailCalls.push({q,signal,...d});return d.promise;},
     copyText:raw=>{copies.push(raw);return Promise.resolve();},announce:text=>announcements.push(text),...extra};
   const controller=createSessionController(document,options);
-  const result={window,document,nodes,frames,observers,aborts,listCalls,detailCalls,announcements,copies,controller,options,
+  const result={window,document,nodes,frames,timers,observers,aborts,listCalls,detailCalls,announcements,copies,controller,options,
+    poll(){const entries=[...timers];timers.clear();for(const [,fn]of entries)fn();},
     hook:fn=>observerHook=fn,mount(){document.body.append(controller.fragment);assert.equal(controller.mount(),true);},
     finish(){fontsReady();for(const fn of [...frames.values()])fn();frames.clear();},
-    clean(){controller.teardown();controller.teardown();fixtures.delete(result);assert.equal(window.count()+window.visualViewport.count()+document.fonts.count()+frames.size+nodes.reduce((n,node)=>n+node.count(),0),0);assert.ok(observers.every(o=>o.disconnected));}};
+    clean(){controller.teardown();controller.teardown();fixtures.delete(result);assert.equal(document.count()+window.count()+window.visualViewport.count()+document.fonts.count()+frames.size+timers.size+nodes.reduce((n,node)=>n+node.count(),0),0);assert.ok(observers.every(o=>o.disconnected));}};
   fixtures.add(result);return result;
 }
 function rows(f){return find(f,n=>n.tagName==='button'&&!['Refresh sessions','Refresh conversation','Copy message'].includes(n.textContent));}
 function painted(f){return find(f,n=>has(n,'nav-md-line')).map(n=>n.textContent);}
+
+function followFixture(extra={}){
+  const states=[];const f=fixture({autoFollow:true,readState:(q,signal)=>{const d=deferred();states.push({q,signal,...d});return d.promise;},...extra});
+  f.states=states;f.mount();f.controller.selectConversation(scope('A'));
+  const value=detail();value.selection='A'.repeat(43);f.detailCalls[0].resolve(value);return f;
+}
+function cachedState(extra={}){return {build:'invented-build',...scope('A'),selection:'A'.repeat(43),match:true,cached:true,cached_turns:1,
+  cached_updated:{ms:0,known:true},disk_changed:false,live:'unknown',working_known:false,working:false,elapsed_ms:0,...extra};}
+test('automatic updates retain unchanged message nodes and own one physical flight',async()=>{
+  const f=followFixture();await tick();assert.equal(f.timers.size,1);
+  const first=find(f,n=>n.tagName==='article')[0];f.poll();await tick();assert.equal(f.states.length,1);assert.equal(f.detailCalls.length,1);
+  f.poll();await tick();assert.equal(f.states.length,1);f.states[0].resolve(cachedState());await tick();assert.equal(f.detailCalls.length,2);
+  const value=detail();value.selection='A'.repeat(43);const message=structuredClone(value.messages[0]);message.id='2'.padStart(32,'0');message.groups[0].ordinal=1;message.groups[0].lines[0].spans[0].t='new activity';value.messages.push(message);
+  f.detailCalls[1].resolve(value);await tick();assert.equal(find(f,n=>n.tagName==='article')[0],first);assert(painted(f).includes('new activity'));assert.equal(f.timers.size,1);
+});
+test('scrolling up polls cached state only and keeps last good content on errors or mismatch',async()=>{
+  const f=followFixture();await tick();const content=find(f,n=>has(n,'nav-controller-follow-content'))[0],first=find(f,n=>n.tagName==='article')[0];
+  content.scrollHeight=1000;content.scrollTop=0;content.emit('scroll');f.poll();await tick();f.states[0].resolve(cachedState({disk_changed:true,cached_turns:3}));await tick();
+  assert.equal(f.detailCalls.length,1);assert(first.isConnected);assert(find(f,n=>has(n,'nav-follow-status'))[0].textContent.includes('2 new prompts below'));
+  f.poll();await tick();f.states[1].reject();await tick();assert(first.isConnected);assert.equal(f.detailCalls.length,1);
+  f.poll();await tick();f.states[2].resolve({build:'invented-build',...scope('A'),selection:'A'.repeat(43),match:false,reason:'selection_changed'});await tick();
+  assert(first.isConnected);assert.equal(f.detailCalls.length,1);assert(find(f,n=>has(n,'nav-follow-status'))[0].textContent.includes('selection changed'));
+});
+test('hidden pages abort without releasing the flight before physical completion',async()=>{
+  const f=followFixture();await tick();f.poll();await tick();assert.equal(f.states.length,1);
+  f.document.hidden=true;f.document.emit('visibilitychange');assert(f.states[0].signal.aborted);assert.equal(f.timers.size,0);
+  f.document.hidden=false;f.document.emit('visibilitychange');assert.equal(f.timers.size,0);
+  f.states[0].resolve(cachedState());await tick();assert.equal(f.timers.size,1);assert.equal(f.detailCalls.length,1);
+  f.poll();await tick();assert.equal(f.states.length,2);f.controller.selectConversation(scope('B'));assert(f.states[1].signal.aborted);
+  f.states[1].resolve(cachedState());await tick();assert.equal(f.timers.size,0);
+});
+test('older windows request state and explicitly navigate to newest without an anchor',async()=>{
+  const newest=[];const f=followFixture({detailQuery:{last:50,markup:false,anchor:123},onNewest:value=>newest.push(value)});await tick();
+  f.poll();await tick();f.states[0].resolve(cachedState());await tick();assert.equal(f.detailCalls.length,1);
+  byText(f,'Jump to newest').click();assert.deepEqual(newest,[scope('A')]);assert.equal(f.detailCalls.length,1);
+});
+test('scrolling or focusing during either read prevents a completion from replacing the view',async()=>{
+  for(const phase of ['state','conversation'])for(const intent of ['scroll','focus']){
+    const f=followFixture();await tick();const first=find(f,n=>n.tagName==='article')[0],content=find(f,n=>has(n,'nav-controller-follow-content'))[0];
+    f.poll();await tick();if(phase==='conversation'){f.states[0].resolve(cachedState());await tick();}
+    if(intent==='scroll'){content.scrollHeight=1000;content.scrollTop=0;content.emit('scroll');}else first.children[0].focus();
+    if(phase==='state')f.states[0].resolve(cachedState());
+    else{const value=detail();value.selection='A'.repeat(43);value.messages[0].groups[0].lines[0].spans[0].t='must not publish';f.detailCalls[1].resolve(value);}
+    await tick();assert(first.isConnected);assert(!painted(f).includes('must not publish'));assert.equal(f.detailCalls.length,phase==='state'?1:2);f.clean();
+  }
+});
+test('hidden cancellation of a full read keeps its slot through delayed completion',async()=>{
+  const f=followFixture();await tick();f.poll();await tick();f.states[0].resolve(cachedState());await tick();assert.equal(f.detailCalls.length,2);
+  f.document.hidden=true;f.document.emit('visibilitychange');assert(f.detailCalls[1].signal.aborted);
+  f.document.hidden=false;f.document.emit('visibilitychange');assert.equal(f.timers.size,0);
+  const value=detail();value.selection='A'.repeat(43);value.messages[0].groups[0].lines[0].spans[0].t='aborted full response';f.detailCalls[1].resolve(value);await tick();
+  assert(!painted(f).includes('aborted full response'));assert.equal(f.timers.size,1);assert.equal(f.detailCalls.length,2);
+});
+test('explicit keyboard resume leaves each feed focus pause and preserves later focus intent',async()=>{
+  for(const target of ['prompt','copy','code'])for(const key of ['End','G']){
+    const f=followFixture();await tick();
+    const article=find(f,n=>n.tagName==='article')[0],content=find(f,n=>has(n,'nav-controller-follow-content'))[0];
+    const focused=target==='prompt'?find(f,n=>has(n,'nav-feed-prompt'))[0]:target==='copy'?find(f,n=>has(n,'nav-feed-copy'))[0]:find(f,n=>has(n,'nav-md-scroll'))[0];
+    focused.focus();content.scrollHeight=1000;content.scrollTop=0;content.emit('scroll');
+    let prevented=false;const pane=content.parentNode;
+    pane.emit('keydown',{target:focused,key,shiftKey:key==='G',preventDefault(){prevented=true;}});
+    assert(prevented);assert.equal(f.document.activeElement,byText(f,'Jump to newest'));await tick();
+    assert.equal(f.states.length,1);f.states[0].resolve(cachedState({disk_changed:true}));await tick();assert.equal(f.detailCalls.length,2);
+    // A new focus intent after resume still wins over the in-flight response.
+    focused.focus();const value=detail();value.selection='A'.repeat(43);value.messages[0].groups[0].lines[0].spans[0].t='focus must win';f.detailCalls[1].resolve(value);await tick();
+    assert(article.isConnected);assert(!painted(f).includes('focus must win'));assert.equal(f.document.activeElement,focused);f.clean();
+  }
+});
 
 // No direct DTO is returned through a promise: even deliberately hostile DTOs
 // are nested in the trusted inert envelope.
