@@ -498,6 +498,14 @@ first and last; Page Up/Down and the mouse wheel scroll; a click selects;
 Markdown, the way the transcript has it, to the same places as in `aiq
 asks`. To select text with the mouse, hold Shift (Option in iTerm2).
 
+Press `/` to search the loaded messages by a case-insensitive substring. Type a
+query, use the up/down arrows to choose a matching snippet, and press Enter to
+focus that passage. Escape cancels without moving the conversation; Ctrl-C
+still quits. Search includes folded continuation text. When a match exists only
+in the message's copy text, the viewer selects its owning message and keeps the
+matching snippet on the status line. `--last` limits the searchable messages too.
+Queries stay in this open viewer, and pasted text is ignored as elsewhere in it.
+
 `--follow` keeps the screen up to date as the conversation grows. While the
 newest message is selected, each new one is selected as it comes; moved up,
 the screen stays where you are, the bottom line counts the messages new
@@ -506,6 +514,9 @@ the agent has been working. When the pane moves to a new transcript
 (`/clear`, Codex `/new`, a takeover by another provider), a divider shows
 and the new one goes on below it. What you type into it never reaches the
 session.
+
+Opening search pauses following while new output refreshes the matching snippets.
+After focusing a result or canceling search, `G` goes back to following.
 
 The colours suit a dark background unless the terminal says it is light.
 `--theme auto` (the default) asks the terminal for its background colour

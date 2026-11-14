@@ -54,6 +54,10 @@ On a terminal it opens full screen with the newest message selected. j/k or the 
 a message, Tab and Shift-Tab jump between your prompts, g and G go to the first and last,
 PgUp/PgDn and the wheel scroll, a click selects, y copies the message as Markdown, and q,
 Esc or Ctrl-C quits. Shift-drag (Option-drag in iTerm2) selects text with the mouse.
+/ searches loaded messages by case-insensitive substring: type a query, use the arrows
+to choose a matching snippet, and Enter focuses its message. Escape cancels search.
+Search includes folded continuation text; a match hidden by the rendering keeps its
+snippet on the status line. Search pauses following; G returns to following afterward.
 With --follow the newest message selected moves on to each new one; moved up, the screen
 stays put and G goes back to following.
 
@@ -915,6 +919,10 @@ type convoPrinter struct {
 	track bool
 	cuts  []convoCut
 	facts convoFacts
+	// Only the terminal viewer asks for prompt wrap locations; stream and web
+	// projection consumers retain their existing paint/capture paths.
+	searchRows bool
+	inputRows  []convoInputRow
 	// Sticky for one emit, including failures followed by successful renders.
 	renderFailed bool
 	faults       *diagnostic.Latch
@@ -931,11 +939,18 @@ type convoCut struct {
 	end             int
 	key, kind, text string
 	facts           convoFacts
+	inputRows       []convoInputRow
+}
+
+type convoInputRow struct {
+	at  int // byte offset of this painted row in the current emission
+	row wrappedTextRow
 }
 
 func (p *convoPrinter) cut(b *strings.Builder, key, kind, text string) {
 	if p.track {
-		cut := convoCut{end: b.Len(), key: key, kind: kind, text: text, facts: p.facts}
+		cut := convoCut{end: b.Len(), key: key, kind: kind, text: text, facts: p.facts, inputRows: p.inputRows}
+		p.inputRows = nil
 		if p.capture != nil {
 			p.capture.cut(b, cut, len(p.cuts))
 		}
@@ -1347,8 +1362,14 @@ func (p *convoPrinter) human(b *strings.Builder, head, body string) {
 		b.WriteString(osc133Prompt)
 	}
 	b.WriteString(line(p.palette.you, truncate(sanitize(head), width), false))
-	for _, l := range wrap(sanitize(strings.TrimRight(body, "\n")), width) {
-		b.WriteString(line(sgrBold, l, true))
+	wrapEach(sanitize(strings.TrimRight(body, "\n")), width, func(row wrappedTextRow) {
+		if p.searchRows {
+			p.inputRows = append(p.inputRows, convoInputRow{at: b.Len(), row: row})
+		}
+		b.WriteString(line(sgrBold, row.text, true))
+	})
+	if p.searchRows {
+		p.inputRows = append(p.inputRows, convoInputRow{at: b.Len()})
 	}
 	b.WriteString(line("", "", true))
 }

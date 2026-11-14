@@ -37,8 +37,12 @@ type convoPart struct {
 
 // convoRow is one row of the conversation: rendered text, and the message it belongs to.
 type convoRow struct {
-	text string
-	msg  int // -1: the space between messages
+	text     string
+	msg      int    // -1: the space between messages
+	wrap     bool   // continues the preceding row's rendered line, rather than a hard newline
+	gap      string // text removed at that display wrap (a space, or nothing for a glyph split)
+	plain    string // prompt body before its band padding and repeated wrap indentation
+	plainSet bool   // even an empty prompt row must not search its painted padding
 }
 
 // convoMsg is one message: its rows, from inclusive to to exclusive, and the Markdown y copies.
@@ -47,6 +51,7 @@ type convoMsg struct {
 	kind     string // as convoCut, with more and none folded into the message before
 	raw      string
 	from, to int
+	body     int // first body row, after a separately rendered message header
 }
 
 type convoScreen struct {
@@ -66,6 +71,8 @@ type convoScreen struct {
 	known   int
 	status  string // what --follow says: the turn working, or what went wrong
 	message string // what the last key did, such as a copy
+	search  *convoSearch
+	paused  bool // search pauses --follow until G/End explicitly resumes it
 }
 
 func newConvoScreen(live bool) *convoScreen {
@@ -82,6 +89,7 @@ func (c *convoScreen) layout() {
 	for i, pt := range c.parts {
 		p := newConvoPrinter(pt.s.Provider, true, false)
 		p.width, p.live, p.hold, p.track = width, c.live, pt.hold, true
+		p.searchRows = true
 		if !pt.moved.IsZero() {
 			c.rows = append(c.rows, convoRow{msg: -1})
 			for _, l := range strings.Split(convoMovedLine(p, pt.t, pt.s, pt.moved, pt.from, width), "\n") {
@@ -100,8 +108,19 @@ func (c *convoScreen) layout() {
 // wrapping to the terminal. It breaks at the last space that fits, else between glyphs. Each
 // row ends its styles, and the next row opens again with those still in force.
 func convoWrap(line string, w int) []string {
+	parts := convoWrapParts(line, w)
+	rows := make([]string, len(parts))
+	for i, row := range parts {
+		rows[i] = row.text
+	}
+	return rows
+}
+
+// convoWrapParts retains the boundary that the terminal display adds. Searching can
+// put these rows back together without inventing matches across actual line breaks.
+func convoWrapParts(line string, w int) []convoRow {
 	if w < 1 || cells(kitPlain(line)) <= w {
-		return []string{line}
+		return []convoRow{{text: line}}
 	}
 	type token struct {
 		text  string
@@ -122,8 +141,9 @@ func convoWrap(line string, w int) []string {
 		at = m[1]
 	}
 	glyphs(line[at:])
-	var rows []string
+	var rows []convoRow
 	open := "" // the styles in force where the row starts
+	gap := ""
 	for start := 0; start < len(toks); {
 		used, end, space := 0, start, -1
 		for ; end < len(toks); end++ {
@@ -155,7 +175,11 @@ func convoWrap(line string, w int) []string {
 				}
 			}
 		}
-		rows = append(rows, b.String()+sgrReset)
+		rows = append(rows, convoRow{text: b.String() + sgrReset, wrap: start > 0, gap: gap})
+		gap = ""
+		if next > cut {
+			gap = " "
+		}
 		start = next
 	}
 	return rows
@@ -199,24 +223,52 @@ func convoExpandTabs(line string) string {
 // blank lines before a message are the space between messages; a later part of an answer and
 // a "(no reply)" go on the message before them.
 func (c *convoScreen) cut(part int, text string, cuts []convoCut, width int) {
+	inputRows := map[int]wrappedTextRow{}
+	for _, cut := range cuts {
+		for _, input := range cut.inputRows {
+			inputRows[input.at] = input.row
+		}
+	}
 	for _, folded := range foldConvoCuts(text, cuts) {
 		ct := folded.first
 		m := convoMsg{id: fmt.Sprintf("%d\x00%s\x00%s\x00%x\x00%d", part, ct.key, ct.kind, folded.firstHash, folded.occurrence), kind: ct.kind, raw: folded.raw}
+		paintCut := folded.firstCut
 		for segment, paint := range folded.segments {
-			var lines []string
+			if segment > 0 {
+				for paintCut++; paintCut < folded.lastCut && cuts[paintCut].kind == "part"; paintCut++ {
+				}
+			}
+			offset := 0
+			if paintCut > 0 {
+				offset = cuts[paintCut-1].end
+			}
+			var lines []convoRow
+			headerRows := 0
 			for _, l := range strings.Split(paint, "\n") {
-				lines = append(lines, convoWrap(convoExpandTabs(l), width)...)
+				wrapped := convoWrapParts(convoExpandTabs(l), width)
+				if input, ok := inputRows[offset]; ok && len(wrapped) == 1 {
+					wrapped[0].wrap, wrapped[0].gap = input.soft, input.gap
+					wrapped[0].plain = input.text[input.skip:]
+					wrapped[0].plainSet = true
+				}
+				if segment == 0 && headerRows == 0 && kitPlain(l) != "" && (ct.kind == "you" || ct.kind == "steer" || ct.kind == "answer") {
+					headerRows = len(wrapped)
+				}
+				lines = append(lines, wrapped...)
+				offset += len(l) + 1
 			}
 			start := 0
 			if segment == 0 {
-				for start < len(lines)-1 && lines[start] == "" {
+				for start < len(lines)-1 && lines[start].text == "" {
 					c.rows = append(c.rows, convoRow{msg: -1})
 					start++
 				}
 				m.from = len(c.rows)
+				m.body = m.from + headerRows
 			}
 			for _, line := range lines[start:] {
-				c.rows = append(c.rows, convoRow{text: line, msg: len(c.msgs)})
+				line.msg = len(c.msgs)
+				c.rows = append(c.rows, line)
 			}
 		}
 		m.to = len(c.rows)
@@ -231,7 +283,9 @@ func (c *convoScreen) height() int { return max(c.h-len(c.head)-2, 1) }
 func (c *convoScreen) clampTop() { c.top = clamp(c.top, 0, max(len(c.rows)-c.height(), 0)) }
 
 // following says the newest message is selected, so the next one will be.
-func (c *convoScreen) following() bool { return len(c.msgs) == 0 || c.sel == len(c.msgs)-1 }
+func (c *convoScreen) following() bool {
+	return !c.paused && c.search == nil && (len(c.msgs) == 0 || c.sel == len(c.msgs)-1)
+}
 
 // visible says some row of message i is on screen.
 func (c *convoScreen) visible(i int) bool {
@@ -285,6 +339,7 @@ func (c *convoScreen) resize(w, h int) {
 // relayout lays the screen out again, keeping the selected message and where it sits on
 // screen.
 func (c *convoScreen) relayout() {
+	defer c.refreshSearch()
 	following := c.following()
 	id, off, old := "", 0, c.sel
 	if len(c.msgs) > 0 {
@@ -431,6 +486,9 @@ func convoQuits(e asksInput) bool {
 // input handles one event and says whether to quit.
 func (c *convoScreen) input(e asksInput) bool {
 	c.message = ""
+	if c.search != nil {
+		return c.searchInput(e)
+	}
 	switch {
 	case e.paste:
 		c.message = "Pasted text does nothing here"
@@ -441,6 +499,9 @@ func (c *convoScreen) input(e asksInput) bool {
 		switch {
 		case convoQuits(e):
 			return true
+		case k.r == '/':
+			c.search = &convoSearch{}
+			c.paused = c.live
 		case k.code == keyDown:
 			c.down()
 		case k.code == keyUp:
@@ -452,6 +513,7 @@ func (c *convoScreen) input(e asksInput) bool {
 		case k.code == keyHome || k.r == 'g':
 			c.sel, c.top = 0, 0
 		case k.code == keyEnd:
+			c.paused = false
 			c.sel = max(len(c.msgs)-1, 0)
 			c.show()
 		case k.code == keyPgDn:
@@ -494,14 +556,14 @@ func (c *convoScreen) newBelow() int {
 
 // footer is one dim line of keys, cut down by width, as in aiq asks.
 func (c *convoScreen) footer(th kitTheme) []kitSeg {
-	keys := []kitKey{{"j/k", "move", 0}}
+	keys := []kitKey{{"j/k", "move", 0}, {"/", "search", 0}}
 	switch {
 	case c.w < 50:
 		keys = append(keys, kitKey{"y", "copy", 0}, kitKey{"q", "quit", 0})
 	case c.w < 80:
 		keys = append(keys, kitKey{"Tab", "prompt", 0}, kitKey{"y", "copy", 0}, kitKey{"q", "quit", 0})
 	default:
-		keys = append(keys, kitKey{"Tab", "prompt", 0}, kitKey{"g/G", "first/last", 0}, kitKey{"PgUp/PgDn", "page", 0},
+		keys = append(keys, kitKey{"Tab", "prompt", 0}, kitKey{"g/G", "first/last", 0},
 			kitKey{"y", "copy", 0}, kitKey{"q", "quit", 0})
 	}
 	segs, _ := kitKeys(keys, th.dim, 1)
@@ -540,11 +602,18 @@ func (c *convoScreen) frame() []string {
 	c.clampTop()
 	var out []string
 	if c.narrow() {
-		out = append(out, kitLine([]kitSeg{{style: sgrBold + th.accent, text: "Too narrow; q quits"}}, "", c.w))
+		label := "Too narrow; q quits"
+		if c.search != nil {
+			label = "Too narrow; Ctrl-C quits"
+		}
+		out = append(out, kitLine([]kitSeg{{style: sgrBold + th.accent, text: label}}, "", c.w))
 		for len(out) < c.h {
 			out = append(out, kitLine(nil, "", c.w))
 		}
 		return out
+	}
+	if c.search != nil {
+		return c.searchFrame(th, mk)
 	}
 	for _, l := range c.head {
 		out = append(out, kitLine([]kitSeg{{text: convoExpandTabs(l), raw: true}}, "", c.w))
@@ -889,7 +958,8 @@ func convoInput(keys <-chan []byte, events chan<- asksInput, quit func(), pastin
 			close(settled)
 		}
 	}()
-	var tokens asksTokenizer
+	tokens := asksTokenizer{literal: true}
+	searching := false // follows event order, even while output holds the screen up
 	var escape, orphan <-chan time.Time
 	var queue []asksInput
 	take := func(evs []asksInput) {
@@ -898,9 +968,10 @@ func convoInput(keys <-chan []byte, events chan<- asksInput, quit func(), pastin
 		// yet follow. This is set before a quit is called, so the way out sees it.
 		pasting.Store(tokens.pasting || tokens.cutPaste || len(tokens.pending) > 0 || tokens.afterEscape)
 		for _, e := range evs {
-			if convoQuits(e) {
+			if !searching && convoQuits(e) || !e.paste && !e.mouse && e.key.code == keyQuit {
 				quit()
 			}
+			searching = convoSearchMode(searching, e)
 		}
 		queue = append(queue, evs...)
 	}
