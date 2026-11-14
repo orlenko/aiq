@@ -485,7 +485,7 @@ test('workspace unknown and malformed lease metadata cannot produce a command',a
 });
 
 test('session activity labels keep unknown and recent distinct and expose only a fixed workspace link',async()=>{
- const f=fixture();f.mount();f.controller.loadSessions(query());
+ const f=fixture({resumeCommands:true});f.mount();f.controller.loadSessions(query());
  const activity={live:'live',pid:0,managed:true,workspace:'/fixture/work space',account:'Invented account',launcher:'fixture',pane:'%9',lease_id:'7',started:'123',drain:'waiting',drain_manual:true,continued:false};
  const value=sessions('/fixture/A',[row('A',{provider:'claude',activity}),row('B',{activity:{...activity,live:'recent',managed:false,workspace:'',lease_id:'',started:''}})]);
  value.activity={known:false,live:1,elsewhere:1,claude_open_known:false,observed:{ms:0,known:true}};
