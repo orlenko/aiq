@@ -92,6 +92,7 @@ func navDetailScanCondition(raw, fingerprint string) (matched, valid, wildcard b
 type navDetailQuery struct {
 	provider, id string
 	last         int
+	all          bool
 	markup       bool
 	anchor       int64
 	condition    navDetailCondition
@@ -141,14 +142,19 @@ func navDetailDecode(req *http.Request) (navDetailQuery, navDetailCode, bool) {
 		}
 	}
 	if value, exists := values["last"]; exists {
-		if !attachDigits(value[0], 5) {
-			return q, navDetailInvalid, false
+		if value[0] == "all" {
+			q.all = true
+			q.last = 0
+		} else {
+			if !attachDigits(value[0], 5) {
+				return q, navDetailInvalid, false
+			}
+			n, err := strconv.Atoi(value[0])
+			if err != nil || n < 1 || n > 10000 {
+				return q, navDetailInvalid, false
+			}
+			q.last = n
 		}
-		n, err := strconv.Atoi(value[0])
-		if err != nil || n < 1 || n > 10000 {
-			return q, navDetailInvalid, false
-		}
-		q.last = n
 	}
 	if value, exists := values["markup"]; exists {
 		if value[0] != "0" && value[0] != "1" {
@@ -164,6 +170,9 @@ func navDetailDecode(req *http.Request) (navDetailQuery, navDetailCode, bool) {
 		if err != nil || q.anchor < 1 || q.anchor > 9999999999999 {
 			return q, navDetailInvalid, false
 		}
+	}
+	if q.all && q.anchor != 0 {
+		return q, navDetailInvalid, false
 	}
 	q.condition, err = navDetailConditions(req.Header.Values("If-None-Match"))
 	if err != nil {

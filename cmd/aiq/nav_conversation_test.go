@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -375,4 +376,33 @@ func TestNavConversationClockAndGroupFidelity(t *testing.T) {
 			t.Fatal("complete body growth did not change message ID alone")
 		}
 	}
+}
+
+func TestNavConversationExplicitAllPreservesWholeHistoryAndBounds(t *testing.T) {
+	turns := make([]transcript.Turn, 60)
+	for i := range turns {
+		at := time.UnixMilli(1000 + int64(i)*60000)
+		turns[i] = transcript.Turn{Prompt: "invented prompt " + strconv.Itoa(i), Reply: "invented answer", Started: at, ReplyAt: at.Add(time.Second)}
+	}
+	s := wireTestSession(turns...)
+	bounded := wireTestOptions()
+	bounded.last = 50
+	window, body := wireTestBuild(t, s, bounded)
+	if window.EarlierHidden != 10 || window.WindowStart != 10 {
+		t.Fatal("bounded window changed")
+	}
+	all := bounded
+	all.last = 0
+	all.all = true
+	whole, complete := wireTestBuild(t, s, all)
+	if whole.EarlierHidden != 0 || whole.LaterHidden != 0 || whole.WindowStart != 0 || !bytes.Contains(complete, []byte("invented prompt 0")) || !bytes.Contains(complete, []byte("invented prompt 59")) || len(complete) <= len(body) {
+		t.Fatal("all did not return complete history")
+	}
+	for _, o := range []navConversationOptions{func() navConversationOptions { x := all; x.last = 50; return x }(), func() navConversationOptions { x := all; x.anchor = 1000; return x }()} {
+		w, b, f, e := buildNavConversation(s, o)
+		wireTestWholeFailure(t, w, b, f, e, errNavConversationInvalid)
+	}
+	all.bodyBytes = int64(len(body))
+	w, b, f, e := buildNavConversation(s, all)
+	wireTestWholeFailure(t, w, b, f, e, errNavConversationTooLarge)
 }

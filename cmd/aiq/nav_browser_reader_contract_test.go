@@ -15,7 +15,7 @@ func TestNavBrowserConversationWireContract(t *testing.T) {
 	var rows []struct {
 		Query struct {
 			Provider, ID string
-			Last         int
+			Last         any
 			Markup       bool
 			Anchor       any
 		}
@@ -32,14 +32,19 @@ func TestNavBrowserConversationWireContract(t *testing.T) {
 		valid++
 		request := httptest.NewRequest("GET", row.Path, nil)
 		q, _, ok := navDetailDecode(request)
-		if !ok || q.provider != row.Query.Provider || q.id != row.Query.ID || q.last != row.Query.Last || q.markup != row.Query.Markup || q.anchor != int64(row.Query.Anchor.(float64)) {
+		wantAll := row.Query.Last == "all"
+		wantLast := 0
+		if !wantAll {
+			wantLast = int(row.Query.Last.(float64))
+		}
+		if !ok || q.provider != row.Query.Provider || q.id != row.Query.ID || q.last != wantLast || q.all != wantAll || q.markup != row.Query.Markup || q.anchor != int64(row.Query.Anchor.(float64)) {
 			t.Fatal("browser literal does not match the actual conversation decoder")
 		}
 		if q.anchor == 0 && request.URL.Query().Has("at") {
 			t.Fatal("unanchored browser request emitted at")
 		}
 	}
-	if len(rows) != 8 || valid != 3 {
+	if len(rows) != 10 || valid != 4 {
 		t.Fatal("browser wire contract fixture incomplete")
 	}
 }

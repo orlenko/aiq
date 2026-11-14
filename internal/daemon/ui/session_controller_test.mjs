@@ -239,3 +239,9 @@ test('cross-channel retirement detaches old detail before any abort callout',asy
   assert.deepEqual(observations, ['ready','activating'].flatMap(phase=>['directory','workers','dispose'].map(mode=>({phase,mode,
     trace:mode==='dispose'?[['abort',false,false,0,false]]:[['abort',false,false,0,false],['reader',false,false,0,false]]}))));
 });
+
+test('explicit all remains owned and closed without admitting numeric zero or an anchor',()=>{
+ const f=fixture({detailQuery:{last:'all',markup:false,anchor:0}});f.mount();f.controller.selectConversation(scope('A'));assert.equal(f.detailCalls[0].q.last,'all');f.clean();
+ for(const last of [0,'0','ALL',null])assert.throws(()=>fixture({detailQuery:{last,markup:false,anchor:0}}));
+ assert.throws(()=>fixture({detailQuery:{last:'all',markup:false,anchor:1}}));
+});

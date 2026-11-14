@@ -192,7 +192,7 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 	if s.Provider != q.provider || s.ID != q.id {
 		return h.failure(navDetailSelectionChanged, started)
 	}
-	_, _, err = navConversationBounds(s.Turns, q.last, q.anchor)
+	_, _, err = navConversationWindowBounds(s.Turns, q.last, q.anchor, q.all)
 	diagnostic.Note(ctx, transcript.PanicOrigin(err))
 	if failure, stopped := check(); stopped {
 		return failure
@@ -222,7 +222,7 @@ func (h *navDetailHandler) prepare(req *http.Request, started time.Time, child *
 	if err != nil {
 		return h.failure(navDetailInternal, started)
 	}
-	o := navConversationOptions{provider: q.provider, id: q.id, last: q.last, anchor: q.anchor, markup: q.markup,
+	o := navConversationOptions{provider: q.provider, id: q.id, last: q.last, all: q.all, anchor: q.anchor, markup: q.markup,
 		now: h.deps.now(), location: h.deps.location, live: facts.live, hold: facts.hold, stale: facts.stale,
 		accounts: facts.accounts, skippedNote: h.deps.skippedNote, liveMark: h.deps.liveMark, bodyBytes: h.limits.bodyBytes,
 		arrayEntries: h.limits.arrayEntries, stringUnits: h.limits.stringUnits}
