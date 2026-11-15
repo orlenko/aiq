@@ -701,10 +701,23 @@ func pad(s string, w int) string {
 // wrap breaks text into rows of at most w cells, keeping its own line
 // breaks and splitting words longer than a row.
 func wrap(text string, w int) []string {
+	var out []string
+	wrapEach(text, w, func(row wrappedTextRow) { out = append(out, row.text) })
+	return out
+}
+
+type wrappedTextRow struct {
+	text, gap string
+	soft      bool
+	skip      int // repeated indentation on a continued row
+}
+
+// wrapEach keeps the source line boundary and the exact display break beside the
+// text. The ordinary printer still consumes the same rows through wrap.
+func wrapEach(text string, w int, emit func(wrappedTextRow)) {
 	if w < 10 {
 		w = 10
 	}
-	var out []string
 	for _, para := range strings.Split(strings.ReplaceAll(text, "\t", "    "), "\n") {
 		para = strings.TrimRight(para, " \r")
 		indent := para[:len(para)-len(strings.TrimLeft(para, " "))]
@@ -713,21 +726,30 @@ func wrap(text string, w int) []string {
 		}
 		words := strings.Fields(para)
 		if len(words) == 0 {
-			out = append(out, "")
+			emit(wrappedTextRow{})
 			continue
+		}
+		soft, gap := false, ""
+		add := func(text, nextGap string) {
+			skip := 0
+			if soft && strings.HasPrefix(text, indent) {
+				skip = len(indent)
+			}
+			emit(wrappedTextRow{text: text, soft: soft, gap: gap, skip: skip})
+			soft, gap = true, nextGap
 		}
 		cur, used := indent, cells(indent)
 		for _, word := range words {
 			wc := cells(word)
 			if used > cells(indent) && used+1+wc > w {
-				out = append(out, cur)
+				add(cur, " ")
 				cur, used = indent, cells(indent)
 			}
 			for wc > w-cells(indent) {
 				// A long URL or path: hard-split it.
 				head := truncateExact(word, w-used)
 				if head == "" && used > cells(indent) {
-					out = append(out, cur)
+					add(cur, " ")
 					cur, used = indent, cells(indent)
 					head = truncateExact(word, w-used)
 				}
@@ -747,7 +769,7 @@ func wrap(text string, w int) []string {
 					cur, used, word, wc = cur+head, cells(cur+head), "", 0
 					break
 				}
-				out = append(out, cur+head)
+				add(cur+head, "")
 				cur, used = indent, cells(indent)
 				word = word[len(head):]
 				wc = cells(word)
@@ -762,9 +784,8 @@ func wrap(text string, w int) []string {
 			cur += word
 			used += wc
 		}
-		out = append(out, cur)
+		add(cur, "")
 	}
-	return out
 }
 
 // truncateExact returns the longest prefix of s that fits in w cells, cut between glyphs.

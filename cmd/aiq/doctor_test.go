@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/orlenko/aiq/internal/state"
+)
 
 func TestShellQuote(t *testing.T) {
 	for in, want := range map[string]string{
@@ -16,5 +23,99 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// Telemetry comes from a poll: a usage row with a poll time, with or without
+// windows (a good poll may find none running).
+func TestPolledNeedsAPollTime(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		u    state.Usage
+		ok   bool
+		want bool
+	}{
+		{"poll time", state.Usage{ObservedAt: 300}, true, true},
+		{"no usage row", state.Usage{}, false, false},
+		{"no poll time", state.Usage{}, true, false},
+	} {
+		if got := polled(c.u, c.ok); got != c.want {
+			t.Errorf("%s: polled = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDoctorTelemetryAgeIsTheLastPolls(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("AIQ_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("AIQ_CONFIG", filepath.Join(root, "config.toml"))
+	a, err := openApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.close()
+	now := time.Now()
+	old := now.Add(-240 * time.Hour)
+	telemetry := func(acc state.Account) (bool, string) {
+		r := &doctorReport{byKey: map[string]*doctorFix{}}
+		a.checkAccount(r, acc, now, nil)
+		for _, c := range r.checks {
+			if strings.Contains(c.text, "telemetry") {
+				return c.ok, c.text
+			}
+		}
+		t.Fatal("no telemetry check")
+		return false, ""
+	}
+	add := func(id string, polled time.Time, ws ...state.Window) state.Account {
+		acc := state.Account{ID: id, Provider: "codex", Name: strings.TrimPrefix(id, "codex/"), Enabled: true, Home: filepath.Join(root, id)}
+		if err := a.st.AddAccount(acc); err != nil {
+			t.Fatal(err)
+		}
+		if polled.IsZero() {
+			// Never polled: only an exhaustion mark wrote the usage row.
+			a.st.MarkExhausted(id, "limit", now.Add(time.Hour), now)
+		} else {
+			a.st.SetUsageMeta(id, "", 0, "", polled)
+		}
+		for _, w := range ws {
+			w.AccountID = id
+			if err := a.st.UpsertWindow(w); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return acc
+	}
+	// Polled just now; the status line's session window is days old.
+	fresh := add("codex/fresh", now,
+		state.Window{Key: "session", Kind: state.KindShort, Source: "statusline", ObservedAt: old.Unix()},
+		state.Window{Key: "weekly", Kind: state.KindWeekly, Source: "aiq", ObservedAt: now.Unix()})
+	if ok, text := telemetry(fresh); !ok {
+		t.Errorf("fresh poll reported stale: %s", text)
+	}
+	// Last polled days ago; a running status line keeps one window new.
+	stalled := add("codex/stalled", old,
+		state.Window{Key: "session", Kind: state.KindShort, Source: "statusline", ObservedAt: now.Unix()},
+		state.Window{Key: "weekly", Kind: state.KindWeekly, Source: "aiq", ObservedAt: old.Unix()})
+	if ok, text := telemetry(stalled); ok {
+		t.Errorf("stalled poll reported fresh: %s", text)
+	}
+	// Polled just now, then a running session's status line rewrote every
+	// row the poll stored.
+	rewritten := add("codex/rewritten", now,
+		state.Window{Key: "weekly", Kind: state.KindWeekly, Source: "statusline", ObservedAt: now.Unix()})
+	if ok, text := telemetry(rewritten); !ok {
+		t.Errorf("status line after a poll: %s", text)
+	}
+	// Polled just now, with no window running.
+	if ok, text := telemetry(add("codex/idle", now)); !ok {
+		t.Errorf("a good poll with no windows: %s", text)
+	}
+	// Never polled: a status line and an exhaustion mark wrote the records.
+	never := add("codex/never", time.Time{},
+		state.Window{Key: "session", Kind: state.KindShort, Source: "statusline", ObservedAt: now.Unix()})
+	if ok, text := telemetry(never); ok || !strings.Contains(text, "no telemetry yet") {
+		t.Errorf("never polled: %v %s", ok, text)
 	}
 }

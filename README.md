@@ -37,6 +37,24 @@ things stay private per account: the credential, and `.claude.json` (Claude
 Code rewrites it with a rename on every change, so sharing it would lose
 writes). It is seeded from your `~/.claude.json` when the account is created,
 which means project trust and user-scoped MCP servers are per account.
+Claude Code refuses to write auto memory through the overlay's `projects`
+symlink, so an overlay launch passes `--settings` with `autoMemoryDirectory`
+naming the project's real folder, `~/.claude/projects/<project>/memory`, the
+one a native session uses. aiq works out the project the way Claude Code
+2.1.322 does (a linked worktree shares its main checkout's folder) and
+leaves Claude Code's default alone when it cannot be sure, or when the user
+settings or the project's `.claude/settings.json` or `settings.local.json`
+already decide. It also adds nothing when Claude Code's own memory
+variables are set, when a launcher's `env` configures the home, config home
+or a memory variable (even with an empty value), when a launcher's `args`
+carry `--settings`, or with `--project-config-root` or `--deep-link-cwd-b64`.
+An inline JSON `--settings` (cmux adds one) gets the key added; with a
+`--settings` file aiq adds nothing and says so. The folder is fixed at
+launch: after `/cd` to another project, the session keeps writing the first
+project's memory, where a native session may switch to the new project's.
+Likewise with `-w` and a WorktreeCreate hook that returns something other
+than a git worktree of the same repository: the session writes the
+original project's memory.
 
 The account matching the current `~/.claude` login is registered as
 *native* and launches without `CLAUDE_CONFIG_DIR` at all.
@@ -534,6 +552,14 @@ first and last; Page Up/Down and the mouse wheel scroll; a click selects;
 Markdown, the way the transcript has it, to the same places as in `aiq
 asks`. To select text with the mouse, hold Shift (Option in iTerm2).
 
+Press `/` to search the loaded messages by a case-insensitive substring. Type a
+query, use the up/down arrows to choose a matching snippet, and press Enter to
+focus that passage. Escape cancels without moving the conversation; Ctrl-C
+still quits. Search includes folded continuation text. When a match exists only
+in the message's copy text, the viewer selects its owning message and keeps the
+matching snippet on the status line. `--last` limits the searchable messages too.
+Queries stay in this open viewer, and pasted text is ignored as elsewhere in it.
+
 `--follow` keeps the screen up to date as the conversation grows. While the
 newest message is selected, each new one is selected as it comes; moved up,
 the screen stays where you are, the bottom line counts the messages new
@@ -542,6 +568,9 @@ the agent has been working. When the pane moves to a new transcript
 (`/clear`, Codex `/new`, a takeover by another provider), a divider shows
 and the new one goes on below it. What you type into it never reaches the
 session.
+
+Opening search pauses following while new output refreshes the matching snippets.
+After focusing a result or canceling search, `G` goes back to following.
 
 The colours suit a dark background unless the terminal says it is light.
 `--theme auto` (the default) asks the terminal for its background colour
