@@ -84,14 +84,15 @@ the final head. Run them as `internal/testenv` isolates tests: `HOME`, `AIQ_DATA
 launchd, systemd, the login keychain or the running daemon.
 
 - `install-or-update.sh --no-pull --no-daemon` from a login shell (2-5 min).
+- `aiq long` on the temporary tmux server, using invented accounts and a fake provider:
+  start a named session, force a takeover, check that the name holds and that only that
+  server's panes changed (5-10 min).
 - Fixture tests in `go test`, seconds each: a forced takeover of a named session keeps
   its name; a `security` stub that reports a locked keychain does not make an account
   read as logged out. If one is missing, the next B change in that code adds it.
 
 Owner-run only: `install-or-update.sh` with the daemon, from the owner's own login
-shell; `aiq long` with a logged-in account on a temporary tmux server (start a named
-session, force a takeover, check that the name holds and that only that server's panes
-changed; 5-10 min); `aiq long --backend herdr` in a real Herdr terminal; a real provider login;
+shell; `aiq long --backend herdr` in a real Herdr terminal; a real provider login;
 anything on the login keychain. Until installs follow a release tag, B changes run the
 automated items only.
 
@@ -103,9 +104,9 @@ or `.github/workflows/` is reviewed under the rules on its base commit.
 **Owner decisions about process.** Add new ones here, dated (shared stop rule 14).
 
 - 2026-11-13: the owner approved process v0.3 for this repo. It replaces the manual review workflow v0.2 and every earlier process waiver or timing exception.
-- 2026-11-14: the owner added `internal/navclient/*` to the navigator group and made the
-  `aiq long` takeover check owner-run, because it needs a logged-in account that the
-  isolated environment does not have.
+- 2026-11-14 (owner, direct Codex chat): add `internal/navclient/*` to the navigator
+  group and retain the automated `aiq long` takeover smoke using invented accounts
+  and a fake provider. Real provider login and login-keychain checks remain owner-run.
 
 ## Review guidelines
 
