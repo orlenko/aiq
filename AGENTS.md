@@ -42,7 +42,8 @@ files excluded, against this list. `*` means every file in that folder.
   `internal/provider/codex/appserver.go`.
 - Navigator, off by default (`[ui] navigator`) or not mounted: `internal/daemon/`
   `navigator.go`, `navgate.go`, `owneronly_*.go`, `nav_auth_http.go`,
-  `nav_lifecycle.go`; `internal/navauth/*`; `internal/navtoken/*`. A change confined to these and unlisted files is C unless some
+  `nav_lifecycle.go`; `internal/navauth/*`; `internal/navtoken/*`;
+  `internal/navclient/*`. A change confined to these and unlisted files is C unless some
   of it can run with the navigator off; the author names the flag, and the round-1
   reviewer answers the shared off-by-default question. Asks and Herdr are opt-in but
   shipped, so they count as running code.
@@ -83,8 +84,9 @@ the final head. Run them as `internal/testenv` isolates tests: `HOME`, `AIQ_DATA
 launchd, systemd, the login keychain or the running daemon.
 
 - `install-or-update.sh --no-pull --no-daemon` from a login shell (2-5 min).
-- `aiq long` on the temporary tmux server: start a named session, force a takeover,
-  check that the name holds and that only that server's panes changed (5-10 min).
+- `aiq long` on the temporary tmux server, using invented accounts and a fake provider:
+  start a named session, force a takeover, check that the name holds and that only that
+  server's panes changed (5-10 min).
 - Fixture tests in `go test`, seconds each: a forced takeover of a named session keeps
   its name; a `security` stub that reports a locked keychain does not make an account
   read as logged out. If one is missing, the next B change in that code adds it.
@@ -102,6 +104,9 @@ or `.github/workflows/` is reviewed under the rules on its base commit.
 **Owner decisions about process.** Add new ones here, dated (shared stop rule 14).
 
 - 2026-11-13: the owner approved process v0.3 for this repo. It replaces the manual review workflow v0.2 and every earlier process waiver or timing exception.
+- 2026-11-14 (owner, direct Codex chat): add `internal/navclient/*` to the navigator
+  group and retain the automated `aiq long` takeover smoke using invented accounts
+  and a fake provider. Real provider login and login-keychain checks remain owner-run.
 
 ## Review guidelines
 
