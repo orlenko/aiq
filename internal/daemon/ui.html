@@ -80,6 +80,7 @@ const fmtAgo = (ts) => { if (!ts) return 'never'; const s = Math.floor(Date.now(
 const fmtIn = (ts) => { if (!ts) return ''; const s = ts - Math.floor(Date.now()/1000); if (s <= 0) return 'due'; if (s < 3600) return 'in ' + Math.floor(s/60) + 'm'; if (s < 86400) return 'in ' + Math.floor(s/3600) + 'h' + String(Math.floor(s%3600/60)).padStart(2,'0') + 'm'; return 'in ' + (s/86400).toFixed(1) + 'd'; };
 const cls = (p) => p >= 95 ? 'bad' : p >= 80 ? 'warn' : '';
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shellArg = (s) => /^[A-Za-z0-9_./-]+$/.test(s) ? s : "'" + String(s).replace(/'/g, "'\\''") + "'";
 
 function accountCard(a) {
   const wins = a.windows.map(w => {
@@ -93,11 +94,12 @@ function accountCard(a) {
   }).join('');
   const resets = a.windows.filter(w => w.binding && w.resets_at).map(w => `${esc(w.label || w.key).toLowerCase()} ${fmtIn(w.resets_at)}`).join(' · ');
   let badge, hint = '';
-  const loginCmd = `aiq account login ${a.id}`;
+  const loginCmd = `aiq account login ${shellArg(a.id)}`;
   if (!a.enabled) badge = `<span class="badge off" title="aiq account enable ${esc(a.id)}">disabled</span>`;
   else if (!a.has_credential || a.cli_login === 'out') { badge = `<span class="badge bad" title="${esc(loginCmd)}">no login</span>`; hint = `<div class="hint">${esc(loginCmd)}</div>`; }
   else if (a.cli_login === 'unreadable') { badge = `<span class="badge bad" title="${esc(a.cli_login_problem || '')}">login unreadable</span>`; hint = `<div class="hint">${esc(a.cli_login_problem || '')}</div>`; }
   else if (a.cli_mismatch) { badge = `<span class="badge bad" title="${esc(a.ineligible || '')}">CLI is ${esc(a.cli_identity)}</span>`; hint = `<div class="hint">${esc(loginCmd)}</div>`; }
+  else if (a.provider === 'codex' && !a.eligible && a.ineligible === 'authentication required') { badge = '<span class="badge bad">authentication required</span>'; hint = `<div class="hint">Run <code>${esc(loginCmd)}</code> in a terminal.</div>`; }
   else if (a.exhausted) { const m = /until (.+)$/.exec(a.reason || ''); badge = `<span class="badge bad" title="${esc(a.reason || '')}">exhausted${m ? ' · ' + esc(m[1]) : ''}</span>`; }
   else if (!a.eligible) badge = `<span class="badge">${esc(a.ineligible)}</span>`;
   else badge = `<span class="badge ${a.rank === 1 ? 'rank1' : ''}">#${a.rank} · ${a.score.toFixed(1)}/h${a.rung === 1 ? ' · extra usage' : a.rung > 1 ? ' · last resort' : ''}</span>`;
