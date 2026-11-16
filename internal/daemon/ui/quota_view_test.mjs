@@ -85,6 +85,9 @@ test("helpers: percent, money in minor units, spans and quoted login commands", 
   assert.equal(quotaMoney("BHD", 1234), "BHD 1.234");
   assert.equal(quotaMoney("", 700), "700 minor units, currency unknown");
   assert.equal(quotaMoney("usd", 700), "700 minor units of usd");
+  // Well-formed but unsupported: Intl would assume two decimals; keep raw units.
+  assert.equal(quotaMoney("ZZZ", 1234), "1234 minor units of ZZZ");
+  assert.equal(quotaMoney("XQQ", 5), "5 minor units of XQQ");
   assert.equal(quotaMoney("USD", 9007199254740991), "USD 90071992547409.91");
   assert.equal(quotaSpan(0, 45), "45s");
   assert.equal(quotaSpan(0, 7500), "2h 05m");

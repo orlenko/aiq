@@ -19,14 +19,25 @@ export function quotaPercent(value) {
   return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}%`;
 }
 
+// Currencies whose precision the runtime knows. Intl.NumberFormat accepts any
+// well-formed code and assumes two decimals for one it does not know.
+let currencies = null;
+function knownCurrency(code) {
+  if (currencies === null) {
+    try { currencies = new Set(Intl.supportedValuesOf("currency")); } catch { currencies = new Set(); }
+  }
+  return currencies.has(code);
+}
+
 // Minor units with the currency's own precision, by integer string arithmetic.
 // An unknown currency keeps the raw minor units rather than guessing a scale.
 export function quotaMoney(currency, minor) {
   if (!Number.isSafeInteger(minor)) return "";
   let digits;
   try {
-    if (typeof currency !== "string" || !/^[A-Z]{3}$/.test(currency)) throw new RangeError();
+    if (typeof currency !== "string" || !/^[A-Z]{3}$/.test(currency) || !knownCurrency(currency)) throw new RangeError();
     digits = new Intl.NumberFormat("en", {style: "currency", currency}).resolvedOptions().maximumFractionDigits;
+    if (!Number.isSafeInteger(digits) || digits < 0 || digits > 4) throw new RangeError();
   } catch {
     return `${minor} minor units${currency ? ` of ${currency}` : ", currency unknown"}`;
   }
