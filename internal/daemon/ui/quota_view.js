@@ -19,14 +19,13 @@ export function quotaPercent(value) {
   return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}%`;
 }
 
-// ISO 4217 minor-unit exponents for the currencies a provider is likely to bill
-// in. This is a fixed table, not the browser's: engines' currency data (CLDR)
-// disagrees with ISO for some codes (HUF, IQD, ...) and would scale amounts
-// differently in different browsers. Any other code keeps its raw minor units.
-const exponents = new Map([
-  ...["USD", "EUR", "GBP", "CAD", "AUD", "NZD", "CHF", "SEK", "NOK", "DKK", "PLN", "SGD", "HKD", "INR", "BRL", "MXN", "ZAR", "ILS", "AED"].map(c => [c, 2]),
-  ["JPY", 0], ["KRW", 0], ["BHD", 3], ["KWD", 3], ["OMR", 3], ["JOD", 3], ["TND", 3],
-]);
+// Currencies shown with two decimals: ISO 4217 gives them two, and aiq's CLI
+// (ExtraUsage.Money) renders every amount as minor/100. This is a fixed table,
+// not the browser's: engines' currency data (CLDR) disagrees with ISO for some
+// codes and would scale amounts differently in different browsers. Any other
+// code, including zero- and three-decimal ones whose provider scale is not
+// confirmed, keeps its raw minor units rather than a guessed scale.
+const exponents = new Map(["USD", "EUR", "GBP", "CAD", "AUD", "NZD", "CHF", "SEK", "NOK", "DKK", "PLN", "SGD", "HKD", "INR", "BRL", "MXN", "ZAR", "ILS", "AED"].map(c => [c, 2]));
 
 // Minor units with the currency's own precision, by integer string arithmetic.
 // An unknown currency keeps the raw minor units rather than guessing a scale.
