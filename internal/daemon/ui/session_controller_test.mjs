@@ -47,7 +47,7 @@ function fixture(extra={}) {
   document.body=new Element(document,'body');let fontsReady;document.fonts.ready=new Promise(r=>fontsReady=r);
   window.visualViewport=new Target();window.requestAnimationFrame=fn=>{const id=++serial;frames.set(id,fn);return id;};window.cancelAnimationFrame=id=>frames.delete(id);
   window.AbortController=class extends AbortController {constructor(){super();aborts.push(this);}};
-  window.setTimeout=(fn,delay)=>{assert.equal(delay,2000);const id=++serial;timers.set(id,fn);return id;};window.clearTimeout=id=>timers.delete(id);
+  window.setTimeout=(fn,delay)=>{assert([1200,2000].includes(delay));const id=++serial;timers.set(id,fn);return id;};window.clearTimeout=id=>timers.delete(id);
   window.ResizeObserver=class {constructor(fn){this.callback=fn;this.disconnected=false;observers.push(this);observerHook('constructor',this);}observe(node){this.node=node;observerHook('observe',this,node);}disconnect(){this.disconnected=true;}};
   const listCalls=[],detailCalls=[],announcements=[],copies=[];
   const options={window,idPrefix:'controllerFixture',limits:limits(),detailQuery:{last:50,markup:false,anchor:0},
@@ -613,4 +613,39 @@ test('safe session failure reasons explain retries while previous results remain
   f.controller.loadSessions(query());f.listCalls[1].reject(Object.assign(new Error('invented private body'),{code:'request',status:503,reason}));await tick();
   const status=find(f,n=>has(n,'nav-controller-status'))[0];assert(status.textContent.includes(expected));assert(status.textContent.includes('showing previous results'));assert(!status.textContent.includes('private'));assert(f.document.body.textContent.includes('row A'));assert(byText(f,'Retry sessions'));f.clean();
  }
+});
+
+const coldSessions=()=>({...sessions('/fixture/A',[]),partial:true,scanned:0,of:10});
+test('cold scans retain known rows and retry only twice before honest incomplete status',async()=>{
+ const f=fixture();f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(sessions());await tick();
+ f.controller.loadSessions(query());
+ for(let i=1;i<=3;i++){
+  f.listCalls[i].resolve(coldSessions());await tick();assert(f.document.body.textContent.includes('row A'));assert(!f.announcements.at(-1).includes('No sessions'));
+  if(i<3){assert.equal(f.timers.size,1);f.poll();assert.equal(f.listCalls.length,i+2);}else assert.equal(f.timers.size,0);
+ }
+ const pane=find(f,n=>has(n,'nav-controller-pane'))[0];assert.equal(pane.getAttribute('aria-busy'),'false');assert.equal(pane.getAttribute('data-stale'),'true');assert(f.announcements.at(-1).includes('Refresh sessions'));
+ byText(f,'Retry sessions').click();f.listCalls[4].resolve(sessions('/fixture/A',[row('B')]));await tick();assert(f.document.body.textContent.includes('row B'));assert(!f.document.body.textContent.includes('row A'));f.clean();
+});
+test('an initial cold scan recovers automatically while complete empty results remain definitive',async()=>{
+ const f=fixture();f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(coldSessions());await tick();assert.equal(f.controller.snapshotSessions(),null);assert.equal(f.timers.size,1);
+ f.poll();f.listCalls[1].resolve(sessions());await tick();assert(f.document.body.textContent.includes('row A'));assert.equal(f.timers.size,0);
+ f.controller.loadSessions(query());f.listCalls[2].resolve({...sessions('/fixture/A',[]),partial:false,scanned:0,of:0,unreadable_count:0});await tick();assert(!f.document.body.textContent.includes('row A'));assert.equal(f.announcements.at(-1),'No sessions.');assert.equal(f.timers.size,0);f.clean();
+});
+test('cold retry retirement, freeze and hidden pages cannot start late reads',async()=>{
+ for(const mode of ['replace','teardown','freeze','hidden']){
+  const f=fixture({autoFollow:true,readState:()=>{throw Error('unexpected state read');}});f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(coldSessions());await tick();const late=[...f.timers.values()][0];assert(late);
+  if(mode==='replace')f.controller.loadSessions(query('/fixture/B'));else if(mode==='teardown')f.controller.teardown();else if(mode==='freeze')f.controller.freeze();else {f.document.hidden=true;f.document.emit('visibilitychange');}
+  const before=f.listCalls.length;f.poll();late();assert.equal(f.listCalls.length,before,mode);assert.equal(f.timers.size,0);f.clean();
+ }
+});
+test('cache seeds and HTTP errors never start automatic retries; parsed partial empty scans retain rows',async()=>{
+ const first=fixture();first.mount();first.controller.loadSessions(query());first.listCalls[0].resolve(sessions());await tick();const snapshot=first.controller.snapshotSessions();first.clean();
+ snapshot.data={...snapshot.data,sessions:[],partial:true,scanned:0};
+ const f=fixture();f.mount();f.controller.loadSessions(query(),{snapshot});assert.equal(f.listCalls.length,1);assert.equal(f.timers.size,0);
+ f.listCalls[0].reject(Object.assign(new Error('private'),{code:'request',status:503}));await tick();assert.equal(f.timers.size,0);
+ f.controller.loadSessions(query());f.listCalls[1].resolve(sessions());await tick();
+ f.controller.loadSessions(query());f.listCalls[2].resolve({...coldSessions(),scanned:3});await tick();assert(f.document.body.textContent.includes('row A'));assert(f.announcements.at(-1).includes('incomplete'));assert.equal(f.timers.size,0);f.clean();
+});
+test('incomplete-status callback reentry cannot schedule a retired retry',async()=>{
+ let f;f=fixture({announce:text=>{if(text.startsWith('Session scan incomplete'))f.controller.loadSessions(query('/fixture/B'));}});f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(coldSessions());await tick();assert.equal(f.listCalls.length,2);assert.equal(f.listCalls[1].q.dir,'/fixture/B');assert.equal(f.timers.size,0);f.clean();
 });
