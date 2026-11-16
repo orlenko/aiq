@@ -409,11 +409,12 @@ func TestUIOpenerUsesOnlyPrivatePathAndNeverKills(t *testing.T) {
 			helper := filepath.Join(root, "xdg-open")
 			arg := filepath.Join(root, "invented.html")
 			record := filepath.Join(root, "record")
+			ready := filepath.Join(root, "ready")
 			release := filepath.Join(root, "release")
 			exited := filepath.Join(root, "exited")
 			body := "#!/bin/sh\ntrap 'printf signaled > \"$UI_TEST_SIGNAL\"' HUP INT TERM\nprintf '%s\\n%s\\n%s\\n' \"$#\" \"$1\" \"${BROWSER-unset}\" > \"$UI_TEST_RECORD\"\n"
 			if mode == "held" {
-				body += "while [ ! -f \"$UI_TEST_RELEASE\" ]; do /bin/sleep 0.01; done\n"
+				body += "printf ready > \"$UI_TEST_READY\"\nwhile [ ! -f \"$UI_TEST_RELEASE\" ]; do /bin/sleep 0.01; done\n"
 			}
 			body += "printf done > \"$UI_TEST_EXITED\"\n"
 			if mode == "nonzero" {
@@ -427,17 +428,86 @@ func TestUIOpenerUsesOnlyPrivatePathAndNeverKills(t *testing.T) {
 			t.Setenv("PATH", root)
 			t.Setenv("BROWSER", "invented-secret-browser-command")
 			t.Setenv("UI_TEST_RECORD", record)
+			t.Setenv("UI_TEST_READY", ready)
 			t.Setenv("UI_TEST_RELEASE", release)
 			t.Setenv("UI_TEST_EXITED", exited)
 			t.Setenv("UI_TEST_SIGNAL", filepath.Join(root, "signal"))
 			defer os.WriteFile(release, []byte("release"), 0600)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
+			var started bool
+			var e error
 			if mode == "held" {
-				ctx, cancel = context.WithTimeout(context.Background(), 150*time.Millisecond)
-				defer cancel()
+				type result struct {
+					started bool
+					err     error
+				}
+				finished := make(chan result, 1)
+				received := false
+				// Even an assertion failure releases the owned helper and observes
+				// its exit before TempDir removes the handshake files.
+				t.Cleanup(func() {
+					cancel()
+					if err := os.WriteFile(release, []byte("release"), 0600); err != nil {
+						t.Error("release owned helper", err)
+					}
+					if !received {
+						select {
+						case got := <-finished:
+							started = got.started
+						case <-time.After(2 * time.Second):
+							t.Error("owned opener did not finish after cancellation")
+							return
+						}
+					}
+					if started {
+						deadline := time.Now().Add(2 * time.Second)
+						for {
+							if _, err := os.Stat(exited); err == nil {
+								break
+							}
+							if time.Now().After(deadline) {
+								t.Error("owned helper did not finish after cleanup release")
+								break
+							}
+							time.Sleep(5 * time.Millisecond)
+						}
+					}
+				})
+				go func() {
+					ok, err := openUIFile(ctx, "linux", arg)
+					finished <- result{ok, err}
+				}()
+				ticker := time.NewTicker(5 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					if b, err := os.ReadFile(ready); err == nil && string(b) == "ready" {
+						break
+					}
+					select {
+					case <-ctx.Done():
+						t.Fatal("owned helper did not reach its record-ready barrier")
+					case got := <-finished:
+						started, e, received = got.started, got.err, true
+						t.Fatal("held opener returned before explicit cancellation")
+					case <-ticker.C:
+					}
+				}
+				// The child has recorded its arguments and is held. Cancellation
+				// now tests observation of that running child, not startup speed.
+				if ctx.Err() != nil {
+					t.Fatal("owned helper exceeded the outer timeout before explicit cancellation")
+				}
+				cancel()
+				select {
+				case got := <-finished:
+					started, e, received = got.started, got.err, true
+				case <-time.After(time.Second):
+					t.Fatal("owned opener ignored explicit cancellation")
+				}
+			} else {
+				started, e = openUIFile(ctx, "linux", arg)
 			}
-			started, e := openUIFile(ctx, "linux", arg)
 			if mode == "success" {
 				if e != nil || !started {
 					t.Fatal("dispatch")
