@@ -127,17 +127,66 @@ var platformUUIDRe = regexp.MustCompile(`"IOPlatformUUID"\s*=\s*"([^"]+)"`)
 // Candidates assembles selector input for a provider. Dead leases on this
 // host are pruned as a side effect.
 func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
-	accounts, err := p.St.ListAccounts(provider)
-	if err != nil {
-		return nil, err
-	}
 	leases, err := p.leases()
 	if err != nil {
 		return nil, err
 	}
+	f := &Facts{Now: time.Now(), Leases: leases, HasCredential: HasCredential}
+	if err := p.gather(f, provider); err != nil {
+		return nil, err
+	}
+	return p.candidatesFrom(provider, f), nil
+}
+
+// Facts are what Candidates and View read from the store, gathered once so the
+// same assembly can run on a snapshot read elsewhere. Leases are the live set:
+// already pruned, or filtered without pruning.
+type Facts struct {
+	Now      time.Time
+	Hostname string
+	Accounts []state.Account // ListAccounts order
+	Usage    map[string]state.Usage
+	Windows  map[string][]state.Window
+	Leases   []state.Lease
+	Whys     map[state.LeaseRef]string
+	// Scope is each provider's model scope, as ModelScope resolves it.
+	Scope map[string]string
+	// HasCredential decides an account's credential, as HasCredential does.
+	HasCredential func(state.Account) bool
+}
+
+// gather appends one provider's accounts, with their usage and windows, to f.
+func (p *Pool) gather(f *Facts, provider string) error {
+	if f.Usage == nil {
+		f.Usage = map[string]state.Usage{}
+	}
+	if f.Windows == nil {
+		f.Windows = map[string][]state.Window{}
+	}
+	accounts, err := p.St.ListAccounts(provider)
+	if err != nil {
+		return err
+	}
+	for _, acc := range accounts {
+		if u, ok, err := p.St.GetUsage(acc.ID); err != nil {
+			return err
+		} else if ok {
+			f.Usage[acc.ID] = u
+		}
+		ws, err := p.St.ListWindows(acc.ID)
+		if err != nil {
+			return err
+		}
+		f.Windows[acc.ID] = ws
+	}
+	f.Accounts = append(f.Accounts, accounts...)
+	return nil
+}
+
+func (p *Pool) candidatesFrom(provider string, f *Facts) []selector.Candidate {
 	interactive := map[string]int{}
 	workers := map[string]int{}
-	for _, l := range leases {
+	for _, l := range f.Leases {
 		if l.Mode == state.ModeWorker {
 			workers[l.AccountID]++
 		} else {
@@ -145,19 +194,20 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 		}
 	}
 	var cands []selector.Candidate
-	for _, acc := range accounts {
+	for _, acc := range f.Accounts {
+		if acc.Provider != provider {
+			continue
+		}
 		c := selector.Candidate{
 			ID:                acc.ID,
 			Enabled:           acc.Enabled,
-			HasCredential:     HasCredential(acc),
+			HasCredential:     f.HasCredential(acc),
 			Priority:          acc.Priority,
 			LastSelectedAt:    acc.LastSelectedAt,
 			InteractiveLeases: interactive[acc.ID],
 			WorkerLeases:      workers[acc.ID],
 		}
-		if u, ok, err := p.St.GetUsage(acc.ID); err != nil {
-			return nil, err
-		} else if ok {
+		if u, ok := f.Usage[acc.ID]; ok {
 			c.CooldownUntil = u.CooldownUntil
 			c.ResetCredits = u.ResetCredits
 			c.ResetCreditExpiry = u.ResetCreditExpiry
@@ -181,28 +231,28 @@ func (p *Pool) Candidates(provider string) ([]selector.Candidate, error) {
 					c.Unavailable = selector.UnavailableLoginOut
 				}
 			}
-			if ok, _ := u.Extra.Spendable(time.Now()); ok && p.Cfg.Selection.ExtraUsage {
+			if ok, _ := u.Extra.Spendable(f.Now); ok && p.Cfg.Selection.ExtraUsage {
 				c.ExtraUsage = fmt.Sprintf("%s prepaid left", u.Extra.Money(u.Extra.BalanceMinor))
 			}
 		}
 		c.LastResort = p.Cfg.LastResortRank(acc.Provider)
-		ws, err := p.St.ListWindows(acc.ID)
-		if err != nil {
-			return nil, err
-		}
-		c.Windows = ws
+		c.Windows = f.Windows[acc.ID]
 		cands = append(cands, c)
 	}
-	return cands, nil
+	return cands
 }
 
 // Policy builds the selector policy for a provider and mode.
 func (p *Pool) Policy(provider, mode string, now time.Time) selector.Policy {
+	return p.policyScope(provider, mode, p.ModelScope(provider), now)
+}
+
+func (p *Pool) policyScope(provider, mode, scope string, now time.Time) selector.Policy {
 	sel := p.Cfg.Selection
 	return selector.Policy{
 		Now:              now,
 		Mode:             mode,
-		ModelScope:       p.ModelScope(provider),
+		ModelScope:       scope,
 		Sticky:           mode == state.ModeInteractive && sel.InteractivePolicy != "score",
 		SwitchPct:        sel.SwitchPct,
 		StaleAfter:       time.Duration(sel.StaleAfterSeconds) * time.Second,
@@ -392,20 +442,43 @@ type View struct {
 
 // View assembles everything the status renderers need.
 func (p *Pool) View(eventLimit int) (*View, error) {
-	now := time.Now()
-	v := &View{SchemaVersion: SchemaVersion, GeneratedAt: now.Unix(), Hostname: Hostname(), Rankings: map[string][]RankView{}, ModelScope: map[string]string{}, WorkerCapacity: map[string]int{}, WorkerCapacityByScope: map[string]map[string]int{}}
 	leases, err := p.leases()
 	if err != nil {
 		return nil, err
 	}
+	f := &Facts{Now: time.Now(), Hostname: Hostname(), Leases: leases, Scope: map[string]string{}, HasCredential: HasCredential}
+	f.Whys, _ = p.St.LeaseWhys()
+	for _, provider := range Providers {
+		f.Scope[provider] = p.ModelScope(provider)
+		if err := p.gather(f, provider); err != nil {
+			return nil, err
+		}
+	}
+	v := p.ViewFrom(f)
+	events, _ := p.St.ListEvents(eventLimit)
+	for _, e := range events {
+		v.Events = append(v.Events, EventView{Timestamp: e.Timestamp, Provider: e.Provider, AccountID: e.AccountID, Type: e.Type, Detail: e.Detail})
+	}
+	if v.Events == nil {
+		v.Events = []EventView{}
+	}
+	return v, nil
+}
+
+// ViewFrom assembles a view from facts gathered beforehand, without the event
+// history. It reads nothing itself: the store, the clock, the hostname, the
+// model scopes and the credential check all come from f.
+func (p *Pool) ViewFrom(f *Facts) *View {
+	now := f.Now
+	v := &View{SchemaVersion: SchemaVersion, GeneratedAt: now.Unix(), Hostname: f.Hostname, Rankings: map[string][]RankView{}, ModelScope: map[string]string{}, WorkerCapacity: map[string]int{}, WorkerCapacityByScope: map[string]map[string]int{}}
 	// Display order and labels come from config [display].
 	order := map[string]int{}
 	for i, id := range p.Cfg.Display.Order {
 		order[id] = i
 	}
 	leasesBy := map[string][]LeaseView{}
-	whys, _ := p.St.LeaseWhys()
-	for _, l := range leases {
+	whys := f.Whys
+	for _, l := range f.Leases {
 		leasesBy[l.AccountID] = append(leasesBy[l.AccountID], LeaseView{
 			ID: l.ID, AccountID: l.AccountID, PID: l.PID, Hostname: l.Hostname, Mode: l.Mode, Cwd: l.Cwd,
 			Depth: l.Depth, ParentAccount: l.ParentAccount, Args: l.Args, StartedAt: l.StartedAt,
@@ -413,15 +486,12 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 		})
 	}
 	for _, provider := range Providers {
-		scope := p.ModelScope(provider)
+		scope := f.Scope[provider]
 		v.ModelScope[provider] = scope
-		cands, err := p.Candidates(provider)
-		if err != nil {
-			return nil, err
-		}
+		cands := p.candidatesFrom(provider, f)
 		ranked := map[string]map[string]RankView{}
 		for _, mode := range []string{state.ModeInteractive, state.ModeWorker} {
-			pol := p.Policy(provider, mode, now)
+			pol := p.policyScope(provider, mode, scope, now)
 			rs := selector.Rank(pol, cands)
 			ranked[mode] = map[string]RankView{}
 			for i, r := range rs {
@@ -432,20 +502,19 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 			}
 		}
 		v.WorkerCapacityByScope[provider] = p.capacityByScope(provider, cands, now)
-		accounts, err := p.St.ListAccounts(provider)
-		if err != nil {
-			return nil, err
-		}
-		for _, a := range accounts {
+		for _, a := range f.Accounts {
+			if a.Provider != provider {
+				continue
+			}
 			av := AccountView{
 				ID: a.ID, Provider: a.Provider, Name: a.Name, Enabled: a.Enabled, Native: a.Native,
-				Home: a.Home, QuotaID: a.QuotaID, Identity: a.Identity, HasCredential: HasCredential(a),
+				Home: a.Home, QuotaID: a.QuotaID, Identity: a.Identity, HasCredential: f.HasCredential(a),
 				Leases: leasesBy[a.ID], Terms: []string{}, Label: p.Cfg.Display.Labels[a.ID], Order: 1 << 20,
 			}
 			if idx, ok := order[a.ID]; ok {
 				av.Order = idx
 			}
-			if u, ok, _ := p.St.GetUsage(a.ID); ok {
+			if u, ok := f.Usage[a.ID]; ok {
 				av.Plan, av.ResetCredits, av.PollError, av.ObservedAt = u.Plan, u.ResetCredits, u.PollError, u.ObservedAt
 				av.CreditExpiry = u.ResetCreditExpiry
 				av.CLILogin, av.CLIIdentity, av.CLICheckedAt = u.CLILogin, u.CLIIdentity, u.CLICheckedAt
@@ -467,8 +536,7 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 					av.Exhausted, av.Reason, av.CooldownUntil = true, u.ExhaustedReason, u.CooldownUntil
 				}
 			}
-			ws, _ := p.St.ListWindows(a.ID)
-			for _, w := range ws {
+			for _, w := range f.Windows[a.ID] {
 				av.Windows = append(av.Windows, WindowView{
 					Key: w.Key, Label: w.Label, Kind: w.Kind, Scope: w.Scope,
 					Binding: isBinding(w, scope), UsedPct: w.UsedPct, ResetsAt: w.ResetsAt,
@@ -531,14 +599,8 @@ func (p *Pool) View(eventLimit int) (*View, error) {
 		}
 		return a.ID < b.ID
 	})
-	events, _ := p.St.ListEvents(eventLimit)
-	for _, e := range events {
-		v.Events = append(v.Events, EventView{Timestamp: e.Timestamp, Provider: e.Provider, AccountID: e.AccountID, Type: e.Type, Detail: e.Detail})
-	}
-	if v.Events == nil {
-		v.Events = []EventView{}
-	}
-	return v, nil
+	v.Events = []EventView{}
+	return v
 }
 
 // capacityByScope computes free worker slots per model scope: "none" plus

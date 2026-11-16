@@ -936,6 +936,13 @@ func (s *Store) SetLeasePane(id int64, pane string) error {
 // machine, or this one under an earlier name) is believed.
 const MaxLeaseAge = 36 * time.Hour
 
+// LeaseGone is PruneLeases' test, without its release: a lease on this host
+// whose pid is gone, or one from another host started before cutoff (unix
+// seconds). Read-only callers use it to show what pruning would keep.
+func LeaseGone(l Lease, hostname string, alive func(pid int) bool, cutoff int64) bool {
+	return (l.Hostname == hostname && !alive(l.PID)) || (l.Hostname != hostname && l.StartedAt < cutoff)
+}
+
 // PruneLeases removes leases on this host whose pid is gone, and leases from
 // other hosts older than MaxLeaseAge. A lease on this host lives as long as
 // its process: a long session runs for days, and dropping its lease by age
@@ -948,7 +955,7 @@ func (s *Store) PruneLeases(hostname string, alive func(pid int) bool) ([]Lease,
 	cutoff := time.Now().Add(-MaxLeaseAge).Unix()
 	var live []Lease
 	for _, l := range leases {
-		if (l.Hostname == hostname && !alive(l.PID)) || (l.Hostname != hostname && l.StartedAt < cutoff) {
+		if LeaseGone(l, hostname, alive, cutoff) {
 			if strings.HasPrefix(l.Pane, "herdr:") {
 				s.ForLease(l, 0).ReleaseLease(l.ID)
 			} else {

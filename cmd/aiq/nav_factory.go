@@ -12,11 +12,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/navroute"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
+	"github.com/orlenko/aiq/internal/proc"
 	"github.com/orlenko/aiq/internal/provider/agy"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/terminal"
@@ -55,6 +57,7 @@ type navFactoryInput struct {
 	observe        func(context.Context, terminal.ObservationTarget) terminal.Observation
 	workspace      func(context.Context, string) (string, bool)
 	notes          func(context.Context, string, state.NavigatorSnapshotLimits) (navLongNote, error)
+	quotas         *navQuotaDeps // nil: the quota read answers unavailable
 	asksPath       string
 	asksKeyPresent func() bool
 	now            func() time.Time
@@ -75,6 +78,7 @@ type navFactory struct {
 	bundle                              *navFactoryBundle
 	checked                             time.Time
 	sessionSlots, detailSlots, askSlots chan struct{}
+	quotaSlots                          chan struct{}
 	api                                 http.Handler
 	pages                               http.Handler
 }
@@ -93,12 +97,16 @@ func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) 
 	}
 	in.asksPath = strings.Clone(in.asksPath)
 	f := &navFactory{input: in, policy: p, cache: transcript.NewCache(), pages: pages,
-		sessionSlots: make(chan struct{}, p.sessions.builders), detailSlots: make(chan struct{}, p.detail.requests), askSlots: make(chan struct{}, p.asks.requests)}
+		sessionSlots: make(chan struct{}, p.sessions.builders), detailSlots: make(chan struct{}, p.detail.requests), askSlots: make(chan struct{}, p.asks.requests),
+		quotaSlots: make(chan struct{}, 1)}
 	mux := navroute.NewMux()
 	if err := mux.Handle(navroute.Directories, http.HandlerFunc(f.directories)); err != nil {
 		return nil, err
 	}
 	if err := mux.Handle(navroute.Long, http.HandlerFunc(f.longMetadata)); err != nil {
+		return nil, err
+	}
+	if err := mux.Handle(navroute.Quotas, http.HandlerFunc(f.quotas)); err != nil {
 		return nil, err
 	}
 	if err := mux.Handle(navroute.ConversationState, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -423,8 +431,42 @@ func navProductionMetadata(path string, identity func(context.Context) (string, 
 		return store.ReadNavigatorSnapshot(ctx, host, limits)
 	}
 }
-func mountProductionNavigator(s *daemon.Server) {
-	f, err := newNavFactory(navProductionInput(), navProductionPolicy())
+
+// navProductionQuotas reads state.db read-only, with the daemon's config and
+// poll bookkeeping. Identity is the navigator's bounded fresh acquisition, not
+// the legacy cached Hostname.
+func navProductionQuotas(cfg *config.Config, poll func() daemon.PollStatus) *navQuotaDeps {
+	p := &pool.Pool{Cfg: cfg}
+	path := paths.StateDB()
+	return &navQuotaDeps{
+		read: func(ctx context.Context, limits state.QuotaSnapshotLimits) (out *state.QuotaSnapshot, err error) {
+			store, err := state.OpenReadOnly(path)
+			if err != nil {
+				return nil, state.ErrQuotaSnapshotUnavailable
+			}
+			defer func() {
+				if e := store.Close(); e != nil && err == nil {
+					out = nil
+					err = state.ErrQuotaSnapshotUnavailable
+				}
+			}()
+			return store.ReadQuotaSnapshot(ctx, limits)
+		},
+		host: pool.HostnameContext,
+		// The provider's own settings file, read once per provider per request;
+		// no process, no network. An unreadable file resolves no scope.
+		scope:      func(_ context.Context, provider string) string { return p.ModelScope(provider) },
+		poll:       poll,
+		alive:      proc.Alive,
+		credential: pool.HasCredential,
+		view:       p.ViewFrom,
+	}
+}
+
+func mountProductionNavigator(s *daemon.Server, cfg *config.Config) {
+	in := navProductionInput()
+	in.quotas = navProductionQuotas(cfg, s.PollStatus)
+	f, err := newNavFactory(in, navProductionPolicy())
 	if err != nil {
 		s.MountNavigator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { navFactoryUnavailable(w, r) }))
 		s.MountNavigatorPages(daemon.NavigatorUnavailablePages())
