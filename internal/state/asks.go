@@ -26,23 +26,26 @@ const AskPerson = "person"
 // Ask is a stretch of an agent's own words that asks the person for something.
 // Times are Unix seconds.
 type Ask struct {
-	ID          int64    `json:"id"`
-	Chain       string   `json:"chain"`
-	Workspace   string   `json:"workspace"`
-	Provider    string   `json:"provider"`
-	SessionID   string   `json:"session_id"`
-	RaisedAt    int64    `json:"raised_at"`
-	State       AskState `json:"state"`
-	StateAt     int64    `json:"state_at"`
-	StateReason string   `json:"state_reason"`
-	StateText   string   `json:"state_text"`
-	FirstQuote  string   `json:"first_quote"`
-	LastQuote   string   `json:"last_quote"`
-	AsksReader  float64  `json:"asks_reader"`
-	Risk        float64  `json:"risk"`
-	Refs        []string `json:"refs"`
-	Repeats     int      `json:"repeats"`
-	LastSeen    int64    `json:"last_seen"`
+	// ActionSequence is snapshot metadata, not a schema column. The latest
+	// state event prevents an old browser action surviving a dismiss/restore ABA.
+	ActionSequence int64    `json:"-"`
+	ID             int64    `json:"id"`
+	Chain          string   `json:"chain"`
+	Workspace      string   `json:"workspace"`
+	Provider       string   `json:"provider"`
+	SessionID      string   `json:"session_id"`
+	RaisedAt       int64    `json:"raised_at"`
+	State          AskState `json:"state"`
+	StateAt        int64    `json:"state_at"`
+	StateReason    string   `json:"state_reason"`
+	StateText      string   `json:"state_text"`
+	FirstQuote     string   `json:"first_quote"`
+	LastQuote      string   `json:"last_quote"`
+	AsksReader     float64  `json:"asks_reader"`
+	Risk           float64  `json:"risk"`
+	Refs           []string `json:"refs"`
+	Repeats        int      `json:"repeats"`
+	LastSeen       int64    `json:"last_seen"`
 	// RepeatAt is when the agent itself last raised the item. LastSeen also counts text aiq
 	// put in a turn, which must not hold back the agent's own repeat.
 	RepeatAt int64 `json:"repeat_at"`

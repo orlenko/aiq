@@ -46,6 +46,7 @@ type State struct {
 	codes           map[[32]byte]pending
 	credentials     map[[32]byte]credential
 	nonces          map[[32]byte]int64
+	actionNonces    map[[32]byte]int64
 }
 
 func New(key [32]byte, binding Binding) (*State, error) {

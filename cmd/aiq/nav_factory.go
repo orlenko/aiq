@@ -109,6 +109,9 @@ func newNavFactory(in navFactoryInput, p navFactoryPolicy) (*navFactory, error) 
 	if err := mux.Handle(navroute.Quotas, http.HandlerFunc(f.quotas)); err != nil {
 		return nil, err
 	}
+	if err := mux.Handle(navroute.AskAction, http.HandlerFunc(f.askAction)); err != nil {
+		return nil, err
+	}
 	if err := mux.Handle(navroute.ConversationState, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// State observes only an already-admitted selection. It must not refresh
 		// roots, start discovery, or wait for a concurrent bundle builder.

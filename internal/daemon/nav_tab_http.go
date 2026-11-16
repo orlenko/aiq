@@ -10,10 +10,10 @@ import (
 
 type navTabFactsKey struct{}
 
-// AuthorizeRead is the production-only request verifier. Generic gate fixtures
-// retain their explicitly supplied legacy Credential seam, never this adapter.
+// AuthorizeRead verifies GET reads and the separately signed, bodyless Ask
+// action POST. Generic gate fixtures retain their explicit Credential seam.
 func (a *navAuthAdapter) AuthorizeRead(r *http.Request) (*http.Request, bool) {
-	if a == nil || a.state == nil || r == nil || r.URL == nil || r.Method != "GET" ||
+	if a == nil || a.state == nil || r == nil || r.URL == nil || (r.Method != "GET" && r.Method != "POST") ||
 		r.ContentLength != 0 || len(r.TransferEncoding) != 0 || r.Body != nil && r.Body != http.NoBody ||
 		r.URL.Scheme != "" || r.URL.Host != "" || r.URL.User != nil || r.URL.Opaque != "" || r.URL.Fragment != "" {
 		return nil, false
@@ -28,7 +28,16 @@ func (a *navAuthAdapter) AuthorizeRead(r *http.Request) (*http.Request, bool) {
 	}
 	var f *navauth.TabFacts
 	var err error
-	if strings.HasPrefix(value, "AiqTab2 ") {
+	if r.Method == "POST" {
+		if r.URL.Path != "/api/nav/asks/action" || navTabHasHeader(r.Header, "If-None-Match") {
+			return nil, false
+		}
+		p, e := navauth.ParseActionTabProof(value)
+		if e != nil {
+			return nil, false
+		}
+		f, err = a.state.AdmitActionTab(r.Method, target, p)
+	} else if strings.HasPrefix(value, "AiqTab2 ") {
 		condition, valid := navTabSingleHeader(r.Header, "If-None-Match")
 		if !valid {
 			return nil, false
@@ -63,7 +72,9 @@ func WriteNavigatorBody(w http.ResponseWriter, r *http.Request, h http.Header, s
 			var mac [32]byte
 			var err error
 			mimeOK := h.Get("Content-Type") == "application/json"
-			if facts.Conditional() {
+			if facts.Action() {
+				mac, err = facts.SignActionResponse(status, body)
+			} else if facts.Conditional() {
 				etag, valid := navTabSingleHeader(h, "ETag")
 				if !valid {
 					mimeOK = false

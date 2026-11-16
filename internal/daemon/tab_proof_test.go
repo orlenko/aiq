@@ -25,7 +25,7 @@ func TestNavigatorTabProofNodeFixtures(t *testing.T) {
 	if e != nil {
 		t.Fatalf("tab proof fixtures failed: %v\n%s", e, out)
 	}
-	for _, s := range []string{"tests 8", "pass 8", "fail 0", "cancelled 0", "skipped 0"} {
+	for _, s := range []string{"tests 15", "pass 15", "fail 0", "cancelled 0", "skipped 0"} {
 		if !regexp.MustCompile(`(?m)^# ` + s + `$`).Match(out) {
 			t.Fatalf("tab proof fixtures incomplete:\n%s", out)
 		}

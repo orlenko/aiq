@@ -27,6 +27,7 @@ const (
 	ConversationState
 	Long
 	Quotas
+	AskAction
 )
 
 var patterns = [...]string{
@@ -43,6 +44,7 @@ var patterns = [...]string{
 	ConversationState: "GET /api/nav/sessions/{provider}/{id}/state",
 	Long:              "GET /api/nav/long",
 	Quotas:            "GET /api/nav/quotas",
+	AskAction:         "POST /api/nav/asks/action",
 }
 
 func (route Route) Key() string {
