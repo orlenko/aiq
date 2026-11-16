@@ -26,6 +26,7 @@ const (
 	Directories
 	ConversationState
 	Long
+	Quotas
 )
 
 var patterns = [...]string{
@@ -41,6 +42,7 @@ var patterns = [...]string{
 	Directories:       "GET /api/nav/directories",
 	ConversationState: "GET /api/nav/sessions/{provider}/{id}/state",
 	Long:              "GET /api/nav/long",
+	Quotas:            "GET /api/nav/quotas",
 }
 
 func (route Route) Key() string {
