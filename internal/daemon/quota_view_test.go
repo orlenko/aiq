@@ -25,7 +25,7 @@ func TestNavigatorQuotaViewNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("quota view fixtures failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "# pass 17") || !strings.Contains(string(out), "# fail 0") {
+	if !strings.Contains(string(out), "# pass 20") || !strings.Contains(string(out), "# fail 0") {
 		t.Fatalf("quota view fixtures did not complete all literal cases:\n%s", out)
 	}
 }

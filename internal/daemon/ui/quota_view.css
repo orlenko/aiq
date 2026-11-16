@@ -71,3 +71,10 @@
 .nav-quotas-table tr[data-eligible="false"] .nav-quotas-why{color:var(--nav-quota-bad)}
 .nav-quotas-empty{color:var(--muted);font-style:italic}
 .nav-quotas-technical{margin-top:.75rem}
+.nav-quotas-machines{color:var(--muted);font-size:.75rem;margin:0 0 .5rem}
+.nav-quotas-machine[data-status="error"]{color:var(--nav-quota-warn)}
+.nav-quotas-sessions{font-size:.75rem;margin-top:.15rem}
+.nav-quotas-sessions>summary{cursor:pointer;color:var(--accent);width:max-content;max-width:100%}
+.nav-quotas-sessions summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.nav-quotas-lease-machine{flex:none;color:var(--muted);max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-quotas-lease-machine[data-status]{color:var(--nav-quota-warn)}

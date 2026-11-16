@@ -11,13 +11,14 @@ const account = (id, provider, extra = {}) => ({id, provider, plan: "max", label
   eligible: true, ineligible: "", exhausted: false, reason: "", cooldown_until: null, rank: 1, score: 3.5, rung: 0, terms: ["5h 42%"],
   reset_credits: 0, reset_credit_expires_at: null, extra_usage: null, poll_error: "", observed_at: 1790000000,
   windows: [win(), win({key: "seven_day", label: "7d", kind: "weekly", used_pct: null, resets_at: null})],
-  leases: [{mode: "long", drain: "", depth: 0, pane: "%7", pid: 1, workspace: "/invented/w", cwd: "/invented/w", why: ""}], ...extra});
-const doc = (extra = {}) => ({schema: 1, generated_at: 1790000001, hostname: "invented-host",
+  leases: [{mode: "long", drain: "", depth: 0, pane: "%7", pid: 1, workspace: "/invented/w", cwd: "/invented/w", why: "", machine: ""}], ...extra});
+const doc = (extra = {}) => ({schema: 2, generated_at: 1790000001, hostname: "invented-host",
   poll: {last_at: null, interval_s: 60, polling: false, error: ""},
   model_scope: [{provider: "claude", scope: "fable"}],
   accounts: [account("claude/a", "claude"), account("claude/b", "claude"), account("codex/c", "codex")],
   rankings: [{key: "claude/interactive", entries: [{id: "claude/a", score: 3.5, rung: 0, eligible: true, reason: "", terms: []}]},
-    {key: "claude/worker", entries: []}], ...extra});
+    {key: "claude/worker", entries: []}],
+  machines: [{name: "", here: true, status: "ok", seen_at: 1790000001, error: "", sessions: 3, unmatched: 0}], ...extra});
 
 test("admits a document into a frozen grouped model", () => {
   const s = quotaSnapshot(doc(), limits);
@@ -34,6 +35,16 @@ test("admits a document into a frozen grouped model", () => {
   assert.equal(s.rankings[0].mode, "interactive");
   assert.ok(Object.isFrozen(s) && Object.isFrozen(s.providers[0].accounts[0].windows[0]) && Object.isFrozen(s.rankings[0].entries));
   assert.throws(() => { "use strict"; s.providers[0].accounts[0].windows[0].used = 0; });
+});
+
+test("machines: this one first, then others; sessions name their machine", () => {
+  const d = doc();
+  d.machines.push({name: "invented-box", here: false, status: "error", seen_at: null, error: "invented: Permission denied", sessions: 1, unmatched: 2});
+  d.accounts[1].leases.push({mode: "interactive", drain: "", depth: 0, pane: "", pid: 9, workspace: "", cwd: "/invented/remote", why: "", machine: "invented-box"});
+  const s = quotaSnapshot(d, limits);
+  assert.deepEqual(s.machines.map(m => [m.name, m.here, m.status, m.seenAt, m.unmatched]), [["", true, "ok", 1790000001, 0], ["invented-box", false, "error", null, 2]]);
+  assert.deepEqual(s.providers[0].accounts[1].leases.map(l => l.machine), ["", "invented-box"]);
+  assert.ok(Object.isFrozen(s.machines[1]));
 });
 
 test("remaining is never below zero", () => {
@@ -56,7 +67,14 @@ const refusals = {
   "extra top-level field": d => { d.events = []; },
   "extra account field": d => { d.accounts[0].home = "/invented/home"; },
   "missing field": d => { delete d.accounts[0].plan; },
-  "wrong schema": d => { d.schema = 2; },
+  "wrong schema": d => { d.schema = 1; },
+  "no machines": d => { d.machines = []; },
+  "other machine first": d => { d.machines[0] = {...d.machines[0], here: false, name: "invented-box"}; },
+  "second here": d => { d.machines.push({...d.machines[0]}); },
+  "unnamed other machine": d => { d.machines.push({...d.machines[0], here: false}); },
+  "repeated machine": d => { const m = {...d.machines[0], here: false, name: "invented-box"}; d.machines.push(m, {...m}); },
+  "unknown machine status": d => { d.machines.push({...d.machines[0], here: false, name: "invented-box", status: "maybe"}); },
+  "session on an unlisted machine": d => { d.accounts[0].leases[0].machine = "invented-box"; },
   "string number": d => { d.accounts[0].windows[0].used_pct = "42"; },
   "negative used": d => { d.accounts[0].windows[0].used_pct = -1; },
   "zero time": d => { d.accounts[0].observed_at = 0; },

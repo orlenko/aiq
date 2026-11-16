@@ -742,6 +742,31 @@ dismiss and restore controls copy fixed terminal commands. They do not perform
 setup, start a watcher or change an ask. Existing Asks setup and privacy rules
 above still apply.
 
+Quotas shows every account in the dashboard's compact layout, with each
+account's long and interactive sessions behind a one-line count. When you
+share the same subscriptions across several machines, list the others in
+`[fleet]`; Quotas then shows their sessions too, on the account with the same
+provider and email (or the same account id, when no email is known):
+
+```toml
+[fleet]
+hosts = ["workstation", "me@laptop.lan"]   # ssh destinations: ~/.ssh/config aliases work
+# aiq = "~/.local/bin/aiq"                 # aiq's path there, if not the default
+```
+
+While a Quotas page is open, the daemon runs `ssh <host> ~/.local/bin/aiq
+leases --json` on each host once a minute, and stops ten minutes after the
+last read. ssh runs without prompts (`BatchMode`), a terminal, or agent or port
+forwarding, so a host has to accept your key without a passphrase prompt; with
+the daemon under launchd or systemd, that means a key that does not need the
+agent, or an agent the service can reach. A host that does not answer is
+named at the top of Quotas, its last answer stays on screen marked with its
+age, and the error is under Technical details. Each host needs an aiq new
+enough to have `aiq leases`. The reply lists only live long and interactive
+sessions: account, provider and email, mode, pane or pid, workspace or
+directory, and the session's why line. It never includes launch arguments,
+prompts, transcripts or credentials. Nothing listens on any machine.
+
 Resume, bare resume, auto resume and long auto resume are also copy controls.
 Read-command buttons copy full-ID `aiq convo` commands, with `--follow` offered
 for Claude and Codex.
@@ -1406,6 +1431,9 @@ tmux_prefix = "aiq"
 
 [ui]
 navigator = false              # optional local browser navigator; restart daemon after changing
+
+[fleet]
+hosts = []                      # other machines whose sessions Quotas shows, over ssh (see the navigator)
 
 [updates]
 enabled = true                  # keep npm-installed codex/claude current

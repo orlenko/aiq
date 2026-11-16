@@ -1,4 +1,4 @@
-// Pure admission of a GET /api/nav/quotas document (schema 1): no reader, DOM,
+// Pure admission of a GET /api/nav/quotas document (schema 2): no reader, DOM,
 // defaults or inference. null stays null (unknown); it never becomes zero.
 const fail = () => { throw new TypeError("could not capture quota snapshot"); };
 const require = value => { if (!value) fail(); };
@@ -29,14 +29,15 @@ const login = {has_credential:"bool", cli:"str", cli_identity:"str", cli_mismatc
 const extra = {currency:"str", balance_minor:"int?", used_minor:"int", limit_minor:"int", limit_reached:"bool", note:"str"};
 const win = {key:"str", label:"str", kind:"str", scope:"str", binding:"bool", used_pct:"num?", resets_at:"time?",
   window_seconds:"uint", source:"str", observed_at:"time?"};
-const lease = {mode:"str", drain:"str", depth:"uint", pane:"str", pid:"uint", workspace:"str", cwd:"str", why:"str"};
+const lease = {mode:"str", drain:"str", depth:"uint", pane:"str", pid:"uint", workspace:"str", cwd:"str", why:"str", machine:"str"};
+const machine = {name:"str", here:"bool", status:"str", seen_at:"time?", error:"str", sessions:"uint", unmatched:"uint"};
 const account = {id:"str", provider:"str", plan:"str", label:"str", identity:"str", enabled:"bool", login,
   eligible:"bool", ineligible:"str", exhausted:"bool", reason:"str", cooldown_until:"time?",
   rank:"uint", score:"num?", rung:"uint", terms:["str"], reset_credits:"uint", reset_credit_expires_at:"time?",
   extra_usage:{nullable:extra}, poll_error:"str", observed_at:"time?", windows:[win], leases:[lease]};
 const rank = {id:"str", score:"num?", rung:"uint", eligible:"bool", reason:"str", terms:["str"]};
 const ranking = {key:"str", entries:[rank]};
-const document = {schema:"uint", generated_at:"time?", hostname:"str", poll, model_scope:[scope], accounts:[account], rankings:[ranking]};
+const document = {schema:"uint", generated_at:"time?", hostname:"str", poll, model_scope:[scope], accounts:[account], rankings:[ranking], machines:[machine]};
 
 function capture(value, schema, budget, rows = false) {
   if (Array.isArray(schema)) {
@@ -79,6 +80,7 @@ function freeze(value) {
 }
 const clis = new Set(["in", "out", "unreadable", "unknown"]);
 const modes = new Set(["interactive", "worker"]);
+const statuses = new Set(["ok", "error", "pending"]);
 
 // quotaSnapshot admits data, the {data} of a quotas read, within the page's
 // limits, and returns a frozen model. Accounts keep the server's order (by
@@ -89,7 +91,7 @@ export function quotaSnapshot(data, limits) {
   try {
     const budget = credits(limits);
     const d = capture(data, document, budget);
-    require(d.schema === 1);
+    require(d.schema === 2);
     const providers = [], byProvider = new Map();
     for (const a of d.accounts) {
       require(a.id !== "" && a.provider !== "" && clis.has(a.login.cli));
@@ -115,7 +117,7 @@ export function quotaSnapshot(data, limits) {
             used: w.used_pct, remaining: w.used_pct === null ? null : Math.max(0, 100 - w.used_pct),
             resetsAt: w.resets_at, windowSeconds: w.window_seconds, source: w.source, observedAt: w.observed_at};
         }),
-        leases: a.leases.map(l => ({mode: l.mode, drain: l.drain, depth: l.depth, pane: l.pane, pid: l.pid, workspace: l.workspace, cwd: l.cwd, why: l.why})),
+        leases: a.leases.map(l => ({mode: l.mode, drain: l.drain, depth: l.depth, pane: l.pane, pid: l.pid, workspace: l.workspace, cwd: l.cwd, why: l.why, machine: l.machine})),
       });
     }
     let previous = "";
@@ -126,7 +128,16 @@ export function quotaSnapshot(data, limits) {
       return {key: r.key, provider: r.key.slice(0, at), mode: r.key.slice(at + 1),
         entries: r.entries.map(e => ({id: e.id, score: e.score, rung: e.rung, eligible: e.eligible, reason: e.reason, terms: e.terms}))};
     });
-    return freeze({generatedAt: d.generated_at, hostname: d.hostname,
+    // This machine first, exactly once, then other machines by distinct name.
+    const names = new Set();
+    const machines = d.machines.map((m, i) => {
+      require(statuses.has(m.status) && m.here === (i === 0) && (m.here ? m.name === "" : m.name !== "" && !names.has(m.name)));
+      names.add(m.name);
+      return {name: m.name, here: m.here, status: m.status, seenAt: m.seen_at, error: m.error, sessions: m.sessions, unmatched: m.unmatched};
+    });
+    require(machines.length > 0);
+    for (const group of providers) for (const a of group.accounts) for (const l of a.leases) require(l.machine === "" || names.has(l.machine));
+    return freeze({generatedAt: d.generated_at, hostname: d.hostname, machines,
       poll: {lastAt: d.poll.last_at, intervalS: d.poll.interval_s, polling: d.poll.polling, error: d.poll.error},
       modelScope: d.model_scope.map(s => ({provider: s.provider, scope: s.scope})), providers, rankings});
   } catch { fail(); }

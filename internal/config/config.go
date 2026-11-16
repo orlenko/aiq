@@ -256,6 +256,53 @@ type UI struct {
 	Navigator bool `toml:"navigator,omitempty"`
 }
 
+// Fleet lists the owner's other machines, so the Quotas page can show the long
+// and interactive sessions running there on the same subscriptions. The
+// daemon asks each one over ssh, with the owner's keys and without prompts,
+// while the Quotas page is open. Empty asks nobody.
+type Fleet struct {
+	// Hosts are ssh destinations: a Host alias from ~/.ssh/config, a host
+	// name, or user@host.
+	Hosts []string `toml:"hosts,omitempty"`
+	// Aiq is aiq's path on those machines, as their login shell finds it from
+	// the home directory. Empty means ~/.local/bin/aiq.
+	Aiq string `toml:"aiq,omitempty"`
+}
+
+// DefaultFleetAiq is where install-or-update.sh puts aiq.
+const DefaultFleetAiq = "~/.local/bin/aiq"
+
+// AiqPath is Aiq, or the default. Defaults are applied here rather than in
+// Load, so saving the config never writes a [fleet] section nobody set.
+func (f Fleet) AiqPath() string {
+	if f.Aiq == "" {
+		return DefaultFleetAiq
+	}
+	return f.Aiq
+}
+
+var (
+	fleetHostPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,252}$`)
+	fleetAiqPattern  = regexp.MustCompile(`^[A-Za-z0-9_.~/+-]{1,255}$`)
+)
+
+// ValidFleetHost accepts an ssh destination that ssh cannot read as an option
+// and a remote shell cannot read as anything but one word.
+func ValidFleetHost(h string) error {
+	if !fleetHostPattern.MatchString(h) {
+		return fmt.Errorf("fleet.hosts: %q is not an ssh host name, alias or user@host", h)
+	}
+	return nil
+}
+
+// ValidFleetAiq accepts a path the remote shell runs as one plain word.
+func ValidFleetAiq(p string) error {
+	if !fleetAiqPattern.MatchString(p) || strings.HasPrefix(p, "-") {
+		return fmt.Errorf("fleet.aiq: %q must be a plain path such as %s", p, DefaultFleetAiq)
+	}
+	return nil
+}
+
 type Telemetry struct {
 	ClaudeStatusline bool `toml:"claude_statusline"`
 	// ClaudeStatuslineInstalled records that the multiplexer was installed
@@ -290,6 +337,7 @@ type Config struct {
 	Telemetry Telemetry `toml:"telemetry"`
 	Updates   Updates   `toml:"updates"`
 	UI        UI        `toml:"ui,omitempty"`
+	Fleet     Fleet     `toml:"fleet,omitempty"`
 	// Launchers are named programs that start a CLI in an environment of
 	// their own, keyed by the name typed after `aiq`.
 	Launchers map[string]Launcher `toml:"launchers,omitempty"`
@@ -410,6 +458,21 @@ func Load() (*Config, error) {
 	for _, name := range c.Selection.LastResort {
 		if !KnownProvider(name) {
 			return nil, fmt.Errorf("%s: selection.last_resort: unknown provider %q; choose from %s", paths.ConfigFile(), name, ProviderList(", "))
+		}
+	}
+	seen := map[string]bool{}
+	for _, h := range c.Fleet.Hosts {
+		if err := ValidFleetHost(h); err != nil {
+			return nil, fmt.Errorf("%s: %w", paths.ConfigFile(), err)
+		}
+		if seen[h] {
+			return nil, fmt.Errorf("%s: fleet.hosts: %q is listed twice", paths.ConfigFile(), h)
+		}
+		seen[h] = true
+	}
+	if c.Fleet.Aiq != "" {
+		if err := ValidFleetAiq(c.Fleet.Aiq); err != nil {
+			return nil, fmt.Errorf("%s: %w", paths.ConfigFile(), err)
 		}
 	}
 	if c.Selection.MinHours <= 0 {
