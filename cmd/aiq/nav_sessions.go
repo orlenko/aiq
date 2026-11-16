@@ -30,7 +30,7 @@ type navSessionsDeps struct {
 	source      transcript.Discovery
 	summary     func(context.Context, string) (transcript.Summary, error)
 	listContext func(context.Context) (context.Context, context.CancelFunc)
-	activity    func(context.Context, navListQuery, []transcript.Summary, *navListRun) ([]navSessionActivity, navActivitySummary, error)
+	activity    func(context.Context, navListQuery, []transcript.Summary, *navListRun) (navListExtras, error)
 }
 
 type navSessionsHandler struct {
@@ -270,10 +270,11 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 	result.Rows, eligible = nil, nil
 	body := navSessionsBody{Dir: q.dir, RootsSearched: append([]string{}, h.roots...), Partial: partial,
 		Scanned: result.Scanned, Of: result.Of, UnreadableCount: len(result.Unreadable), Sessions: make([]navSessionRow, 0, len(selected))}
-	var activity []navSessionActivity
+	var extras navListExtras
 	if h.deps.activity != nil {
 		var err error
-		activity, body.Activity, err = h.deps.activity(parent, q, selected, run)
+		extras, err = h.deps.activity(parent, q, selected, run)
+		body.Activity = extras.summary
 		if err != nil {
 			if errors.Is(err, errNavAuxTooLarge) {
 				return navListError(503, "list_too_large")
@@ -283,17 +284,22 @@ func (h *navSessionsHandler) prepare(req *http.Request, release *func()) (out na
 			}
 			return navListError(500, "internal_error")
 		}
-		if len(activity) != len(selected) {
+		if len(extras.activity) != len(selected) || len(extras.workspaces) != len(selected) || len(extras.asks) != len(selected) {
 			return navListError(500, "internal_error")
 		}
 	}
 	for i, row := range selected {
 		dto := navSessionDTO(row)
-		if activity != nil {
-			dto.Activity = activity[i]
+		if extras.activity != nil {
+			dto.Activity = extras.activity[i]
+			dto.Workspace, dto.WorkspaceKnown = extras.workspaces[i].path, extras.workspaces[i].known
+			dto.PendingAsks, dto.PendingAsksKnown = extras.asks[i].count, extras.asks[i].known
 		}
 		body.Sessions = append(body.Sessions, dto)
 	}
+	// Workspace-only rows follow the conversations, under their own row cap.
+	body.Sessions = append(body.Sessions, extras.rows...)
+	body.Partial = body.Partial || extras.partial
 	clear(selected)
 	if h.limits.arrayEntries > 0 && int64(len(body.RootsSearched))+int64(len(body.Sessions)) > h.limits.arrayEntries {
 		return navListError(http.StatusServiceUnavailable, "list_too_large")
@@ -324,6 +330,9 @@ type navSessionsBody struct {
 }
 
 type navSessionRow struct {
+	// Kind is "session" for a conversation, or "workspace" for a recorded long
+	// workspace with no listed conversation: such a row has no ID or commands.
+	Kind     string             `json:"kind"`
 	Provider string             `json:"provider"`
 	ID       string             `json:"id"`
 	Cwd      string             `json:"cwd"`
@@ -339,6 +348,14 @@ type navSessionRow struct {
 	Bypass   bool               `json:"bypass"`
 	Commands []navListCommand   `json:"commands"`
 	Activity navSessionActivity `json:"activity"`
+	// Workspace is the managed workspace root, known only from a lease mapping
+	// or an exact recorded long workspace path; never derived from a cwd.
+	Workspace      string `json:"workspace"`
+	WorkspaceKnown bool   `json:"workspace_known"`
+	// PendingAsks counts open Asks raised by this conversation; on a workspace
+	// row, those raised in it by conversations not in this list.
+	PendingAsks      int  `json:"pending_asks"`
+	PendingAsksKnown bool `json:"pending_asks_known"`
 }
 
 type navListCommand struct {
@@ -354,7 +371,7 @@ func navSessionDTO(s transcript.Summary) navSessionRow {
 			commands = append(commands, navListCommand{Verb: "convo_follow"})
 		}
 	}
-	return navSessionRow{Provider: s.Provider, ID: s.ID, Cwd: s.Cwd, Label: s.Label, Title: s.Title, Model: s.Model, Branch: s.Branch,
+	return navSessionRow{Kind: "session", Provider: s.Provider, ID: s.ID, Cwd: s.Cwd, Label: s.Label, Title: s.Title, Model: s.Model, Branch: s.Branch,
 		Started: s.Started.UTC().Format(time.RFC3339Nano), Updated: s.Updated.UTC().Format(time.RFC3339Nano),
 		Turns: s.Turns, Tools: s.Tools, Worker: s.Worker, Bypass: s.Bypass, Commands: commands, Activity: navSessionActivity{Live: "unknown"}}
 }

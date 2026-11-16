@@ -1,4 +1,5 @@
 import {captureSessions, captureDetail, captureDetailResponse, captureState} from "./controller_data.js";
+import {createSessionGrid,sessionGridLocalTime} from "./session_grid.js";
 import {createConversationFeed} from "./feed.js";
 import {directory,encodeForm} from "./auth_codec.js";
 
@@ -54,6 +55,8 @@ export function createSessionController(document, options) {
   const selectedCallback=Object.getOwnPropertyDescriptor(options ?? {},"onSelection");
   let onSelection=selectedCallback?.value ?? (()=>{});
   if (selectedCallback && (!Object.hasOwn(selectedCallback,"value") || typeof selectedCallback.value!=="function")) fail();
+  const workspaceCallback=Object.getOwnPropertyDescriptor(options??{},"onWorkspace"),onWorkspace=workspaceCallback?.value??null;
+  if(workspaceCallback&&(!Object.hasOwn(workspaceCallback,"value")||typeof onWorkspace!=="function"))fail();
   const readyCallback=Object.getOwnPropertyDescriptor(options??{},"onDetailReady");
   let onDetailReady=readyCallback?.value??(()=>{});
   if(readyCallback&&(!Object.hasOwn(readyCallback,"value")||typeof onDetailReady!=="function"))fail();
@@ -89,6 +92,7 @@ export function createSessionController(document, options) {
   root.setAttribute("data-reading",String(conversationOnly));root.setAttribute("data-conversation-only",String(conversationOnly));
   root.append(listPane.root, detailPane.root);
   let mounted = false, disposed = false, frozen=false, activeScope = null, listQuery = null, selection = null, listView = null;
+  let filterText="",filterLiveOnly=false;
   const current = {list:null, detail:null}, serial = {list:0n, detail:0n}, removes = [];
   let railVisible=!(window.matchMedia?.("(max-width: 48rem)")?.matches??false);
   const railToggle=node("button","nav-session-rail-toggle","Hide sessions");railToggle.type="button";
@@ -170,7 +174,7 @@ export function createSessionController(document, options) {
   function markers() {
     for (const item of listView?.rows || []) {
       if (!item.button) continue;
-      if (selection?.row === item) item.button.setAttribute("aria-current", "true");
+      if (selection?.row === item || selection?.scope.provider===item.value?.provider&&selection?.scope.id===item.value?.id) item.button.setAttribute("aria-current", "true");
       else item.button.removeAttribute("aria-current");
     }
   }
@@ -251,8 +255,11 @@ export function createSessionController(document, options) {
   }
   function listReceived(op,data){
     if(!alive(op)||frozen)return;
-    if(!data.partial||data.sessions.length){listCommit(op,data);return;}
-    // An interrupted empty scan cannot establish that known sessions vanished.
+    const hasConversation=data.sessions.some(row=>row.kind!=="workspace");
+    if(!data.partial||hasConversation){listCommit(op,data);return;}
+    // Metadata-only workspace rows do not establish a completed transcript scan.
+    // Show them on a cold start while retaining a useful prior conversation list.
+    if(data.sessions.length&&!listView?.data.sessions.some(row=>row.kind!=="workspace"))listCommit(op,data);
     // Only live unscanned responses get bounded retries; cache seeds never do.
     const retry=data.scanned===0&&(op.emptyRetries??0)<2&&!document.hidden&&root.isConnected;
     incompleteList(op,retry);
@@ -278,40 +285,30 @@ export function createSessionController(document, options) {
       diagnostics.append(diagnosticTitle,
         node("p", "nav-controller-facts", op.query.all?"All directories":`Directory: ${data.dir}`),
         node("p", "nav-controller-facts", `Scanned ${data.scanned} of ${data.of}; unreadable ${data.unreadable_count}; partial: ${data.partial ? "yes" : "no"}`));
-      view.root.append(node("p","nav-session-count",`${data.sessions.length} ${data.sessions.length===1?"session":"sessions"}${data.partial?" · partial results":""}`),diagnostics);
+      view.root.append(diagnostics);
       if(data.activity){
         const value=data.activity,date=new Date(value.observed.ms),stamp=value.observed.known&&Number.isFinite(date.getTime())?date.toLocaleString():"unknown time";
         diagnostics.append(node("p","nav-controller-facts",`Activity snapshot: ${stamp}. Refresh to check again.`),node("p","nav-controller-elsewhere",`${value.known?"":"At least "}${value.live} verified managed sessions · ${value.elsewhere} elsewhere${value.known?"":" · other managed state unknown"}${value.claude_open_known?"":" · Claude registrations incomplete"}`));
       }
       for (const rootPath of data.roots_searched) diagnostics.append(node("p", "nav-controller-facts", `Root searched: ${rootPath}`));
-      const rows = node("ul", "nav-controller-rows"); view.root.append(rows);
-      for (const value of data.sessions) {
-        const li = node("li", "nav-controller-row"), item = {button:null}; view.rows.push(item); rows.append(li);
-        const activity=value.activity,live=activity?.live??"unknown";li.setAttribute("data-nav-live",live);
-        const labels={unknown:"Live state unknown",recent:"Recent activity (not verified live)",open:`Registered open in pid ${activity?.pid??0} (process exists; session not verified)`,live:"Verified running · aiq long",ended:"Managed session verified ended"};
-        const brief={unknown:"◌ Unknown",recent:"◔ Recent write",open:"○ Open, registered",live:"● Live",ended:"Ended, verified"};
-        const activityLabel=node("p","nav-controller-activity",brief[live]??brief.unknown);activityLabel.title=labels[live]??labels.unknown;li.append(activityLabel);
-        const label = `${value.provider} · ${value.label} · ${value.id}`;
-        if (value.selectable) {
-          item.button = node("button", "nav-controller-select", value.label||value.title||"Untitled conversation"); item.button.type = "button";item.button.title=label;li.append(item.button);
-          const selectedScope = {provider:value.provider, id:value.id};
-          const click = () => { if (mounted && !disposed && listView === view) select(selectedScope, {item, view}); };
-          item.button.addEventListener("click", click);
-          view.removes.push(() => item.button.removeEventListener("click", click));
-        } else li.append(node("p", "nav-controller-unavailable", `${label} · Unavailable for selection`));
-        const summary=node("div","nav-session-summary"),project=node("span","nav-session-project",value.cwd?value.cwd.split("/").filter(Boolean).at(-1)||"/":"Unknown project"),agent=node("span","nav-session-agent",`${value.provider}${value.model?" · "+value.model:""}`),size=node("span","nav-session-size",`${value.turns} ${value.turns===1?"turn":"turns"}`),updated=node("span","nav-session-updated",value.updated);
-        project.title=value.cwd||"Directory unknown";updated.title=value.updated;summary.append(project,agent,size,updated);li.append(summary);
-        const details=node("details","nav-session-commands"),toggle=node("summary","","Copy commands and details"),panel=node("div","nav-session-command-panel");
-        details.append(toggle,panel);li.append(details);
-        panel.append(node("p","nav-controller-facts",labels[live]??labels.unknown));
-        commandControls(panel,value,()=>mounted&&!disposed&&listView===view,view.removes);
-        const drainLabels={"":"no wrap-up recorded",requested:"wrapping up · moves at turn end",draining:"wrapping up · moves at turn end",ready:"wrap-up ready",waiting:"waiting for an account"};
-        if(activity?.managed)panel.append(node("p","nav-controller-facts",`Recorded account: ${activity.account} · launcher: ${activity.launcher||"bare"} · terminal: ${activity.pane} · ${Object.hasOwn(drainLabels,activity.drain)?drainLabels[activity.drain]:"drain state unknown"}${activity.drain_manual?" · requested by you":""}`));
-        if(activity?.workspace){const link=node("a","nav-controller-workspace",activity.continued?"Current session in workspace →":"Workspace history and terminal controls →");link.href="/long?dir="+encodeForm(activity.workspace);link.rel="noreferrer";panel.append(link);}
-        panel.append(node("p", "nav-controller-facts", `${value.provider} · ${value.id}`),node("p", "nav-controller-facts", `Title: ${value.title} · Directory: ${value.cwd||"Unknown"}`),
-          node("p", "nav-controller-facts", `Model: ${value.model} · Branch: ${value.branch} · Updated: ${value.updated}`),
-          node("p", "nav-controller-facts", `Turns: ${value.turns} · Tools: ${value.tools} · Worker: ${value.worker ? "yes" : "no"} · Bypass: ${value.bypass ? "yes" : "no"}`));
-      }
+      view.grid=createSessionGrid(document,{data,state:listView?.grid.viewState()??op.gridState,
+        isCurrent:()=>mounted&&!disposed&&listView===view,
+        announce:value=>{if(mounted&&!disposed&&listView===view)try{announce(value);}catch{}},
+        onWorkspace,onSelect:(value,item)=>select({provider:value.provider,id:value.id},{item,view}),
+        renderDetails:(parent,value)=>{
+          const activity=value.activity,live=activity?.live??"unknown",labels={unknown:"Live state unknown",recent:"Recent activity (not verified live)",open:`Registered open in pid ${activity?.pid??0} (process exists; session not verified)`,live:"Verified running · aiq long",ended:"Managed session verified ended"};
+          const details=node("details","nav-session-commands"),toggle=node("summary","","Details"),panel=node("div","nav-session-command-panel");
+          toggle.title="Copy commands and session details";details.append(toggle,panel);parent.append(details);
+          panel.append(node("p","nav-controller-facts",labels[live]??labels.unknown));
+          commandControls(panel,value,()=>mounted&&!disposed&&listView===view,view.removes);
+          const drainLabels={"":"no wrap-up recorded",requested:"wrapping up · moves at turn end",draining:"wrapping up · moves at turn end",ready:"wrap-up ready",waiting:"waiting for an account"};
+          if(activity?.managed)panel.append(node("p","nav-controller-facts",`Recorded account: ${activity.account} · launcher: ${activity.launcher||"bare"} · terminal: ${activity.pane} · ${Object.hasOwn(drainLabels,activity.drain)?drainLabels[activity.drain]:"drain state unknown"}${activity.drain_manual?" · requested by you":""}`));
+          panel.append(node("p","nav-controller-facts",`${value.provider} · ${value.id}`),node("p","nav-controller-facts",`Title: ${value.title} · Directory: ${value.cwd||"Unknown"}`),
+            node("p","nav-controller-facts",`Model: ${value.model} · Branch: ${value.branch} · Updated: ${sessionGridLocalTime(value.updated)}`),
+            node("p","nav-controller-facts",`Turns: ${value.turns} · Tools: ${value.tools} · Worker: ${value.worker?"yes":"no"} · Bypass: ${value.bypass?"yes":"no"}`));
+        }});
+      view.rows=view.grid.rows;view.removes.push(()=>view.grid.teardown());view.grid.toolbar.append(diagnostics);view.root.append(view.grid.root);
+      view.grid.setFilter(filterText,filterLiveOnly);
       if (!alive(op)) return;
       clearList(); if (!alive(op)) return;
       listView = view; listPane.content.append(view.root); markers();
@@ -470,7 +467,7 @@ export function createSessionController(document, options) {
   }
   function snapshotSessions(){
     if(!mounted||disposed||!listView)return null;
-    return {query:{...listView.query},data:captureSessions(listView.data,listView.query.canonicalDir,limits,listView.query.all)};
+    return {query:{...listView.query},data:captureSessions(listView.data,listView.query.canonicalDir,limits,listView.query.all),gridState:listView.grid.viewState(),filter:filterText};
   }
   function loadSessions(value, options={}) {
     if (!mounted || disposed || frozen) return;
@@ -496,7 +493,7 @@ export function createSessionController(document, options) {
       let cached=null;
       try{
         const snapshot=field(options,"snapshot"),saved=field(snapshot,"query");
-        if(["dir","canonicalDir","workers","all"].every(key=>field(saved,key)===op.query[key]))cached=captureSessions(field(snapshot,"data"),op.query.canonicalDir,limits,op.query.all);
+        if(["dir","canonicalDir","workers","all"].every(key=>field(saved,key)===op.query[key])){cached=captureSessions(field(snapshot,"data"),op.query.canonicalDir,limits,op.query.all);op.gridState=Object.getOwnPropertyDescriptor(snapshot,"gridState")?.value;const filter=Object.getOwnPropertyDescriptor(snapshot,"filter")?.value;if(typeof filter==="string"&&filter.length<=4096)filterText=filter;}
       }catch{/* A missing, stale or malformed cache cannot block the live read. */}
       if(cached&&alive(op))listCommit(op,cached);
     }
@@ -584,5 +581,5 @@ export function createSessionController(document, options) {
       return true;
     } catch { teardown(); return false; }
   }
-  return {fragment, mount, loadSessions, snapshotSessions, setMarkup:value=>{if(typeof value!=="boolean"||disposed)return false;detailQuery.markup=value;if(selection)select({...selection.scope});return true;},selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
+  return {fragment, mount, loadSessions, snapshotSessions, setFilter:(value,live=false)=>{if(typeof value!=="string"||typeof live!=="boolean"||disposed)return 0;filterText=value;filterLiveOnly=live;return listView?.grid.setFilter(value,live)??0;}, setMarkup:value=>{if(typeof value!=="boolean"||disposed)return false;detailQuery.markup=value;if(selection)select({...selection.scope});return true;},selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
 }

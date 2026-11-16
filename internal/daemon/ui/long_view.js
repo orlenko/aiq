@@ -22,7 +22,7 @@ export function createLongView(document,options){
   actions.setAttribute("aria-label","Terminal commands");moves.setAttribute("role","group");moves.setAttribute("aria-label","Moves work");
   moves.append(node("p","","Moves work · moves the session to another account at its next turn end and archives its note."),drain);
   actions.append(actionTarget,attach,moves,actionState);actions.hidden=!dir;root.insertBefore(actions,notice);
-  const allWorkspaces=button("All workspaces","nav-long-all");allWorkspaces.hidden=!dir;root.insertBefore(allWorkspaces,meta);
+  const allWorkspaces=button("Back to sessions","nav-long-all");allWorkspaces.hidden=!dir;root.insertBefore(allWorkspaces,meta);
   let mounted=false,disposed=false,flight=null,timer=null,wantFull=false,metadata=null,fullMetadata=null,controller=null,scope=null,
     frozen=false,parkedAuto=false,pending=null,leaseKey=null,account=null,version=0,fullKey=null,lastSuccess=null,displayedTarget=null,copyBusy=false;
   const removes=[],linkRemoves={meta:[],history:[]};let deferredHistory=null,deferredMeta=null;

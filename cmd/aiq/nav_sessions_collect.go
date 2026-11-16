@@ -96,6 +96,18 @@ func (r *navListRun) reserve(overhead int64, fields ...string) bool {
 	return fits
 }
 
+// tryReserve admits n bytes when they fit and otherwise refuses without
+// latching a resource failure, for optional additions the list can go without.
+func (r *navListRun) tryReserve(n int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state.resource || r.state.internal || n < 0 || n > r.limit-r.used {
+		return false
+	}
+	r.used += n
+	return true
+}
+
 func (r *navListRun) Candidates(ctx context.Context, dir string) ([]transcript.Candidate, error) {
 	rows, err := r.Discovery.Candidates(ctx, dir)
 	r.discoveryResult(ctx, err)

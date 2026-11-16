@@ -62,7 +62,7 @@ function fixture(extra={}) {
     clean(){controller.teardown();controller.teardown();fixtures.delete(result);assert.equal(document.count()+window.count()+window.visualViewport.count()+document.fonts.count()+frames.size+timers.size+nodes.reduce((n,node)=>n+node.count(),0),0);assert.ok(observers.every(o=>o.disconnected));}};
   fixtures.add(result);return result;
 }
-function rows(f){return find(f,n=>n.tagName==='button'&&!['Refresh sessions','Retry sessions','Refresh conversation','Copy message'].includes(n.textContent));}
+function rows(f){return find(f,n=>has(n,'nav-controller-select'));}
 function painted(f){return find(f,n=>has(n,'nav-md-line')).map(n=>n.textContent);}
 
 function longValue(name='A',full=true,extra={}){
@@ -437,7 +437,7 @@ test('read chips copy fixed text only after activation and omit unsupported IDs 
   f.listCalls[0].resolve(sessions('/fixture/A',values));await tick();assert.deepEqual(f.copies,[]);
   const buttons=find(f,n=>has(n,'nav-command-copy'));assert.equal(buttons.length,3);
   for(const button of buttons){button.click();await tick();}
-  assert.deepEqual(f.copies,[`aiq convo ${ids.A}`,`aiq convo ${ids.A} --follow`,`aiq convo ${ids.B}`]);
+  assert.deepEqual([...f.copies].sort(),[`aiq convo ${ids.A}`,`aiq convo ${ids.A} --follow`,`aiq convo ${ids.B}`].sort());
   assert.ok(!f.copies.some(s=>s.includes('invented')||s.includes('untrusted')));f.clean();
 });
 
@@ -515,9 +515,9 @@ test('session activity labels keep unknown and recent distinct and expose only a
  assert.ok(f.document.body.textContent.includes('Verified running · aiq long'));assert.ok(f.document.body.textContent.includes('Recent activity (not verified live)'));
  assert.ok(f.document.body.textContent.includes('At least 1 verified managed sessions · 1 elsewhere · other managed state unknown'));
  assert.ok(f.document.body.textContent.includes('waiting for an account · requested by you'));
- byText(f,'Copy recorded launcher resume command').click();await tick();assert.equal(f.copies.at(-1),`aiq resume --launcher fixture ${ids.A}`);
+ const managedRow=find(f,n=>has(n,'nav-controller-row')&&n.textContent.includes(ids.A))[0];walk(managedRow).find(n=>n.tagName==='button'&&n.textContent==='Copy recorded launcher resume command').click();await tick();assert.equal(f.copies.at(-1),`aiq resume --launcher fixture ${ids.A}`);
  for(const name of ['','-flag','fixture;echo','fixture\n','X',{},null])assert.equal(navigatorLauncherResumeCommand('claude',ids.A,name),null);
- assert.equal(find(f,n=>has(n,'nav-controller-workspace'))[0].href,'/long?dir=%2Ffixture%2Fwork+space');f.clean();
+ assert.equal(find(f,n=>has(n,'nav-grid-workspace')&&n.href.startsWith('/long?'))[0].href,'/long?dir=%2Ffixture%2Fwork+space');f.clean();
 });
 
 
@@ -648,4 +648,51 @@ test('cache seeds and HTTP errors never start automatic retries; parsed partial 
 });
 test('incomplete-status callback reentry cannot schedule a retired retry',async()=>{
  let f;f=fixture({announce:text=>{if(text.startsWith('Session scan incomplete'))f.controller.loadSessions(query('/fixture/B'));}});f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(coldSessions());await tick();assert.equal(f.listCalls.length,2);assert.equal(f.listCalls[1].q.dir,'/fixture/B');assert.equal(f.timers.size,0);f.clean();
+});
+
+test('unified grid sorts numeric counts and local times with unknowns last in both directions',async()=>{
+ const f=fixture();f.mount();f.controller.loadSessions(query());
+ f.listCalls[0].resolve(sessions('/fixture/A',[
+  row('A',{updated:'2026-11-01T12:00:00Z',pending_asks:12,pending_asks_known:true}),
+  row('B',{updated:'2026-11-02T12:00:00Z',pending_asks:2,pending_asks_known:true}),
+  row('C',{updated:'0001-01-01T00:00:00Z',pending_asks:0,pending_asks_known:false})]));await tick();
+ const ordered=()=>rows(f).map(n=>n.textContent),sort=key=>find(f,n=>has(n,'nav-grid-col-'+key)&&n.tagName==='th')[0];
+ assert.deepEqual(ordered(),['row B','row A','row C']);assert.equal(sort('updated').getAttribute('aria-sort'),'descending');
+ walk(sort('asks')).find(n=>n.tagName==='button').click();assert.deepEqual(ordered(),['row A','row B','row C']);
+ walk(sort('asks')).find(n=>n.tagName==='button').click();assert.deepEqual(ordered(),['row B','row A','row C']);
+ assert.equal(sort('asks').getAttribute('aria-sort'),'ascending');assert(!f.document.body.textContent.includes('2026-11-01T12:00:00Z'));
+ f.clean();
+});
+test('header filters compose with global search and survive refresh and a same-scope cache seed',async()=>{
+ const f=fixture();f.mount();f.controller.loadSessions(query());const data=sessions('/fixture/A',[
+  row('A',{provider:'claude',cwd:'/fixture/atlas',pending_asks:2,pending_asks_known:true}),row('B',{provider:'codex',cwd:'/fixture/atlas',pending_asks:0,pending_asks_known:true}),row('C',{provider:'claude',cwd:'/fixture/pulse'})]);
+ f.listCalls[0].resolve(data);await tick();
+ const input=key=>find(f,n=>n.getAttribute('aria-label')===`Filter ${key}`)[0];
+ const visible=()=>find(f,n=>has(n,'nav-controller-row')&&!n.hidden).map(n=>walk(n).find(c=>has(c,'nav-controller-select')).textContent);
+ input('provider').value='claude';input('provider').emit('change');input('workspace / directory').value='atlas';input('workspace / directory').emit('input');
+ assert.deepEqual(visible(),['row A']);assert.equal(f.controller.setFilter('pulse'),0);assert.deepEqual(visible(),[]);
+ f.controller.setFilter('row');assert.deepEqual(visible(),['row A']);f.controller.refresh();f.listCalls[1].resolve(data);await tick();assert.deepEqual(visible(),['row A']);
+ const snapshot=f.controller.snapshotSessions();f.clean();const next=fixture();next.mount();next.controller.loadSessions(query(),{snapshot});
+ assert.equal(snapshot.filter,'row');assert.equal(find(next,n=>n.getAttribute('aria-label')==='Filter provider')[0].value,'claude');assert.equal(next.controller.snapshotSessions().filter,'row');assert.equal(find(next,n=>has(n,'nav-controller-row')&&!n.hidden).length,1);next.clean();
+});
+test('recorded workspace rows remain navigable without offering invalid conversation or copy controls',async()=>{
+ const opened=[],f=fixture({readCommands:true,resumeCommands:true,onWorkspace:(...args)=>opened.push(args)});f.mount();f.controller.loadSessions(query());
+ f.listCalls[0].resolve(sessions('/fixture/A',[row('A'),row('B',{kind:'workspace',id:'',workspace:'/fixture/orphan',workspace_known:true,label:'',title:'',pending_asks:3,pending_asks_known:true})]));await tick();
+ assert.equal(rows(f).length,1);const orphan=find(f,n=>has(n,'nav-controller-row')&&n.textContent.includes('No listed conversation'))[0];assert(orphan);assert.equal(walk(orphan).filter(n=>has(n,'nav-command-copy')).length,0);
+ walk(orphan).find(n=>has(n,'nav-grid-workspace')).emit('click',{button:0,preventDefault(){}});assert.deepEqual(opened,[['/fixture/orphan',true]]);assert.equal(f.detailCalls.length,0);f.clean();
+});
+test('grid admission retains honest legacy defaults and rejects invalid workspace shapes before painting',async()=>{
+ const f=fixture();f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(sessions());await tick();const snapshot=f.controller.snapshotSessions();
+ assert.equal(snapshot.data.sessions[0].kind,'session');assert.equal(snapshot.data.sessions[0].pending_asks_known,false);
+ for(const change of [{kind:'other'},{kind:'workspace',id:''},{workspace:'relative',workspace_known:true},{pending_asks:-1},{pending_asks_known:'true'}]){
+  f.controller.refresh();f.listCalls.at(-1).resolve(sessions('/fixture/A',[row('B',change)]));await tick();assert.equal(rows(f)[0].textContent,'row A');assert(f.document.body.textContent.includes('Sessions unavailable; showing previous results.'));
+ }
+ f.clean();
+});
+
+
+test('metadata-only cold snapshots retry transcript discovery and retain prior conversations',async()=>{
+ const f=fixture();f.mount();f.controller.loadSessions(query());const provisional=sessions('/fixture/A',[row('B',{kind:'workspace',id:'',workspace:'/fixture/recorded',label:'',title:''})]);provisional.scanned=0;
+ f.listCalls[0].resolve(provisional);await tick();assert.equal(rows(f).length,0);assert.equal(find(f,n=>has(n,'nav-controller-row')).length,1);assert.equal(f.timers.size,1);
+ f.poll();f.listCalls[1].resolve(sessions());await tick();assert.equal(rows(f)[0].textContent,'row A');f.controller.refresh();f.listCalls[2].resolve(provisional);await tick();assert.equal(rows(f)[0].textContent,'row A');f.clean();
 });
