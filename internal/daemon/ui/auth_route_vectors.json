@@ -30,5 +30,11 @@
  {"route":"/long?all=true","ok":false},
  {"route":"/long?at=123","ok":false},
  {"route":"/long?dir=relative","ok":false},
- {"route":"/long?dir=%2Finvented&history=0","ok":false}
+ {"route":"/long?dir=%2Finvented&history=0","ok":false},
+ {"route":"/quotas","ok":true},
+ {"route":"/quotas?dir=%2Finvented","ok":false},
+ {"route":"/quotas?all=true","ok":false},
+ {"route":"/quotas?all=false","ok":false},
+ {"route":"/quotas?","ok":false},
+ {"route":"/quotas/","ok":false}
 ]

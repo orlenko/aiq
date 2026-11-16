@@ -93,7 +93,7 @@ var (
 		}()
 		s := daemon.New(a.cfg, a.pool, logger)
 		if a.cfg.UI.Navigator {
-			mountProductionNavigator(s)
+			mountProductionNavigator(s, a.cfg)
 		}
 		return s.Run()
 	}

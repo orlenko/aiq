@@ -4,7 +4,7 @@ import {readFileSync} from "node:fs";
 import vm from "node:vm";
 import {rememberBody,signReply,until} from "./auth_test_proof.mjs";
 import {canonical32,credential,encodeForm,fragment,route} from "./auth_codec.js";
-import {createTabSession} from "./auth_session.js";
+import {authBridge,createTabSession} from "./auth_session.js";
 
 const build="invented+0123456789ab",base="http://127.0.0.1:54321",code="A".repeat(43),bearer="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",key="aiq.navigator.v1:"+build;
 const encoder=new TextEncoder();
@@ -35,7 +35,7 @@ test("closed canonical fragment and nested Go-compatible encoding",()=>{
   assert(canonical32(code));assert(!canonical32(code.slice(0,42)+"B"));
 });
 test("shared literal route vectors match the Go page admission",()=>{
-  const rows=JSON.parse(readFileSync(new URL("./auth_route_vectors.json",import.meta.url),"utf8"));assert.equal(rows.length,32);
+  const rows=JSON.parse(readFileSync(new URL("./auth_route_vectors.json",import.meta.url),"utf8"));assert.equal(rows.length,38);
   for(const row of rows){let ok=true;try{route(row.route)}catch{ok=false}assert.equal(ok,row.ok,row.route);}
 });
 test("credential raw grammar refuses substitution, duplicates and BOM",()=>{
@@ -55,6 +55,23 @@ test("directory catalog uses the fixed proof-protected path and Sessions byte al
   const requests=[];const x=setup({fetcher:async(url,options)=>{requests.push({url,options});return options.method==='POST'?reply('{"credential":"'+bearer+'"}'):reply('{"source":"launch metadata","directories":[]}');}});
   assert.equal(await x.session.ready,true);assert.deepEqual(await x.session.directories({}),{data:{source:'launch metadata',directories:[]}});
   assert.equal(requests[1].url,base+'/api/nav/directories');assert.match(requests[1].options.headers.Authorization,/^AiqTab2 /);assert(!requests[1].options.headers.Authorization.includes(bearer));x.session.dispose();
+});
+test("quota reader uses only the fixed empty query and the Sessions byte allowance",async()=>{
+  const requests=[];const x=setup({fetcher:async(url,options)=>{requests.push({url,options});return options.method==='POST'?reply('{"credential":"'+bearer+'"}'):reply('{"schema":1}');}});
+  assert.equal(await x.session.ready,true);assert.deepEqual(await x.session.quotas({}),{data:{schema:1}});
+  assert.equal(requests[1].url,base+'/api/nav/quotas');assert.match(requests[1].options.headers.Authorization,/^AiqTab2 /);
+  for(const query of [{dir:'/A'},{all:true},[],null,Object.defineProperty({},'x',{value:1,enumerable:false})])await assert.rejects(x.session.quotas(query));
+  assert.equal(requests.length,2);x.session.dispose();
+});
+test("auth bridge forwards only the current owner's Forget and a sanitized state",()=>{
+  let owner=true,forgets=0;const session={forget(){forgets++;},snapshot:()=>({kind:"unlocked",message:"Navigator unlocked.",notice:"",token:"INVENTED-SECRET"})};
+  const bridge=authBridge(()=>owner,()=>session);
+  assert.deepEqual(bridge.state(),{kind:"unlocked",message:"Navigator unlocked.",notice:""});assert(Object.isFrozen(bridge.state())&&Object.isFrozen(bridge));
+  bridge.forget();assert.equal(forgets,1);
+  owner=false;bridge.forget();assert.equal(forgets,1);assert.deepEqual(bridge.state(),{kind:"disposed",message:"",notice:""});
+  const throwing=authBridge(()=>{throw Error("invented");},()=>session);throwing.forget();assert.equal(forgets,1);assert.equal(throwing.state().kind,"disposed");
+  assert.equal(authBridge(()=>true,()=>null).state().kind,"disposed");
+  assert.throws(()=>authBridge(null,()=>session));
 });
 test("workspace reader binds only fixed canonical scope and history queries",async()=>{
   const urls=[];const x=setup({fetcher:async(url,options)=>{urls.push(url);return options.method==='POST'?reply('{"credential":"'+bearer+'"}'):reply('{}');}});

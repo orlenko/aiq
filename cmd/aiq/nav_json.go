@@ -95,7 +95,8 @@ func (m *navJSONMeter) value(v reflect.Value) bool {
 	case reflect.Pointer:
 		// Only these two closed, nonrecursive optional wire objects are
 		// admitted. Arbitrary pointers and interface graphs remain refused.
-		if t != reflect.TypeFor[*navLongLease]() && t != reflect.TypeFor[*navLongScope]() {
+		if t != reflect.TypeFor[*navLongLease]() && t != reflect.TypeFor[*navLongScope]() &&
+			t != reflect.TypeFor[*int64]() && t != reflect.TypeFor[*float64]() && t != reflect.TypeFor[*navQuotaExtra]() {
 			return false
 		}
 		if v.IsNil() {
@@ -111,6 +112,11 @@ func (m *navJSONMeter) value(v reflect.Value) bool {
 		return m.add(5)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return m.add(int64(len(strconv.FormatInt(v.Int(), 10))))
+	case reflect.Float64:
+		// encoding/json's own float text, so the count is exact; NaN and
+		// infinities fail here as they would there.
+		b, err := json.Marshal(v.Float())
+		return err == nil && m.add(int64(len(b)))
 	case reflect.Slice:
 		// []byte has a different wire representation in encoding/json.
 		if t.Elem().Kind() == reflect.Uint8 {
