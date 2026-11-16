@@ -152,12 +152,27 @@ func navClaudeRegistrations(ctx context.Context, roots []string, run *navListRun
 }
 
 func (f *navFactory) listActivity(ctx context.Context, roots transcript.Roots, q navListQuery, rows []transcript.Summary, run *navListRun) ([]navSessionActivity, navActivitySummary, error) {
+	out, totals, _, err := f.listActivityWith(ctx, roots, q, rows, run)
+	return out, totals, err
+}
+
+// navActivityMetadata is what one activity pass admitted from launch metadata:
+// the snapshot (nil when unavailable), whether reading it failed, and the
+// terminal observation of each long lease it observed, by lease ID.
+type navActivityMetadata struct {
+	snapshot *state.NavigatorSnapshot
+	failed   bool
+	observed map[int64]terminal.Observation
+}
+
+func (f *navFactory) listActivityWith(ctx context.Context, roots transcript.Roots, q navListQuery, rows []transcript.Summary, run *navListRun) ([]navSessionActivity, navActivitySummary, navActivityMetadata, error) {
+	meta := navActivityMetadata{observed: map[int64]terminal.Observation{}}
 	out := make([]navSessionActivity, len(rows))
 	totals := navActivitySummary{}
 	at := f.input.now()
 	observed, err := navConversationTime(at)
 	if err != nil {
-		return nil, totals, err
+		return nil, totals, meta, err
 	}
 	totals.Observed = observed
 	for i, row := range rows {
@@ -186,24 +201,26 @@ func (f *navFactory) listActivity(ctx context.Context, roots transcript.Roots, q
 		snapshot, err = f.input.metadata(ctx, state.NavigatorSnapshotLimits{Rows: f.policy.sessions.arrayEntries, TextBytes: f.policy.sessions.rowBytes})
 	}
 	if ctx.Err() != nil {
-		return nil, totals, ctx.Err()
+		return nil, totals, meta, ctx.Err()
 	}
 	if errors.Is(err, state.ErrNavigatorSnapshotTooLarge) {
-		return nil, totals, errNavAuxTooLarge
+		return nil, totals, meta, errNavAuxTooLarge
 	}
+	meta.failed = f.input.metadata != nil && (err != nil || snapshot == nil)
 	if err == nil && snapshot != nil {
+		meta.snapshot = snapshot
 		entries += int64(len(snapshot.Launches) + len(snapshot.Leases))
 		if entries > f.policy.sessions.arrayEntries {
-			return nil, totals, errNavAuxTooLarge
+			return nil, totals, meta, errNavAuxTooLarge
 		}
 		for _, v := range snapshot.Launches {
 			if !run.reserve(256, v.Provider, v.AccountID, v.Launcher, v.Cwd, v.Mode, v.SessionID) {
-				return nil, totals, errNavAuxTooLarge
+				return nil, totals, meta, errNavAuxTooLarge
 			}
 		}
 		for _, v := range snapshot.Leases {
 			if !run.reserve(256, v.Provider, v.AccountID, v.Launcher, v.Cwd, v.Mode, v.Workspace, v.Pane, v.SessionID, v.Drain) {
-				return nil, totals, errNavAuxTooLarge
+				return nil, totals, meta, errNavAuxTooLarge
 			}
 		}
 		totals.Known = true
@@ -220,7 +237,7 @@ func (f *navFactory) listActivity(ctx context.Context, roots transcript.Roots, q
 		byDirectory := map[string][]managed{}
 		for i := range snapshot.Leases {
 			if err := ctx.Err(); err != nil {
-				return nil, totals, err
+				return nil, totals, meta, err
 			}
 			lease := &snapshot.Leases[i]
 			if lease.Mode != state.ModeLong || lease.Depth != 0 {
@@ -234,8 +251,9 @@ func (f *navFactory) listActivity(ctx context.Context, roots transcript.Roots, q
 			launchID := navLeaseLaunchID(ctx, &state.NavigatorSnapshot{Launches: launches[lease.ID]}, lease, false)
 			live, e := f.observeNavLease(ctx, snapshot, lease, launchID)
 			if e != nil {
-				return nil, totals, e
+				return nil, totals, meta, e
 			}
+			meta.observed[lease.ID] = live
 			value := managed{lease, live, cwd, workspace}
 			key := lease.Provider + "/" + lease.SessionID
 			bySession[key] = append(bySession[key], value)
@@ -298,7 +316,7 @@ func (f *navFactory) listActivity(ctx context.Context, roots transcript.Roots, q
 	}
 	open, known, err := navClaudeRegistrations(ctx, roots.ClaudeProjects, run, &entries, f.policy.sessions.arrayEntries, proc.Alive)
 	if err != nil {
-		return nil, totals, err
+		return nil, totals, meta, err
 	}
 	totals.ClaudeOpenKnown = known
 	for i, row := range rows {
@@ -310,8 +328,8 @@ func (f *navFactory) listActivity(ctx context.Context, roots transcript.Roots, q
 		}
 		v := out[i]
 		if !run.reserve(256, v.Live, v.Workspace, v.Account, v.Launcher, v.Pane, v.LeaseID, v.Started, v.Drain) {
-			return nil, totals, errNavAuxTooLarge
+			return nil, totals, meta, errNavAuxTooLarge
 		}
 	}
-	return out, totals, ctx.Err()
+	return out, totals, meta, ctx.Err()
 }
