@@ -28,20 +28,25 @@ export async function prepareTabRead2(credential,base,build,path,condition,valid
  if(typeof condition!=="string"||condition!==""&&!/^"[0-9a-f]{64}"$/.test(condition))bad();
  return prepareTabProof(credential,base,build,path,condition,valid,crypto,true);
 }
-async function prepareTabProof(credential,base,build,path,condition,valid,crypto,conditional){
+export async function prepareTabAction(credential,base,build,path,valid,crypto=globalThis.crypto){
+ if(typeof path!=="string"||!/^\/api\/nav\/asks\/action\?action=(dismiss|restore)&id=[1-9][0-9]{0,18}&revision=[0-9a-f]{64}$/.test(path))bad();
+ const id=path.split("&id=")[1].split("&")[0];if(id.length===19&&id>"9223372036854775807")bad();
+ return prepareTabProof(credential,base,build,path,"",valid,crypto,false,true);
+}
+async function prepareTabProof(credential,base,build,path,condition,valid,crypto,conditional,action=false){
  const check=()=>{if(!valid())bad();};check();
  const digest=await crypto.subtle.digest("SHA-256",decode(credential));credential=null;check();
  const key=await crypto.subtle.importKey("raw",digest,{name:"HMAC",hash:"SHA-256"},false,["sign","verify"]);check();
  const selector=encode(new Uint8Array(await crypto.subtle.sign("HMAC",key,encoder.encode("aiq-nav-tab-id-v1"))));check();
  const bytes=new Uint8Array(32);crypto.getRandomValues(bytes);check();const nonce=encode(bytes);
- const fields=[conditional?"aiq-nav-tab-request-v2":"aiq-nav-tab-request-v1",base,build,"GET",path,selector,nonce];if(conditional)fields.push(condition);
+ const fields=[action?"aiq-nav-tab-action-request-v1":conditional?"aiq-nav-tab-request-v2":"aiq-nav-tab-request-v1",base,build,action?"POST":"GET",path,selector,nonce];if(conditional)fields.push(condition);
  const requestMAC=encode(new Uint8Array(await crypto.subtle.sign("HMAC",key,frame(...fields))));check();
- return Object.freeze({authorization:(conditional?"AiqTab2 ":"AiqTab ")+selector+"."+nonce+"."+requestMAC,
+ return Object.freeze({authorization:(action?"AiqAction1 ":conditional?"AiqTab2 ":"AiqTab ")+selector+"."+nonce+"."+requestMAC,
   async verify(proof,status,mime,responseBuild,raw,etag=""){
    check();if(!canonical32(proof)||mime!==(conditional&&status===304?"":"application/json")||responseBuild!==build||!(raw instanceof Uint8Array))bad();
    if(conditional&&(etag!==""&&!/^"[0-9a-f]{64}"$/.test(etag)||status===304&&(condition===""||etag!==condition||raw.byteLength!==0)))bad();
    const hash=encode(new Uint8Array(await crypto.subtle.digest("SHA-256",raw)));check();
-   const responseFields=[conditional?"aiq-nav-tab-response-v2":"aiq-nav-tab-response-v1",requestMAC,String(status),mime,build];if(conditional)responseFields.push(etag);responseFields.push(hash);
+   const responseFields=[action?"aiq-nav-tab-action-response-v1":conditional?"aiq-nav-tab-response-v2":"aiq-nav-tab-response-v1",requestMAC,String(status),mime,build];if(conditional)responseFields.push(etag);responseFields.push(hash);
    const ok=await crypto.subtle.verify("HMAC",key,decode(proof),frame(...responseFields));check();if(!ok)bad();
   }});
 }

@@ -53,7 +53,7 @@ const longData={build:"str",kind:"str",requested_dir:"str",workspace:"str",works
   lease:{nullable:{id:"str",started:"str",provider:"str",account:"str",launcher:"str",pane:"str",live:"str",drain:"str",working_known:"bool",working:"bool",turn_started:time}},
   current:{nullable:{provider:"str",id:"str"}},current_spans:[longSpan],
   earlier:[{key:"str",provider:"str",session_id:"str",transcript_available:"bool",workspace_known:"bool",last:time,spans:[longSpan]}],
-  workspaces:[{workspace:"str",recorded_leases:"uint",sessions:"uint"}],note:{available:"bool",exists:"bool",updated:time,archived:"uint"}};
+  workspaces:[{workspace:"str",recorded_leases:"uint",sessions:"uint",updated:{optional:time},pending_asks:{optional:"uint"},pending_asks_known:{optional:"bool"}}],note:{available:"bool",exists:"bool",updated:time,archived:"uint"}};
 
 export function captureLong(data,expectedDir,history,limits){
   try{
@@ -61,7 +61,7 @@ export function captureLong(data,expectedDir,history,limits){
     const out=capture(data,longData,credits(limits));
     require(out.requested_dir===expectedDir&&out.history_present===history);validTime(out.observed);validTime(out.note.updated);
     const seen=new Set();
-    for(const item of out.workspaces){directory(item.workspace);require(!seen.has(item.workspace));seen.add(item.workspace);}
+    for(const item of out.workspaces){if(item.updated===undefined)item.updated={known:false,ms:0};if(item.pending_asks===undefined)item.pending_asks=0;if(item.pending_asks_known===undefined)item.pending_asks_known=false;validTime(item.updated);directory(item.workspace);require(!seen.has(item.workspace));seen.add(item.workspace);}
     if(expectedDir==="")require(history&&out.kind==="list"&&out.workspace===""&&!out.workspace_known&&out.state==="records"&&out.lease===null&&out.current===null&&out.earlier.length===0&&out.current_spans.length===0);
     else{directory(out.workspace);require(out.kind==="workspace"&&["live","none","never","unknown"].includes(out.state)&&out.workspaces.length===0);}
     if(out.lease){

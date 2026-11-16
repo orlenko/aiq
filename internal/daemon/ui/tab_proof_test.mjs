@@ -60,3 +60,48 @@ test('retired verification holds the physical reader before the successor can fe
  while(!entered)await new Promise(r=>setImmediate(r));const successor=broker.route(),next=successor.read('asks',{mode:'all'});
  await new Promise(r=>setImmediate(r));assert.equal(calls,1);release();await old;assert.deepEqual(await next,{data:{}});assert.equal(calls,2);assert.equal(s.snapshot().kind,'unlocked');broker.close();s.dispose();
 });
+
+const actionQuery={id:'1',revision:'a'.repeat(64),action:'dismiss'};
+const actionPath='/api/nav/asks/action?action=dismiss&id=1&revision='+'a'.repeat(64);
+function actionSign(header,raw,status=200){return createHmac('sha256',Buffer.from(v.key_hex,'hex')).update(frame('aiq-nav-tab-action-response-v1',header.split('.').at(-1),String(status),'application/json',v.build,createHash('sha256').update(raw).digest('base64url'))).digest('base64url');}
+function actionResponse(header,data,status=200){const raw=enc.encode(JSON.stringify(data));return new Response(raw,{status,headers:{'Content-Type':'application/json','X-Aiq-Build':v.build,'X-Aiq-Tab-Proof':actionSign(header,raw,status)}});}
+
+test('action proof binds POST target and revision in its own request and response domains',async()=>{
+ const {prepareTabAction}=await import('./tab_proof.js');
+ const p=await prepareTabAction(v.credential,base,v.build,actionPath,()=>true,deterministic());
+ const selector=createHmac('sha256',Buffer.from(v.key_hex,'hex')).update('aiq-nav-tab-id-v1').digest('base64url');
+ const mac=createHmac('sha256',Buffer.from(v.key_hex,'hex')).update(frame('aiq-nav-tab-action-request-v1',base,v.build,'POST',actionPath,selector,v.nonce)).digest('base64url');
+ assert.equal(p.authorization,'AiqAction1 '+selector+'.'+v.nonce+'.'+mac);
+ const raw=enc.encode('{}');await p.verify(actionSign(p.authorization,raw),200,'application/json',v.build,raw);
+ await assert.rejects(p.verify(signFor(p.authorization,raw),200,'application/json',v.build,raw));
+ for(const path of [v.target,actionPath+'&extra=1',actionPath.replace('id=1','id=01'),actionPath.replace('dismiss','delete')])await assert.rejects(prepareTabAction(v.credential,base,v.build,path,()=>true,deterministic()));
+});
+test('direct ask action sends one empty-body POST and admits its exact result',async()=>{
+ let calls=0;const s=session(async(url,o)=>{calls++;assert.equal(url,base+actionPath);assert.equal(o.method,'POST');assert.equal(o.body,undefined);return actionResponse(o.headers.Authorization,{id:'1',state:'dismissed',revision:'b'.repeat(64)});});await s.ready;
+ assert.deepEqual(await s.actions.ask(actionQuery),{data:{id:'1',state:'dismissed',revision:'b'.repeat(64)}});assert.equal(calls,1);assert.equal(s.snapshot().kind,'unlocked');s.dispose();
+});
+test('signed action conflict does not lock tab or retry and a fresh read remains available',async()=>{
+ let calls=0;const s=session(async(url,o)=>{calls++;if(o.method==='POST')return actionResponse(o.headers.Authorization,{error:'ask_changed'},409);const raw=enc.encode('{}');return new Response(raw,{headers:{'Content-Type':'application/json','X-Aiq-Build':v.build,'X-Aiq-Tab-Proof':signFor(o.headers.Authorization,raw)}});});await s.ready;
+ await assert.rejects(s.actions.ask(actionQuery),e=>e.code==='conflict');assert.equal(calls,1);assert.equal(s.snapshot().kind,'restoring');assert.deepEqual(await s.asks({mode:'all'}),{data:{}});assert.equal(calls,2);s.dispose();
+});
+test('lost action response stays uncertain without a retry or terminal auth transition',async()=>{
+ let calls=0;const s=session(async()=>{calls++;throw Error('invented connection loss');});await s.ready;
+ await assert.rejects(s.actions.ask(actionQuery),e=>e.code==='uncertain'&&!e.message.includes('invented'));assert.equal(calls,1);assert.equal(s.snapshot().kind,'restoring');s.dispose();
+});
+test('action physical slot remains held through cancelled body cleanup',async()=>{
+ let release,entered=false,calls=0;const cleaned=new Promise(r=>release=r);
+ const s=session(async(_url,o)=>{calls++;const response=new Response('',{headers:{'Content-Type':'application/json','X-Aiq-Build':v.build}});Object.defineProperty(response,'body',{value:{getReader(){return {read(){entered=true;return new Promise((_resolve,reject)=>o.signal.addEventListener('abort',()=>reject(Error('invented abort')),{once:true}));},cancel(){return cleaned;},releaseLock(){}};}}});return response;});await s.ready;
+ const abort=new AbortController(),first=s.actions.ask(actionQuery,abort.signal);
+ while(!entered)await new Promise(r=>setImmediate(r));abort.abort();
+ await assert.rejects(s.actions.ask(actionQuery),e=>e.code==='unavailable');assert.equal(calls,1);
+ release();await assert.rejects(first,e=>e.code==='uncertain');assert.equal(calls,1);s.dispose();
+});
+test('action reservation precedes reentrant query inspection',async()=>{
+ let nested,calls=0;const s=session(async(_url,o)=>{calls++;return actionResponse(o.headers.Authorization,{id:'1',state:'dismissed',revision:'b'.repeat(64)});});await s.ready;
+ const query=new Proxy(actionQuery,{ownKeys(target){nested=s.actions.ask(actionQuery);return Reflect.ownKeys(target);}});
+ const outcome=s.actions.ask(query);await assert.rejects(nested,e=>e.code==='unavailable');await outcome;assert.equal(calls,1);s.dispose();
+});
+test('401 during a submitted action locks the tab and reports an uncertain outcome',async()=>{
+ let removed=0;const s=session(async()=>new Response(null,{status:401}),{getStorage:()=>({getItem:()=>v.credential,setItem(){},removeItem(){removed++;}})});await s.ready;
+ await assert.rejects(s.actions.ask(actionQuery),e=>e.code==='uncertain');assert.equal(s.snapshot().kind,'locked');assert(removed>0);await assert.rejects(s.asks({mode:'all'}));s.dispose();
+});

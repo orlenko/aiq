@@ -8,13 +8,15 @@ export function createLongView(document,options){
   if(!window||window!==document.defaultView||typeof dir!=="string"||!/^nav-long-[0-9]+$/.test(idPrefix)||
     ![readLong,readConversation,readState,copyText,announce,onWorkspace,onConversation].every(fn=>typeof fn==="function"))throw refused();
   if(dir)directory(dir);
+  const conversationQuery={...options.detailQuery},prose=options.prose??false;if(typeof prose!=="boolean")throw refused();
   const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   const button=(text,cls="")=>{const n=node("button",cls,text);n.type="button";return n;};
   const fragment=document.createDocumentFragment(),root=node("section","nav-long"),heading=node("h2","",dir?"Workspace":"Long workspaces");
   heading.id=idPrefix;root.setAttribute("aria-labelledby",idPrefix);fragment.append(root);
   const refresh=button("Refresh workspace","nav-long-refresh"),meta=node("div","nav-long-meta"),history=node("div","nav-long-history"),
     notice=node("p","nav-long-notice"),newest=button("Jump to current session","nav-long-newest"),feed=node("div","nav-long-feed");
-  newest.hidden=true;root.append(heading,refresh,meta,notice,newest,history,feed);
+  const sortLabel=node("label","nav-long-sort","Sort by"),sort=node("select","nav-long-sort-select");for(const [value,label]of [["updated","Last activity"],["asks","Pending asks"],["name","Name"]]){const option=node("option","",label);option.value=value;sort.append(option);}sort.value="updated";sortLabel.append(sort);sortLabel.hidden=Boolean(dir);
+  newest.hidden=true;root.append(heading,refresh,sortLabel,meta,notice,newest,history,feed);
   const actions=node("section","nav-long-actions"),actionTarget=node("p","nav-long-action-target"),actionState=node("p","nav-long-action-state"),
     attach=button("Copy attach command","nav-command-copy"),drain=button("Copy wrap-up command","nav-command-copy"),moves=node("div","nav-long-moves");
   actions.setAttribute("aria-label","Terminal commands");moves.setAttribute("role","group");moves.setAttribute("aria-label","Moves work");
@@ -68,9 +70,14 @@ export function createLongView(document,options){
     clearLinks("meta");
     const content=document.createDocumentFragment();
     if(value.kind==="list"){
-      content.append(node("p","",value.workspaces.length+" workspaces found"+(value.partial?" · partial history":"")));
+      content.append(node("p","",value.workspaces.length+" workspaces · this machine"+(value.partial?" · partial history":"")));
       const list=node("ul","nav-controller-rows");
-      for(const row of value.workspaces){const item=node("li","nav-controller-row");item.append(link(row.workspace,"/long?dir="+encodeForm(row.workspace),()=>onWorkspace(row.workspace),"meta"),node("p","",row.sessions+" recorded sessions · "+row.recorded_leases+" recorded leases"));list.append(item);}
+      const ordered=[...value.workspaces].sort((a,b)=>{
+        if(sort.value==="asks"){const delta=b.pending_asks-a.pending_asks;if(delta)return delta;if(a.pending_asks_known!==b.pending_asks_known)return a.pending_asks_known?-1:1;}
+        if(sort.value!=="name"){if(a.updated.known!==b.updated.known)return a.updated.known?-1:1;if(a.updated.known&&a.updated.ms!==b.updated.ms)return b.updated.ms-a.updated.ms;}
+        return a.workspace.localeCompare(b.workspace);
+      });
+      for(const row of ordered){const item=node("li","nav-controller-row");item.append(link(row.workspace,"/long?dir="+encodeForm(row.workspace),()=>onWorkspace(row.workspace),"meta"),node("p","nav-long-row-facts",`${row.sessions} recorded sessions · ${row.pending_asks_known?row.pending_asks+" pending asks":row.pending_asks?row.pending_asks+"+ pending asks":"Asks unknown"} · ${row.updated.known?"Last activity "+time(row.updated):"Activity time unknown"}`));list.append(item);}
       if(!value.workspaces.length)content.append(node("p","",value.partial?"Workspace history could not be completely mapped.":"No recorded long workspaces."));
       content.append(list);
     }else{
@@ -119,8 +126,8 @@ export function createLongView(document,options){
     controller?.teardown();controller=null;scope={...next};frozen=false;parkedAuto=false;pending=null;newest.hidden=false;
     const content=document.createDocumentFragment();
     if(wasDifferent){const divider=node("p","nav-long-divider","Session changed · previous session "+previous.provider+" · "+previous.id+" is available in history.");divider.setAttribute("role","separator");content.append(divider);}
-    controller=createSessionController(document,{window,idPrefix:idPrefix+"-session-"+(++version),limits,conversationOnly:true,
-      detailQuery:options.detailQuery,readingControls:true,readCommands:true,resumeCommands:true,autoFollow:true,shortcutsEnabled:options.shortcutsEnabled,
+    controller=createSessionController(document,{window,idPrefix:idPrefix+"-session-"+(++version),limits,conversationOnly:true,prose,
+      detailQuery:conversationQuery,readingControls:true,readCommands:true,resumeCommands:true,autoFollow:true,shortcutsEnabled:options.shortcutsEnabled,
       readSessions:()=>Promise.reject(refused()),readConversation,readState,copyText,announce,
       onNewest:()=>{if(alive()){showSession(metadata?.current??scope,true);}},onSelection:()=>{}});
     content.append(controller.fragment);feed.replaceChildren(content);
@@ -173,7 +180,8 @@ export function createLongView(document,options){
   }
   function mount(){
     if(disposed)return false;if(mounted)return alive();if(!root.isConnected)return false;mounted=true;
-    listen(refresh,"click",()=>request(true));
+    listen(refresh,"click",()=>{request(true);});
+    listen(sort,"change",()=>{if(["updated","asks","name"].includes(sort.value)&&metadata)drawMeta(metadata);});
     listen(attach,"click",()=>copyLease("attach"));listen(drain,"click",()=>copyLease("drain"));
     listen(actions,"focusout",()=>queueMicrotask(updateActions));
     listen(meta,"focusout",()=>queueMicrotask(()=>{if(alive()&&deferredMeta&&!meta.contains(document.activeElement))drawMeta(deferredMeta);}));
@@ -193,5 +201,5 @@ export function createLongView(document,options){
     try{flight?.abort.abort();}catch{}controller?.teardown();controller=null;
     for(const remove of removes)try{remove();}catch{}removes.length=0;clearLinks("meta");clearLinks("history");root.remove();metadata=fullMetadata=deferredHistory=deferredMeta=scope=pending=displayedTarget=null;
   }
-  return Object.freeze({fragment,mount,teardown});
+  return Object.freeze({fragment,mount,teardown,setMarkup:value=>{if(typeof value!=="boolean"||disposed)return false;conversationQuery.markup=value;controller?.setMarkup(value);return true;}});
 }

@@ -42,9 +42,12 @@ type navLongSession struct {
 	Spans               []navLongSpan `json:"spans"`
 }
 type navLongWorkspace struct {
-	Workspace string `json:"workspace"`
-	Recorded  int    `json:"recorded_leases"`
-	Sessions  int    `json:"sessions"`
+	Workspace        string      `json:"workspace"`
+	Recorded         int         `json:"recorded_leases"`
+	Sessions         int         `json:"sessions"`
+	Updated          navWireTime `json:"updated"`
+	PendingAsks      int         `json:"pending_asks"`
+	PendingAsksKnown bool        `json:"pending_asks_known"`
 }
 type navLongBody struct {
 	Build            string             `json:"build"`

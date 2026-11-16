@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +154,194 @@ func TestNavLongGroupingAndSubdirectoryMapping(t *testing.T) {
 	unknown := longRead(t, f, x.work+"/sub", true)
 	if !unknown.Partial || unknown.WorkspaceKnown || unknown.State == "never" || len(unknown.Earlier) != 4 || unknown.UnmappedLaunches != 6 {
 		t.Fatal("unknown mapping guessed away records", unknown)
+	}
+}
+
+func TestNavLongWorkspaceUpdatedUsesLatestMappedTranscript(t *testing.T) {
+	x := newNavAppFixture(t, 0, "Invented answer")
+	olderID := "00000002-0000-4000-8000-000000000002"
+	newerID := "00000003-0000-4000-8000-000000000003"
+	missingID := "00000004-0000-4000-8000-000000000004"
+	newer := x.at.Add(3 * time.Hour)
+	writeSession := func(id string, updated time.Time) {
+		t.Helper()
+		user, err := json.Marshal(map[string]any{"type": "user", "sessionId": id, "cwd": x.work,
+			"timestamp": x.at.Format(time.RFC3339Nano), "message": map[string]string{"role": "user", "content": "Invented request"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		answer, err := json.Marshal(map[string]any{"type": "assistant", "sessionId": id, "cwd": x.work,
+			"timestamp": updated.Format(time.RFC3339Nano), "message": map[string]any{"id": "invented-answer", "role": "assistant",
+				"content": []map[string]string{{"type": "text", "text": "Invented reply"}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		goldenWrite(t, filepath.Join(x.roots.ClaudeProjects[0], claudeNonAlnum.ReplaceAllString(x.work, "-"), id+".jsonl"), string(user), string(answer))
+	}
+	writeSession(olderID, x.at.Add(time.Minute))
+	writeSession(newerID, newer)
+	in := x.input(nil)
+	in.workspace = func(_ context.Context, dir string) (string, bool) { return dir, true }
+	in.metadata = func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
+		rows := []state.NavigatorLaunch{}
+		for i, item := range []struct{ id, workspace string }{
+			{newerID, x.work}, {olderID, x.work}, {newerID, x.work},
+			{missingID, x.work + "/missing"}, {newerID, x.work + "/contradicted"},
+		} {
+			rows = append(rows, state.NavigatorLaunch{ID: int64(i + 1), Provider: "claude", Mode: state.ModeLong,
+				SessionID: item.id, Cwd: item.workspace, StartedMS: newer.Add(24 * time.Hour).UnixMilli()})
+		}
+		return &state.NavigatorSnapshot{Launches: rows, Leases: []state.NavigatorLease{{ID: 1, Mode: state.ModeLong,
+			Workspace: x.work + "/lease-only", StartedAt: newer.Add(48 * time.Hour).Unix()}}}, nil
+	}
+	f, err := newNavFactory(in, navProductionPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := longRead(t, f, "", true)
+	got := map[string]navLongWorkspace{}
+	for _, workspace := range body.Workspaces {
+		got[workspace.Workspace] = workspace
+	}
+	if len(got) != 3 || got[x.work].Sessions != 2 || got[x.work].Updated != (navWireTime{MS: newer.UnixMilli(), Known: true}) {
+		t.Fatalf("workspace update did not use newest matching transcript: %+v", body.Workspaces)
+	}
+	for _, path := range []string{x.work + "/missing", x.work + "/lease-only"} {
+		if got[path].Updated != (navWireTime{}) {
+			t.Fatalf("unavailable transcript update guessed from recorded time: %+v", got[path])
+		}
+	}
+	if _, exists := got[x.work+"/contradicted"]; exists {
+		t.Fatal("contradicting transcript was counted toward workspace freshness")
+	}
+}
+
+func TestNavLongWorkspacePendingAsksResolveAliases(t *testing.T) {
+	for _, unresolved := range []bool{false, true} {
+		t.Run(map[bool]string{false: "mapped", true: "unresolved open item"}[unresolved], func(t *testing.T) {
+			x := newNavAppFixture(t, 9, "Invented pending question")
+			alias, other, empty, unrelated := filepath.Join(x.root, "alias"), filepath.Join(x.root, "other"), filepath.Join(x.root, "empty"), filepath.Join(x.root, "unrelated")
+			for _, path := range []string{other, empty, unrelated} {
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(x.work, alias); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", x.asksPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			for _, update := range []struct {
+				query string
+				args  []any
+			}{
+				{`UPDATE asks SET workspace=? WHERE id IN (1,2,3)`, []any{alias}},
+				{`UPDATE asks SET workspace=? WHERE id=4`, []any{other}},
+				{`UPDATE asks SET workspace=?,state='closed' WHERE id=5`, []any{filepath.Join(x.root, "unmapped-closed")}},
+				{`UPDATE asks SET state='dismissed' WHERE id=6`, nil},
+				{`UPDATE asks SET state='probably-done' WHERE id=7`, nil},
+				{`UPDATE asks SET workspace=? WHERE id=9`, []any{unrelated}},
+			} {
+				if _, err := db.Exec(update.query, update.args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if unresolved {
+				if _, err := db.Exec(`UPDATE asks SET workspace=? WHERE id=9`, filepath.Join(x.root, "unknown")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			in := x.input(nil)
+			probes := map[string]int{}
+			in.workspace = func(_ context.Context, dir string) (string, bool) {
+				probes[dir]++
+				root, err := filepath.EvalSymlinks(dir)
+				return root, err == nil
+			}
+			in.metadata = func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
+				return &state.NavigatorSnapshot{Leases: []state.NavigatorLease{
+					{ID: 1, Mode: state.ModeLong, Workspace: x.work},
+					{ID: 2, Mode: state.ModeLong, Workspace: other},
+					{ID: 3, Mode: state.ModeLong, Workspace: empty},
+				}}, nil
+			}
+			f, err := newNavFactory(in, navProductionPolicy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := longRead(t, f, "", true)
+			for _, row := range body.Workspaces {
+				want := map[string]int{x.work: 4, other: 1, empty: 0}[row.Workspace]
+				if row.PendingAsksKnown == unresolved || !unresolved && row.PendingAsks != want {
+					t.Fatalf("pending count or coverage wrong: %+v", row)
+				}
+			}
+			if len(body.Workspaces) != 3 || !unresolved && probes[alias] != 1 || probes[x.work] != 0 {
+				t.Fatal("workspace mapping was not shared/memoized or unrelated asks added a workspace", probes, body.Workspaces)
+			}
+		})
+	}
+}
+
+func TestNavLongWorkspacePendingAsksUnavailableStaysUnknown(t *testing.T) {
+	for _, mode := range []string{"missing", "unreadable", "row budget", "text budget", "cancelled", "busy"} {
+		t.Run(mode, func(t *testing.T) {
+			x := newNavAppFixture(t, 2, "Invented pending question")
+			in := x.input(nil)
+			in.metadata = func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
+				return &state.NavigatorSnapshot{Leases: []state.NavigatorLease{{ID: 1, Mode: state.ModeLong, Workspace: x.work}}}, nil
+			}
+			policy := navProductionPolicy()
+			switch mode {
+			case "missing":
+				in.asksPath = filepath.Join(x.root, "absent-registry.db")
+			case "unreadable":
+				in.asksPath = filepath.Join(x.root, "invalid-registry.db")
+				if err := os.WriteFile(in.asksPath, []byte("Invented non-SQLite data"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "row budget":
+				policy.asks.reader.Rows = 1
+			case "text budget":
+				policy.asks.reader.TextBytes = 1
+			}
+			f, err := newNavFactory(in, policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			if mode == "cancelled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			if mode == "busy" {
+				f.askSlots <- struct{}{}
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 20*time.Millisecond)
+				defer cancel()
+			}
+			row := &navLongWorkspace{Workspace: x.work}
+			resolver := &navWorkspaceResolver{ctx: ctx, memo: map[string]navWorkspaceResult{}}
+			f.longPendingAsks(ctx, resolver, map[string]*navLongWorkspace{x.work: row})
+			if mode == "busy" {
+				if ctx.Err() == nil || len(f.askSlots) != 1 {
+					t.Fatal("waiting for shared Asks slot ignored deadline or released another reader")
+				}
+				<-f.askSlots
+			}
+			if row.PendingAsksKnown || row.PendingAsks != 0 || len(f.askSlots) != 0 {
+				t.Fatal("unavailable reading became known zero or retained a physical slot", row)
+			}
+			if mode == "missing" {
+				if _, err := os.Stat(in.asksPath); !os.IsNotExist(err) {
+					t.Fatal("missing registry was created", err)
+				}
+			}
+		})
 	}
 }
 

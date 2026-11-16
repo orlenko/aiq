@@ -54,7 +54,7 @@ func TestRouteOwnDispatchAndDerivedRequestState(t *testing.T) {
 		t.Fatal("real dispatch/clone did not preserve trusted key and origin")
 	}
 	catalog := Catalog()
-	if len(catalog) != 13 || catalog[0] != "unregistered" || catalog[1] != "GET /api/nav/hello" || catalog[6] != "GET /api/nav/sessions/{provider}/{id}" || catalog[7] != "GET /api/nav/asks" || catalog[8] != "GET /api/nav/asks/{id}/turn" || catalog[9] != "GET /api/nav/directories" || catalog[10] != "GET /api/nav/sessions/{provider}/{id}/state" || catalog[11] != "GET /api/nav/long" || catalog[12] != "GET /api/nav/quotas" {
+	if len(catalog) != 14 || catalog[0] != "unregistered" || catalog[1] != "GET /api/nav/hello" || catalog[6] != "GET /api/nav/sessions/{provider}/{id}" || catalog[7] != "GET /api/nav/asks" || catalog[8] != "GET /api/nav/asks/{id}/turn" || catalog[9] != "GET /api/nav/directories" || catalog[10] != "GET /api/nav/sessions/{provider}/{id}/state" || catalog[11] != "GET /api/nav/long" || catalog[12] != "GET /api/nav/quotas" || catalog[13] != "POST /api/nav/asks/action" {
 		t.Fatal("closed catalog changed")
 	}
 	catalog[1] = "invented mutable catalog input"

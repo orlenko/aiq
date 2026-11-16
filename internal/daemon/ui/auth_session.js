@@ -1,6 +1,7 @@
 import {canonical32, credential, directory, encodeForm, fragment, origin} from "./auth_codec.js";
 import {createAppHost} from "./app.js";
 import {prepareTabRead2} from "./tab_proof.js";
+import {prepareTabAction} from "./tab_proof.js";
 
 const LINK = "Link invalid, expired or already used; run aiq ui again.";
 const LOCKED = "This tab is locked; run aiq ui again.";
@@ -145,7 +146,8 @@ export function createTabSession(options) {
     read = storageCall(e,"getItem",key);
     return !read.stale && read.ok && (read.value === null || read.value === "");
   }
-  async function send(e,path,method,body,byteLimit,bearer,parent,decode,condition="") {
+  let actionFlight=null;
+  async function send(e,path,method,body,byteLimit,bearer,parent,decode,condition="",actionRequest=null) {
     if (!live(e)) throw failure("cancelled");
     const controller = new AbortController(), started=now();
     const valid = () => {
@@ -162,10 +164,11 @@ export function createTabSession(options) {
       const headers = method === "POST" ? {"Content-Type":"application/json"} : {};
       let proof=null;
       if (bearer !== null) {
-        proof=await prepareTabRead2(bearer,base,build,path,condition,valid,options.crypto ?? globalThis.crypto);bearer=null;
+        proof=await (actionRequest?prepareTabAction(bearer,base,build,path,valid,options.crypto ?? globalThis.crypto):prepareTabRead2(bearer,base,build,path,condition,valid,options.crypto ?? globalThis.crypto));bearer=null;
         if(!valid())bad();headers.Authorization=proof.authorization;
         if(condition)headers["If-None-Match"]=condition;
       }
+      if(actionRequest)actionRequest.sent=true;
       response=await fetcher(base+path,{method,headers,body,signal:controller.signal,redirect:"error",credentials:"omit",cache:"no-store"});
       const status = response.status;
       if (status === 401 && live(e)) {
@@ -190,7 +193,7 @@ export function createTabSession(options) {
       const raw=new Uint8Array(total);let offset=0;
       for (const chunk of chunks) { raw.set(chunk,offset);offset+=chunk.byteLength; }
       if(proof) { await proof.verify(response.headers.get("X-Aiq-Tab-Proof"),status,mime??"",response.headers.get("X-Aiq-Build"),raw,etag);if(!valid())bad(); }
-      if(status!==200&&!notModified)throw failure("request");
+      if(status!==200&&!notModified)throw failure(actionRequest?(status===409?"conflict":"unavailable"):"request");
       const value=decode(raw,{status,etag});
       if (!valid()) bad();
       return value;
@@ -306,10 +309,39 @@ export function createTabSession(options) {
       throw new TypeError(UNAVAILABLE);
     }
   }
+  function actionError(code){
+    const error=new TypeError(code==="conflict"?"This ask changed; refresh Asks before trying again.":code==="uncertain"?"Ask action outcome unknown; refresh Asks before trying again.":"Ask action unavailable");
+    Object.defineProperty(error,"code",{value:code,enumerable:true});return error;
+  }
+  async function askAction(query,abortSignal){
+    if(actionFlight)throw actionError("unavailable");
+    const flight={sent:false};actionFlight=flight;
+    const e=epoch;
+    let id,revision,action,path;
+    try{
+      if(!live(e)||!["unlocked","restoring"].includes(kind)||token===null)throw actionError("unavailable");
+      if(!query||typeof query!=="object"||Array.isArray(query)||Reflect.ownKeys(query).length!==3)bad();
+      id=own(query,"id");revision=own(query,"revision");action=own(query,"action");
+      if(typeof id!=="string"||!/^[1-9][0-9]{0,18}$/.test(id)||id.length===19&&id>"9223372036854775807"||typeof revision!=="string"||!/^[0-9a-f]{64}$/.test(revision)||!["dismiss","restore"].includes(action))bad();
+      path="/api/nav/asks/action?action="+action+"&id="+id+"&revision="+revision;
+      const result=await send(e,path,"POST",undefined,1024,token,abortSignal,raw=>{
+        const data=JSON.parse(new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(raw));
+        if(Reflect.ownKeys(data).length!==3||own(data,"id")!==id||own(data,"state")!==(action==="dismiss"?"dismissed":"open")||typeof own(data,"revision")!=="string"||!/^[0-9a-f]{64}$/.test(data.revision))bad();
+        return {data};
+      },"",flight);
+      if(!live(e))throw actionError("uncertain");
+      if(kind==="restoring"){kind="unlocked";message="Navigator unlocked.";emit();if(!live(e))throw actionError("uncertain");}
+      return result;
+    }catch(error){
+      const category=failures.get(error);
+      throw actionError(category==="conflict"?"conflict":category==="unavailable"?"unavailable":flight.sent?"uncertain":"unavailable");
+    }finally{if(actionFlight===flight)actionFlight=null;}
+  }
   signal?.addEventListener("abort",dispose,{once:true});
   if (!live(epoch)) dispose();
   const ready=disposed?Promise.resolve(false):begin();
   return Object.freeze({ready,snapshot,forget,dispose,attachHost,
+    actions:Object.freeze({ask:askAction}),
     selection:()=>["unlocked","restoring"].includes(kind)&&live(epoch)?selected:null,
     directories:(q,s)=>read("directories",q,s),long:(q,s)=>read("long",q,s),sessions:(q,s)=>read("sessions",q,s),conversation:(q,s)=>read("conversation",q,s),state:(q,s)=>read("state",q,s),asks:(q,s)=>read("asks",q,s),placement:(q,s)=>read("placement",q,s),quotas:(q,s)=>read("quotas",q,s)});
 }
@@ -385,7 +417,7 @@ export function start(options) {
       const app=createAppHost(document,{window,root:document.getElementById("nav-app-root"),isCurrent:current,
         limits:{arrayEntries,stringUnits,rows},initialNext:session.selection()?.next,
         readers:{directories:session.directories,long:session.long,sessions:session.sessions,conversation:session.conversation,state:session.state,asks:session.asks,placement:session.placement,quotas:session.quotas},
-        auth});
+        actions:session.actions,auth});
       if(!current()||!session.attachHost(()=>{
         const old=host;host=null;
         try{const focused=document.activeElement;if(document.hasFocus()&&document.getElementById("nav-app-root")?.contains(focused))retiredFocus=focused;}catch{}

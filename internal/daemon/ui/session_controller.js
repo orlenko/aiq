@@ -292,7 +292,7 @@ export function createSessionController(document, options) {
       const s = data.session;
       candidate.headers=detailHeaderText(data).map(text=>node("p","nav-controller-facts",text));
       const metadata=prose?node("details","nav-conversation-details"):candidate.root;
-      if(prose){metadata.append(node("summary","","Terminal commands and details"));candidate.root.append(node("p","nav-conversation-meta",`${s.cwd.split("/").filter(Boolean).at(-1)||"Unknown project"} · ${s.provider}${s.model?" · "+s.model:""}`),metadata);}
+      if(prose){metadata.append(node("summary","",readCommands||resumeCommands?"Terminal commands and details":"Session details"));candidate.root.append(node("p","nav-conversation-meta",`${s.cwd.split("/").filter(Boolean).at(-1)||"Unknown project"} · ${s.provider}${s.model?" · "+s.model:""}`),metadata);}
       metadata.append(...candidate.headers);
       commandControls(metadata,s,()=>alive(op)&&!candidate.retired,candidate.removes);
       if(!conversationOnly&&s.cwd){try{directory(s.cwd);const link=node("a","nav-controller-workspace","Workspace history and terminal controls →");link.href="/long?dir="+encodeForm(s.cwd);link.rel="noreferrer";metadata.append(link);}catch{}}
@@ -302,6 +302,7 @@ export function createSessionController(document, options) {
         copyText:raw => { if (alive(op) && !candidate.retired) return copyText(raw); },
         announce:value => { if (alive(op) && !candidate.retired) announce(value); }});
       candidate.root.append(candidate.child.fragment);
+      if(prose&&conversationOnly&&!readingControls&&!readCommands&&!resumeCommands)candidate.root.append(metadata);
       if (!alive(op)) return;
       detailPane.content.append(candidate.root);
       if (!alive(op)) return;
@@ -327,8 +328,12 @@ export function createSessionController(document, options) {
     return value.value;
   }
   function atBottom(){
-    const el=detailPane.content;
-    return el.scrollHeight-el.scrollTop-el.clientHeight<=48;
+    const el=prose?document.scrollingElement:detailPane.content;
+    return el.scrollHeight-el.scrollTop-(prose?window.innerHeight:el.clientHeight)<=48;
+  }
+  function scrollNewest(){
+    if(prose)window.scrollTo({top:Math.max(0,document.scrollingElement.scrollHeight-window.innerHeight),behavior:"instant"});
+    else detailPane.content.scrollTop=detailPane.content.scrollHeight;
   }
   function followText(op,text,announceChange=false){
     if(!alive(op)||!op.followLabel)return;
@@ -343,7 +348,7 @@ export function createSessionController(document, options) {
     op.selectionToken=data.selection;op.older=data.later_hidden>0||detailQuery.anchor!==0;
     op.shownTurns=data.window_start;for(const message of data.messages)op.shownTurns=Math.max(op.shownTurns,message.turn+1);
     op.following=!op.older;op.changed=false;
-    detailPane.content.classList.add("nav-controller-follow-content");
+    detailPane.content.classList.add(prose?"nav-controller-page-follow":"nav-controller-follow-content");
     const label=node("p","nav-follow-status",op.query.provider==="agy"?"Snapshot · no live turn tracking for Antigravity.":op.older?`${data.later_hidden} newer prompts not shown as of ${new Date().toLocaleTimeString()} · jump to newest`:"Following.");
     // The timer is visual text, deliberately outside the polite live region.
     const jump=node("button","nav-follow-newest","Jump to newest");jump.type="button";
@@ -355,7 +360,7 @@ export function createSessionController(document, options) {
       // stable control at the newest content; poll completions never move it.
       jump.focus({preventScroll:true});
       if(!alive(op))return;
-      op.following=true;detailPane.content.scrollTop=detailPane.content.scrollHeight;
+      op.following=true;scrollNewest();
       if(!op.followFlight){if(op.timer!==undefined){window.clearTimeout(op.timer);op.timer=undefined;}void pollFollow(op);}
     };
     const scroll=()=>{if(!alive(op))return;op.following=!op.older&&atBottom();if(!op.following)followText(op,"Following paused · jump to newest.");};
@@ -364,9 +369,10 @@ export function createSessionController(document, options) {
         ["INPUT","TEXTAREA","SELECT"].includes(e.target?.tagName?.toUpperCase())||e.target?.isContentEditable)return;
       if(!shortcutsEnabled())return;e.preventDefault();resume();
     };
-    jump.addEventListener("click",resume);detailPane.content.addEventListener("scroll",scroll);detailPane.root.addEventListener("keydown",keys);
-    op.candidate.removes.push(()=>jump.removeEventListener("click",resume),()=>detailPane.content.removeEventListener("scroll",scroll),()=>detailPane.root.removeEventListener("keydown",keys));
-    if(!op.older)detailPane.content.scrollTop=detailPane.content.scrollHeight;
+    const scrollTarget=prose?window:detailPane.content;
+    jump.addEventListener("click",resume);scrollTarget.addEventListener("scroll",scroll);detailPane.root.addEventListener("keydown",keys);
+    op.candidate.removes.push(()=>jump.removeEventListener("click",resume),()=>scrollTarget.removeEventListener("scroll",scroll),()=>detailPane.root.removeEventListener("keydown",keys));
+    if(!op.older)scrollNewest();
     scheduleFollow(op);
   }
   async function pollFollow(op){
@@ -409,7 +415,7 @@ export function createSessionController(document, options) {
       const headers=detailHeaderText(value);for(let i=0;i<headers.length;i++)if(op.candidate.headers[i].textContent!==headers[i])op.candidate.headers[i].textContent=headers[i];
       op.etag=etag;op.selectionToken=value.selection;op.changed=false;
       op.shownTurns=value.window_start;for(const message of value.messages)op.shownTurns=Math.max(op.shownTurns,message.turn+1);
-      detailPane.content.scrollTop=detailPane.content.scrollHeight;
+      scrollNewest();
       followText(op,op.query.provider==="agy"?"Snapshot refreshed · no live turn tracking for Antigravity.":op.clock??"Following.");
     }catch{if(alive(op)&&!document.hidden)followText(op,"Updates unavailable · showing the last conversation.",true);}
     finally{op.followFlight=false;if(alive(op))scheduleFollow(op);}
@@ -512,5 +518,5 @@ export function createSessionController(document, options) {
       return true;
     } catch { teardown(); return false; }
   }
-  return {fragment, mount, loadSessions, selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
+  return {fragment, mount, loadSessions, setMarkup:value=>{if(typeof value!=="boolean"||disposed)return false;detailQuery.markup=value;if(selection)select({...selection.scope});return true;},selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
 }

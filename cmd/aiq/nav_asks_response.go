@@ -46,6 +46,7 @@ type navAsksStatus struct {
 	Remedy  []string `json:"remedy"`
 }
 type navAsksItem struct {
+	Revision  string         `json:"revision"`
 	ID        string         `json:"id"`
 	Provider  string         `json:"provider"`
 	SessionID string         `json:"session_id"`
@@ -405,7 +406,7 @@ func (r *navAsksRun) captureSelected() (*navAsksResponseCapture, error) {
 			}
 		}
 		c.array(1)
-		item := navAsksItem{ID: c.text(strconv.FormatInt(a.ID, 10)), Provider: c.text(a.Provider), SessionID: c.text(a.SessionID),
+		item := navAsksItem{Revision: c.text(state.AskActionRevision(a)), ID: c.text(strconv.FormatInt(a.ID, 10)), Provider: c.text(a.Provider), SessionID: c.text(a.SessionID),
 			Workspace: c.text(a.Workspace), State: c.text(string(a.State)), Raised: navAsksSecond(a.RaisedAt, false), StateAt: navAsksSecond(a.StateAt, false),
 			Repeats: int64(a.Repeats), Reason: c.text(a.StateReason), Text: c.text(a.StateText), Refs: c.list(a.Refs)}
 		if c.err != nil {

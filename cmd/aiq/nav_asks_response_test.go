@@ -84,7 +84,7 @@ func TestNavAsksResponseLiteralQuotasAndRoots(t *testing.T) {
 	}
 	s := responseRows()
 	o = responseOptions()
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 136
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 264
 	body, err := buildNavAsksResponse(context.Background(), s, o)
 	if err != nil {
 		t.Fatal(err)
@@ -111,11 +111,11 @@ func TestNavAsksResponseLiteralQuotasAndRoots(t *testing.T) {
 	tail := func(string, int, bool) ([]webMarkdownLine, bool) {
 		return []webMarkdownLine{{kind: "text", spans: []webMarkdownSpan{{text: "z"}}}, {kind: "code", spans: []webMarkdownSpan{{text: "   ", classes: []string{"code"}}}}}, true
 	}
-	o.arrayEntries, o.stringUnits = 17, 158
+	o.arrayEntries, o.stringUnits = 17, 286
 	if _, e := buildNavAsksResponseWith(context.Background(), s, o, tail, json.Marshal); e != nil {
 		t.Fatal(e)
 	}
-	for _, mutate := range []func(*navAsksResponseOptions){func(o *navAsksResponseOptions) { o.arrayEntries = 16 }, func(o *navAsksResponseOptions) { o.stringUnits = 157 }} {
+	for _, mutate := range []func(*navAsksResponseOptions){func(o *navAsksResponseOptions) { o.arrayEntries = 16 }, func(o *navAsksResponseOptions) { o.stringUnits = 285 }} {
 		bad := o
 		mutate(&bad)
 		if b, e := buildNavAsksResponseWith(context.Background(), s, bad, tail, json.Marshal); b != nil || e != errNavAsksResponseTooLarge {
@@ -270,7 +270,7 @@ func TestNavAsksResponseOwnedCaptureAndConcurrency(t *testing.T) {
 	}
 	s = responseRows()
 	o = responseOptions()
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 136
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 2, 23, 70, 11, 264
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)

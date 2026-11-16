@@ -153,8 +153,8 @@ func TestNavAsksMovedReferenceSharedLimitsBeforeRender(t *testing.T) {
 	o := responseOptions()
 	s := responseSnapshot()
 	s.Items = []state.Ask{movedAsk(1, state.AskClosed, "", o.now.Unix())}
-	// Header100 + closed-row metadata7 + reference1 + actual wording13 =121 units.
-	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 1, 20, 35, 9, 121
+	// Header100 + closed-row metadata7 + revision64 + reference1 + actual wording13 =185 units.
+	o.rows, o.inputBytes, o.renderCells, o.arrayEntries, o.stringUnits = 1, 20, 35, 9, 185
 	body, err := buildNavAsksResponse(context.Background(), s, o)
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestNavAsksMovedReferenceSharedLimitsBeforeRender(t *testing.T) {
 		if credit == "reference entry" {
 			bad.arrayEntries = 6
 		} else {
-			bad.stringUnits = 81
+			bad.stringUnits = 145
 		}
 		renders, marshals := 0, 0
 		render := func(string, int, bool) ([]webMarkdownLine, bool) { renders++; return nil, true }

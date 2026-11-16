@@ -68,6 +68,7 @@ type TabFacts struct {
 	epoch       uint64
 	born        int64
 	conditional bool
+	action      bool
 }
 
 func (s *State) AdmitTab(method, target string, p TabProof) (*TabFacts, error) {
@@ -114,7 +115,7 @@ func (s *State) admitTab(method, target, condition string, p TabProof, condition
 	return &TabFacts{state: s, key: key, proof: p, epoch: s.epoch, born: selected.born, conditional: conditional}, nil
 }
 func (f *TabFacts) SignResponse(status int, body []byte) ([32]byte, error) {
-	if f == nil || f.state == nil || f.conditional {
+	if f == nil || f.state == nil || f.conditional || f.action {
 		return [32]byte{}, ErrInvalid
 	}
 	s := f.state

@@ -167,6 +167,67 @@ func (r *navWorkspaceResolver) resolve(dir string) navWorkspaceResult {
 type navLongTranscript struct {
 	available bool
 	workspace navWorkspaceResult
+	updated   navWireTime
+}
+
+// Counts use the same workspace identity rules as the list, not a browser path
+// string join. Every open item must be mapped before a zero is meaningful.
+func (f *navFactory) longPendingAsks(ctx context.Context, resolver *navWorkspaceResolver, workspaces map[string]*navLongWorkspace) {
+	if len(workspaces) == 0 || ctx.Err() != nil {
+		return
+	}
+	select {
+	case f.askSlots <- struct{}{}:
+		defer func() { <-f.askSlots }()
+	case <-ctx.Done():
+		return
+	}
+	// Open mode=ro without initialization and use the existing row/text-bounded
+	// snapshot reader. Its store closes before any count is published, while
+	// this shared physical slot is still held.
+	snapshot, err := func() (snapshot *state.AsksSnapshot, err error) {
+		store, err := state.OpenReadOnly(f.input.asksPath)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if closeErr := store.Close(); closeErr != nil {
+				snapshot = nil
+				err = closeErr
+			}
+		}()
+		return store.ReadAsksSnapshot(ctx, f.input.now(), f.policy.asks.reader)
+	}()
+	if err != nil || snapshot == nil || ctx.Err() != nil {
+		return
+	}
+	counts := map[string]int{}
+	for _, ask := range snapshot.Items {
+		if ask.State != state.AskOpen {
+			continue
+		}
+		root := ask.Workspace
+		if workspaces[root] == nil {
+			resolved := resolver.resolve(root)
+			if !resolved.known {
+				return // It could belong to any listed workspace: coverage is unknown.
+			}
+			root = resolved.root
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if workspaces[root] != nil {
+			counts[root]++
+		}
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	for root, row := range workspaces {
+		row.PendingAsks = counts[root]
+		row.PendingAsksKnown = true
+	}
 }
 
 func (f *navFactory) buildLongMetadata(ctx context.Context, q navLongQuery, snapshot *state.NavigatorSnapshot, run *navListRun) (navLongBody, error) {
@@ -239,6 +300,9 @@ func (f *navFactory) buildLongMetadata(ctx context.Context, q navLongQuery, snap
 				s, e := run.summary(ctx, hit.Path)
 				if e == nil && s.Provider == provider && s.ID == id {
 					value.available = true
+					// Only the verified transcript summary supplies freshness. A missing
+					// or unshowable timestamp stays unknown, never a launch time.
+					value.updated, _ = navConversationTime(s.Updated)
 					if s.Cwd != "" {
 						if !q.history && body.WorkspaceKnown && s.Cwd == body.Workspace {
 							value.workspace = navWorkspaceResult{body.Workspace, true}
@@ -317,7 +381,10 @@ func (f *navFactory) buildLongMetadata(ctx context.Context, q navLongQuery, snap
 				if info.workspace.known && info.workspace.root != scope.root {
 					continue
 				}
-				addWorkspace(scope.root)
+				workspace := addWorkspace(scope.root)
+				if info.updated.Known && (!workspace.Updated.Known || info.updated.MS > workspace.Updated.MS) {
+					workspace.Updated = info.updated
+				}
 				if rootGroups[scope.root] == nil {
 					rootGroups[scope.root] = map[string]bool{}
 				}
@@ -339,6 +406,7 @@ func (f *navFactory) buildLongMetadata(ctx context.Context, q navLongQuery, snap
 		}
 	}
 	if body.Kind == "list" {
+		f.longPendingAsks(ctx, resolver, workspaces)
 		for path, row := range workspaces {
 			row.Sessions = len(rootGroups[path])
 			body.Workspaces = append(body.Workspaces, *row)

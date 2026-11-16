@@ -110,7 +110,7 @@ func (s *Store) readAsksSnapshot(ctx context.Context, day string, limits AsksSna
 		}
 	}
 	out := &AsksSnapshot{Items: make([]Ask, 0), Status: AsksStatus{NotWatched: make([]string, 0)}, UTCDay: day}
-	rows, err := tx.QueryContext(ctx, `SELECT `+askColumns+` FROM asks ORDER BY raised_at DESC, id DESC`)
+	rows, err := tx.QueryContext(ctx, `SELECT `+askColumns+`, (SELECT COALESCE(MAX(id),0) FROM asks_events WHERE ask_id = asks.id) FROM asks ORDER BY raised_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,7 @@ func (s *Store) readAsksSnapshot(ctx context.Context, day string, limits AsksSna
 		var a Ask
 		var refs string
 		if err := row.Scan(&a.ID, &a.Chain, &a.Workspace, &a.Provider, &a.SessionID, &a.RaisedAt, &a.State, &a.StateAt,
-			&a.StateReason, &a.StateText, &a.FirstQuote, &a.LastQuote, &a.AsksReader, &a.Risk, &refs, &a.Repeats, &a.LastSeen, &a.RepeatAt); err != nil {
+			&a.StateReason, &a.StateText, &a.FirstQuote, &a.LastQuote, &a.AsksReader, &a.Risk, &refs, &a.Repeats, &a.LastSeen, &a.RepeatAt, &a.ActionSequence); err != nil {
 			return err
 		}
 		if math.IsNaN(a.Risk) || math.IsInf(a.Risk, 0) || math.IsNaN(a.AsksReader) || math.IsInf(a.AsksReader, 0) {

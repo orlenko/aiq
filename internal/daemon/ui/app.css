@@ -199,3 +199,62 @@ body:has(#nav-app-root[data-auth-controls="true"]:not([hidden])) #nav-auth-root 
  .nav-controller-list .nav-controller-row .nav-controller-select {min-height:2.75rem;}
  .nav-session-command-panel {padding:.6rem;}
 }
+
+/* Work through one session at a time, retaining the original context beside it. */
+.nav-app[data-nav-page="/long"] .nav-long {padding:1rem 2.5rem;box-sizing:border-box;}
+.nav-long .nav-controller-row {padding:.75rem 1rem;border-color:var(--nav-line);border-inline-start-width:1px;}
+.nav-long .nav-controller-row p {margin:.35rem 0;font-size:.85rem;color:var(--muted);}
+.nav-long .nav-controller-row>a {font-weight:600;text-decoration:none;}
+.nav-long .nav-long-sort {display:flex;gap:.5rem;align-items:center;font-size:.85rem;margin:.75rem 0;}
+.nav-long .nav-long-sort select {min-height:2rem;}
+.nav-long .nav-long-row-facts {display:flex;flex-wrap:wrap;gap:.4rem 1rem;}
+.nav-long h2 {font-size:1.2rem;margin:0 0 .75rem;}
+.nav-markdown-toggle {font-size:.75rem;color:var(--muted);white-space:nowrap;}
+.nav-markdown-toggle input {min-width:1rem!important;min-height:1rem!important;width:1rem;height:1rem;}
+.nav-asks-layout {min-width:0;}
+.nav-asks-layout[data-context="true"] {display:grid;grid-template-columns:minmax(32rem,.95fr) minmax(25rem,1.05fr);}
+.nav-ask-context {min-width:0;border-inline-start:1px solid var(--nav-line);padding:1rem 1.25rem;background:var(--panel);}
+.nav-ask-context-tools {display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;}
+.nav-ask-context-heading {font-size:1rem;margin:0 auto 0 0;}
+.nav-ask-context-tools button,.nav-ask-context-tools a {font-size:.75rem;min-height:2rem;}
+.nav-ask-context-status {font-size:.8rem;color:var(--muted);}
+.nav-ask-context .nav-controller {grid-template-columns:minmax(0,1fr);}
+.nav-ask-context .nav-controller-pane {padding:.75rem 0;border:0;}
+.nav-ask-context .nav-controller-heading {font-size:1rem;}
+.nav-ask-context .nav-controller-refresh {position:static;float:right;}
+.nav-ask-context .nav-feed {font-size:.9rem;}
+.nav-ask-context .nav-feed-outline {display:none;}
+.nav-ask-action-notice {display:flex;align-items:center;gap:.75rem;margin:.5rem 2.5rem;padding:.5rem .75rem;background:var(--nav-band);font-size:.85rem;}
+.nav-ask-action-notice button {min-height:1.8rem;font-size:.8rem;}
+.nav-asks-controller>.nav-asks-refresh {top:-3rem;}
+@media(max-width:65rem){.nav-asks-layout[data-context="true"]{grid-template-columns:minmax(0,1fr);}.nav-ask-context{border-inline-start:0;border-block-start:1px solid var(--nav-line);}}
+@media(max-width:45rem){.nav-app[data-nav-page="/long"] .nav-long{padding:1rem;}.nav-markdown-toggle{margin-left:auto;}.nav-ask-action-notice{margin:.5rem 1rem;}.nav-asks-controller>.nav-asks-refresh{right:1rem;}.nav-ask-context{padding:1rem;}}
+
+.nav-controller-page-follow {max-height:none;overflow:visible;overscroll-behavior:auto;}
+.nav-asks-sessions,.nav-ask-context {align-self:start;}
+
+.nav-asks-layout[data-context="true"] {display:block;}
+.nav-ask-context {padding:1.5rem 0 0;margin-top:1.5rem;border-inline-start:0;border-top:1px solid var(--nav-line);}
+.nav-ask-context-heading {font-size:.75rem;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:650;}
+.nav-ask-context .nav-controller-heading {display:none;}
+.nav-ask-context .nav-controller-refresh {float:none;margin:0 0 .75rem;}
+.nav-app[data-nav-page="/asks"] .nav-app-status {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);}
+.nav-app[data-nav-page="/asks"] .nav-page-title {font-size:1.25rem;margin:1rem 1.5rem;}
+.nav-asks-controller>.nav-asks-refresh {top:-3.1rem;right:1.5rem;}
+
+.nav-machine-scope {font-size:.75rem;color:var(--muted);white-space:nowrap;}
+.nav-header {gap:.75rem;}
+.nav-header .nav-search-label {flex-basis:12rem;}
+.nav-header .nav-markdown-toggle {gap:.3rem;}
+.nav-app .nav-reading-options {font-size:.75rem;}
+.nav-app-status {margin:.5rem 2.5rem;font-size:.8rem;color:var(--muted);}
+
+.nav-ask-context .nav-feed[data-prose="true"] {max-width:75ch;margin-inline:0;}
+.nav-ask-context .nav-conversation-meta {display:none;}
+.nav-ask-context .nav-conversation-details {margin-top:1rem;}
+.nav-ask-context-tools .nav-controller-refresh {margin:0;font-size:.75rem!important;}
+.nav-ask-context .nav-feed[data-prose="true"] .nav-feed-message {margin:.8rem 0;padding:.25rem 0;}
+.nav-ask-context .nav-feed[data-prose="true"] .nav-feed-message[data-kind="you"],.nav-ask-context .nav-feed[data-prose="true"] .nav-feed-message[data-kind="steer"] {padding:.8rem 1rem;}
+
+.nav-app[data-nav-page="/long"] .nav-long>h2 {display:none;}
+.nav-app[data-nav-page="/long"] .nav-long {padding-top:0;}
