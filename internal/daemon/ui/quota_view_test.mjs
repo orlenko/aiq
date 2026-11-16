@@ -88,6 +88,9 @@ test("helpers: percent, money in minor units, spans and quoted login commands", 
   // Well-formed but unsupported: Intl would assume two decimals; keep raw units.
   assert.equal(quotaMoney("ZZZ", 1234), "1234 minor units of ZZZ");
   assert.equal(quotaMoney("XQQ", 5), "5 minor units of XQQ");
+  // Engines' CLDR digits differ from ISO 4217 here; no table entry, raw units.
+  assert.equal(quotaMoney("HUF", 123400), "123400 minor units of HUF");
+  assert.equal(quotaMoney("KWD", 1500), "KWD 1.500");
   assert.equal(quotaMoney("USD", 9007199254740991), "USD 90071992547409.91");
   assert.equal(quotaSpan(0, 45), "45s");
   assert.equal(quotaSpan(0, 7500), "2h 05m");

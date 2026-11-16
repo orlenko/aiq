@@ -19,28 +19,21 @@ export function quotaPercent(value) {
   return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}%`;
 }
 
-// Currencies whose precision the runtime knows. Intl.NumberFormat accepts any
-// well-formed code and assumes two decimals for one it does not know.
-let currencies = null;
-function knownCurrency(code) {
-  if (currencies === null) {
-    try { currencies = new Set(Intl.supportedValuesOf("currency")); } catch { currencies = new Set(); }
-  }
-  return currencies.has(code);
-}
+// ISO 4217 minor-unit exponents for the currencies a provider is likely to bill
+// in. This is a fixed table, not the browser's: engines' currency data (CLDR)
+// disagrees with ISO for some codes (HUF, IQD, ...) and would scale amounts
+// differently in different browsers. Any other code keeps its raw minor units.
+const exponents = new Map([
+  ...["USD", "EUR", "GBP", "CAD", "AUD", "NZD", "CHF", "SEK", "NOK", "DKK", "PLN", "SGD", "HKD", "INR", "BRL", "MXN", "ZAR", "ILS", "AED"].map(c => [c, 2]),
+  ["JPY", 0], ["KRW", 0], ["BHD", 3], ["KWD", 3], ["OMR", 3], ["JOD", 3], ["TND", 3],
+]);
 
 // Minor units with the currency's own precision, by integer string arithmetic.
 // An unknown currency keeps the raw minor units rather than guessing a scale.
 export function quotaMoney(currency, minor) {
   if (!Number.isSafeInteger(minor)) return "";
-  let digits;
-  try {
-    if (typeof currency !== "string" || !/^[A-Z]{3}$/.test(currency) || !knownCurrency(currency)) throw new RangeError();
-    digits = new Intl.NumberFormat("en", {style: "currency", currency}).resolvedOptions().maximumFractionDigits;
-    if (!Number.isSafeInteger(digits) || digits < 0 || digits > 4) throw new RangeError();
-  } catch {
-    return `${minor} minor units${currency ? ` of ${currency}` : ", currency unknown"}`;
-  }
+  const digits = typeof currency === "string" ? exponents.get(currency) : undefined;
+  if (digits === undefined) return `${minor} minor units${currency ? ` of ${currency}` : ", currency unknown"}`;
   let text = String(Math.abs(minor));
   if (digits > 0) {
     text = text.padStart(digits + 1, "0");
