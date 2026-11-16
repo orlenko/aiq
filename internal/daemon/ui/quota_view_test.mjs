@@ -12,9 +12,9 @@ class Target {
 class Element extends Target {
   constructor(document, tag) {
     super();
-    Object.assign(this, {ownerDocument: document, tagName: tag, children: [], parentNode: null, attrs: new Map(), className: "", value: "", style: {}, id: "", type: "", colSpan: 1});
+    Object.assign(this, {ownerDocument: document, tagName: tag, children: [], parentNode: null, attrs: new Map(), className: "", value: "", style: {setProperty(k, v) { this[k] = v; }}, id: "", title: "", type: "", colSpan: 1});
   }
-  append(...nodes) { for (const n of nodes) { if (n.tagName === "#fragment") { this.append(...n.children); continue; } n.remove(); n.parentNode = this; this.children.push(n); } }
+  append(...nodes) { for (let n of nodes) { if (typeof n === "string") { const t = new Element(this.ownerDocument, "#text"); t.value = n; n = t; } if (n.tagName === "#fragment") { this.append(...n.children); continue; } n.remove(); n.parentNode = this; this.children.push(n); } }
   prepend(n) { n.remove(); n.parentNode = this; this.children.unshift(n); }
   replaceChildren(...nodes) { for (const n of [...this.children]) n.remove(); this.value = ""; this.append(...nodes); }
   remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(n => n !== this); this.parentNode = null; }
@@ -128,30 +128,32 @@ test("mounts only when connected, then reads once with an empty query", async ()
   assert.equal(f.status(), "Loading quotas");
   await f.resolve();
   assert.match(f.status(), /^Quotas updated/);
-  assert.equal(f.find("nav-quotas-provider").length, 2);
+  // One column per provider, side by side, as on the dashboard.
+  assert.equal(f.find("nav-quotas-column").length, 2);
+  assert.equal(f.find("nav-quotas-columns")[0].style["--nav-quota-cols"], "2");
   assert.deepEqual(f.find("nav-quotas-provider-heading").map(n => n.textContent), ["claude", "codex"]);
+  assert.equal(f.find("nav-quotas-heading").length, 1);
 });
 
 test("used bars, unknown windows, resets, binding, source and freshness", async () => {
   const f = fixture(); f.mount(); await f.resolve();
   const [known, unknown] = f.find("nav-quotas-window");
-  assert.match(known.textContent, /83% used · 17% left/);
-  assert.match(known.textContent, /resets in 2h 05m/);
-  assert.match(known.textContent, /limits this account/);
-  assert.match(known.textContent, /from probe/);
-  assert.match(known.textContent, /read 5m ago/);
+  assert.equal(known.textContent, "5h83% used, 17% left");
+  assert.equal(known.title, "five_hour · probe · read 5m ago");
   const fill = walk(known).find(n => n.className === "nav-quotas-fill");
   assert.equal(fill.style.width, "83%");
   assert.equal(fill.getAttribute("data-level"), "warn");
   // Unknown is never 0% used or free capacity.
-  assert.match(unknown.textContent, /usage unknown/);
-  assert.doesNotMatch(unknown.textContent, /\d+% (used|left)/);
+  assert.equal(unknown.textContent, "7d– usage unknown");
   assert.equal(walk(unknown).some(n => n.className === "nav-quotas-fill"), false);
   assert.equal(walk(unknown).find(n => n.className === "nav-quotas-bar").getAttribute("data-unknown"), "true");
-  assert.match(unknown.textContent, /reset time unknown/);
-  assert.match(unknown.textContent, /does not limit this account/);
-  assert.match(unknown.textContent, /model scope invented-model/);
-  assert.match(f.text(), /aiq last polled 2m ago · every 5m/);
+  assert.equal(unknown.getAttribute("data-binding"), "false");
+  const card = f.find("nav-quotas-card")[0];
+  assert.match(walk(card).find(n => n.className === "nav-quotas-sub").textContent, /^5h resets in 2h 05m · seen 1m ago$/);
+  const details = walk(card).find(n => n.className === "nav-quotas-details").textContent;
+  assert.match(details, /5h: 83% used, 17% left · resets .* · limits this account · from probe · read 5m ago/);
+  assert.match(details, /7d: usage unknown · reset time unknown · does not limit this account · model scope invented-model · from probe · read 5m ago/);
+  assert.equal(f.find("nav-quotas-meta")[0].textContent, "polled 2m ago · every 5m · claude scope: invented-model");
 });
 
 test("used over 100 clamps the bar and shows 0 left", async () => {
@@ -159,7 +161,7 @@ test("used over 100 clamps the bar and shows 0 left", async () => {
   const d = doc(); d.accounts[0].windows[0].used_pct = 130;
   await f.resolve(0, d);
   const row = f.find("nav-quotas-window")[0];
-  assert.match(row.textContent, /130% used · 0% left/);
+  assert.equal(row.textContent, "5h130% used, 0% left");
   assert.equal(walk(row).find(n => n.className === "nav-quotas-fill").style.width, "100%");
 });
 
@@ -169,9 +171,9 @@ test("paid extra usage keeps minor-unit precision and unknown balance", async ()
   d.accounts[0].extra_usage = {currency: "USD", balance_minor: 1234, used_minor: 250, limit_minor: 1000, limit_reached: false, note: "invented note"};
   d.accounts[1].extra_usage = {currency: "JPY", balance_minor: null, used_minor: 300, limit_minor: 0, limit_reached: true, note: ""};
   await f.resolve(0, d);
-  const [a, b] = f.find("nav-quotas-extra").map(n => n.textContent);
-  assert.equal(a, "Paid extra usage: USD 12.34 prepaid, USD 2.50 of USD 10.00 used this month (invented note)");
-  assert.equal(b, "Paid extra usage: balance unknown, 300 minor units of JPY used this month, monthly limit reached");
+  const [a, b] = f.find("nav-quotas-sub").map(n => n.textContent);
+  assert.match(a, / · extra usage USD 12\.34 prepaid, USD 2\.50 of USD 10\.00 this month \(invented note\) · /);
+  assert.match(b, / · extra usage balance unknown, 300 minor units of JPY this month, monthly limit reached · /);
 });
 
 test("reset credits, cooldown, exhaustion and leases", async () => {
@@ -182,15 +184,25 @@ test("reset credits, cooldown, exhaustion and leases", async () => {
   d.accounts[2].cooldown_until = NOW + 600;
   d.accounts[2].leases = [{mode: "worker", drain: "requested", depth: 2, pane: "", pid: 4242, workspace: "", cwd: "/invented/cwd", why: "invented why"}];
   await f.resolve(0, d);
-  assert.match(f.find("nav-quotas-credits")[0].textContent, /^2 reset credits, next expires /);
-  assert.equal(f.find("nav-quotas-credits")[1].textContent, "No reset credit");
+  const subs = f.find("nav-quotas-sub").map(n => n.textContent);
+  assert.match(subs[0], / · ⟳ 2 reset credits, next expires .* · seen 1m ago$/);
+  assert.match(subs[1], / · invented: 5h at 100% · no reset credit · /);
+  assert.match(subs[2], / · cooling down, usable in 10m · /);
   const cards = f.find("nav-quotas-card");
   assert.equal(cards[1].getAttribute("data-standing"), "bad");
-  assert.match(cards[1].textContent, /Exhausted: invented: 5h at 100%/);
-  assert.match(cards[2].textContent, /Cooling down, usable again in 10m/);
+  assert.equal(walk(cards[1]).find(n => n.className === "nav-quotas-badge").textContent, "exhausted");
   const leases = f.find("nav-quotas-lease");
   assert.equal(leases[0].textContent, "long%7/invented/work");
-  assert.equal(leases.at(-1).textContent, "worker · wrap-up requested · nested depth 2process 4242/invented/cwdinvented why");
+  assert.equal(leases.at(-1).textContent, "worker · requested · d2pid 4242/invented/cwdinvented why");
+});
+
+test("badges: rank and score, extra usage and last-resort tiers", async () => {
+  const f = fixture(); f.mount(); await f.resolve();
+  assert.deepEqual(f.find("nav-quotas-badge").map(n => n.textContent), ["#1 · 3.5/h", "#2 · score unknown · extra usage", "#1 · 3.5/h"]);
+  const g = fixture(); g.mount();
+  const d = doc(); d.accounts[2].rung = 3; d.accounts[0].eligible = false; d.accounts[0].ineligible = "invented: cooling";
+  await g.resolve(0, d);
+  assert.deepEqual(g.find("nav-quotas-badge").map(n => n.textContent), ["invented: cooling", "#2 · score unknown · extra usage", "#1 · 3.5/h · last resort #2"]);
 });
 
 test("login problems: copy a quoted command, keep raw errors behind a disclosure", async () => {
@@ -201,10 +213,10 @@ test("login problems: copy a quoted command, keep raw errors behind a disclosure
   d.accounts[2].login = login({cli_mismatch: true, cli_identity: "other@invented.test"});
   d.accounts[2].poll_error = "invented HTTP 500 body";
   await f.resolve(0, d);
+  assert.deepEqual(f.find("nav-quotas-badge").map(n => n.textContent), ["no login", "login unreadable", "CLI is other@invented.test"]);
   const cards = f.find("nav-quotas-card");
-  assert.match(cards[0].textContent, /Not logged in/);
-  assert.match(cards[2].textContent, /CLI is logged in as other@invented\.test/);
   assert.equal(walk(cards[1]).some(n => n.className === "nav-quotas-copy"), false);
+  assert.match(f.find("nav-quotas-sub")[2].textContent, /last usage read failed/);
   // Raw text only inside <details>; the visible line is a summary.
   for (const raw of ["invented keychain text 0xdead", "invented HTTP 500 body"]) {
     const holder = walk(f.document.body).find(n => n.tagName === "pre" && n.textContent === raw);
@@ -214,6 +226,7 @@ test("login problems: copy a quoted command, keep raw errors behind a disclosure
   }
   const buttons = f.find("nav-quotas-copy");
   assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].getAttribute("aria-label"), "Copy login command for claude/a");
   buttons[0].click();
   await tick();
   assert.deepEqual(f.copies, ["aiq account login claude/a"]);
@@ -235,16 +248,18 @@ test("a copy that fails is reported; a disabled account offers no command", asyn
   assert.equal(f.announcements.at(-1), "Could not copy the login command");
 });
 
-test("ranking tables keep order, score, tier and reason", async () => {
+test("the next-pick table keeps order, score, tier and reason", async () => {
   const f = fixture(); f.mount(); await f.resolve();
   const tables = f.find("nav-quotas-table");
-  assert.equal(tables.length, 2);
-  const rows = walk(tables[0]).filter(n => n.tagName === "tr").slice(1).map(r => r.children.map(c => c.textContent));
+  assert.equal(tables.length, 1);
+  const rows = walk(tables[0]).filter(n => n.tagName === "tr").map(r => r.children.map(c => c.textContent));
   assert.deepEqual(rows, [
-    ["1", "claude/a", "3.5/h", "5h 83% used"],
-    ["2", "claude/b", "unknown", "uses paid extra usage"],
-    ["3", "claude/z", "not eligible", "invented: logged out"]]);
-  assert.match(tables[1].textContent, /claude · workers.*No account/);
+    ["claude · interactive"],
+    ["1. claude/a", "3.5/h", "5h 83% used"],
+    ["2. claude/b", "score unknown", "extra usage"],
+    ["3. claude/z", "", "invented: logged out"],
+    ["claude · worker"],
+    ["no account"]]);
 });
 
 test("machine identity and scoring terms stay in technical disclosures", async () => {
