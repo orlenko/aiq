@@ -255,8 +255,11 @@ export function createSessionController(document, options) {
   }
   function listReceived(op,data){
     if(!alive(op)||frozen)return;
-    if(!data.partial||data.sessions.length){listCommit(op,data);return;}
-    // An interrupted empty scan cannot establish that known sessions vanished.
+    const hasConversation=data.sessions.some(row=>row.kind!=="workspace");
+    if(!data.partial||hasConversation){listCommit(op,data);return;}
+    // Metadata-only workspace rows do not establish a completed transcript scan.
+    // Show them on a cold start while retaining a useful prior conversation list.
+    if(data.sessions.length&&!listView?.data.sessions.some(row=>row.kind!=="workspace"))listCommit(op,data);
     // Only live unscanned responses get bounded retries; cache seeds never do.
     const retry=data.scanned===0&&(op.emptyRetries??0)<2&&!document.hidden&&root.isConnected;
     incompleteList(op,retry);

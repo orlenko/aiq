@@ -105,7 +105,7 @@ body {margin:0;font:14px/1.45 system-ui,sans-serif;}
 .nav-controller-list .nav-session-table .nav-controller-row {display:table-row;margin:0!important;padding:0!important;border-block-end:1px solid var(--nav-line)!important;}
 .nav-controller-list .nav-session-table .nav-controller-row[hidden] {display:none!important;}
 .nav-controller-list .nav-session-table .nav-controller-row:hover {background:var(--nav-band);}
-.nav-controller-list .nav-session-table .nav-controller-row[data-current="true"] {padding:0!important;border-inline-start:0;background:var(--nav-select);}
+.nav-controller-list .nav-session-table .nav-controller-row[data-current="true"] {padding:0!important;border-inline-start:0;}
 .nav-controller-list .nav-session-table .nav-controller-select {display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;width:100%;border:0;background:transparent;box-shadow:none;text-align:start;padding:0;min-height:1.3rem;font-size:.85rem;line-height:1.45;color:var(--fg);font-weight:500;}
 .nav-session-table .nav-controller-select:focus-visible {outline:2px solid var(--accent);outline-offset:3px;}
 .nav-session-table .nav-grid-workspace {font-weight:500;text-decoration:none;}

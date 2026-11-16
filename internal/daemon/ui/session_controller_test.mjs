@@ -689,3 +689,10 @@ test('grid admission retains honest legacy defaults and rejects invalid workspac
  }
  f.clean();
 });
+
+
+test('metadata-only cold snapshots retry transcript discovery and retain prior conversations',async()=>{
+ const f=fixture();f.mount();f.controller.loadSessions(query());const provisional=sessions('/fixture/A',[row('B',{kind:'workspace',id:'',workspace:'/fixture/recorded',label:'',title:''})]);provisional.scanned=0;
+ f.listCalls[0].resolve(provisional);await tick();assert.equal(rows(f).length,0);assert.equal(find(f,n=>has(n,'nav-controller-row')).length,1);assert.equal(f.timers.size,1);
+ f.poll();f.listCalls[1].resolve(sessions());await tick();assert.equal(rows(f)[0].textContent,'row A');f.controller.refresh();f.listCalls[2].resolve(provisional);await tick();assert.equal(rows(f)[0].textContent,'row A');f.clean();
+});
