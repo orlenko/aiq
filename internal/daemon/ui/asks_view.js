@@ -324,7 +324,7 @@ export function createAsksView(document, data, options) {
       const quote = node("div", "nav-asks-body"), details = node("div", "nav-asks-details");
       quote.id = `${article.id}-quote`; details.id = `${article.id}-details`; details.hidden = true;
       const row = {group, data, article, quote, details, wording:node("p", "nav-asks-wording", "Original wording"),
-        expanded:false, generation:0n, ready:null, heading:node("h3", "nav-asks-item-heading", `Ask ${data.id}`),
+        expanded:inbox, generation:0n, ready:null, heading:node("h3", "nav-asks-item-heading", `Ask ${data.id}`),
         current:null, toggle:button("Show details"), copy:button("Copy quote"), nav:button("Open conversation"),command:null};
       rows.push(row); group.rows.push(row); group.region.append(article);
       article.append(row.heading,

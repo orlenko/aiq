@@ -81,6 +81,15 @@ test('inbox restores only selection and expanded groups from its bounded present
  const state=f.view.viewState();assert.deepEqual(state,{selectedId:'2',expanded:[false,true,false,false,false]});assert(Object.isFrozen(state)&&Object.isFrozen(state.expanded));
  assert.equal(f.view.focusSelected(),true);assert.equal(f.document.activeElement.getAttribute('aria-current'),'true');f.clean();assert.equal(f.view.focusSelected(),false);
 });
+test('initially collapsed inbox groups start with latest wording and retain an explicit original choice',async()=>{
+ for(const restored of [undefined,{selectedId:'3',expanded:[false,false,false,false,false]}]){
+  const f=fixture({inbox:true,viewState:restored});f.mount();click(f,'Other open (1)');find(f,'nav-asks-pick')[3].click();
+  let panel=find(f,'nav-asks-selected').find(visible);assert(find(f,'nav-asks-question').find(visible).textContent.includes('latest quote'));
+  walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Copy quote').click();await tick();assert.equal(f.copies.at(-1),latestCopy);
+  walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Show original').click();click(f,'Other open (1)');click(f,'Other open (1)');find(f,'nav-asks-pick')[3].click();
+  panel=find(f,'nav-asks-selected').find(visible);assert(find(f,'nav-asks-question').find(visible).textContent.includes('original quote'));walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Copy quote').click();await tick();assert.equal(f.copies.at(-1),firstCopy);f.clean();
+ }
+});
 test('detached construction, retry, five native disclosures, exact owned text and mode',async()=>{
   const data=snapshot(),f=fixture({},data);assert.equal(f.view.mount(),false);
   f.view.refresh();assert.equal(f.copies.length+f.navigations.length+f.observers.length,0);
