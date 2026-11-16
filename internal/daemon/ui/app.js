@@ -233,7 +233,7 @@ export function createAppHost(document,options) {
     try{
       const child=createSessionController(document,{window,idPrefix:"nav-ask-context-"+(++generation),limits,conversationOnly:true,prose:true,autoFollow:false,readingControls:false,readCommands:false,resumeCommands:false,
         detailQuery:{last:5,markup:marks.checked,anchor:anchor??0},readSessions:()=>Promise.reject(refused()),readConversation:(q,s)=>op.lease.read("conversation",q,s),copyText:t=>copy(t,op),announce:text=>{if(valid())announce(text);},onSelection:()=>{}});
-      if(!valid()){child.teardown();return;}op.contextController=child;body.append(child.fragment);const contextRefresh=body.querySelector(".nav-controller-refresh");if(contextRefresh){contextRefresh.textContent="Refresh context";tools.append(contextRefresh);}if(!child.mount()){child.teardown();return;}child.selectConversation({provider:value.provider,id:value.id});
+      if(!valid()){child.teardown();return;}op.contextController=child;body.append(child.fragment);const contextRefresh=body.querySelectorAll(".nav-controller-refresh")[1];if(contextRefresh){contextRefresh.textContent="Refresh context";tools.append(contextRefresh);}if(!child.mount()){child.teardown();return;}child.selectConversation({provider:value.provider,id:value.id});
     }catch{if(valid())contextStatus.textContent="Conversation context unavailable. Try opening the full conversation.";}
   }
   async function performAskAction(op,value){
@@ -330,7 +330,7 @@ export function createAppHost(document,options) {
     }
     normalizeStatuses();if(focus&&active(op))title.focus({preventScroll:true});
   }
-  function tabAddress(path){return path==="/help"||path==="/quotas"?address(path):path==="/long"?address(path,sharedScope.dir):address(path,sharedScope.dir,sharedScope.all);}
+  function tabAddress(path){return path==="/help"||path==="/quotas"?address(path):path==="/long"?address(path):address(path,sharedScope.dir,sharedScope.all);}
   function goBack(){try{if(window.history.state?.aiqNavigator===1&&window.history.length>1){window.history.back();return;}}catch{}const all=Boolean(currentAddress?.all&&currentAddress.path.startsWith("/sessions"));navigate(address("/sessions",all?"":currentAddress?.dir||lastDirectory,all),{replace:true});}
   function keys(e){
     if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)||e.target.isContentEditable)return;
