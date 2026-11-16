@@ -39,7 +39,7 @@ export function navigateNavigatorRows(event,active,singleKeys=true){
   else if(["g","Home"].includes(event.key))next=0;
   else if(["G","End"].includes(event.key))next=entries.length-1;
   else return false;
-  const target=entries[next]?.controls[0];if(!target)return false;
+  const target=entries[next]?.controls.find(c=>c.classList?.contains("nav-controller-select"))??entries[next]?.controls[0];if(!target)return false;
   event.preventDefault();target.focus();setNavigatorRoving(group,target);return true;
 }
 function address(path,dir="",all=false,anchor=0) {
@@ -68,9 +68,9 @@ export function createAppHost(document,options) {
   const button=(text,cls="")=>{const n=node("button",cls,text);n.type="button";return n;};
   const shell=node("div","nav-shell"),header=node("header","nav-header"),nav=node("nav","nav-tabs");nav.setAttribute("aria-label","Navigator pages");
   const title=node("h2","nav-page-title","Sessions");title.tabIndex=-1;
-  const links=new Map();for(const [path,label]of [["/asks","Asks"],["/sessions","Sessions"],["/long","Workspaces"],["/quotas","Quotas"],["/help","Help"]]){const a=node("a","nav-tab",label);a.href=path;a.rel="noreferrer";links.set(path,a);nav.append(a);}
+  const links=new Map();for(const [path,label]of [["/asks","Asks"],["/sessions","Sessions"],["/quotas","Quotas"],["/help","Help"]]){const a=node("a","nav-tab",label);a.href=path;a.rel="noreferrer";links.set(path,a);nav.append(a);}
   const brand=node("a","nav-brand","aiq");brand.href="/asks?all=true";
-  const back=button("← Back","nav-back");const machine=node("span","nav-machine-scope","This machine");machine.title="Sessions and asks on this computer. Cross-machine aggregation is not available yet.";header.append(brand,nav,machine);
+  const back=button("← Back","nav-back");const machine=node("span","nav-machine-scope","This machine");machine.title="Sessions and asks on this computer. Quotas also shows configured remote machines.";header.append(brand,nav,machine);
   const toolbar=node("form","nav-toolbar"),dirLabel=node("label","nav-directory-label","Directory"),dirInput=node("input","nav-directory"),apply=button("Show directory");
   dirInput.type="text";dirInput.autocomplete="off";dirInput.spellcheck=false;dirInput.placeholder="/absolute/project/path";dirLabel.append(dirInput);apply.type="submit";
   const allLabel=node("label","nav-toggle"),allInput=node("input");allInput.type="checkbox";allLabel.append(allInput,document.createTextNode(" All Asks"));
@@ -115,6 +115,7 @@ export function createAppHost(document,options) {
     if(currentAddress?.path==="/asks"){
       const has=current?.controller?.setFilter(search.value,explicit===true);filterEmpty.hidden=!q||has;filterMessage.textContent="No loaded asks match.";roving();return;
     }
+    if(currentAddress?.path.startsWith("/sessions")){current?.controller?.setFilter(search.value,liveOnly.checked);filterEmpty.hidden=true;roving();return;}
     const rows=[...content.querySelectorAll(".nav-controller-row")];
     for(const row of rows)row.hidden=q!==""&&!(row.getAttribute("data-filter-text")??row.textContent).toLocaleLowerCase().includes(q)||liveOnly.checked&&currentAddress?.path.startsWith("/sessions")&&!["live","open"].includes(row.getAttribute("data-nav-live"));
     filterEmpty.hidden=!(rows.length&&q&&!rows.some(row=>!row.hidden));filterMessage.textContent="No loaded sessions match.";
@@ -161,6 +162,7 @@ export function createAppHost(document,options) {
   }
   function navigate(next,{replace=false,pop=false,focus=true,automatic=false,reason=""}={}){
     let parsed;try{parsed=route(next);}catch{announce("Choose a navigator page and an absolute directory.");return;}
+    if(parsed.path==="/long"&&!parsed.dir)parsed=route("/sessions?all=true");
     if(["/asks","/sessions"].includes(parsed.path)&&!parsed.dir&&!parsed.all)parsed=route(parsed.path+"?all=true");
     if(!alive())return;if(!pop&&!navHistory(parsed.next,replace))return;
     scopeReason=automatic?(reason==="directory fallback"?"directory fallback":reason==="most recent found"?"most recent found":"most recent"):"";render(parsed,focus);
@@ -287,10 +289,11 @@ export function createAppHost(document,options) {
   }
   function showAskOrigin(value){const matches=value&&askOrigin&&value.id===askOrigin.id&&value.provider===askOrigin.provider;askReturn.hidden=!matches;if(matches)askContext.textContent=`Ask ${askOrigin.askId} · ${askOrigin.located?"Showing the located turn.":"Turn not located; showing the session."}`;}
   function help(){
-    const section=node("section","nav-help");section.append(node("h3","","Read your sessions"),node("p","","Choose a directory to list its sessions, then open a conversation. Search filters only the results already loaded. Refresh reads a new snapshot; it never types into or resumes a session."),node("h3","","Asks"),node("p","","Choose a session to review its pending asks. Dismiss an ask here when it no longer needs attention; Undo restores a dismissal. The adjacent pane shows its original conversation when the turn can be located, or labels a session fallback. Done and dismissed items remain available for restoration."),node("h3","","Login and privacy"),node("p","","Open this tab with aiq ui. Its login expires after 30 minutes without successful requests or eight hours total. Forget this tab clears its saved login; aiq ui --revoke signs out every browser. After a daemon restart or a terminal connection failure, run aiq ui again. Remote browsers and SSH forwarding are unsupported."),node("p","","Conversation window, theme, Markdown marks and keyboard choices last for this open page. Tab always belongs to your browser. Copy requires an explicit action. Session control remains in the terminal."));
+    const section=node("section","nav-help");section.append(node("h3","","Read your sessions"),node("p","","Sessions includes recorded workspaces and conversations in one table. Sort by a column heading or filter beneath it; open a session to read its conversation, or a workspace for its history and terminal controls. Filters apply to the loaded snapshot. Refresh reads a new snapshot; it never types into or resumes a session."),node("h3","","Asks"),node("p","","Choose a session to review its pending asks. Dismiss an ask here when it no longer needs attention; Undo restores a dismissal. The adjacent pane shows its original conversation when the turn can be located, or labels a session fallback. Done and dismissed items remain available for restoration."),node("h3","","Login and privacy"),node("p","","Open this tab with aiq ui. Its login expires after 30 minutes without successful requests or eight hours total. Forget this tab clears its saved login; aiq ui --revoke signs out every browser. After a daemon restart or a terminal connection failure, run aiq ui again. Remote browsers and SSH forwarding are unsupported."),node("p","","Conversation window, theme, Markdown marks and keyboard choices last for this open page. Tab always belongs to your browser. Copy requires an explicit action. Session control remains in the terminal."));
     return section;
   }
   function render(parsed,focus){
+    if(parsed.path==="/long"&&!parsed.dir){navigate("/sessions?all=true",{replace:true,focus});return;}
     clearRoute();if(!alive())return;status.textContent="";
     currentAddress=parsed;if(parsed.dir)lastDirectory=parsed.dir;
     root.setAttribute("data-nav-page",parsed.path);machine.hidden=parsed.path==="/quotas";
@@ -308,13 +311,13 @@ export function createAppHost(document,options) {
     recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help"||parsed.path==="/long";catalogStatus.textContent="";directoryTree.replaceChildren();directoryTree.hidden=true;allSessions.hidden=["/long","/help","/quotas"].includes(parsed.path);
     scopeMenu.hidden=["/asks","/long","/help","/quotas"].includes(parsed.path);searchLabel.hidden=parsed.path==="/help"||parsed.path==="/quotas";search.placeholder=parsed.path==="/asks"?"Filter loaded asks":"Filter loaded sessions";
     readingOptions.hidden=windowLabel.hidden;back.hidden=!selected(parsed)&&!(parsed.path==="/long"&&parsed.dir);
-    title.textContent=parsed.path==="/long"?"Workspaces":parsed.path==="/asks"?"Asks":parsed.path==="/quotas"?"Quotas":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
+    title.textContent=parsed.path==="/long"?"Workspace history":parsed.path==="/asks"?"Asks":parsed.path==="/quotas"?"Quotas":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
     title.hidden=Boolean(selected(parsed))||parsed.path==="/quotas";
     controls.hidden=workersLabel.hidden&&liveLabel.hidden&&windowLabel.hidden&&back.hidden;
     liveLabel.hidden=parsed.path!=="/sessions"||Boolean(selected(parsed));
     if(parsed.path==="/sessions"&&scopeReason)title.textContent+=" · "+scopeReason;
     document.title=title.textContent+" — aiq";
-    for(const[path,a]of links){a.href=tabAddress(path);if(path==="/sessions"&&parsed.path.startsWith("/sessions")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
+    for(const[path,a]of links){a.href=tabAddress(path);if(path==="/sessions"&&(parsed.path.startsWith("/sessions")||parsed.path==="/long")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
     if(parsed.path==="/help"){content.append(help());if(focus)title.focus({preventScroll:true});return;}
     if(parsed.path.startsWith("/sessions")){recent.replaceChildren();recent.disabled=true;catalogStatus.textContent="Loading recent directories…";void loadDirectories(op,parsed);}
     const announceCurrent=text=>{if(active(op)){announce(text);if(text==="Asks updated"&&restored&&op.restoreAllowed)window.requestAnimationFrame(()=>{if(!active(op)||!op.restoreAllowed||document.activeElement!==title)return;op.restoreAllowed=false;if(op.controller.focusSelected())window.scrollTo({top:restored.scroll,behavior:"instant"});});}};
@@ -341,7 +344,7 @@ export function createAppHost(document,options) {
         detailQuery:{last:parsed.anchor?50:lastPrompts,markup:marks.checked,anchor:parsed.anchor},
         readSessions:(q,s)=>op.lease.read("sessions",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),readState:(q,s)=>op.lease.read("state",q,s),
         onNewest:v=>{if(active(op))navigate(address("/sessions/"+v.provider+"/"+v.id,parsed.dir,parsed.all),{replace:true});},
-        copyText:t=>copy(t,op),announce:announceCurrent,onSelection:v=>selectionChanged(op,v)});
+        copyText:t=>copy(t,op),announce:announceCurrent,onWorkspace:(dir,history)=>{if(active(op))navigate(address(history?"/long":"/sessions",dir));},onSelection:v=>selectionChanged(op,v)});
     }
     if(!active(op)){op.controller.teardown();return;}
     if(parsed.path==="/asks"){

@@ -42,7 +42,7 @@ const detail = {build:"str", session, earlier_hidden:"uint", later_hidden:"uint"
 const activity={live:"str",pid:"uint",managed:"bool",workspace:"str",account:"str",launcher:"str",pane:"str",lease_id:"str",started:"str",drain:"str",drain_manual:"bool",continued:"bool"};
 const activitySummary={known:"bool",live:"uint",elsewhere:"uint",claude_open_known:"bool",observed:time};
 const row = {provider:"str", id:"str", cwd:"str", label:"str", title:"str", model:"str", branch:"str",
-  updated:"str", turns:"uint", tools:"uint", worker:"bool", bypass:"bool",activity:{optional:activity}};
+  updated:"str", turns:"uint", tools:"uint", worker:"bool", bypass:"bool",activity:{optional:activity},kind:{optional:"str"},workspace:{optional:"str"},workspace_known:{optional:"bool"},pending_asks:{optional:"uint"},pending_asks_known:{optional:"bool"}};
 const list = {dir:"str", roots_searched:["str"], partial:"bool", scanned:"uint", of:"uint",
   unreadable_count:"uint", sessions:[row],activity:{optional:activitySummary}};
 const catalog={source:"str",directories:[{path:"str",updated_ms:"uint"}]};
@@ -158,7 +158,11 @@ export function captureSessions(data, expectedCanonicalDir, limits, all=false) {
     require(out.dir === expectedCanonicalDir);
     if(out.activity){validTime(out.activity.observed);require(out.activity.elsewhere<=out.activity.live&&(!all||out.activity.elsewhere===0));}
     for (const item of out.sessions) {
-      item.selectable = ["claude", "codex", "agy"].includes(item.provider) && uuid.test(item.id);
+      item.kind??="session";item.workspace??="";item.workspace_known??=false;item.pending_asks??=0;item.pending_asks_known??=false;
+      require(["session","workspace"].includes(item.kind));if(item.workspace)directory(item.workspace);
+      require(!item.workspace_known||item.workspace!=="");
+      require(item.kind!=="workspace"||item.id===""&&item.workspace!=="");
+      item.selectable = item.kind==="session" && ["claude", "codex", "agy"].includes(item.provider) && uuid.test(item.id);
       const value=item.activity;
       if(value){
         require(["unknown","recent","open","live","ended"].includes(value.live)&&value.pid<=2147483647);

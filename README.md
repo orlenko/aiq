@@ -716,8 +716,14 @@ storage is reported and the login can remain in memory for the open page.
 The numeric-loopback HTTP connection assumes trusted initial page loading and
 does not encrypt directory names or session IDs.
 
-Sessions offers a recent directory catalog, All Sessions, workers, loaded-text
-search and a live/registered-open filter. Activity is a dated snapshot; Refresh
+Sessions combines conversations and recorded workspaces in one table. Workspace,
+session name, provider, pending asks, last activity and status have sortable
+column headings and filters. Sorting and filtering cover the loaded snapshot;
+partial results stay labelled. Pending asks count open asks attached to each
+conversation; unavailable counts stay unknown. Workspaces without a listed
+conversation remain available through their history link. A recent directory
+catalog, workers, loaded-text search and a live/registered-open filter can narrow
+the view. Activity is a dated snapshot; Refresh
 checks it again. A managed live mark requires a positive terminal observation
 and an unchanged lease. A Claude PID registration is labelled separately, and
 recent Codex or Antigravity writes are hints rather than live proof. Unknown
