@@ -20,7 +20,7 @@ export function createAsksController(document, options) {
   const inbox=options.inbox??false;if(typeof inbox!=="boolean")fail();
   let viewState=options.viewState??null;
   let onPlacement=placementOption?.value;
-  let onSelection=options.onSelection,onAction=options.onAction;
+  let onSelection=options.onSelection,onAction=options.onAction,onBatchAction=options.onBatchAction;
   if (placementOption && (!Object.hasOwn(placementOption,"value") || typeof onPlacement!=="function")) fail();
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
       !/^[A-Za-z][A-Za-z0-9_-]*$/.test(idPrefix) ||
@@ -93,10 +93,10 @@ export function createAsksController(document, options) {
     cleanup(c);
   }
   function reserve() {
-    try{onSelection?.(null);}catch{}
     const op = {waiting:false, mode:"", dir:""}, old = candidate, flight = readFlight;
     viewState=old?.child?.viewState()??viewState;
     intent = op; retry = null; candidate = null;
+    try{onSelection?.(null);}catch{}
     retire(old, op, true); abort(flight);
     return op;
   }
@@ -161,6 +161,10 @@ export function createAsksController(document, options) {
         inbox,viewState,
         onSelection:value=>{if(current(op)&&candidate===c&&!c.retired)onSelection?.(value);},
         onAction:onAction?value=>{if(!eligible(c))return Promise.reject(new Error("Ask unavailable"));return onAction(value);}:undefined,
+        onBatchAction:onBatchAction?(items,scope,signal,valid)=>{
+          if(!eligible(c))return Promise.reject(new Error("Asks unavailable"));
+          return onBatchAction(items,scope,signal,()=>eligible(c)&&valid());
+        }:undefined,
         expectedScope:{mode:op.mode, dir:op.dir}, limits:{...limits},
         copyText:text => copy(c, text),
         announce:message => { if (eligible(c)) announce(message); },
@@ -232,11 +236,11 @@ export function createAsksController(document, options) {
       retire(old, null, false); root.remove(); root.replaceChildren();
       refreshButton.removeEventListener("click", refresh);
       abort(flight);
-      readAsks = null; copyText = null; announce = null; onConversation = null; onPlacement = null;onSelection=null;onAction=null;
+      readAsks = null; copyText = null; announce = null; onConversation = null; onPlacement = null;onSelection=null;onAction=null;onBatchAction=null;
     });
   }
   refreshButton.addEventListener("click", refresh);
   return {fragment, mount, loadScope, refresh, teardown,viewState:()=>candidate?.child?.viewState()??viewState,
-    setFilter:value=>candidate?.child?.setFilter(value)??false,
+    setFilter:(value,explicit=false)=>candidate?.child?.setFilter(value,explicit)??false,
     focusSelected:()=>Boolean(candidate&&eligible(candidate)&&candidate.child.focusSelected())};
 }

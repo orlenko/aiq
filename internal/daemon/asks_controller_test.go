@@ -25,7 +25,7 @@ func TestNavigatorAsksControllerNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Asks controller fixtures failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "# pass 26") || !strings.Contains(string(out), "# fail 0") {
+	if !strings.Contains(string(out), "# pass 27") || !strings.Contains(string(out), "# fail 0") {
 		t.Fatalf("Asks controller fixtures did not complete all literal cases:\n%s", out)
 	}
 }

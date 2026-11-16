@@ -16,6 +16,13 @@ function clock(value) {
   const date = new Date(value.ms);
   return Number.isNaN(date.getTime()) ? `milliseconds since epoch: ${value.ms}` : date.toISOString();
 }
+function localClock(value) {
+  if (!value.known) return "time unknown";
+  const date = new Date(value.ms);
+  if (!Number.isFinite(date.getTime())) return "time unknown";
+  return date.toLocaleString(undefined, {year:"numeric", month:"short", day:"numeric",
+    hour:"numeric", minute:"2-digit", timeZoneName:"short"});
+}
 // Display the admitted line text, while clipboard operations retain the exact
 // separately supplied quotation. Terminal decoration is not question content.
 function questionText(wording){return wording.lines.map(line=>line.spans.filter(span=>!span.d).map(span=>span.t).join("")).join("\n").trim()||"Question text unavailable";}
@@ -25,10 +32,10 @@ export function createAsksView(document, data, options) {
   const {window, idPrefix} = options || {};
   const inbox=options?.inbox??false;
   const restored=options?.viewState??null;
-  let {copyText, announce, onConversation, onPlacement, onSelection, onAction} = options || {};
+  let {copyText, announce, onConversation, onPlacement, onSelection, onAction, onBatchAction} = options || {};
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
       !/^[A-Za-z][A-Za-z0-9_-]*$/.test(idPrefix) ||
-      typeof inbox!=="boolean" || ![copyText, announce, onConversation].every(f => typeof f === "function") || onPlacement!==undefined && typeof onPlacement!=="function" || onSelection!==undefined && typeof onSelection!=="function" || onAction!==undefined && typeof onAction!=="function") {
+      typeof inbox!=="boolean" || ![copyText, announce, onConversation].every(f => typeof f === "function") || onPlacement!==undefined && typeof onPlacement!=="function" || onSelection!==undefined && typeof onSelection!=="function" || onAction!==undefined && typeof onAction!=="function" || onBatchAction!==undefined && typeof onBatchAction!=="function") {
     throw new TypeError("could not configure Asks view");
   }
   let snapshot = captureAsks(data, options.expectedScope, options.limits);
@@ -44,6 +51,8 @@ export function createAsksView(document, data, options) {
   const overviewButtons = [],commandButtons=[];
   let selectedInbox=null,inboxPanel=null,selectedSession=null,sessionHeading=null,sessionPath=null,sessionFacts=null,sessionQuestions=null,filterText="",actionFlight=null;
   const sessions=[],sessionByKey=new Map();
+  let bulkButton=null,bulkConfirm=null,bulkIntent=null,bulkFlight=null;
+  const bulkRemoves=[];
   function node(tag, className, text) {
     const n = document.createElement(tag); n.className = className;
     if (text !== undefined) n.textContent = text;
@@ -71,7 +80,11 @@ export function createAsksView(document, data, options) {
       row.copy.setAttribute("aria-disabled", !eligible(row) || flight ? "true" : "false");
       if(row.command)row.command.setAttribute("aria-disabled",!eligible(row)||flight?"true":"false");
       row.nav.setAttribute("aria-disabled", !eligible(row) || !row.data.selectable ? "true" : "false");
-      if(row.action)row.action.disabled=!eligible(row)||Boolean(actionFlight)||!row.data.revision;
+      if(row.action)row.action.disabled=!eligible(row)||Boolean(actionFlight||bulkFlight)||!row.data.revision;
+    }
+    if(bulkButton){const pending=selectedSession?.rows.filter(row=>row.data.state==="open")??[];
+      bulkButton.textContent=`Dismiss all ${pending.length} pending asks`;
+      bulkButton.disabled=phase!=="ready"||!root?.isConnected||Boolean(actionFlight||bulkFlight)||!pending.length||!selectedSession?.id||pending.some(row=>!row.data.revision)||new Set(pending.map(row=>row.data.id)).size!==pending.length;
     }
   }
   function cleanFocus(intent) {
@@ -217,6 +230,7 @@ export function createAsksView(document, data, options) {
   function selectInbox(row){
     if(!inbox||phase!=="ready"||!root?.isConnected||row&&!row.group.expanded)return;
     if(row&&selectedInbox===row){syncSessions();controls();return;}
+    if(row&&selectedSession!==row.session)cancelBulk();
     if(selectedInbox){selectedInbox.panel.hidden=true;selectedInbox.article.append(selectedInbox.panel);selectedInbox.pick.removeAttribute("aria-current");selectedInbox.article.setAttribute("data-selected","false");}
     selectedInbox=row;inboxPanel.replaceChildren();
     if(row){selectedSession=row.session;syncSessions();if(sessionQuestions)selectedSession.item.append(sessionQuestions);row.panel.hidden=false;inboxPanel.append(row.panel);row.pick.setAttribute("aria-current","true");row.article.setAttribute("data-selected","true");}
@@ -245,25 +259,51 @@ export function createAsksView(document, data, options) {
     if(phase!=="ready"||!root?.isConnected)return;
     const row=session.rows.find(row=>row.data.state==="open"&&matches(row))??session.rows.find(matches);
     if(!row)return;
-    selectedSession=session;
+    if(selectedSession!==session)cancelBulk();selectedSession=session;
     if(!row.group.expanded)toggleGroup(row.group);
     selectInbox(row);
   }
-  function setFilter(value){
+  function setFilter(value,explicit=false){
     if(phase!=="ready"||!inbox||typeof value!=="string")return false;
     filterText=value.toLocaleLowerCase();
     if(!selectedInbox||!matches(selectedInbox)){
-      const row=rows.find(row=>row.session===selectedSession&&row.data.state==="open"&&matches(row))??rows.find(row=>row.data.state==="open"&&matches(row))??rows.find(matches);
+      const row=rows.find(row=>row.session===selectedSession&&row.data.state==="open"&&matches(row))??
+        (explicit||!selectedSession||selectedSession.pending===0?rows.find(row=>row.data.state==="open"&&matches(row))??rows.find(matches):null);
       if(row){selectedSession=row.session;if(!row.group.expanded)toggleGroup(row.group);selectInbox(row);}else if(selectedInbox)selectInbox(null);
     }
     syncSessions();inboxPanel.hidden=!selectedInbox||!matches(selectedInbox);return rows.some(matches);
   }
   async function act(row){
-    if(!eligible(row)||actionFlight||!row.data.revision||!onAction)return;
+    if(!eligible(row)||actionFlight||bulkFlight||!row.data.revision||!onAction)return;
     const token={};actionFlight=token;controls();
     try{await onAction(Object.freeze({id:row.data.id,revision:row.data.revision,action:row.data.state==="open"?"dismiss":"restore"}));}
     catch{if(eligible(row))status.textContent="Could not update this ask. Refresh Asks before trying again.";}
     finally{if(actionFlight===token)actionFlight=null;if(phase==="ready")controls();}
+  }
+  function cancelBulk(){
+    for(const remove of bulkRemoves.splice(0))remove();
+    bulkIntent=null;if(bulkConfirm){bulkConfirm.hidden=true;bulkConfirm.replaceChildren();}
+    try{bulkFlight?.abort.abort();}catch{}
+  }
+  function prepareBulk(){
+    if(!inbox||phase!=="ready"||!root?.isConnected||bulkButton.disabled||!onBatchAction)return;
+    cancelBulk();
+    const bind=(target,type,fn)=>{target.addEventListener(type,fn);bulkRemoves.push(()=>target.removeEventListener(type,fn));};
+    const session=selectedSession,items=Object.freeze(session.rows.filter(row=>row.data.state==="open").map(row=>Object.freeze({id:row.data.id,revision:row.data.revision,action:"dismiss"})));
+    const intent={session,items};bulkIntent=intent;bulkConfirm.replaceChildren();bulkConfirm.hidden=false;
+    const scope=node("p","",`Dismiss all ${items.length} pending asks in ${session.workspace}?`),identity=node("p","",`${session.provider} · ${session.id}`),confirm=button(`Dismiss ${items.length} asks`),cancel=button("Cancel");
+    bulkConfirm.append(scope,identity,confirm,cancel);
+    bind(cancel,"click",()=>{cancelBulk();bulkButton.focus();});
+    bind(confirm,"click",async()=>{
+      if(bulkIntent!==intent||phase!=="ready"||selectedSession!==session||!root?.isConnected||bulkFlight)return;
+      const token={abort:new window.AbortController()};bulkFlight=token;bulkIntent=null;bulkConfirm.hidden=true;controls();
+      const valid=()=>phase==="ready"&&root?.isConnected&&bulkFlight===token&&!token.abort.signal.aborted&&selectedSession===session;
+      try{await onBatchAction(items,Object.freeze({sessionKey:session.key,workspace:session.workspace,provider:session.provider,id:session.id}),token.abort.signal,valid);}
+      catch{if(valid())status.textContent="Session dismissal stopped. Refresh Asks to check its outcome.";}
+      finally{if(bulkFlight===token)bulkFlight=null;if(phase==="ready")controls();}
+    });
+    const escape=event=>{if(event.key==="Escape"){event.preventDefault();cancelBulk();bulkButton.focus();}};
+    bind(bulkConfirm,"keydown",escape);cancel.focus();
   }
   function copy(row,command=null) {
     const ready=()=>row?eligible(row):phase==="ready"&&root?.isConnected;
@@ -291,7 +331,7 @@ export function createAsksView(document, data, options) {
     if (!eligible(row) || !row.data.selectable) return;
     const intent = row.ready;
     try {
-      if (onPlacement) onPlacement(Object.freeze({askId:row.data.id,provider:row.data.provider,id:row.data.session_id}));
+      if (onPlacement) onPlacement(Object.freeze({askId:row.data.id,provider:row.data.provider,id:row.data.session_id,excerpt:questionText(row.data[row.expanded?"latest":"first"])}));
       else onConversation({provider:row.data.provider, id:row.data.session_id});
     }
     catch {
@@ -305,6 +345,7 @@ export function createAsksView(document, data, options) {
   function terminate(dispose) {
     if (phase === "disposed" || phase === "failed" && !dispose) return;
     phase = dispose ? "disposed" : "failed"; flight = null;
+    cancelBulk();
     endFocus(focusIntent);
     const candidates = [];
     for (const row of rows) {
@@ -324,7 +365,7 @@ export function createAsksView(document, data, options) {
     for (const row of rows) for (const key of Object.keys(row)) row[key] = null;
     rows.length = 0; groups.length = 0; snapshot = null;
     selectedInbox=null;inboxPanel=null;selectedSession=null;sessionQuestions=null;sessionByKey.clear();sessions.length=0;
-    copyText = null; announce = null; onConversation = null; onPlacement = null;onSelection=null;onAction=null;
+    copyText = null; announce = null; onConversation = null; onPlacement = null;onSelection=null;onAction=null;onBatchAction=null;
     for (const candidate of candidates) cleanup(candidate);
     if (dispose) root = null;
   }
@@ -384,7 +425,7 @@ export function createAsksView(document, data, options) {
       row.copy.setAttribute("aria-describedby", quote.id);
       row.nav.disabled = !data.selectable;
       if (!data.selectable) row.nav.textContent = "Conversation unavailable";
-      details.append(node("p", "", data.workspace), node("p", "", `Raised: ${clock(data.raised_at)}; changed: ${clock(data.state_at)}; repeats: ${data.repeats}`));
+      details.append(node("p", "", data.workspace), node("p", "", `Raised: ${localClock(data.raised_at)}; changed: ${localClock(data.state_at)}; repeats: ${data.repeats}`));
       for (const ref of data.refs) details.append(node("p", "nav-asks-ref", ref));
       listen(row.toggle, () => { if (eligible(row)) transaction(() => activate(row, !row.expanded)); });
       listen(row.copy, () => copy(row)); listen(row.nav, () => navigate(row));
@@ -415,7 +456,9 @@ export function createAsksView(document, data, options) {
     const rail=node("nav","nav-asks-sessions"),pendingList=node("div","nav-asks-session-list"),history=node("details","nav-asks-session-history"),historyList=node("div","nav-asks-session-list"),work=node("div","nav-asks-work");
     rail.setAttribute("aria-label","Sessions with asks");pendingList.setAttribute("role","list");historyList.setAttribute("role","list");history.append(node("summary","","Done and dismissed"),historyList);rail.append(node("h2","nav-asks-rail-title","Sessions"),pendingList,history,list);
     sessionHeading=node("h2","nav-asks-session-title");sessionPath=node("p","nav-asks-session-path");sessionFacts=node("p","nav-asks-session-facts");
-    work.append(sessionPath,sessionHeading,sessionFacts,inboxPanel);root.append(rail,work);
+    work.append(sessionPath,sessionHeading,sessionFacts);
+    if(onBatchAction){bulkButton=button("Dismiss all pending asks");bulkButton.classList.add("nav-asks-bulk");bulkConfirm=node("section","nav-asks-bulk-confirm");bulkConfirm.hidden=true;bulkConfirm.setAttribute("aria-label","Confirm session dismissal");work.append(bulkButton,bulkConfirm);listen(bulkButton,prepareBulk);}
+    work.append(inboxPanel);root.append(rail,work);
     const summary=node("p","nav-asks-summary",`${groups[0].rows.length} need your answer · ${groups[1].rows.length} ${groups[1].rows.length===1?"warning":"warnings"}`),diagnostics=node("details","nav-asks-diagnostics");diagnostics.append(node("summary","","Watcher details and recent changes"));
     for(const child of [...list.children])if(["nav-asks-report","nav-asks-totals","nav-asks-moved","nav-asks-scope","nav-asks-scope-counts"].includes(child.className))diagnostics.append(child);
     list.replaceChildren(summary,...list.children,diagnostics);
@@ -429,7 +472,7 @@ export function createAsksView(document, data, options) {
       row.search=[questionText(row.data.latest),row.data.id,row.data.provider,row.data.session_id,row.data.workspace].join(" ").toLocaleLowerCase();
       row.pick=button(questionText(row.data.latest).replace(/\s+/g," ").slice(0,180));row.pick.classList.add("nav-asks-pick");row.pick.setAttribute("aria-controls",`${row.article.id}-panel`);
       row.article.setAttribute("data-filter-text",[questionText(row.data.latest),row.data.id,row.data.provider,row.data.session_id,row.data.workspace].join(" "));
-      const date=row.data.raised_at.known?new Date(row.data.raised_at.ms):null;const age=date&&Number.isFinite(date.getTime())?date.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}):"time unknown";
+      const age=localClock(row.data.raised_at);
       const meta=node("p","nav-asks-row-meta",`Ask ${row.data.id} · ${age}${row.data.selectable?"":" · conversation unavailable"}`);meta.title=row.data.workspace;
       row.panel=node("div","nav-asks-selected");row.panel.id=`${row.article.id}-panel`;row.panel.hidden=true;
       row.question=node("div","nav-asks-question",questionText(row.data.latest));
@@ -439,7 +482,7 @@ export function createAsksView(document, data, options) {
       const actions=node("div","nav-asks-actions");
       if(onAction){row.command?.remove();row.action=button(row.data.state==="open"?"Dismiss":"Restore");row.action.classList.add("nav-asks-action");actions.append(row.action);listen(row.action,()=>act(row));}
       actions.append(row.nav,row.copy);
-      row.panel.append(label,row.question,actions,node("p","nav-asks-terminal-note","Answer in the session’s terminal."),row.more);
+      row.panel.append(label,node("p","nav-asks-asked",`Asked ${age}`),row.question,actions,node("p","nav-asks-terminal-note","Answer in the session’s terminal."),row.more);
       row.article.append(row.pick,meta,row.panel);
       listen(row.pick,()=>selectInbox(row));
     }

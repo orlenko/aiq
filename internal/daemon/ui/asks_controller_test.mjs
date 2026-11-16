@@ -293,3 +293,18 @@ test('disposed pending reads/copies and saved frame callbacks stay silent, neigh
   for(const fn of frames)fn();assert.equal(f.announcements.length,n);assert.equal(f.document.activeElement,neighbor);assert.equal(f.view.mount(),false);
   assert.equal(f.view.refresh(),false);assert.equal(f.view.loadScope(all()),false);assert.equal(f.calls.length,2);assert.equal(f.find('nav-asks-controller').length,0);
 });
+
+test('successive dismissal refreshes stay in the chosen session until its final pending ask',async()=>{
+ const data=dto(scope());data.sections[0].items[1].id='12';
+ const f=fixture({inbox:true});f.mount();await f.load();await f.resolve(0,data);
+ const key=f.view.viewState().sessionKey;
+ // A competing session comes first on refreshed reads. It must not steal selection.
+ data.sections[0].items.reverse();
+ for(const [id,next] of [['9007199254740993','2'],['2','3'],['3','12']]){
+  for(const group of data.sections){const at=group.items.findIndex(row=>row.id===id);if(at!==-1){const [row]=group.items.splice(at,1);row.state='dismissed';data.sections[4].items.push(row);break;}}
+  f.view.refresh();await tick();await f.resolve(f.calls.length-1,data);
+  assert.equal(f.view.viewState().selectedId,next);
+  assert.equal(f.view.viewState().sessionKey===key,next!=='12');
+ }
+ f.clean();
+});

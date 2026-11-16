@@ -5,6 +5,7 @@ import {createAsksController} from "./asks_controller.js";
 import {createLongView} from "./long_view.js";
 import {createQuotaView} from "./quota_view.js";
 import {captureDirectories} from "./controller_data.js";
+import {highlightPeekPassage} from "./peek.js";
 
 const owners=new WeakMap();
 const copyFlights=new WeakMap(); // One physical clipboard operation per document.
@@ -59,7 +60,8 @@ export function createAppHost(document,options) {
   if (!window || document.defaultView!==window || root?.ownerDocument!==document || typeof isCurrent!=="function") throw refused();
   const limits={};for(const key of ["rows","arrayEntries","stringUnits"]){const n=options.limits?.[key];if(!Number.isSafeInteger(n)||n<=0)throw refused();limits[key]=n;}
   const initial=options.initialNext,broker=createReadBroker(readers),owner={},removes=[];
-  const askViews=new Map();
+  const askViews=new Map(),sessionViews=new Map();
+  const sessionKey=query=>JSON.stringify([query.dir,query.canonicalDir,query.workers,query.all===true]);
   const askKey=parsed=>parsed.all?"all":"dir:"+parsed.dir;
   let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true,lastPrompts=50,scopeReason="",sharedScope={all:true,dir:""},askOrigin=null;
   const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
@@ -99,7 +101,7 @@ export function createAppHost(document,options) {
   const content=node("div","nav-app-content");
   const actionNotice=node("aside","nav-ask-action-notice");actionNotice.hidden=true;
   const filterEmpty=node("div","nav-filter-empty"),filterMessage=node("p"),clearFilter=button("Clear filter");filterEmpty.hidden=true;filterEmpty.append(filterMessage,clearFilter);
-  const helpDialog=node("dialog","nav-key-dialog"),closeHelp=button("Close keyboard help"),keyText=node("p","","Tab stays with your browser. In a list: j/k or arrows move, Home/End move to an edge, Enter opens. / searches loaded results; Esc clears search or goes back. In a focused conversation: n/p move between prompt headings. Press m anywhere outside a text field to toggle Markdown symbols.");
+  const helpDialog=node("dialog","nav-key-dialog"),closeHelp=button("Close keyboard help"),keyText=node("p","","Tab stays with your browser. In a list: j/k or arrows move, Home/End move to an edge, Enter opens. / searches loaded results; Esc closes the active panel or clears search. In a focused conversation: n/p move between prompt headings. Press m anywhere outside a text field to toggle Markdown symbols.");
   const shortcutLabel=node("label","nav-toggle"),shortcutInput=node("input");shortcutInput.type="checkbox";shortcutInput.checked=true;shortcutLabel.append(shortcutInput,document.createTextNode(" Enable single-key shortcuts"));helpDialog.append(node("h2","","Keyboard help"),keyText,shortcutLabel,closeHelp);
   const helpButton=button("Keyboard help","nav-key-help");tabPopup.append(helpButton);
   shell.append(header,title,controls,status,actionNotice,placement,askReturn,copyFallback,filterEmpty,content,helpDialog);
@@ -108,10 +110,10 @@ export function createAppHost(document,options) {
   function listen(target,type,fn){const wrapped=e=>{if(alive())fn(e);};removes.push(()=>target.removeEventListener(type,wrapped));target.addEventListener(type,wrapped);}
   function normalizeStatuses(){for(const n of content.querySelectorAll('[role="status"]')){n.removeAttribute("role");n.setAttribute("aria-live","off");}}
   function announce(text){if(!alive())return;normalizeStatuses();filter();status.textContent=text;}
-  function filter(){
+  function filter(explicit=false){
     if(!alive())return;if(current)current.filter=search.value;const q=search.value.toLocaleLowerCase();
     if(currentAddress?.path==="/asks"){
-      const has=current?.controller?.setFilter(search.value);filterEmpty.hidden=!q||has;filterMessage.textContent="No loaded asks match.";roving();return;
+      const has=current?.controller?.setFilter(search.value,explicit===true);filterEmpty.hidden=!q||has;filterMessage.textContent="No loaded asks match.";roving();return;
     }
     const rows=[...content.querySelectorAll(".nav-controller-row")];
     for(const row of rows)row.hidden=q!==""&&!(row.getAttribute("data-filter-text")??row.textContent).toLocaleLowerCase().includes(q)||liveOnly.checked&&currentAddress?.path.startsWith("/sessions")&&!["live","open"].includes(row.getAttribute("data-nav-live"));
@@ -143,6 +145,7 @@ export function createAppHost(document,options) {
   }
   function clearRoute(){
     const old=current;
+    if(old?.sessionsQuery){const snapshot=old.controller?.snapshotSessions();if(snapshot){const key=sessionKey(snapshot.query);sessionViews.delete(key);sessionViews.set(key,snapshot);while(sessionViews.size>4)sessionViews.delete(sessionViews.keys().next().value);}}
     if(old?.asksKey){const value=old.controller?.viewState();if(value){askViews.delete(old.asksKey);askViews.set(old.asksKey,{value,filter:old.filter??"",scroll:window.scrollY});while(askViews.size>4)askViews.delete(askViews.keys().next().value);}}
     if(old)old.retired=true;current=null;++placementEpoch;
     content.replaceChildren();placement.replaceChildren();placement.hidden=true;copyFallback.replaceChildren();copyFallback.hidden=true;
@@ -158,7 +161,7 @@ export function createAppHost(document,options) {
   }
   function navigate(next,{replace=false,pop=false,focus=true,automatic=false,reason=""}={}){
     let parsed;try{parsed=route(next);}catch{announce("Choose a navigator page and an absolute directory.");return;}
-    if(parsed.path==="/asks"&&!parsed.dir&&!parsed.all)parsed=route("/asks?all=true");
+    if(["/asks","/sessions"].includes(parsed.path)&&!parsed.dir&&!parsed.all)parsed=route(parsed.path+"?all=true");
     if(!alive())return;if(!pop&&!navHistory(parsed.next,replace))return;
     scopeReason=automatic?(reason==="directory fallback"?"directory fallback":reason==="most recent found"?"most recent found":"most recent"):"";render(parsed,focus);
   }
@@ -209,7 +212,6 @@ export function createAppHost(document,options) {
   function askSelected(op,value){
     if(!active(op))return;
     const changed=!sameAsk(op.selectedAsk,value);if(changed){++placementEpoch;closeContext(op);}op.selectedAsk=value;
-    if(changed&&value&&["claude","codex","agy"].includes(value.provider)&&/^[0-9a-fA-F-]{36}$/.test(value.id))void place(op,value);
   }
   async function place(op,value){
     if(!active(op)||!sameAsk(op.selectedAsk,value)||!op.contextRoot)return;
@@ -227,12 +229,13 @@ export function createAppHost(document,options) {
       anchor=d.anchor;
     }catch{}
     if(!valid())return;
-    contextStatus.textContent=anchor===null?"Original turn not located. Showing the session’s latest conversation.":"Showing the ask’s original conversation turn.";
+    contextStatus.textContent=anchor===null?"Looking for the matching passage in this session…":"Showing the ask’s original conversation turn.";
     const full=node("a","nav-ask-full-conversation","Open full conversation");full.href=address("/sessions/"+value.provider+"/"+value.id,currentAddress.dir,currentAddress.all,anchor??0);full.rel="noreferrer";
     full.addEventListener("click",event=>{if(!valid()||event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;event.preventDefault();askOrigin={...value,next:currentAddress.next,located:anchor!==null};navigate(full.getAttribute("href"));});tools.append(full);
     try{
       const child=createSessionController(document,{window,idPrefix:"nav-ask-context-"+(++generation),limits,conversationOnly:true,prose:true,autoFollow:false,readingControls:false,readCommands:false,resumeCommands:false,
-        detailQuery:{last:5,markup:marks.checked,anchor:anchor??0},readSessions:()=>Promise.reject(refused()),readConversation:(q,s)=>op.lease.read("conversation",q,s),copyText:t=>copy(t,op),announce:text=>{if(valid())announce(text);},onSelection:()=>{}});
+        detailQuery:{last:anchor===null?"all":5,markup:marks.checked,anchor:anchor??0},readSessions:()=>Promise.reject(refused()),readConversation:(q,s)=>op.lease.read("conversation",q,s),copyText:t=>copy(t,op),announce:text=>{if(valid())announce(text);},onSelection:()=>{},
+        onDetailReady:()=>{if(!valid())return;const match=highlightPeekPassage(body,value.excerpt??"");contextStatus.textContent=match?"Matching ask passage highlighted.":anchor===null?"Matching passage not found in the loaded conversation. Open the full conversation to explore.":"Showing the located turn; the ask’s wording was not found in this view.";}});
       if(!valid()){child.teardown();return;}op.contextController=child;body.append(child.fragment);const contextRefresh=body.querySelectorAll(".nav-controller-refresh")[1];if(contextRefresh){contextRefresh.textContent="Refresh context";tools.append(contextRefresh);}if(!child.mount()){child.teardown();return;}child.selectConversation({provider:value.provider,id:value.id});
     }catch{if(valid())contextStatus.textContent="Conversation context unavailable. Try opening the full conversation.";}
   }
@@ -253,6 +256,31 @@ export function createAppHost(document,options) {
         op.controller.refresh();
       }
     }finally{if(actionFlight===token)actionFlight=null;}
+  }
+  async function performSessionDismissal(op,items,scope,signal,isCurrent){
+    if(!active(op)||actionFlight||typeof actions?.ask!=="function"||!isCurrent()||signal.aborted)throw refused();
+    const token={},abort=new window.AbortController();actionFlight=token;
+    const stop=()=>abort.abort();signal.addEventListener("abort",stop,{once:true});
+    const timer=window.setTimeout(stop,30000);let confirmed=0,uncertain=false,conflict=false;
+    actionNotice.hidden=false;
+    try{
+      for(const item of items){
+        if(!active(op)||!isCurrent()||abort.signal.aborted)break;
+        actionNotice.textContent=`Dismissing ${confirmed+1} of ${items.length} asks in ${scope.workspace}…`;
+        try{
+          const response=await actions.ask(item,abort.signal),d=response?.data;
+          if(!d||d.id!==item.id||d.state!=="dismissed"||typeof d.revision!=="string"||!/^[0-9a-f]{64}$/.test(d.revision))throw refused();
+          confirmed++;
+        }catch(error){conflict=error?.code==="conflict";uncertain=!conflict;break;}
+      }
+      if(active(op)){
+        actionNotice.textContent=confirmed===items.length?`${confirmed} asks dismissed in ${scope.workspace}.`:
+          `${confirmed} of ${items.length} dismissals confirmed in ${scope.workspace}. ${uncertain?"One outcome is uncertain; refreshing to check.":conflict?"An ask changed; review the refreshed list.":"Stopped; remaining asks were not submitted."}`;
+        op.controller.refresh();
+      }
+    }finally{
+      window.clearTimeout(timer);signal.removeEventListener("abort",stop);if(actionFlight===token)actionFlight=null;
+    }
   }
   function toggleMarks(){
     if(!alive())return;const op=current;if(op?.contextValue)void place(op,op.contextValue);else op?.controller?.setMarkup?.(marks.checked);announce(marks.checked?"Markdown symbols shown. Shortcut: m.":"Markdown symbols hidden. Shortcut: m.");
@@ -305,6 +333,7 @@ export function createAppHost(document,options) {
         readAsks:(q,s)=>op.lease.read("asks",q,s),copyText:t=>copy(t,op),announce:announceCurrent,
         onConversation:v=>{if(active(op))navigate(address("/sessions/"+v.provider+"/"+v.id,parsed.dir,parsed.all));},
         onSelection:v=>askSelected(op,v),onAction:typeof actions?.ask==="function"?v=>performAskAction(op,v):undefined,
+        onBatchAction:typeof actions?.ask==="function"?(items,scope,signal,valid)=>performSessionDismissal(op,items,scope,signal,valid):undefined,
         onPlacement:v=>{void place(op,v);}});
     }else{
       op.controller=createSessionController(document,{window,idPrefix:"nav-app-session-"+(++generation),limits,
@@ -323,8 +352,7 @@ export function createAppHost(document,options) {
     if(parsed.path==="/long"){normalizeStatuses();if(focus&&active(op))title.focus({preventScroll:true});return;}
     if(parsed.path==="/asks")op.controller.loadScope({mode:parsed.all?"all":"directory",dir:parsed.dir});
     else{
-      if(parsed.all)op.controller.loadSessions({dir:"",canonicalDir:"",workers:workers.checked,all:true});
-      else if(parsed.dir)op.controller.loadSessions({dir:parsed.dir,canonicalDir:parsed.dir,workers:workers.checked});
+      if(parsed.all||parsed.dir){op.sessionsQuery={dir:parsed.dir,canonicalDir:parsed.dir,workers:workers.checked,all:parsed.all};op.controller.loadSessions(op.sessionsQuery,{snapshot:sessionViews.get(sessionKey(op.sessionsQuery))});}
       const pick=selected(parsed);if(pick)op.controller.selectConversation(pick);
       if(!pick&&!parsed.dir&&!parsed.all)announce("Choose an absolute directory to load sessions.");
     }
@@ -334,7 +362,7 @@ export function createAppHost(document,options) {
   function goBack(){try{if(window.history.state?.aiqNavigator===1&&window.history.length>1){window.history.back();return;}}catch{}const all=Boolean(currentAddress?.all&&currentAddress.path.startsWith("/sessions"));navigate(address("/sessions",all?"":currentAddress?.dir||lastDirectory,all),{replace:true});}
   function keys(e){
     if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)||e.target.isContentEditable)return;
-    if(e.key==="Escape"){e.preventDefault();if(helpDialog.open)helpDialog.close();else if(search.value){search.value="";filter();announce("Search cleared.");}else goBack();return;}
+    if(e.key==="Escape"){if(helpDialog.open){e.preventDefault();helpDialog.close();}else if(search.value){e.preventDefault();search.value="";filter();announce("Search cleared.");}else{const disclosure=e.target.closest("details[open]");if(disclosure){e.preventDefault();disclosure.open=false;disclosure.querySelector("summary")?.focus();}else if(current?.contextValue){e.preventDefault();++placementEpoch;closeContext(current);current.controller.focusSelected();}}return;}
     if(shortcuts&&e.key==="m"){e.preventDefault();marks.checked=!marks.checked;toggleMarks();return;}
     if(!e.target.closest(".nav-controller,.nav-asks,.nav-feed,.nav-long"))return;
     if(shortcuts&&e.key==="/"){e.preventDefault();search.focus();return;}
@@ -357,7 +385,7 @@ export function createAppHost(document,options) {
     listen(document,"pointerdown",()=>{if(current)current.restoreAllowed=false;});listen(window,"wheel",()=>{if(current)current.restoreAllowed=false;});
     listen(allInput,"change",()=>{search.value="";navigate(address("/asks",allInput.checked?"":lastDirectory,allInput.checked));});
     listen(allSessions,"click",()=>{if(current)current.scopeTouched=true;search.value="";navigate(address(currentAddress.path==="/asks"?"/asks":"/sessions","",true));});
-    listen(search,"input",filter);listen(liveOnly,"change",filter);listen(workers,"change",()=>render(currentAddress,false));listen(marks,"change",toggleMarks);
+    listen(search,"input",()=>filter(true));listen(liveOnly,"change",filter);listen(workers,"change",()=>render(currentAddress,false));listen(marks,"change",toggleMarks);
     listen(clearFilter,"click",()=>{search.value="";filter();search.focus();});
     listen(windowSelect,"change",()=>{const value=windowSelect.value;if(!["50","100","500","all"].includes(value)){announce("Choose a conversation window.");return;}lastPrompts=value==="all"?"all":Number(value);navigate(address(currentAddress.path,currentAddress.dir,currentAddress.all),{replace:true,focus:false});});
     listen(search,"keydown",e=>{if(e.key==="Escape"){e.preventDefault();search.value="";filter();announce("Search cleared.");}});
@@ -378,7 +406,7 @@ export function createAppHost(document,options) {
     actionNotice.replaceChildren();actionNotice.hidden=true;
     try{old?.controller?.teardown();}catch{}
     try{old?.lease?.dispose();}catch{}
-    broker.close();askViews.clear();askOrigin=null;content.replaceChildren();placement.replaceChildren();copyFallback.replaceChildren();
+    broker.close();askViews.clear();sessionViews.clear();askOrigin=null;content.replaceChildren();placement.replaceChildren();copyFallback.replaceChildren();
   }
   return Object.freeze({mount,dispose});
 }
