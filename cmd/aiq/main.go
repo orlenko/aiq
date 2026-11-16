@@ -121,7 +121,7 @@ Long-running sessions (supervised, moved between accounts before they run dry):
                                     attach the recorded local lease; optional copied-start guard
 
 Sessions in this directory (Claude, Codex and Antigravity transcripts):
-	aiq ui [directory]               open the local browser navigator (macOS/Linux)
+	aiq ui [directory]               open the local browser navigator on Asks (macOS/Linux)
 	aiq ui --info | --revoke         authenticate daemon metadata or revoke browser logins
   aiq handoff redact [--apply]      list secrets matching known formats in saved handoff
                                     notes, by kind and count; --apply rewrites the notes

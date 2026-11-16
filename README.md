@@ -691,8 +691,9 @@ an updated daemon:
 navigator = true
 ```
 
-Then run `aiq ui` from your project directory. It opens a one-use browser
-handoff; the link expires after two minutes. Each tab has its own login,
+Then run `aiq ui`. It opens a one-use browser handoff to Asks across every
+project; give a directory, or `.` for the current one, to open that project's
+Asks instead. The link expires after two minutes. Each tab has its own login,
 expiring after 30 minutes without successful requests or eight hours total.
 Background follow requests count as activity. Forget this tab signs out that
 tab; `aiq ui --revoke` invalidates every tab and pending link. After a daemon
@@ -700,8 +701,9 @@ restart, run `aiq ui` again. The navigator stays off unless you enable it.
 Windows unlock, remote browsers and SSH forwarding are not supported.
 
 ```bash
-aiq ui                        # this directory
-aiq ui /path/to/project        # an explicit directory
+aiq ui                        # Asks across every project
+aiq ui .                      # this directory's Asks
+aiq ui /path/to/project        # an explicit directory's Asks
 aiq ui --info                  # authenticated host and data-directory information
 aiq ui --revoke                # invalidate all tabs and pending links
 ```

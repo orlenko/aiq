@@ -25,7 +25,9 @@ import (
 const uiUsage = "usage: aiq ui [directory] | --info | --revoke | --help"
 const uiHelpText = uiUsage + `
 
-Open the local Sessions and Asks navigator for this directory.
+Open the local navigator on Asks: every project's Asks with no argument, or
+the Asks of the given directory ("." for this one). Sessions and conversations
+are reached from there.
 Requires an already running daemon with [ui] navigator = true.
 Login is per tab and expires after 30 minutes idle or eight hours.
 --info prints authenticated directory and host information.
@@ -199,15 +201,17 @@ func runUI(parent context.Context, args []string, platform string, out io.Writer
 		_, err = io.WriteString(out, "All navigator browser logins and pending links revoked. Browser storage is cleared on its next authenticated request.\n")
 		return err
 	}
+	// No argument opens every project's Asks. An explicit directory, "." included,
+	// opens that directory's Asks; a relative one resolves against the cwd.
 	directory := o.directory
-	if directory == "" {
-		directory, err = d.cwd()
-	}
-	if err == nil {
-		directory, err = filepath.Abs(directory)
-	}
-	if err != nil {
-		return navlaunch.ErrUnavailable
+	if directory != "" && !filepath.IsAbs(directory) {
+		var wd string
+		if wd, err = d.cwd(); err != nil || !filepath.IsAbs(wd) {
+			return navlaunch.ErrUnavailable
+		}
+		directory = filepath.Join(wd, directory)
+	} else if directory != "" {
+		directory = filepath.Clean(directory)
 	}
 	port, _ := record.Port()
 	// Canonical zero bytes give the longest possible code shape without issuing.
