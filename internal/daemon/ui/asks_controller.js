@@ -17,6 +17,8 @@ export function createAsksController(document, options) {
   let readAsks = field(options, "readAsks"), copyText = field(options, "copyText"),
     announce = field(options, "announce"), onConversation = field(options, "onConversation");
   const placementOption=Object.getOwnPropertyDescriptor(options,"onPlacement");
+  const inbox=options.inbox??false;if(typeof inbox!=="boolean")fail();
+  let viewState=options.viewState??null;
   let onPlacement=placementOption?.value;
   if (placementOption && (!Object.hasOwn(placementOption,"value") || typeof onPlacement!=="function")) fail();
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
@@ -91,6 +93,7 @@ export function createAsksController(document, options) {
   }
   function reserve() {
     const op = {waiting:false, mode:"", dir:""}, old = candidate, flight = readFlight;
+    viewState=old?.child?.viewState()??viewState;
     intent = op; retry = null; candidate = null;
     retire(old, op, true); abort(flight);
     return op;
@@ -153,6 +156,7 @@ export function createAsksController(document, options) {
       content.append(c.root);
       if (!current(op) || candidate !== c) return;
       c.child = createAsksView(document, data, {window, idPrefix,
+        inbox,viewState,
         expectedScope:{mode:op.mode, dir:op.dir}, limits:{...limits},
         copyText:text => copy(c, text),
         announce:message => { if (eligible(c)) announce(message); },
@@ -219,6 +223,7 @@ export function createAsksController(document, options) {
     if (disposed) return;
     activity(() => {
       disposed = true; mounted = false; intent = null; retry = null;
+      viewState=null;
       const old = candidate, flight = readFlight; candidate = null;
       retire(old, null, false); root.remove(); root.replaceChildren();
       refreshButton.removeEventListener("click", refresh);
@@ -227,5 +232,6 @@ export function createAsksController(document, options) {
     });
   }
   refreshButton.addEventListener("click", refresh);
-  return {fragment, mount, loadScope, refresh, teardown};
+  return {fragment, mount, loadScope, refresh, teardown,viewState:()=>candidate?.child?.viewState()??viewState,
+    focusSelected:()=>Boolean(candidate&&eligible(candidate)&&candidate.child.focusSelected())};
 }

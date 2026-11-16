@@ -16,14 +16,19 @@ function clock(value) {
   const date = new Date(value.ms);
   return Number.isNaN(date.getTime()) ? `milliseconds since epoch: ${value.ms}` : date.toISOString();
 }
+// Display the admitted line text, while clipboard operations retain the exact
+// separately supplied quotation. Terminal decoration is not question content.
+function questionText(wording){return wording.lines.map(line=>line.spans.filter(span=>!span.d).map(span=>span.t).join("")).join("\n").trim()||"Question text unavailable";}
 
 // A supplied snapshot only. Its parent owns readers, authentication and replacement.
 export function createAsksView(document, data, options) {
   const {window, idPrefix} = options || {};
+  const inbox=options?.inbox??false;
+  const restored=options?.viewState??null;
   let {copyText, announce, onConversation, onPlacement} = options || {};
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
       !/^[A-Za-z][A-Za-z0-9_-]*$/.test(idPrefix) ||
-      ![copyText, announce, onConversation].every(f => typeof f === "function") || onPlacement!==undefined && typeof onPlacement!=="function") {
+      typeof inbox!=="boolean" || ![copyText, announce, onConversation].every(f => typeof f === "function") || onPlacement!==undefined && typeof onPlacement!=="function") {
     throw new TypeError("could not configure Asks view");
   }
   let snapshot = captureAsks(data, options.expectedScope, options.limits);
@@ -37,6 +42,7 @@ export function createAsksView(document, data, options) {
   const rows = [], groups = [], removes = [];
   let phase = "detached", flight = null, focusIntent = null, overview = null;
   const overviewButtons = [],commandButtons=[];
+  let selectedInbox=null,inboxPanel=null;
   function node(tag, className, text) {
     const n = document.createElement(tag); n.className = className;
     if (text !== undefined) n.textContent = text;
@@ -51,7 +57,7 @@ export function createAsksView(document, data, options) {
   }
   function active() { return phase === "ready" || phase === "activating" || phase === "transitioning"; }
   function eligible(row, intent = row.ready) {
-    return phase === "ready" && root?.isConnected && row.group?.expanded && intent && row.ready === intent;
+    return phase === "ready" && root?.isConnected && row.group?.expanded && (!inbox||selectedInbox===row) && intent && row.ready === intent;
   }
   function revoke(row) {
     if (row.ready) row.ready.copy = "";
@@ -90,6 +96,7 @@ export function createAsksView(document, data, options) {
   }
   function reveal(row, trigger) {
     if (phase !== "ready" || !root.isConnected || !trigger.isConnected || !root.contains(trigger) || !trigger.getClientRects().length) return;
+    if(inbox){if(!row.group.expanded)toggleGroup(row.group);selectInbox(row);row.more.open=true;}
     const intent = {initial:document.activeElement, revoked:false, ended:false, busy:1, cleaning:false, removes:[]};
     focusIntent = intent;
     let target = null;
@@ -147,6 +154,7 @@ export function createAsksView(document, data, options) {
     row.toggle.textContent = expanded ? "Show original" : "Show details";
     row.toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
     row.ready = {generation:++row.generation, copy:row.data[expanded ? "latest" : "first"].copy};
+    if(row.question)row.question.textContent=questionText(row.data[expanded?"latest":"first"]);
     return true;
   }
   function activate(row, expanded) {
@@ -201,6 +209,16 @@ export function createAsksView(document, data, options) {
         else return;
       }
     });
+    if(inbox&&selectedInbox?.group===group&&!group.expanded)selectInbox(rows.find(row=>row.group.expanded)??null);
+  }
+  function selectInbox(row){
+    if(!inbox||phase!=="ready"||!root?.isConnected||row&&!row.group.expanded)return;
+    if(selectedInbox){selectedInbox.panel.hidden=true;selectedInbox.article.append(selectedInbox.panel);selectedInbox.pick.removeAttribute("aria-current");selectedInbox.article.setAttribute("data-selected","false");}
+    selectedInbox=row;inboxPanel.replaceChildren();
+    if(row){row.panel.hidden=false;inboxPanel.append(row.panel);row.pick.setAttribute("aria-current","true");row.article.setAttribute("data-selected","true");}
+    else inboxPanel.append(node("p","nav-empty","Choose an Ask to read its question."));
+    controls();
+    try{announce(row?"Ask selected.":"Choose an Ask.");}catch{/* Selection does not depend on its status sink. */}
   }
   function copy(row,command=null) {
     const ready=()=>row?eligible(row):phase==="ready"&&root?.isConnected;
@@ -260,6 +278,7 @@ export function createAsksView(document, data, options) {
     commandButtons.length=0;
     for (const row of rows) for (const key of Object.keys(row)) row[key] = null;
     rows.length = 0; groups.length = 0; snapshot = null;
+    selectedInbox=null;inboxPanel=null;
     copyText = null; announce = null; onConversation = null; onPlacement = null;
     for (const candidate of candidates) cleanup(candidate);
     if (dispose) root = null;
@@ -291,11 +310,12 @@ export function createAsksView(document, data, options) {
   if (snapshot.moved_today) { overview = node("section", "nav-asks-moved"); root.append(overview); }
   snapshot.sections.forEach((section, index) => {
     const group = {expanded:index < 2, rows:[], region:node("div", "nav-asks-region"),
-      button:button(`${labels[index]} (${section.items.length})`)};
+      button:button(`${inbox&&index===0?"Needs your answer":labels[index]} (${section.items.length})`)};
     group.region.id = `${idPrefix}-group-${index}`; group.region.hidden = !group.expanded;
     group.button.setAttribute("aria-controls", group.region.id);
     group.button.setAttribute("aria-expanded", group.expanded ? "true" : "false");
     const heading = node("h2", "nav-asks-group-heading"); heading.append(group.button);
+    heading.setAttribute("data-group",String(index));if(inbox&&index===1&&section.items.length===0)heading.hidden=true;
     group.region.setAttribute("role", "region"); heading.id = `${group.region.id}-heading`;
     group.region.setAttribute("aria-labelledby", heading.id); root.append(heading, group.region);
     groups.push(group); listen(group.button, () => toggleGroup(group));
@@ -304,7 +324,7 @@ export function createAsksView(document, data, options) {
       const quote = node("div", "nav-asks-body"), details = node("div", "nav-asks-details");
       quote.id = `${article.id}-quote`; details.id = `${article.id}-details`; details.hidden = true;
       const row = {group, data, article, quote, details, wording:node("p", "nav-asks-wording", "Original wording"),
-        expanded:false, generation:0n, ready:null, heading:node("h3", "nav-asks-item-heading", `Ask ${data.id}`),
+        expanded:inbox, generation:0n, ready:null, heading:node("h3", "nav-asks-item-heading", `Ask ${data.id}`),
         current:null, toggle:button("Show details"), copy:button("Copy quote"), nav:button("Open conversation"),command:null};
       rows.push(row); group.rows.push(row); group.region.append(article);
       article.append(row.heading,
@@ -343,6 +363,34 @@ export function createAsksView(document, data, options) {
       overviewButtons.push(control); listen(control, () => reveal(row, control));
     }
   }
+  if(inbox){
+    root.classList.add("nav-asks-inbox");
+    const list=node("div","nav-asks-inbox-list");inboxPanel=node("aside","nav-asks-inbox-detail");inboxPanel.setAttribute("aria-label","Selected Ask");
+    for(const child of [...root.children])list.append(child);
+    root.append(list,inboxPanel);
+    const summary=node("p","nav-asks-summary",`${groups[0].rows.length} need your answer · ${groups[1].rows.length} ${groups[1].rows.length===1?"warning":"warnings"}`),diagnostics=node("details","nav-asks-diagnostics");diagnostics.append(node("summary","","Watcher details and recent changes"));
+    for(const child of [...list.children])if(["nav-asks-report","nav-asks-totals","nav-asks-moved","nav-asks-scope","nav-asks-scope-counts"].includes(child.className))diagnostics.append(child);
+    list.replaceChildren(summary,...list.children,diagnostics);
+    for(const row of rows){
+      const project=row.data.workspace.split("/").filter(Boolean).at(-1)||"Unknown project";
+      const label=node("p","nav-asks-context",`Ask ${row.data.id} · ${project} · ${row.data.provider}`);
+      row.pick=button(questionText(row.data.latest));row.pick.classList.add("nav-asks-pick");row.pick.setAttribute("aria-controls",`${row.article.id}-panel`);
+      row.article.setAttribute("data-filter-text",[questionText(row.data.latest),row.data.id,row.data.provider,row.data.session_id,row.data.workspace].join(" "));
+      const meta=node("p","nav-asks-row-meta",`${project} · ${row.data.provider}${row.data.selectable?"":" · conversation unavailable"}`);meta.title=row.data.workspace;
+      row.panel=node("div","nav-asks-selected");row.panel.id=`${row.article.id}-panel`;row.panel.hidden=true;
+      row.question=node("h2","nav-asks-question",questionText(row.data.latest));
+      row.more=node("details","nav-asks-more");row.more.append(node("summary","","Details and original wording"));
+      for(const child of [...row.article.children])row.more.append(child);
+      const actions=node("div","nav-asks-actions");actions.append(row.nav,row.copy);
+      row.panel.append(label,row.question,actions,node("p","nav-asks-terminal-note","Answer in the session’s terminal."),row.more);
+      row.article.append(row.pick,meta,row.panel);
+      listen(row.pick,()=>selectInbox(row));
+    }
+    for(const row of rows)row.more.setAttribute("data-ask-details",row.data.id);
+    if(restored&&Array.isArray(restored.expanded)&&restored.expanded.length===groups.length&&restored.expanded.every(v=>typeof v==="boolean")){
+      groups.forEach((group,index)=>{group.expanded=restored.expanded[index];group.region.hidden=!group.expanded;group.button.setAttribute("aria-expanded",String(group.expanded));});
+    }
+  }
   snapshot = null; controls();
   function mount() {
     if (phase === "ready") return true;
@@ -350,10 +398,10 @@ export function createAsksView(document, data, options) {
     phase = "activating"; root.setAttribute("aria-busy", "true");
     try {
       for (const group of groups) if (group.expanded) for (const row of group.rows) {
-        if (!activate(row, false)) return false;
+        if (!activate(row, inbox)) return false;
       }
       if (!active()) return false;
-      finish(); return true;
+      finish();if(inbox)selectInbox(rows.find(row=>row.group.expanded&&row.data.id===restored?.selectedId)??rows.find(row=>row.group.expanded)??null);return true;
     } catch { terminate(false); return false; }
   }
   function refresh() {
@@ -361,5 +409,7 @@ export function createAsksView(document, data, options) {
       for (const row of rows) if (row.group.expanded && row.current && !protectedRefresh(row, row.current)) return;
     });
   }
-  return {fragment, mount, refresh, teardown:() => terminate(true)};
+  function viewState(){return phase==="ready"&&inbox?Object.freeze({selectedId:selectedInbox?.data.id??"",expanded:Object.freeze(groups.map(group=>group.expanded))}):null;}
+  function focusSelected(){if(phase!=="ready"||!selectedInbox?.pick.isConnected)return false;selectedInbox.pick.focus({preventScroll:true});return true;}
+  return {fragment, mount, refresh,viewState,focusSelected, teardown:() => terminate(true)};
 }

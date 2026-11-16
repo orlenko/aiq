@@ -51,6 +51,27 @@ const buttons=n=>all(n).filter(n=>n.tagName==='button');
 const tick=async()=>{await Promise.resolve();await Promise.resolve();};
 function mounted(f,data,options) {const feed=f.feed(data,options);f.document.body.append(feed.fragment);assert.equal(feed.mount(),true);return feed;}
 
+test('prose input uses normalized raw text without terminal padding and preserves source attribution',async()=>{
+ const f=fixture(),m=fixtureMessage(1,[fixtureGroup(0,fixtureHead('prompt'),[fixtureLine('terminal painted padding     ')])]);
+ m.source='peer';m.raw='Literal <script>inert</script>\n  keep this indentation';
+ const copied=[],feed=mounted(f,fixtureWindow([m]),{prose:true,copyText:text=>{copied.push(text);}});
+ const nodes=all(f.document.body);assert.equal(nodes.find(n=>has(n,'nav-feed-prose')).textContent,m.raw);assert.equal(nodes.find(n=>has(n,'nav-feed-prompt')).textContent,'Peer agent');
+ assert(!f.document.body.textContent.includes('terminal painted padding'));assert(!nodes.some(n=>n.tagName==='script'));
+ buttons(f.document.body).find(n=>has(n,'nav-feed-copy')).emit('click');await tick();assert.deepEqual(copied,[m.raw]);feed.teardown();
+});
+test('prose collapses recorded progress while leaving final answers and their copy controls available',()=>{
+ const f=fixture(),progress=fixtureMessage(1,[fixtureGroup(0,fixtureHead(),[fixtureLine('invented progress')])]),answer=fixtureMessage(2,[fixtureGroup(1,fixtureHead('final'),[fixtureLine('invented final answer')])]);
+ progress.kind='line';progress.sub='said';answer.kind='answer';answer.sub='final';
+ const feed=mounted(f,fixtureWindow([progress,answer]),{prose:true}),nodes=all(f.document.body),details=nodes.filter(n=>has(n,'nav-feed-progress'));
+ assert.equal(details.length,1);assert.equal(details[0].tagName,'details');assert.equal(details[0].children[0].tagName,'summary');assert(details[0].textContent.includes('invented progress'));
+ const articles=nodes.filter(n=>n.tagName==='article');assert(!articles[1].contains(details[0]));assert(articles[1].textContent.includes('invented final answer'));feed.teardown();
+});
+test('prose keeps an ongoing reply visible until the snapshot contains its final answer',()=>{
+ const f=fixture(),reply=fixtureMessage(1,[fixtureGroup(0,fixtureHead('reply'),[fixtureLine('ongoing reply')])]);reply.kind='answer';reply.sub='reply';
+ const feed=mounted(f,fixtureWindow([reply]),{prose:true});assert.equal(all(f.document.body).filter(n=>has(n,'nav-feed-progress')).length,0);
+ const final=fixtureMessage(2,[fixtureGroup(1,fixtureHead('final'),[fixtureLine('completed answer')])]);final.kind='answer';final.sub='final';
+ assert.equal(feed.update(fixtureWindow([reply,final])),true);assert.equal(all(f.document.body).filter(n=>has(n,'nav-feed-progress')).length,1);assert(f.document.body.textContent.includes('completed answer'));feed.teardown();
+});
 test('incremental snapshots retain unchanged message DOM and replace changed copy facts',async()=>{
   const f=fixture(),one=fixtureMessage(1,[fixtureGroup(0,fixtureHead('prompt'))]);
   const feed=mounted(f,fixtureWindow([one]),{readingControls:true});

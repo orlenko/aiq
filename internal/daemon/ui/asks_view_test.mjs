@@ -56,6 +56,40 @@ function fixture(extra={},data=snapshot()) {
   fixtures.add(f);return f;
 }
 
+test('inbox selects the latest question and only its current panel can copy',async()=>{
+ const f=fixture({inbox:true});f.mount();
+ const panels=find(f,'nav-asks-selected'),picks=find(f,'nav-asks-pick');
+ assert.equal(panels.filter(visible).length,1);assert(find(f,'nav-asks-question').filter(visible)[0].textContent.includes('latest quote'));
+ const hiddenCopy=walk(panels.find(n=>!visible(n))).find(n=>n.tagName==='button'&&n.textContent==='Copy quote');hiddenCopy.click();await tick();assert.equal(f.copies.length,0);
+ const activeCopy=()=>walk(panels.find(visible)).find(n=>n.tagName==='button'&&n.textContent==='Copy quote');activeCopy().click();await tick();assert.deepEqual(f.copies,[latestCopy]);
+ picks[1].click();assert.equal(panels.filter(visible).length,1);assert.equal(picks[1].getAttribute('aria-current'),'true');assert.equal(picks[0].getAttribute('aria-current'),null);
+ activeCopy().click();await tick();assert.deepEqual(f.copies,[latestCopy,latestCopy]);assert.equal(walk(panels.find(visible)).find(n=>n.tagName==='button'&&n.textContent==='Conversation unavailable').disabled,true);
+ f.clean();
+});
+test('inbox preserves wording/copy agreement and clears a selection when its group closes',async()=>{
+ const f=fixture({inbox:true});f.mount();
+ let panel=find(f,'nav-asks-selected').find(visible);
+ walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Show original').click();
+ assert(find(f,'nav-asks-question').find(visible).textContent.includes('original quote'));
+ walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Copy quote').click();await tick();assert.deepEqual(f.copies,[firstCopy]);
+ click(f,'Needs your answer (2)');panel=find(f,'nav-asks-selected').find(visible);assert(panel);assert.equal(find(f,'nav-asks-pick').filter(n=>n.getAttribute('aria-current')==='true').length,1);
+ assert(find(f,'nav-asks-question').find(visible).textContent.includes('latest quote'));f.clean();
+});
+test('inbox restores only selection and expanded groups from its bounded presentation state',()=>{
+ const f=fixture({inbox:true,viewState:{selectedId:'2',expanded:[false,true,false,false,false]}});f.mount();
+ assert.equal(find(f,'nav-asks-context').find(visible).textContent,'Ask 2 · project · agy');
+ const state=f.view.viewState();assert.deepEqual(state,{selectedId:'2',expanded:[false,true,false,false,false]});assert(Object.isFrozen(state)&&Object.isFrozen(state.expanded));
+ assert.equal(f.view.focusSelected(),true);assert.equal(f.document.activeElement.getAttribute('aria-current'),'true');f.clean();assert.equal(f.view.focusSelected(),false);
+});
+test('initially collapsed inbox groups start with latest wording and retain an explicit original choice',async()=>{
+ for(const restored of [undefined,{selectedId:'3',expanded:[false,false,false,false,false]}]){
+  const f=fixture({inbox:true,viewState:restored});f.mount();click(f,'Other open (1)');find(f,'nav-asks-pick')[3].click();
+  let panel=find(f,'nav-asks-selected').find(visible);assert(find(f,'nav-asks-question').find(visible).textContent.includes('latest quote'));
+  walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Copy quote').click();await tick();assert.equal(f.copies.at(-1),latestCopy);
+  walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Show original').click();click(f,'Other open (1)');click(f,'Other open (1)');find(f,'nav-asks-pick')[3].click();
+  panel=find(f,'nav-asks-selected').find(visible);assert(find(f,'nav-asks-question').find(visible).textContent.includes('original quote'));walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Copy quote').click();await tick();assert.equal(f.copies.at(-1),firstCopy);f.clean();
+ }
+});
 test('detached construction, retry, five native disclosures, exact owned text and mode',async()=>{
   const data=snapshot(),f=fixture({},data);assert.equal(f.view.mount(),false);
   f.view.refresh();assert.equal(f.copies.length+f.navigations.length+f.observers.length,0);

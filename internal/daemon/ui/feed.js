@@ -9,6 +9,7 @@ export function createConversationFeed(document, data, options) {
     throw new TypeError("could not show conversation");
   }
   const {window, idPrefix, copyText, announce} = options;
+  const prose=options.prose??false;if(typeof prose!=="boolean")throw new TypeError("could not show conversation");
   const readingOption = Object.getOwnPropertyDescriptor(options, "readingControls");
   const readingControls = readingOption ? readingOption.value : false;
   const shortcutOption = Object.getOwnPropertyDescriptor(options, "shortcutsEnabled");
@@ -21,6 +22,7 @@ export function createConversationFeed(document, data, options) {
   const fragment = document.createDocumentFragment();
   let root = document.createElement("section");
   root.className = "nav-feed"; root.setAttribute("aria-label", "Conversation");
+  root.setAttribute("data-prose",String(prose));
   fragment.append(root);
   const helpers = [], controls = [], removes = [];
   const messages = [], prompts = [];
@@ -123,22 +125,30 @@ export function createConversationFeed(document, data, options) {
   }
   function renderMessage(message,markup,finals){
       const article = node("article", "nav-feed-message");
+      article.setAttribute("data-kind",message.kind);article.setAttribute("data-source",message.source_known?message.source:"unknown");
       const record={article,signature:signature(message,markup,finals),id:message.id,helpers:[],controls:[],prompts:[],removes:[]};
       article.id = `${idPrefix}-${message.id}`;
       const messagePosition = {node:article,position:++order};record.position=messagePosition;
       const body = node("div", "nav-feed-body");
       body.id = `${article.id}-body`; article.append(body);
-      let visible = false,groupIndex=0;
+      let visible = false,groupIndex=0,inputRendered=false;
+      const input=prose&&["you","steer"].includes(message.kind);
       try{
       for (const group of message.groups) {
         const index=groupIndex++;
         if (!group.visible) continue;
         visible = true;
-        if (group.leading_break) body.append(node("div", "nav-feed-break"));
-        const head = heading(group.head); if (head) body.append(head);
+        if (group.leading_break&&!prose) body.append(node("div", "nav-feed-break"));
+        const head = heading(group.head);
+        if(input&&!inputRendered){
+          const source=message.source_known?{human:"You",aiq:"aiq context",peer:"Peer agent",notice:"Notice"}[message.source]:"Unattributed input";
+          const label=source+(group.head.clock_text?" · "+group.head.clock_text:"");
+          if(head)head.textContent=label;else body.append(node("div","nav-feed-source",label));
+        }
+        if (head) body.append(head);
         if (readingControls && head && ["prompt","steer"].includes(group.head.mode)) {
           head.id = `${article.id}-prompt-${index}`; head.tabIndex = -1;
-          const button = node("button", "nav-feed-outline-prompt", head.textContent); button.type = "button";
+          const button = node("button", "nav-feed-outline-prompt", prose?(message.raw.split("\n")[0].slice(0,110)||head.textContent):head.textContent); button.type = "button";button.title=head.textContent;
           button.setAttribute("aria-controls",head.id);
           const item = node("li", "nav-feed-outline-item"); item.append(button);
           const final = finals.get(message.turn);
@@ -149,6 +159,7 @@ export function createConversationFeed(document, data, options) {
           messagePosition.position = ++order;
           record.prompts.push({heading:head,button,item,position:order});
         }
+        if(input){if(!inputRendered)body.append(node("div","nav-feed-prose",message.raw));inputRendered=true;continue;}
         const rows = group.empty_body_line ? [...group.lines, {kind:"text", spans:[]}] : group.lines;
         const helper = renderLines(document, rows, {window, markup, base:group.base});
         record.helpers.push(helper); body.append(helper.fragment);
@@ -159,6 +170,10 @@ export function createConversationFeed(document, data, options) {
         button.type = "button"; button.setAttribute("aria-describedby", body.id); toolbar.append(button);
         if (message.account_known && message.account !== "") toolbar.append(node("span", "nav-feed-account", message.account));
         record.controls.push({button, raw:message.raw});
+        if(prose&&(message.kind==="line"&&message.sub==="said"||message.sub==="reply"&&finals.has(message.turn))){
+          const progress=node("details","nav-feed-progress"),summary=node("summary","",`${expectedScope.provider} · Progress note`);
+          progress.append(summary,body,toolbar);article.append(progress);
+        }
       }
       return record;
       }catch(error){cleanRecord(record);throw error;}
@@ -182,8 +197,8 @@ export function createConversationFeed(document, data, options) {
   }
   try {
     const finals = new Map();
+    if(readingControls||prose)for (const m of snapshot.messages) for (const g of m.groups) if (g.visible && g.head.mode === "final") finals.set(m.turn,g.head);
     if (readingControls) {
-      for (const m of snapshot.messages) for (const g of m.groups) if (g.visible && g.head.mode === "final") finals.set(m.turn,g.head);
       const navigation = node("nav", "nav-feed-navigation"); navigation.setAttribute("aria-label", "Prompt navigation");
       previous = node("button", "nav-feed-previous", "Previous prompt"); next = node("button", "nav-feed-next", "Next prompt");
       previous.type = next.type = "button"; navigation.append(previous,next);
@@ -228,7 +243,7 @@ export function createConversationFeed(document, data, options) {
   function update(data){
     const value=captureConversation(data,expectedScope);
     if(!active()||busy||root.contains(document.activeElement))return false;
-    const finals=new Map();if(readingControls)for(const m of value.messages)for(const g of m.groups)if(g.visible&&g.head.mode==="final")finals.set(m.turn,g.head);
+    const finals=new Map();if(readingControls||prose)for(const m of value.messages)for(const g of m.groups)if(g.visible&&g.head.mode==="final")finals.set(m.turn,g.head);
     const old=new Map(records.map(r=>[r.id,r])),prepared=[],nextRecords=[];
     let staging=null;
     try{
