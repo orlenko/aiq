@@ -113,7 +113,7 @@ export function createSessionController(document, options) {
     return {root:section, heading, refresh, status, content};
   }
   function alive(op) {
-    return mounted && !disposed && !op.retired && current[op.channel] === op && op.scope === activeScope;
+    return Boolean(op) && mounted && !disposed && !op.retired && current[op.channel] === op && op.scope === activeScope;
   }
   function cancelFocus(op) {
     if (op?.intent) { op.intent.remove(); op.intent = null; }
@@ -234,7 +234,7 @@ export function createSessionController(document, options) {
     } catch(error) { failed(op, target,error); return; }
     // Even synchronous reader/thenable reentry must consume the returned rejection.
     promise.then(envelope => {
-      if (!alive(op)||op.channel==="detail"&&frozen) return;
+      if (!alive(op)||frozen) return;
       try {
         const data = field(envelope, "data");
         const owned = op.channel === "list" ? captureSessions(data, op.query.canonicalDir, limits,op.query.all) : captureDetail(data, op.query, limits);
@@ -244,7 +244,34 @@ export function createSessionController(document, options) {
       } catch { failed(op, target); }
     }, error => failed(op, target,error));
   }
+  function incompleteList(op,busy){
+    if(!alive(op)||frozen)return;
+    listState("incomplete",Boolean(listView));
+    status(op,listPane,`Session scan incomplete${listView?"; showing previous results":""}. ${busy?"Preparing the index; retrying shortly…":"Refresh sessions to try again."}`,busy);
+  }
+  function listReceived(op,data){
+    if(!alive(op)||frozen)return;
+    if(!data.partial||data.sessions.length){listCommit(op,data);return;}
+    // An interrupted empty scan cannot establish that known sessions vanished.
+    // Only live unscanned responses get bounded retries; cache seeds never do.
+    const retry=data.scanned===0&&(op.emptyRetries??0)<2&&!document.hidden&&root.isConnected;
+    incompleteList(op,retry);
+    if(!retry||!alive(op)||frozen)return;
+    if(document.hidden||!root.isConnected){incompleteList(op,false);return;}
+    op.emptyRetries=(op.emptyRetries??0)+1;
+    const timer=window.setTimeout(()=>{
+      op.timer=undefined;
+      if(!alive(op)||frozen)return;
+      if(document.hidden||!root.isConnected){incompleteList(op,false);return;}
+      readList(op);
+    },1200);
+    if(alive(op)&&!frozen)op.timer=timer;else window.clearTimeout(timer);
+  }
+  function readList(op){
+    if(alive(op)&&!frozen)read(op,readSessions,{dir:op.query.dir,workers:op.query.workers,...(op.query.all?{all:true}:{})},listPane,listReceived);
+  }
   function listCommit(op, data) {
+    if(data.partial&&!data.sessions.length)return;
     const view = {root:node("div", "nav-controller-list"), rows:[], removes:[],data,query:{...op.query}};
     try {
       const diagnostics=node("details","nav-session-diagnostics"),diagnosticTitle=node("summary","","Snapshot details");
@@ -446,7 +473,7 @@ export function createSessionController(document, options) {
     return {query:{...listView.query},data:captureSessions(listView.data,listView.query.canonicalDir,limits,listView.query.all)};
   }
   function loadSessions(value, options={}) {
-    if (!mounted || disposed) return;
+    if (!mounted || disposed || frozen) return;
     const {op, previous} = reserve("list"); let oldDetail = null;
     try {
       op.query = {dir:text(field(value, "dir")), canonicalDir:text(field(value, "canonicalDir")), workers:bool(field(value, "workers"))};
@@ -476,7 +503,7 @@ export function createSessionController(document, options) {
     if(!alive(op))return;
     listState(null,Boolean(listView));
     status(op, listPane, listView ? "Refreshing sessions; showing previous results." : "Loading sessions.", true);
-    if (alive(op)) read(op, readSessions, {dir:op.query.dir, workers:op.query.workers,...(op.query.all?{all:true}:{})}, listPane, listCommit);
+    readList(op);
   }
   function select(value, trigger = null) {
     if (!mounted || disposed || frozen) return;
@@ -526,8 +553,10 @@ export function createSessionController(document, options) {
     if(disposed||frozen)return;frozen=true;
     detailPane.refresh.disabled=true;listPane.refresh.disabled=true;
     const op=current.detail;
-    if(op?.timer!==undefined){window.clearTimeout(op.timer);op.timer=undefined;}
-    try{op?.abort?.abort();}catch{}
+    for(const pending of [current.list,op]){
+      if(pending?.timer!==undefined){window.clearTimeout(pending.timer);pending.timer=undefined;}
+      try{pending?.abort?.abort();}catch{}
+    }
     if(op?.followLabel)op.followLabel.textContent="Frozen session snapshot.";
     for(const button of root.querySelectorAll(".nav-follow-newest"))button.disabled=true;
   }
