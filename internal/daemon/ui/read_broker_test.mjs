@@ -85,3 +85,21 @@ test("queued query is owned and unsupported capability never reads",async()=>{
  f.calls[0].resolve("ok");await a;f.broker.close();
  const b=createReadBroker({sessions:()=>"ok"});await assert.rejects(b.route().read("placement",{askId:"1"}));b.close();
 });
+
+test('read failure diagnostics preserve only fixed codes and signed-status-shaped numbers',async()=>{
+ for(const [code,status,wanted]of [['request',503,'request'],['timeout',undefined,'timeout'],['cancelled',undefined,'cancelled'],['terminal',undefined,'terminal'],['invented secret',503,'unavailable'],['request',401,'request']]){
+  const cause=Object.assign(new Error('invented private body'),{code,status});
+  const b=createReadBroker({sessions:()=>Promise.reject(cause)}),r=b.route();
+  await assert.rejects(r.read('sessions',list),error=>{
+   assert.equal(error.message,'Navigator request unavailable');assert.equal(error.code,wanted);
+   assert.equal(error.status,code==='request'&&status===503?503:undefined);return true;
+  });b.close();
+ }
+ let called=0;const cause=Object.defineProperty(new Error('private'), 'code',{get(){called++;return 'request';}});
+ const b=createReadBroker({sessions(){throw cause;}});await assert.rejects(b.route().read('sessions',list),error=>error.code==='unavailable');assert.equal(called,0);b.close();
+});
+test('retired reads discard diagnostic information along with their obsolete response',async()=>{
+ let reject;const b=createReadBroker({sessions:()=>new Promise((_,no)=>{reject=no;})}),r=b.route();
+ const waiting=assert.rejects(r.read('sessions',list),error=>error.code==='unavailable'&&error.status===undefined);
+ await tick();r.dispose();reject(Object.assign(new Error('private'),{code:'request',status:503}));await waiting;b.close();
+});

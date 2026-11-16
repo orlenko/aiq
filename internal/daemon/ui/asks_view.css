@@ -74,3 +74,9 @@
 .nav-asks-inbox-info:empty {display:none;}
 .nav-asks-inbox-info .nav-asks-button {font-size:.75rem;min-height:1.75rem;padding:.25rem .5rem;margin:.3rem 0 0;}
 .nav-asks-inbox .nav-asks-row-meta {display:block;margin:.2rem 0 0;font-size:.7rem;color:var(--muted);}
+
+.nav-asks-asked {font-size:.8rem;color:var(--muted);margin:.3rem 0 0;}
+
+.nav-asks-bulk {font-size:.8rem!important;min-height:2rem!important;margin:0 0 .75rem!important;}
+.nav-asks-bulk-confirm {padding:.75rem 1rem;margin:.5rem 0 1rem;background:var(--nav-band);border:1px solid var(--nav-line);border-radius:.35rem;font-size:.85rem;overflow-wrap:anywhere;}
+.nav-asks-bulk-confirm p {margin:.3rem 0 .7rem;}

@@ -97,8 +97,9 @@ export function createTabSession(options) {
   let input = options.fragment, epoch = {}, token = null, disposed = false, kind = "locked", message = LOCKED, notice = "", selected = null;
   let clearing = false, deferredDispose = false, hostCleanup = null;
   const failures = new WeakMap();
-  function failure(category) {
-    const error = new TypeError(UNAVAILABLE);failures.set(error,category);return error;
+  const diagnostics=new WeakMap();
+  function failure(category, diagnostic={code:category}) {
+    const error = new TypeError(UNAVAILABLE);failures.set(error,category);diagnostics.set(error,diagnostic);return error;
   }
   const pending = new Set();
   const owned = e => {
@@ -154,12 +155,12 @@ export function createTabSession(options) {
       try { const elapsed=now()-started;return live(e) && !controller.signal.aborted && elapsed >= 0 && elapsed < 10000; }
       catch { return false; }
     };
-    let response=null, reader=null, complete=false, timer=null, relay=null, rejected=null;
+    let response=null, reader=null, complete=false, timer=null, relay=null, rejected=null, expired=false;
     pending.add(controller);
     try {
       if (parent?.aborted) throw failure("cancelled");
       if (parent) { relay=()=>controller.abort();parent.addEventListener("abort",relay,{once:true}); }
-      timer=setTimer(()=>controller.abort(),10000);
+      timer=setTimer(()=>{expired=true;controller.abort();},10000);
       if (!valid()) bad();
       const headers = method === "POST" ? {"Content-Type":"application/json"} : {};
       let proof=null;
@@ -193,12 +194,14 @@ export function createTabSession(options) {
       const raw=new Uint8Array(total);let offset=0;
       for (const chunk of chunks) { raw.set(chunk,offset);offset+=chunk.byteLength; }
       if(proof) { await proof.verify(response.headers.get("X-Aiq-Tab-Proof"),status,mime??"",response.headers.get("X-Aiq-Build"),raw,etag);if(!valid())bad(); }
-      if(status!==200&&!notModified)throw failure(actionRequest?(status===409?"conflict":"unavailable"):"request");
+      if(status!==200&&!notModified)throw failure(actionRequest?(status===409?"conflict":"unavailable"):"request",{code:"request",status});
       const value=decode(raw,{status,etag});
       if (!valid()) bad();
       return value;
     } catch (error) {
-      rejected = failure(failures.get(error) ?? (parent?.aborted || !live(e) ? "cancelled" : "terminal"));
+      const category=failures.get(error) ?? (parent?.aborted || !live(e) ? "cancelled" : "terminal");
+      try{expired=expired||now()-started>=10000;}catch{}
+      rejected = failure(category,category!=="cancelled"&&expired?{code:"timeout"}:diagnostics.get(error)??{code:category});
       throw rejected;
     }
     finally {
@@ -306,7 +309,10 @@ export function createTabSession(options) {
         // Only a code-owned enum crosses this boundary, never a raw error.
         if (category !== "terminal" && live(e)) { try { onReadFailure(category); } catch { /* No new authority. */ } }
       }
-      throw new TypeError(UNAVAILABLE);
+      const diagnostic=diagnostics.get(error),out=new TypeError(UNAVAILABLE);
+      Object.defineProperty(out,"code",{value:diagnostic?.code??category});
+      if(diagnostic?.status!==undefined)Object.defineProperty(out,"status",{value:diagnostic.status});
+      throw out;
     }
   }
   function actionError(code){

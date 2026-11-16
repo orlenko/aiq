@@ -150,6 +150,9 @@ body:has(#nav-app-root[data-auth-controls="true"]:not([hidden])) #nav-auth-root 
 .nav-controller-list .nav-controller-row:has(.nav-controller-select[aria-current="true"]) {background:var(--nav-select);box-shadow:inset 0 1px var(--nav-select-line),inset 0 -1px var(--nav-select-line);}
 @media(max-width:48rem) {.nav-quotas{padding:1rem;}.nav-controller-refresh{right:1rem;}}
 .nav-controller-status,.nav-asks-load-status {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+.nav-controller-status[data-error] {position:static;width:auto;height:auto;overflow:visible;clip-path:none;white-space:normal;padding:.65rem .8rem;background:var(--nav-band);border-inline-start:3px solid var(--muted);}
+.nav-app[data-nav-page="/sessions"] .nav-controller:not([data-reading="true"])>.nav-controller-pane:first-child>.nav-controller-heading {display:none;}
+.nav-ask-match {background:#ffe39a;color:#292116;box-shadow:0 0 0 2px #ffe39a;scroll-margin-block:8rem;}
 .nav-controls:has(>.nav-back[hidden]):has(>.nav-toggle[hidden]):has(>.nav-reading-options[hidden]) {margin-block:0;}
 .nav-feed[data-prose="true"] {max-width:75ch;margin-inline:auto;}
 .nav-feed[data-prose="true"]:has(.nav-feed-outline[open]) {max-width:none;}

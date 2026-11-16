@@ -42,6 +42,7 @@ function fixture(extra={},data=snapshot()) {
   const document={defaultView:window,activeElement:null,focusCalls:0,fonts:new Target(),createElement(tag){const n=new Element(document,tag);nodes.push(n);return n;},createDocumentFragment(){return new Element(document,'#fragment');}};
   document.body=new Element(document,'body');let fontsReady;document.fonts.ready=new Promise(r=>fontsReady=r);
   window.visualViewport=new Target();window.requestAnimationFrame=fn=>{scheduleHook();const id=++serial;frames.set(id,fn);return id;};window.cancelAnimationFrame=id=>frames.delete(id);
+  window.AbortController=AbortController;
   window.ResizeObserver=class {constructor(fn){this.callback=fn;this.disconnected=false;observers.push(this);hook('constructor',this);}observe(n){hook('observe',this,n);}disconnect(){this.disconnected=true;}};
   const copies=[],announcements=[],navigations=[];
   const options={window,idPrefix:'asksFixture',expectedScope:scope(),limits:limits(),copyText:text=>{copies.push(text);},announce:text=>announcements.push(text),onConversation:value=>navigations.push(value),...extra};
@@ -343,7 +344,7 @@ test('inbox search selects a matching session and does not merge unidentified se
  const data=snapshot();data.sections[0].items[1].id='11';data.sections[0].items[1].latest.lines[0].spans[0].t='unique meteor wording';
  data.sections[1].items[0].provider='unsupported';data.sections[1].items[0].session_id='';
  const f=fixture({inbox:true},data);f.mount();assert.equal(find(f,'nav-asks-session-pick').length,3);
- assert.equal(f.view.setFilter('meteor'),true);assert.equal(find(f,'nav-asks-pick').filter(visible).length,1);
+ assert.equal(f.view.setFilter('meteor',true),true);assert.equal(find(f,'nav-asks-pick').filter(visible).length,1);
  assert.equal(find(f,'nav-asks-context').find(visible).textContent,'Ask 11 · project · unsupported');
  assert.equal(f.view.setFilter('no invented match'),false);assert.equal(find(f,'nav-asks-selected').filter(visible).length,0);
  assert.equal(f.view.setFilter(''),true);assert.equal(find(f,'nav-asks-selected').filter(visible).length,1);f.clean();
@@ -362,4 +363,31 @@ test('reselecting the current ask or session preserves its host-owned conversati
  const f=fixture({inbox:true});f.mount();const detail=find(f,'nav-asks-inbox-detail')[0],context=f.document.createElement('aside');context.textContent='Invented conversation context';detail.append(context);
  const selected=find(f,'nav-asks-pick').find(n=>n.getAttribute('aria-current')==='true');selected.click();assert.equal(context.isConnected,true);assert(detail.contains(context));
  find(f,'nav-asks-session-pick').find(n=>n.getAttribute('aria-current')==='true').click();assert.equal(context.isConnected,true);assert(detail.contains(context));f.clean();
+});
+
+test('session dismissal snapshots all open groups despite filtering and requires confirmation',async()=>{
+ const data=snapshot();data.sections[0].items[1].id='12';for(const group of data.sections)for(const row of group.items)row.revision='a'.repeat(64);
+ const calls=[],pending=deferred(),f=fixture({inbox:true,onBatchAction:(...args)=>{calls.push(args);return pending.promise;}},data);f.mount();
+ f.view.setFilter('latest',true);const bulk=find(f,'nav-asks-bulk')[0];assert.equal(bulk.textContent,'Dismiss all 3 pending asks');bulk.click();assert.equal(calls.length,0);
+ let confirm=find(f,'nav-asks-bulk-confirm')[0];assert(confirm.textContent.includes('/invented/project'));assert(confirm.textContent.includes(sourceID));click(f,'Cancel');assert.equal(calls.length,0);assert.equal(confirm.hidden,true);
+ for(let i=0;i<3;i++){bulk.click();click(f,'Cancel');}
+ bulk.click();click(f,'Dismiss 3 asks');assert.equal(calls.length,1);assert.deepEqual(calls[0][0].map(row=>row.id),['9007199254740993','2','3']);assert(calls[0][0].every(row=>row.action==='dismiss'&&Object.isFrozen(row)));assert(Object.isFrozen(calls[0][0]));assert.equal(calls[0][1].id,sourceID);assert.equal(calls[0][3](),true);assert.equal(bulk.disabled,true);
+ find(f,'nav-asks-session-pick')[1].click();assert.equal(calls[0][2].aborted,true);assert.equal(calls[0][3](),false);pending.resolve();await tick();f.clean();
+});
+
+test('passive filter restoration does not replace a session that still has pending asks',()=>{
+ const data=snapshot();data.sections[0].items[1].id='12';data.sections[0].items[1].latest.lines[0].spans[0].t='unique other-session meteor';
+ const f=fixture({inbox:true},data);f.mount();const key=f.view.viewState().sessionKey;
+ assert.equal(f.view.setFilter('meteor'),true);assert.equal(f.view.viewState().sessionKey,key);assert.equal(find(f,'nav-asks-selected').filter(visible).length,0);
+ f.view.setFilter('meteor',true);assert.notEqual(f.view.viewState().sessionKey,key);assert.equal(find(f,'nav-asks-selected').filter(visible).length,1);f.clean();
+});
+
+test('searching away permanently cancels a batch even when search returns before settlement',async()=>{
+ const data=snapshot();data.sections[0].items[1].id='12';for(const group of data.sections)for(const row of group.items)row.revision='a'.repeat(64);
+ data.sections[0].items[0].latest.lines[0].spans[0].t='original-session unique decision';data.sections[0].items[1].latest.lines[0].spans[0].t='other-session unique decision';
+ const pending=deferred();let flight;const f=fixture({inbox:true,onBatchAction:(items,scope,signal,valid)=>{flight={signal,valid};return pending.promise;}},data);f.mount();const key=f.view.viewState().sessionKey;
+ find(f,'nav-asks-bulk')[0].click();click(f,'Dismiss 3 asks');assert.equal(flight.valid(),true);
+ f.view.setFilter('other-session',true);assert.notEqual(f.view.viewState().sessionKey,key);assert.equal(flight.signal.aborted,true);
+ f.view.setFilter('original-session',true);assert.equal(f.view.viewState().sessionKey,key);assert.equal(flight.valid(),false);
+ pending.resolve();await tick();f.clean();
 });

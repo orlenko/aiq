@@ -54,6 +54,9 @@ export function createSessionController(document, options) {
   const selectedCallback=Object.getOwnPropertyDescriptor(options ?? {},"onSelection");
   let onSelection=selectedCallback?.value ?? (()=>{});
   if (selectedCallback && (!Object.hasOwn(selectedCallback,"value") || typeof selectedCallback.value!=="function")) fail();
+  const readyCallback=Object.getOwnPropertyDescriptor(options??{},"onDetailReady");
+  let onDetailReady=readyCallback?.value??(()=>{});
+  if(readyCallback&&(!Object.hasOwn(readyCallback,"value")||typeof onDetailReady!=="function"))fail();
   const readingOption=Object.getOwnPropertyDescriptor(options ?? {},"readingControls"), shortcutOption=Object.getOwnPropertyDescriptor(options ?? {},"shortcutsEnabled");
   const readingControls=readingOption ? readingOption.value : false;
   const prose=options.prose??false;if(typeof prose!=="boolean")fail();
@@ -193,10 +196,25 @@ export function createSessionController(document, options) {
     }
     if(buttons.length){group.append(node("p","nav-controller-facts",`Terminal only · Directory: ${value.cwd}`));if(resumeCommands)group.append(node("p","nav-controller-facts","Resume may open another copy of a running session. Auto variants allow the agent to run without permission prompts."));parent.append(group);}
   }
-  function failed(op, target) {
+  function listState(error, stale) {
+    for(const target of [listPane.root,listPane.status]){
+      if(error)target.setAttribute("data-error",error);else target.removeAttribute("data-error");
+      target.setAttribute("data-stale",String(stale));
+    }
+    listPane.refresh.textContent=error?"Retry sessions":"Refresh sessions";
+  }
+  function failed(op, target, error) {
     if (!alive(op)) return;
     cleanCandidate(op.candidate); cancelFocus(op);
-    status(op, target, op.channel === "list" ? (listView ? "Sessions unavailable; showing previous results." : "Sessions unavailable.") :
+    let reason="",code="unavailable";
+    if(op.channel==="list"){
+      try{const d=Object.getOwnPropertyDescriptor(error,"code");if(d&&Object.hasOwn(d,"value")&&["request","timeout","cancelled","terminal"].includes(d.value))code=d.value;}catch{}
+      const reasons={request:"The server could not complete the request.",timeout:"The request timed out.",cancelled:"The request was cancelled.",terminal:"The connection could not be verified. Reopen the UI to reconnect.",unavailable:"The request could not be completed."};
+      reason=" "+reasons[code];
+      try{const d=Object.getOwnPropertyDescriptor(error,"status");if(code==="request"&&d&&Object.hasOwn(d,"value")&&[400,404,409,413,500,503].includes(d.value))reason=` The server returned HTTP ${d.value}.`;}catch{}
+      listState(code,Boolean(listView));
+    }
+    status(op, target, op.channel === "list" ? (listView ? "Sessions unavailable; showing previous results." : "Sessions unavailable.")+reason :
       "Conversation unavailable.", false);
   }
   function read(op, reader, request, target, commit) {
@@ -212,7 +230,7 @@ export function createSessionController(document, options) {
       const then = result?.then;
       if (typeof then !== "function") throw new TypeError("reader result");
       promise = new Promise((resolve, reject) => Reflect.apply(then, result, [resolve, reject]));
-    } catch { failed(op, target); return; }
+    } catch(error) { failed(op, target,error); return; }
     // Even synchronous reader/thenable reentry must consume the returned rejection.
     promise.then(envelope => {
       if (!alive(op)||op.channel==="detail"&&frozen) return;
@@ -223,10 +241,10 @@ export function createSessionController(document, options) {
         if(op.channel==="detail")op.etag=readETag(envelope);
         if (alive(op)) commit(op, owned);
       } catch { failed(op, target); }
-    }, () => failed(op, target));
+    }, error => failed(op, target,error));
   }
   function listCommit(op, data) {
-    const view = {root:node("div", "nav-controller-list"), rows:[], removes:[]};
+    const view = {root:node("div", "nav-controller-list"), rows:[], removes:[],data,query:{...op.query}};
     try {
       const diagnostics=node("details","nav-session-diagnostics"),diagnosticTitle=node("summary","","Snapshot details");
       diagnostics.append(diagnosticTitle,
@@ -269,6 +287,7 @@ export function createSessionController(document, options) {
       if (!alive(op)) return;
       clearList(); if (!alive(op)) return;
       listView = view; listPane.content.append(view.root); markers();
+      listState(null,false);
       status(op, listPane, data.sessions.length ? "Sessions ready." : "No sessions.", false);
     } finally {
       if (listView !== view) { for (const remove of view.removes) remove(); view.root.remove(); }
@@ -320,6 +339,7 @@ export function createSessionController(document, options) {
       cancelFocus(op);
       detailPane.heading.focus();
     } else cancelFocus(op);
+    if(alive(op)){try{onDetailReady();}catch{/* A host callback cannot regain a retired selection. */}}
   }
   function readETag(envelope){
     const value=Object.getOwnPropertyDescriptor(envelope,"etag");
@@ -420,7 +440,11 @@ export function createSessionController(document, options) {
     }catch{if(alive(op)&&!document.hidden)followText(op,"Updates unavailable · showing the last conversation.",true);}
     finally{op.followFlight=false;if(alive(op))scheduleFollow(op);}
   }
-  function loadSessions(value) {
+  function snapshotSessions(){
+    if(!mounted||disposed||!listView)return null;
+    return {query:{...listView.query},data:captureSessions(listView.data,listView.query.canonicalDir,limits,listView.query.all)};
+  }
+  function loadSessions(value, options={}) {
     if (!mounted || disposed) return;
     const {op, previous} = reserve("list"); let oldDetail = null;
     try {
@@ -438,6 +462,18 @@ export function createSessionController(document, options) {
     } catch { failed(op, listPane); return; }
     finally { retireMany(previous, oldDetail); }
     if (!alive(op)) return;
+    // Only the same explicitly captured scope can seed this new controller.
+    // Admission copies inert DTO fields again; cache objects never become views.
+    if(!listView){
+      let cached=null;
+      try{
+        const snapshot=field(options,"snapshot"),saved=field(snapshot,"query");
+        if(["dir","canonicalDir","workers","all"].every(key=>field(saved,key)===op.query[key]))cached=captureSessions(field(snapshot,"data"),op.query.canonicalDir,limits,op.query.all);
+      }catch{/* A missing, stale or malformed cache cannot block the live read. */}
+      if(cached&&alive(op))listCommit(op,cached);
+    }
+    if(!alive(op))return;
+    listState(null,Boolean(listView));
     status(op, listPane, listView ? "Refreshing sessions; showing previous results." : "Loading sessions.", true);
     if (alive(op)) read(op, readSessions, {dir:op.query.dir, workers:op.query.workers,...(op.query.all?{all:true}:{})}, listPane, listCommit);
   }
@@ -481,7 +517,7 @@ export function createSessionController(document, options) {
     selection = listQuery = activeScope = null;
     clearList(); for (const remove of removes) remove(); removes.length = 0;
     retireMany(oldList, oldDetail); root.remove();
-    readSessions = readConversation = readState = onNewest = copyText = announce = onSelection = shortcutsEnabled = null;
+    readSessions = readConversation = readState = onNewest = copyText = announce = onSelection = onDetailReady = shortcutsEnabled = null;
   }
   // Workspace rollover preserves the last good feed and its copy controls.
   // A frozen controller can never publish a late initial read or follow read.
@@ -518,5 +554,5 @@ export function createSessionController(document, options) {
       return true;
     } catch { teardown(); return false; }
   }
-  return {fragment, mount, loadSessions, setMarkup:value=>{if(typeof value!=="boolean"||disposed)return false;detailQuery.markup=value;if(selection)select({...selection.scope});return true;},selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
+  return {fragment, mount, loadSessions, snapshotSessions, setMarkup:value=>{if(typeof value!=="boolean"||disposed)return false;detailQuery.markup=value;if(selection)select({...selection.scope});return true;},selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
 }
