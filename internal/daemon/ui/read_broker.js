@@ -1,5 +1,11 @@
 const channels = Object.freeze({directories:["catalog"],long:["dir","history"],sessions:["dir","workers","all"], conversation:["provider","id","last","markup","anchor","etag","fromTurn","fromKey"], state:["provider","id","selection"], asks:["mode","dir"], placement:["askId"], quotas:[]});
-const unavailable = () => new TypeError("Navigator request unavailable");
+function unavailable(cause) {
+  const error=new TypeError("Navigator request unavailable");let code="unavailable";
+  try{const d=Object.getOwnPropertyDescriptor(cause,"code");if(d&&Object.hasOwn(d,"value")&&["request","timeout","cancelled","terminal"].includes(d.value))code=d.value;}catch{}
+  Object.defineProperty(error,"code",{value:code});
+  if(code==="request")try{const d=Object.getOwnPropertyDescriptor(cause,"status");if(d&&Object.hasOwn(d,"value")&&[400,404,409,413,500,503].includes(d.value))Object.defineProperty(error,"status",{value:d.value});}catch{}
+  return error;
+}
 function queryCopy(kind, query) {
   if (!query || typeof query !== "object" || Array.isArray(query)) throw unavailable();
   const copy = {};
@@ -40,7 +46,7 @@ export function createReadBroker(readers) {
     const resolve = job.resolve, reject = job.reject;
     job.resolve = job.reject = null;
     if (ok && !job.cancelled && owns(job.route)) resolve(value);
-    else reject(unavailable());
+    else reject(unavailable(!ok&&!job.cancelled&&owns(job.route)?value:undefined));
     job.query = null;
   }
   function abort(job) {
@@ -72,8 +78,8 @@ export function createReadBroker(readers) {
       job.controller = new AbortController();
       if (!owns(job.route) || job.cancelled || job.parent?.aborted) { finish(job,false); return; }
       const result = methods[job.kind](job.query,job.controller.signal);
-      Promise.resolve(result).then(value=>finish(job,true,value),()=>finish(job,false));
-    } catch { finish(job,false); }
+      Promise.resolve(result).then(value=>finish(job,true,value),error=>finish(job,false,error));
+    } catch(error) { finish(job,false,error); }
   }
   function pump() {
     if (closed || queued || active || !current || current.retired) return;

@@ -33,7 +33,7 @@ test("request failures allow manual retry without exposing raw causes",async()=>
  for(const status of [400,404,409,413,500,503]){
   let failed=true,calls=0;const kinds=[];
   const x=setup({fetcher:async()=>{calls++;return failed?response("invented raw private error",status):response("{}");},onReadFailure:k=>kinds.push(k)});await x.s.ready;
-  await assert.rejects(x.s.asks(query),e=>e.message==="Navigator request unavailable");
+  await assert.rejects(x.s.asks(query),e=>e.message==="Navigator request unavailable"&&e.code==="request"&&e.status===status);
   assert.equal(x.s.snapshot().kind,"restoring");assert.deepEqual(kinds,["request"]);
   failed=false;assert.deepEqual(await x.s.asks(query),{data:{}});assert.equal(x.s.snapshot().kind,"unlocked");assert.equal(calls,2);x.s.dispose();
  }
@@ -42,7 +42,7 @@ test("network, build, encoding and JSON failures permanently retire data reads",
  for(const mode of ["network","build","encoding","json"]){
   let calls=0;const x=setup({fetcher:async()=>{calls++;if(mode==="network")throw Error("invented raw secret");return mode==="build"?response("{}",200,{"X-Aiq-Build":"wrong"}):mode==="encoding"?response("{}",200,{"Content-Encoding":"gzip"}):response("{");}});await x.s.ready;
   assert.equal(x.s.attachHost(()=>x.events.push("detached")),true);
-  await assert.rejects(x.s.asks(query),e=>e.message==="Navigator request unavailable");
+  await assert.rejects(x.s.asks(query),e=>e.message==="Navigator request unavailable"&&e.code==="terminal"&&e.status===undefined);
   assert.equal(x.s.snapshot().kind,"terminal");assert.equal(x.events.filter(v=>v==="detached").length,1);
   assert.equal(x.values.get(key),bearer);await assert.rejects(x.s.asks(query));assert.equal(calls,1);
   x.s.forget();assert.equal(x.values.size,0);x.s.dispose();
@@ -78,4 +78,15 @@ test("placement is a separately configured fixed-path capability",async()=>{
  for(const id of ["01","0","9223372036854775808","1/turn?x=y",1])await assert.rejects(x.s.placement({askId:id}));
  assert.equal(calls,1);x.s.dispose();
  const y=setup({fetcher:async()=>{throw Error("must not read");}});await y.s.ready;await assert.rejects(y.s.placement({askId:"1"}));assert.equal(y.s.snapshot().kind,"restoring");y.s.dispose();
+});
+
+test('deadline diagnostic remains fixed while timeout still retires the private host',async()=>{
+ const waiting=deferred();let now=0,deadline,aborted=false;
+ const x=setup({now:()=>now,setTimer:fn=>{deadline=fn;return 1;},clearTimer:()=>{},
+  fetcher:(_url,options)=>{options.signal.addEventListener('abort',()=>{aborted=true;});return waiting.promise;}});await x.s.ready;
+ x.s.attachHost(()=>x.events.push('detached'));
+ const request=assert.rejects(x.s.asks(query),error=>error.message==='Navigator request unavailable'&&error.code==='timeout'&&error.status===undefined);
+ await x.readStarted();now=10000;deadline();assert.equal(aborted,true);waiting.reject(Error('invented private transport error'));await request;
+ assert.equal(x.s.snapshot().kind,'terminal');assert.equal(x.events.filter(v=>v==='detached').length,1);assert.equal(x.values.get(key),bearer);
+ await assert.rejects(x.s.asks(query),error=>error.code==='cancelled');x.s.dispose();
 });

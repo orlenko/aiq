@@ -62,7 +62,7 @@ function fixture(extra={}) {
     clean(){controller.teardown();controller.teardown();fixtures.delete(result);assert.equal(document.count()+window.count()+window.visualViewport.count()+document.fonts.count()+frames.size+timers.size+nodes.reduce((n,node)=>n+node.count(),0),0);assert.ok(observers.every(o=>o.disconnected));}};
   fixtures.add(result);return result;
 }
-function rows(f){return find(f,n=>n.tagName==='button'&&!['Refresh sessions','Refresh conversation','Copy message'].includes(n.textContent));}
+function rows(f){return find(f,n=>n.tagName==='button'&&!['Refresh sessions','Retry sessions','Refresh conversation','Copy message'].includes(n.textContent));}
 function painted(f){return find(f,n=>has(n,'nav-md-line')).map(n=>n.textContent);}
 
 function longValue(name='A',full=true,extra={}){
@@ -554,4 +554,55 @@ test('production workspace prose also follows through the page scrollbar',async(
  const f=longFixture('/fixture/A',{prose:true});f.document.scrollingElement={scrollHeight:1800,scrollTop:0};f.window.innerHeight=600;f.window.scrollTo=q=>{f.document.scrollingElement.scrollTop=q.top;};
  await tick();f.longCalls[0].resolve(longValue());await tick();const value=detail();value.selection='A'.repeat(43);f.detailCalls[0].resolve(value);await tick();
  assert.equal(find(f,n=>has(n,'nav-controller-follow-content')).length,0);assert.equal(find(f,n=>has(n,'nav-controller-page-follow')).length,1);assert.equal(f.document.scrollingElement.scrollTop,1200);f.clean();
+});
+
+test('cached admitted sessions paint synchronously and survive a failed fresh read until retry',async()=>{
+ const first=fixture();first.mount();first.controller.loadSessions(query());
+ const source=sessions();first.listCalls[0].resolve(source);await tick();source.sessions[0].label='changed outside';
+ const snapshot=first.controller.snapshotSessions(),isolated=first.controller.snapshotSessions();
+ assert.equal(snapshot.data.sessions[0].label,'row A');snapshot.data.sessions[0].label='changed cache copy';
+ assert.equal(isolated.data.sessions[0].label,'row A');first.clean();assert.equal(first.controller.snapshotSessions(),null);
+ const f=fixture();f.mount();f.controller.loadSessions(query(),{snapshot:isolated});
+ assert(f.document.body.textContent.includes('row A'));assert.equal(f.listCalls.length,1);
+ isolated.data.sessions[0].label='mutated after restore';assert(!f.document.body.textContent.includes('mutated after restore'));
+ const error=Object.assign(new Error('invented private server text'),{code:'request',status:503});f.listCalls[0].reject(error);await tick();
+ const pane=find(f,n=>has(n,'nav-controller-pane'))[0],status=find(f,n=>has(n,'nav-controller-status'))[0];
+ assert.equal(pane.getAttribute('data-error'),'request');assert.equal(status.getAttribute('data-stale'),'true');
+ assert(status.textContent.includes('HTTP 503'));assert(!status.textContent.includes('private'));
+ assert(f.document.body.textContent.includes('row A'));byText(f,'Retry sessions').click();
+ f.listCalls[1].resolve(sessions('/fixture/A',[row('B')]));await tick();
+ assert(f.document.body.textContent.includes('row B'));assert(!f.document.body.textContent.includes('row A'));
+ assert.equal(pane.getAttribute('data-error'),null);assert.equal(status.getAttribute('data-stale'),'false');assert(byText(f,'Refresh sessions'));f.clean();
+});
+test('session snapshots never paint another requested directory, worker scope or all scope',async()=>{
+ const original=fixture();original.mount();original.controller.loadSessions(query());original.listCalls[0].resolve(sessions());await tick();
+ const snapshot=original.controller.snapshotSessions();original.clean();
+ for(const changed of [query('/fixture/B'),query('/fixture/A',true),{...query(),canonicalDir:'/fixture/B'},{dir:'',canonicalDir:'',workers:false,all:true}]){
+  const f=fixture();f.mount();f.controller.loadSessions(changed,{snapshot});
+  assert.equal(find(f,n=>has(n,'nav-controller-select')).length,0);assert.equal(f.controller.snapshotSessions(),null);assert.equal(f.listCalls.length,1);f.clean();
+ }
+ const f=fixture();f.mount();f.controller.loadSessions(query(),{snapshot});assert(f.document.body.textContent.includes('row A'));
+ f.controller.loadSessions(query('/fixture/B'),{snapshot});assert(!f.document.body.textContent.includes('row A'));assert.equal(f.controller.snapshotSessions(),null);f.clean();
+});
+test('invalid cached DTOs and cache accessors do not block the fresh session read',async()=>{
+ let accesses=0;const base={query:{...query(),all:false},data:sessions()};
+ const bad=Object.defineProperty({...sessions()},'sessions',{get(){accesses++;throw Error('invented getter');}});
+ for(const options of [{snapshot:{...base,data:bad}},{snapshot:{...base,query:{...base.query,all:true}}},Object.defineProperty({},'snapshot',{get(){accesses++;return base;}})]){
+  const f=fixture();f.mount();f.controller.loadSessions(query(),options);assert.equal(f.controller.snapshotSessions(),null);assert.equal(f.listCalls.length,1);
+  f.listCalls[0].resolve(sessions());await tick();assert(f.document.body.textContent.includes('row A'));f.clean();
+ }
+ assert.equal(accesses,0);
+});
+test('detail-ready callback observes only the mounted current feed and can replace or dispose it',async()=>{
+ let calls=0,f;
+ f=fixture({onDetailReady(){
+  calls++;assert(f.document.body.textContent.includes(calls===1?'paint B group 0':'paint A group 0'));
+  if(calls===1)f.controller.selectConversation(scope('A'));else f.controller.teardown();
+ }});f.mount();f.controller.selectConversation(scope('A'));const retired=f.detailCalls[0];
+ f.controller.selectConversation(scope('B'));retired.resolve(detail('A'));await tick();assert.equal(calls,0);
+ f.detailCalls[1].resolve(detail('B'));await tick();assert.equal(calls,1);
+ assert(f.document.body.textContent.includes('Loading conversation.'));assert(!f.document.body.textContent.includes('Conversation ready.'));
+ f.detailCalls[2].resolve(detail('A'));await tick();assert.equal(calls,2);assert.equal(f.document.body.textContent,'');f.clean();
+ const g=fixture({onDetailReady(){throw Error('invented callback');}});g.mount();g.controller.selectConversation(scope('A'));
+ g.detailCalls[0].resolve(detail());await tick();assert(g.document.body.textContent.includes('Conversation ready.'));g.clean();
 });
