@@ -25,10 +25,10 @@ export function createAsksView(document, data, options) {
   const {window, idPrefix} = options || {};
   const inbox=options?.inbox??false;
   const restored=options?.viewState??null;
-  let {copyText, announce, onConversation, onPlacement} = options || {};
+  let {copyText, announce, onConversation, onPlacement, onSelection, onAction} = options || {};
   if (!window || window !== document.defaultView || typeof idPrefix !== "string" ||
       !/^[A-Za-z][A-Za-z0-9_-]*$/.test(idPrefix) ||
-      typeof inbox!=="boolean" || ![copyText, announce, onConversation].every(f => typeof f === "function") || onPlacement!==undefined && typeof onPlacement!=="function") {
+      typeof inbox!=="boolean" || ![copyText, announce, onConversation].every(f => typeof f === "function") || onPlacement!==undefined && typeof onPlacement!=="function" || onSelection!==undefined && typeof onSelection!=="function" || onAction!==undefined && typeof onAction!=="function") {
     throw new TypeError("could not configure Asks view");
   }
   let snapshot = captureAsks(data, options.expectedScope, options.limits);
@@ -42,7 +42,8 @@ export function createAsksView(document, data, options) {
   const rows = [], groups = [], removes = [];
   let phase = "detached", flight = null, focusIntent = null, overview = null;
   const overviewButtons = [],commandButtons=[];
-  let selectedInbox=null,inboxPanel=null;
+  let selectedInbox=null,inboxPanel=null,selectedSession=null,sessionHeading=null,sessionPath=null,sessionFacts=null,sessionQuestions=null,filterText="",actionFlight=null;
+  const sessions=[],sessionByKey=new Map();
   function node(tag, className, text) {
     const n = document.createElement(tag); n.className = className;
     if (text !== undefined) n.textContent = text;
@@ -70,6 +71,7 @@ export function createAsksView(document, data, options) {
       row.copy.setAttribute("aria-disabled", !eligible(row) || flight ? "true" : "false");
       if(row.command)row.command.setAttribute("aria-disabled",!eligible(row)||flight?"true":"false");
       row.nav.setAttribute("aria-disabled", !eligible(row) || !row.data.selectable ? "true" : "false");
+      if(row.action)row.action.disabled=!eligible(row)||Boolean(actionFlight)||!row.data.revision;
     }
   }
   function cleanFocus(intent) {
@@ -209,16 +211,58 @@ export function createAsksView(document, data, options) {
         else return;
       }
     });
-    if(inbox&&selectedInbox?.group===group&&!group.expanded)selectInbox(rows.find(row=>row.group.expanded)??null);
+    if(inbox&&selectedInbox?.group===group&&!group.expanded)selectInbox(rows.find(row=>row.group.expanded&&row.session===selectedSession)??null);
+    if(inbox)syncSessions();
   }
   function selectInbox(row){
     if(!inbox||phase!=="ready"||!root?.isConnected||row&&!row.group.expanded)return;
     if(selectedInbox){selectedInbox.panel.hidden=true;selectedInbox.article.append(selectedInbox.panel);selectedInbox.pick.removeAttribute("aria-current");selectedInbox.article.setAttribute("data-selected","false");}
     selectedInbox=row;inboxPanel.replaceChildren();
-    if(row){row.panel.hidden=false;inboxPanel.append(row.panel);row.pick.setAttribute("aria-current","true");row.article.setAttribute("data-selected","true");}
+    if(row){selectedSession=row.session;syncSessions();if(sessionQuestions)selectedSession.item.append(sessionQuestions);row.panel.hidden=false;inboxPanel.append(row.panel);row.pick.setAttribute("aria-current","true");row.article.setAttribute("data-selected","true");}
     else inboxPanel.append(node("p","nav-empty","Choose an Ask to read its question."));
     controls();
+    try{onSelection?.(row?Object.freeze({askId:row.data.id,provider:row.data.provider,id:row.data.session_id}):null);}catch{}
     try{announce(row?"Ask selected.":"Choose an Ask.");}catch{/* Selection does not depend on its status sink. */}
+  }
+  function matches(row){return !filterText||row.search.includes(filterText);}
+  function syncSessions(){
+    if(!inbox)return;
+    for(const session of sessions){
+      session.item.hidden=!session.rows.some(matches);
+      session.pick.setAttribute("aria-current",session===selectedSession?"true":"false");
+    }
+    for(const row of rows)row.article.hidden=row.session!==selectedSession||!matches(row);
+    for(const group of groups){
+      const count=group.rows.filter(row=>row.session===selectedSession&&matches(row)).length;
+      group.heading.hidden=count===0;
+      group.button.textContent=`${group.label} (${count})`;
+      group.region.hidden=!group.expanded||count===0;
+    }
+    if(sessionHeading){sessionHeading.textContent=selectedSession?`${selectedSession.provider} · ${selectedSession.id?selectedSession.id.slice(0,8):"Unidentified session"}`:"No pending asks";sessionPath.textContent=selectedSession?.workspace||"Choose a session to review its questions.";sessionFacts.textContent=selectedSession?`${selectedSession.pending} pending · this machine`:"This machine";}
+  }
+  function selectSession(session){
+    if(phase!=="ready"||!root?.isConnected)return;
+    const row=session.rows.find(row=>row.data.state==="open"&&matches(row))??session.rows.find(matches);
+    if(!row)return;
+    selectedSession=session;
+    if(!row.group.expanded)toggleGroup(row.group);
+    selectInbox(row);
+  }
+  function setFilter(value){
+    if(phase!=="ready"||!inbox||typeof value!=="string")return false;
+    filterText=value.toLocaleLowerCase();
+    if(!selectedInbox||!matches(selectedInbox)){
+      const row=rows.find(row=>row.session===selectedSession&&row.data.state==="open"&&matches(row))??rows.find(row=>row.data.state==="open"&&matches(row))??rows.find(matches);
+      if(row){selectedSession=row.session;if(!row.group.expanded)toggleGroup(row.group);selectInbox(row);}else if(selectedInbox)selectInbox(null);
+    }
+    syncSessions();inboxPanel.hidden=!selectedInbox||!matches(selectedInbox);return rows.some(matches);
+  }
+  async function act(row){
+    if(!eligible(row)||actionFlight||!row.data.revision||!onAction)return;
+    const token={};actionFlight=token;controls();
+    try{await onAction(Object.freeze({id:row.data.id,revision:row.data.revision,action:row.data.state==="open"?"dismiss":"restore"}));}
+    catch{if(eligible(row))status.textContent="Could not update this ask. Refresh Asks before trying again.";}
+    finally{if(actionFlight===token)actionFlight=null;if(phase==="ready")controls();}
   }
   function copy(row,command=null) {
     const ready=()=>row?eligible(row):phase==="ready"&&root?.isConnected;
@@ -278,8 +322,8 @@ export function createAsksView(document, data, options) {
     commandButtons.length=0;
     for (const row of rows) for (const key of Object.keys(row)) row[key] = null;
     rows.length = 0; groups.length = 0; snapshot = null;
-    selectedInbox=null;inboxPanel=null;
-    copyText = null; announce = null; onConversation = null; onPlacement = null;
+    selectedInbox=null;inboxPanel=null;selectedSession=null;sessionQuestions=null;sessionByKey.clear();sessions.length=0;
+    copyText = null; announce = null; onConversation = null; onPlacement = null;onSelection=null;onAction=null;
     for (const candidate of candidates) cleanup(candidate);
     if (dispose) root = null;
   }
@@ -309,12 +353,12 @@ export function createAsksView(document, data, options) {
   report = null; reportNode = null;
   if (snapshot.moved_today) { overview = node("section", "nav-asks-moved"); root.append(overview); }
   snapshot.sections.forEach((section, index) => {
-    const group = {expanded:index < 2, rows:[], region:node("div", "nav-asks-region"),
+    const group = {expanded:index < 2, label:inbox&&index===0?"Needs your answer":labels[index],rows:[], region:node("div", "nav-asks-region"),
       button:button(`${inbox&&index===0?"Needs your answer":labels[index]} (${section.items.length})`)};
     group.region.id = `${idPrefix}-group-${index}`; group.region.hidden = !group.expanded;
     group.button.setAttribute("aria-controls", group.region.id);
     group.button.setAttribute("aria-expanded", group.expanded ? "true" : "false");
-    const heading = node("h2", "nav-asks-group-heading"); heading.append(group.button);
+    const heading = node("h2", "nav-asks-group-heading");group.heading=heading; heading.append(group.button);
     heading.setAttribute("data-group",String(index));if(inbox&&index===1&&section.items.length===0)heading.hidden=true;
     group.region.setAttribute("role", "region"); heading.id = `${group.region.id}-heading`;
     group.region.setAttribute("aria-labelledby", heading.id); root.append(heading, group.region);
@@ -365,27 +409,49 @@ export function createAsksView(document, data, options) {
   }
   if(inbox){
     root.classList.add("nav-asks-inbox");
-    const list=node("div","nav-asks-inbox-list");inboxPanel=node("aside","nav-asks-inbox-detail");inboxPanel.setAttribute("aria-label","Selected Ask");
+    const list=node("div","nav-asks-inbox-list");sessionQuestions=list;inboxPanel=node("aside","nav-asks-inbox-detail");inboxPanel.setAttribute("aria-label","Selected Ask");
     for(const child of [...root.children])list.append(child);
-    root.append(list,inboxPanel);
+    const rail=node("nav","nav-asks-sessions"),pendingList=node("div","nav-asks-session-list"),history=node("details","nav-asks-session-history"),historyList=node("div","nav-asks-session-list"),work=node("div","nav-asks-work");
+    rail.setAttribute("aria-label","Sessions with asks");pendingList.setAttribute("role","list");historyList.setAttribute("role","list");history.append(node("summary","","Done and dismissed"),historyList);rail.append(node("h2","nav-asks-rail-title","Sessions"),pendingList,history,list);
+    sessionHeading=node("h2","nav-asks-session-title");sessionPath=node("p","nav-asks-session-path");sessionFacts=node("p","nav-asks-session-facts");
+    work.append(sessionPath,sessionHeading,sessionFacts,inboxPanel);root.append(rail,work);
     const summary=node("p","nav-asks-summary",`${groups[0].rows.length} need your answer · ${groups[1].rows.length} ${groups[1].rows.length===1?"warning":"warnings"}`),diagnostics=node("details","nav-asks-diagnostics");diagnostics.append(node("summary","","Watcher details and recent changes"));
     for(const child of [...list.children])if(["nav-asks-report","nav-asks-totals","nav-asks-moved","nav-asks-scope","nav-asks-scope-counts"].includes(child.className))diagnostics.append(child);
     list.replaceChildren(summary,...list.children,diagnostics);
     for(const row of rows){
       const project=row.data.workspace.split("/").filter(Boolean).at(-1)||"Unknown project";
       const label=node("p","nav-asks-context",`Ask ${row.data.id} · ${project} · ${row.data.provider}`);
-      row.pick=button(questionText(row.data.latest));row.pick.classList.add("nav-asks-pick");row.pick.setAttribute("aria-controls",`${row.article.id}-panel`);
+      const key=row.data.selectable?JSON.stringify([row.data.workspace,row.data.provider,row.data.session_id]):"unidentified:"+row.data.id;
+      let session=sessionByKey.get(key);
+      if(!session){session={key,workspace:row.data.workspace,provider:row.data.provider,id:row.data.selectable?row.data.session_id:"",rows:[],pending:0,item:node("div","nav-asks-session"),pick:button("")};session.pick.classList.add("nav-asks-session-pick");session.item.setAttribute("role","listitem");session.item.append(session.pick);sessions.push(session);sessionByKey.set(key,session);listen(session.pick,()=>selectSession(session));}
+      row.session=session;session.rows.push(row);if(row.data.state==="open")session.pending++;
+      row.search=[questionText(row.data.latest),row.data.id,row.data.provider,row.data.session_id,row.data.workspace].join(" ").toLocaleLowerCase();
+      row.pick=button(questionText(row.data.latest).replace(/\s+/g," ").slice(0,180));row.pick.classList.add("nav-asks-pick");row.pick.setAttribute("aria-controls",`${row.article.id}-panel`);
       row.article.setAttribute("data-filter-text",[questionText(row.data.latest),row.data.id,row.data.provider,row.data.session_id,row.data.workspace].join(" "));
-      const meta=node("p","nav-asks-row-meta",`${project} · ${row.data.provider}${row.data.selectable?"":" · conversation unavailable"}`);meta.title=row.data.workspace;
+      const date=row.data.raised_at.known?new Date(row.data.raised_at.ms):null;const age=date&&Number.isFinite(date.getTime())?date.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}):"time unknown";
+      const meta=node("p","nav-asks-row-meta",`Ask ${row.data.id} · ${age}${row.data.selectable?"":" · conversation unavailable"}`);meta.title=row.data.workspace;
       row.panel=node("div","nav-asks-selected");row.panel.id=`${row.article.id}-panel`;row.panel.hidden=true;
-      row.question=node("h2","nav-asks-question",questionText(row.data.latest));
+      row.question=node("div","nav-asks-question",questionText(row.data.latest));
+      row.nav.textContent=row.data.selectable?"Show conversation beside ask":"Conversation unavailable";
       row.more=node("details","nav-asks-more");row.more.append(node("summary","","Details and original wording"));
       for(const child of [...row.article.children])row.more.append(child);
-      const actions=node("div","nav-asks-actions");actions.append(row.nav,row.copy);
+      const actions=node("div","nav-asks-actions");
+      if(onAction){row.command?.remove();row.action=button(row.data.state==="open"?"Dismiss":"Restore");row.action.classList.add("nav-asks-action");actions.append(row.action);listen(row.action,()=>act(row));}
+      actions.append(row.nav,row.copy);
       row.panel.append(label,row.question,actions,node("p","nav-asks-terminal-note","Answer in the session’s terminal."),row.more);
       row.article.append(row.pick,meta,row.panel);
       listen(row.pick,()=>selectInbox(row));
     }
+    for(const session of sessions){
+      const name=session.workspace.split("/").filter(Boolean).at(-1)||"Unknown project";
+      session.pick.append(node("span","nav-asks-session-name",name),node("span","nav-asks-session-count",String(session.pending)),node("span","nav-asks-session-identity",`${session.provider} · ${session.id?session.id.slice(0,8):"unidentified"}`));session.pick.append(node("span","nav-asks-session-directory",session.workspace));session.pick.title=session.workspace+"\n"+session.provider+"/"+session.id;
+      (session.pending?pendingList:historyList).append(session.item);
+    }
+    const info=node("div","nav-asks-inbox-info");
+    for(const child of [...list.children])if(["nav-asks-trust","nav-asks-all"].includes(child.className)||commandButtons.includes(child))info.append(child);
+    rail.append(info,pendingList,history);
+    if(!sessions.some(session=>session.pending))pendingList.append(node("p","nav-empty","No sessions need your answer."));
+    history.hidden=!sessions.some(session=>!session.pending);
     for(const row of rows)row.more.setAttribute("data-ask-details",row.data.id);
     if(restored&&Array.isArray(restored.expanded)&&restored.expanded.length===groups.length&&restored.expanded.every(v=>typeof v==="boolean")){
       groups.forEach((group,index)=>{group.expanded=restored.expanded[index];group.region.hidden=!group.expanded;group.button.setAttribute("aria-expanded",String(group.expanded));});
@@ -401,7 +467,11 @@ export function createAsksView(document, data, options) {
         if (!activate(row, inbox)) return false;
       }
       if (!active()) return false;
-      finish();if(inbox)selectInbox(rows.find(row=>row.group.expanded&&row.data.id===restored?.selectedId)??rows.find(row=>row.group.expanded)??null);return true;
+      finish();if(inbox){
+        const old=rows.find(row=>row.data.id===restored?.selectedId&&(restored?.history||row.data.state==="open"));
+        const next=old??rows.find(row=>row.data.state==="open"&&row.session.key===restored?.sessionKey)??rows.find(row=>row.group.expanded&&row.data.state==="open")??rows.find(row=>row.group.expanded)??null;
+        if(next){selectedSession=next.session;if(!next.group.expanded)toggleGroup(next.group);}selectInbox(next);syncSessions();
+      }return true;
     } catch { terminate(false); return false; }
   }
   function refresh() {
@@ -409,7 +479,7 @@ export function createAsksView(document, data, options) {
       for (const row of rows) if (row.group.expanded && row.current && !protectedRefresh(row, row.current)) return;
     });
   }
-  function viewState(){return phase==="ready"&&inbox?Object.freeze({selectedId:selectedInbox?.data.id??"",expanded:Object.freeze(groups.map(group=>group.expanded))}):null;}
+  function viewState(){return phase==="ready"&&inbox?Object.freeze({selectedId:selectedInbox?.data.id??"",sessionKey:selectedSession?.key??"",history:selectedInbox?.data.state!=="open",expanded:Object.freeze(groups.map(group=>group.expanded))}):null;}
   function focusSelected(){if(phase!=="ready"||!selectedInbox?.pick.isConnected)return false;selectedInbox.pick.focus({preventScroll:true});return true;}
-  return {fragment, mount, refresh,viewState,focusSelected, teardown:() => terminate(true)};
+  return {fragment, mount, refresh,viewState,focusSelected,setFilter, teardown:() => terminate(true)};
 }

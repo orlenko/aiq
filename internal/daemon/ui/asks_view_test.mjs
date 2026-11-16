@@ -72,21 +72,21 @@ test('inbox preserves wording/copy agreement and clears a selection when its gro
  walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Show original').click();
  assert(find(f,'nav-asks-question').find(visible).textContent.includes('original quote'));
  walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Copy quote').click();await tick();assert.deepEqual(f.copies,[firstCopy]);
- click(f,'Needs your answer (2)');panel=find(f,'nav-asks-selected').find(visible);assert(panel);assert.equal(find(f,'nav-asks-pick').filter(n=>n.getAttribute('aria-current')==='true').length,1);
+ click(f,'Needs your answer (1)');panel=find(f,'nav-asks-selected').find(visible);assert(panel);assert.equal(find(f,'nav-asks-pick').filter(n=>n.getAttribute('aria-current')==='true').length,1);
  assert(find(f,'nav-asks-question').find(visible).textContent.includes('latest quote'));f.clean();
 });
 test('inbox restores only selection and expanded groups from its bounded presentation state',()=>{
  const f=fixture({inbox:true,viewState:{selectedId:'2',expanded:[false,true,false,false,false]}});f.mount();
  assert.equal(find(f,'nav-asks-context').find(visible).textContent,'Ask 2 · project · agy');
- const state=f.view.viewState();assert.deepEqual(state,{selectedId:'2',expanded:[false,true,false,false,false]});assert(Object.isFrozen(state)&&Object.isFrozen(state.expanded));
+ const state=f.view.viewState();assert.deepEqual(state,{selectedId:'2',sessionKey:JSON.stringify(['/invented/project','agy',sourceID]),history:false,expanded:[false,true,false,false,false]});assert(Object.isFrozen(state)&&Object.isFrozen(state.expanded));
  assert.equal(f.view.focusSelected(),true);assert.equal(f.document.activeElement.getAttribute('aria-current'),'true');f.clean();assert.equal(f.view.focusSelected(),false);
 });
 test('initially collapsed inbox groups start with latest wording and retain an explicit original choice',async()=>{
  for(const restored of [undefined,{selectedId:'3',expanded:[false,false,false,false,false]}]){
-  const f=fixture({inbox:true,viewState:restored});f.mount();click(f,'Other open (1)');find(f,'nav-asks-pick')[3].click();
+  const f=fixture({inbox:true,viewState:restored});f.mount();click(f,'Closed and dismissed (1)');find(f,'nav-asks-pick')[5].click();
   let panel=find(f,'nav-asks-selected').find(visible);assert(find(f,'nav-asks-question').find(visible).textContent.includes('latest quote'));
   walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Copy quote').click();await tick();assert.equal(f.copies.at(-1),latestCopy);
-  walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Show original').click();click(f,'Other open (1)');click(f,'Other open (1)');find(f,'nav-asks-pick')[3].click();
+  walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Show original').click();click(f,'Closed and dismissed (1)');click(f,'Closed and dismissed (1)');find(f,'nav-asks-pick')[5].click();
   panel=find(f,'nav-asks-selected').find(visible);assert(find(f,'nav-asks-question').find(visible).textContent.includes('original quote'));walk(panel).find(n=>n.tagName==='button'&&n.textContent==='Copy quote').click();await tick();assert.equal(f.copies.at(-1),firstCopy);f.clean();
  }
 });
@@ -323,4 +323,36 @@ test('ask commands preserve maximum int64 decimal text and reject shell or round
  for(const id of ['0','01','1\n','1;echo invented','9223372036854775808',9223372036854775807,null,{}])assert.equal(navigatorAskCommand(id,'open'),null);
  assert.equal(navigatorAskCommand('7','unknown'),null);
  assert.deepEqual(navigatorRemedyCommands(['watch','__proto__','setup','watch']).map(x=>x[0]),['setup','watch']);
+});
+
+
+test('session-first inbox distinguishes providers, session identities and equal directory basenames',()=>{
+ const data=snapshot();data.sections[0].items[1].id='11';data.sections[0].items[1].provider='codex';data.sections[0].items[1].session_id=sourceID;
+ data.sections[1].items[0].workspace='/elsewhere/project';
+ const f=fixture({inbox:true},data);f.mount();
+ const sessions=find(f,'nav-asks-session-pick');assert.equal(sessions.length,3);
+ assert.deepEqual(find(f,'nav-asks-session-count').map(n=>n.textContent),['2','1','1']);
+ assert.equal(find(f,'nav-asks-session-path')[0].textContent,'/invented/project');
+ sessions[2].click();assert.equal(find(f,'nav-asks-session-path')[0].textContent,'/elsewhere/project');
+ assert.equal(find(f,'nav-asks-pick').filter(visible).length,1);
+ assert.equal(find(f,'nav-asks-context').find(visible).textContent,'Ask 2 · project · agy');
+ f.clean();
+});
+
+test('inbox search selects a matching session and does not merge unidentified sessions',()=>{
+ const data=snapshot();data.sections[0].items[1].id='11';data.sections[0].items[1].latest.lines[0].spans[0].t='unique meteor wording';
+ data.sections[1].items[0].provider='unsupported';data.sections[1].items[0].session_id='';
+ const f=fixture({inbox:true},data);f.mount();assert.equal(find(f,'nav-asks-session-pick').length,3);
+ assert.equal(f.view.setFilter('meteor'),true);assert.equal(find(f,'nav-asks-pick').filter(visible).length,1);
+ assert.equal(find(f,'nav-asks-context').find(visible).textContent,'Ask 11 · project · unsupported');
+ assert.equal(f.view.setFilter('no invented match'),false);assert.equal(find(f,'nav-asks-selected').filter(visible).length,0);
+ assert.equal(f.view.setFilter(''),true);assert.equal(find(f,'nav-asks-selected').filter(visible).length,1);f.clean();
+});
+
+test('dismiss uses admitted revision once and retired or hidden panels cannot act',async()=>{
+ const data=snapshot();for(const group of data.sections)for(const row of group.items)row.revision='a'.repeat(64);
+ const pending=deferred(),calls=[],f=fixture({inbox:true,onAction:q=>{calls.push(q);return pending.promise;}},data);f.mount();
+ const actions=find(f,'nav-asks-action');const selected=actions.find(visible),hidden=actions.find(n=>!visible(n));hidden.click();selected.click();selected.click();
+ assert.deepEqual(calls,[{id:'9007199254740993',revision:'a'.repeat(64),action:'dismiss'}]);assert(Object.isFrozen(calls[0]));
+ f.view.teardown();selected.click();pending.resolve();await tick();assert.equal(calls.length,1);f.clean();
 });

@@ -1,10 +1,11 @@
+import {captureAsks} from "./asks_data.js";
 import {captureLong} from "./controller_data.js";
 import {directory,encodeForm} from "./auth_codec.js";
 import {createSessionController,navigatorLeaseCommand} from "./session_controller.js";
 
 const refused=()=>new TypeError("Workspace view unavailable");
 export function createLongView(document,options){
-  const {window,dir,idPrefix,limits,readLong,readConversation,readState,copyText,announce,onWorkspace,onConversation}=options;
+  const {window,dir,idPrefix,limits,readAsks,readLong,readConversation,readState,copyText,announce,onWorkspace,onConversation}=options;
   if(!window||window!==document.defaultView||typeof dir!=="string"||!/^nav-long-[0-9]+$/.test(idPrefix)||
     ![readLong,readConversation,readState,copyText,announce,onWorkspace,onConversation].every(fn=>typeof fn==="function"))throw refused();
   if(dir)directory(dir);
@@ -14,13 +15,15 @@ export function createLongView(document,options){
   heading.id=idPrefix;root.setAttribute("aria-labelledby",idPrefix);fragment.append(root);
   const refresh=button("Refresh workspace","nav-long-refresh"),meta=node("div","nav-long-meta"),history=node("div","nav-long-history"),
     notice=node("p","nav-long-notice"),newest=button("Jump to current session","nav-long-newest"),feed=node("div","nav-long-feed");
-  newest.hidden=true;root.append(heading,refresh,meta,notice,newest,history,feed);
+  const sortLabel=node("label","nav-long-sort","Sort by"),sort=node("select","nav-long-sort-select");for(const [value,label]of [["updated","Last activity"],["asks","Pending asks"],["name","Name"]]){const option=node("option","",label);option.value=value;sort.append(option);}sort.value="updated";sortLabel.append(sort);sortLabel.hidden=Boolean(dir);
+  newest.hidden=true;root.append(heading,refresh,sortLabel,meta,notice,newest,history,feed);
   const actions=node("section","nav-long-actions"),actionTarget=node("p","nav-long-action-target"),actionState=node("p","nav-long-action-state"),
     attach=button("Copy attach command","nav-command-copy"),drain=button("Copy wrap-up command","nav-command-copy"),moves=node("div","nav-long-moves");
   actions.setAttribute("aria-label","Terminal commands");moves.setAttribute("role","group");moves.setAttribute("aria-label","Moves work");
   moves.append(node("p","","Moves work · moves the session to another account at its next turn end and archives its note."),drain);
   actions.append(actionTarget,attach,moves,actionState);actions.hidden=!dir;root.insertBefore(actions,notice);
   const allWorkspaces=button("All workspaces","nav-long-all");allWorkspaces.hidden=!dir;root.insertBefore(allWorkspaces,meta);
+  let askCounts=null,askFlight=null;
   let mounted=false,disposed=false,flight=null,timer=null,wantFull=false,metadata=null,fullMetadata=null,controller=null,scope=null,
     frozen=false,parkedAuto=false,pending=null,leaseKey=null,account=null,version=0,fullKey=null,lastSuccess=null,displayedTarget=null,copyBusy=false;
   const removes=[],linkRemoves={meta:[],history:[]};let deferredHistory=null,deferredMeta=null;
@@ -68,9 +71,14 @@ export function createLongView(document,options){
     clearLinks("meta");
     const content=document.createDocumentFragment();
     if(value.kind==="list"){
-      content.append(node("p","",value.workspaces.length+" workspaces found"+(value.partial?" · partial history":"")));
+      content.append(node("p","",value.workspaces.length+" workspaces · this machine"+(value.partial?" · partial history":"")));
       const list=node("ul","nav-controller-rows");
-      for(const row of value.workspaces){const item=node("li","nav-controller-row");item.append(link(row.workspace,"/long?dir="+encodeForm(row.workspace),()=>onWorkspace(row.workspace),"meta"),node("p","",row.sessions+" recorded sessions · "+row.recorded_leases+" recorded leases"));list.append(item);}
+      const ordered=[...value.workspaces].sort((a,b)=>{
+        if(sort.value==="asks"&&askCounts){const delta=(askCounts.get(b.workspace)??0)-(askCounts.get(a.workspace)??0);if(delta)return delta;}
+        if(sort.value!=="name"){if(a.updated.known!==b.updated.known)return a.updated.known?-1:1;if(a.updated.known&&a.updated.ms!==b.updated.ms)return b.updated.ms-a.updated.ms;}
+        return a.workspace.localeCompare(b.workspace);
+      });
+      for(const row of ordered){const item=node("li","nav-controller-row");item.append(link(row.workspace,"/long?dir="+encodeForm(row.workspace),()=>onWorkspace(row.workspace),"meta"),node("p","nav-long-row-facts",`${row.sessions} recorded sessions · ${askCounts===null?"Asks unknown":(askCounts.get(row.workspace)??0)+" pending asks"} · ${row.updated.known?"Last activity "+time(row.updated):"Activity time unknown"}`));list.append(item);}
       if(!value.workspaces.length)content.append(node("p","",value.partial?"Workspace history could not be completely mapped.":"No recorded long workspaces."));
       content.append(list);
     }else{
@@ -171,9 +179,20 @@ export function createLongView(document,options){
       if(wantFull&&!document.hidden)request(true);else schedule();
     });
   }
+  function requestAsks(){
+    if(dir||!alive()||typeof readAsks!=="function"||askFlight)return;
+    const job={abort:new window.AbortController()};askFlight=job;
+    Promise.resolve().then(()=>{if(!alive()||job.abort.signal.aborted)throw refused();return readAsks({mode:"all",dir:""},job.abort.signal);}).then(envelope=>{
+      if(!alive()||askFlight!==job||job.abort.signal.aborted)return;
+      const snapshot=captureAsks(envelope.data,{mode:"all",dir:""},limits),counts=new Map();
+      for(const group of snapshot.sections.slice(0,3))for(const row of group.items)counts.set(row.workspace,(counts.get(row.workspace)??0)+1);
+      askCounts=counts;if(metadata)drawMeta(metadata);
+    }).catch(()=>{if(alive()&&askFlight===job&&!job.abort.signal.aborted){askCounts=null;if(metadata)drawMeta(metadata);}}).finally(()=>{if(askFlight===job)askFlight=null;});
+  }
   function mount(){
     if(disposed)return false;if(mounted)return alive();if(!root.isConnected)return false;mounted=true;
-    listen(refresh,"click",()=>request(true));
+    listen(refresh,"click",()=>{request(true);requestAsks();});
+    listen(sort,"change",()=>{if(["updated","asks","name"].includes(sort.value)&&metadata)drawMeta(metadata);});
     listen(attach,"click",()=>copyLease("attach"));listen(drain,"click",()=>copyLease("drain"));
     listen(actions,"focusout",()=>queueMicrotask(updateActions));
     listen(meta,"focusout",()=>queueMicrotask(()=>{if(alive()&&deferredMeta&&!meta.contains(document.activeElement))drawMeta(deferredMeta);}));
@@ -186,11 +205,11 @@ export function createLongView(document,options){
       if(document.hidden){if(timer!==null){window.clearTimeout(timer);timer=null;}wantFull=wantFull||Boolean(flight?.full)||!metadata;try{flight?.abort.abort();}catch{}}
       else if(!flight)request(!metadata||wantFull);
     });
-    updateActions();request(true);return alive();
+    updateActions();request(true);requestAsks();return alive();
   }
   function teardown(){
     if(disposed)return;disposed=true;mounted=false;if(timer!==null)window.clearTimeout(timer);
-    try{flight?.abort.abort();}catch{}controller?.teardown();controller=null;
+    try{flight?.abort.abort();askFlight?.abort.abort();}catch{}controller?.teardown();controller=null;
     for(const remove of removes)try{remove();}catch{}removes.length=0;clearLinks("meta");clearLinks("history");root.remove();metadata=fullMetadata=deferredHistory=deferredMeta=scope=pending=displayedTarget=null;
   }
   return Object.freeze({fragment,mount,teardown});

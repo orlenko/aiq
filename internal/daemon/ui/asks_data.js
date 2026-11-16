@@ -59,6 +59,7 @@ function capture(value, schema, budget, rows = false) {
     for (const [key, child] of Object.entries(schema)) {
       out[key] = capture(field(value, key), child, budget, schema === section && key === "items");
     }
+    if(schema===item){const revision=Object.getOwnPropertyDescriptor(value,"revision");if(revision){require(Object.hasOwn(revision,"value")&&typeof revision.value==="string"&&/^[0-9a-f]{64}$/.test(revision.value));debit(budget,"stringUnits",64);out.revision=revision.value;}}
     return out;
   }
   if (schema === "str" || schema === "style") {

@@ -70,12 +70,12 @@ function longValue(name='A',full=true,extra={}){
     lease:{id:'7',started:'1',provider:'agy',account:'Invented account',launcher:'fixture',pane:'%1',live:'live',drain:'',working_known:false,working:false,turn_started:{ms:0,known:false}},
     current:scope(name),current_spans:[],earlier:[],workspaces:[],note:{available:full,exists:false,updated:{ms:0,known:false},archived:0},...extra};
 }
-function longFixture(dir='/fixture/A'){
+function longFixture(dir='/fixture/A',extra={}){
   const f=fixture(),calls=[],states=[],announcements=[];
   let clock=0;f.window.performance={now:()=>clock};f.longClock=value=>{clock=value;};
   const view=createLongView(f.document,{window:f.window,dir,idPrefix:'nav-long-1',limits:limits(),detailQuery:{last:50,markup:false,anchor:0},shortcutsEnabled:()=>true,
     readLong:(q,signal)=>{const d=deferred();calls.push({q,signal,...d});return d.promise;},readConversation:f.options.readConversation,
-    readState:(q,signal)=>{const d=deferred();states.push({q,signal,...d});return d.promise;},copyText:f.options.copyText,announce:text=>announcements.push(text),onWorkspace:()=>{},onConversation:()=>{}});
+    readState:(q,signal)=>{const d=deferred();states.push({q,signal,...d});return d.promise;},copyText:f.options.copyText,announce:text=>announcements.push(text),onWorkspace:()=>{},onConversation:()=>{},...extra});
   const originalClean=f.clean;f.clean=()=>{view.teardown();originalClean();};
   f.document.body.append(view.fragment);assert.equal(view.mount(),true);
   return Object.assign(f,{view,longCalls:calls,states,longAnnouncements:announcements});
@@ -518,4 +518,29 @@ test('session activity labels keep unknown and recent distinct and expose only a
  byText(f,'Copy recorded launcher resume command').click();await tick();assert.equal(f.copies.at(-1),`aiq resume --launcher fixture ${ids.A}`);
  for(const name of ['','-flag','fixture;echo','fixture\n','X',{},null])assert.equal(navigatorLauncherResumeCommand('claude',ids.A,name),null);
  assert.equal(find(f,n=>has(n,'nav-controller-workspace'))[0].href,'/long?dir=%2Ffixture%2Fwork+space');f.clean();
+});
+
+
+test('prose following owns the page scrollbar and pauses when the person scrolls up',async()=>{
+ const f=followFixture({prose:true});f.document.scrollingElement={scrollHeight:2000,scrollTop:0};f.window.innerHeight=600;const scrolls=[];f.window.scrollTo=q=>{scrolls.push(q);f.document.scrollingElement.scrollTop=q.top;};
+ await tick();assert.equal(find(f,n=>has(n,'nav-controller-follow-content')).length,0);assert.equal(find(f,n=>has(n,'nav-controller-page-follow')).length,1);assert.equal(scrolls.at(-1).top,1400);
+ f.document.scrollingElement.scrollTop=300;f.window.emit('scroll');f.poll();await tick();f.states[0].resolve(cachedState({disk_changed:true,cached_turns:3}));await tick();
+ assert.equal(f.detailCalls.length,1);assert(find(f,n=>has(n,'nav-follow-status'))[0].textContent.includes('new prompts below'));
+ byText(f,'Jump to newest').click();assert.equal(scrolls.at(-1).top,1400);await tick();assert.equal(f.states.length,2);
+ f.states[1].resolve(cachedState());await tick();assert.equal(f.detailCalls.length,2);
+ f.document.scrollingElement.scrollTop=400;f.window.emit('scroll');const previous=scrolls.length;f.detailCalls[1].resolve(detail());await tick();assert.equal(scrolls.length,previous);f.clean();assert.equal(f.window.count(),0);
+});
+
+test('workspace list sorts by actual activity or pending asks and keeps unknown counts unknown',async()=>{
+ const {snapshot}=await import('./asks_values.mjs');let resolveAsks;const asksPromise=new Promise(r=>resolveAsks=r);
+ const f=longFixture('',{readAsks:()=>asksPromise});await tick();
+ const data=longValue('A',true,{kind:'list',requested_dir:'',workspace:'',workspace_known:false,state:'records',lease:null,current:null,current_spans:[],earlier:[],workspaces:[
+  {workspace:'/fixture/A',recorded_leases:1,sessions:1,updated:{ms:1000,known:true}},
+  {workspace:'/fixture/B',recorded_leases:1,sessions:1,updated:{ms:3000,known:true}},
+  {workspace:'/fixture/C',recorded_leases:1,sessions:1,updated:{ms:0,known:false}},
+ ]});
+ f.longCalls[0].resolve(data);await tick();const links=()=>find(f,n=>n.tagName==='a').map(n=>n.textContent);assert.deepEqual(links(),['/fixture/B','/fixture/A','/fixture/C']);assert(f.document.body.textContent.includes('Asks unknown'));
+ const asks=snapshot();asks.scope={mode:'all',dir:''};for(const group of asks.sections)for(const row of group.items)row.workspace='/fixture/A';resolveAsks({data:asks});await tick();
+ const sort=find(f,n=>has(n,'nav-long-sort-select'))[0];sort.value='asks';sort.emit('change');assert.deepEqual(links(),['/fixture/A','/fixture/B','/fixture/C']);assert(f.document.body.textContent.includes('4 pending asks'));assert(f.document.body.textContent.includes('0 pending asks'));
+ sort.value='name';sort.emit('change');assert.deepEqual(links(),['/fixture/A','/fixture/B','/fixture/C']);f.clean();
 });
