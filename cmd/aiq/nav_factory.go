@@ -15,6 +15,7 @@ import (
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/daemon"
 	"github.com/orlenko/aiq/internal/diagnostic"
+	"github.com/orlenko/aiq/internal/fleet"
 	"github.com/orlenko/aiq/internal/navroute"
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/pool"
@@ -441,7 +442,14 @@ func navProductionMetadata(path string, identity func(context.Context) (string, 
 func navProductionQuotas(cfg *config.Config, poll func() daemon.PollStatus) *navQuotaDeps {
 	p := &pool.Pool{Cfg: cfg}
 	path := paths.StateDB()
+	var hosts func(context.Context) []fleet.Host
+	if len(cfg.Fleet.Hosts) > 0 {
+		// Polls only while Quotas is read; see fleet.Poller.
+		poller := fleet.NewPoller(cfg.Fleet.Hosts, fleet.SSH(cfg.Fleet.AiqPath()), time.Minute)
+		hosts = func(ctx context.Context) []fleet.Host { return poller.Hosts(ctx, 2*time.Second) }
+	}
 	return &navQuotaDeps{
+		fleet: hosts,
 		read: func(ctx context.Context, limits state.QuotaSnapshotLimits) (out *state.QuotaSnapshot, err error) {
 			store, err := state.OpenReadOnly(path)
 			if err != nil {

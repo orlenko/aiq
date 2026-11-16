@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/orlenko/aiq/internal/config"
 	"github.com/orlenko/aiq/internal/daemon"
+	"github.com/orlenko/aiq/internal/fleet"
 	"github.com/orlenko/aiq/internal/pool"
 	"github.com/orlenko/aiq/internal/state"
 )
@@ -116,7 +118,7 @@ func TestNavQuotasDocument(t *testing.T) {
 	if err := dec.Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Schema != 1 || body.Hostname != "invented-host" || body.Poll.LastAt != nil || body.Poll.IntervalS != 60 || body.Poll.Error != "invented poll error" {
+	if body.Schema != 2 || body.Hostname != "invented-host" || body.Poll.LastAt != nil || body.Poll.IntervalS != 60 || body.Poll.Error != "invented poll error" {
 		t.Fatalf("header: %+v", body)
 	}
 	if len(body.ModelScope) != len(pool.Providers) || body.ModelScope[0].Provider != pool.Providers[0] {
@@ -165,7 +167,9 @@ func TestNavQuotasDocumentAdmittedByBrowserModel(t *testing.T) {
 		}
 		t.Skip("node is not installed; quota consumer contract did not run")
 	}
-	w := factoryGet(t, quotaFactory(t, quotaDeps(quotaStore(t))), "/api/nav/quotas")
+	deps := quotaDeps(quotaStore(t))
+	deps.fleet = inventedFleet
+	w := factoryGet(t, quotaFactory(t, deps), "/api/nav/quotas")
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -177,7 +181,8 @@ func TestNavQuotasDocumentAdmittedByBrowserModel(t *testing.T) {
 const s=quotaSnapshot(JSON.parse(readFileSync(0,'utf8')),{rows:10,arrayEntries:1000,stringUnits:100000});
 assert.deepEqual(s.providers.map(p=>p.provider),['claude','codex']);const a=s.providers[0].accounts[0];
 assert.equal(a.id,'claude/one');assert.equal(a.windows[0].used,42.5);assert.equal(a.windows[0].remaining,57.5);assert.equal(a.windows[1].used,null);assert.equal(a.windows[1].remaining,null);
-assert.equal(a.extraUsage.balanceMinor,null);assert.equal(a.extraUsage.usedMinor,250);assert.equal(a.leases.length,1);assert.equal(a.leases[0].pane,'%7');assert.equal(s.poll.lastAt,null);
+assert.equal(a.extraUsage.balanceMinor,null);assert.equal(a.extraUsage.usedMinor,250);assert.equal(a.leases.length,3);assert.equal(a.leases[0].pane,'%7');assert.equal(s.poll.lastAt,null);
+assert.deepEqual(a.leases.map(l=>l.machine),['','invented-box','invented-down']);assert.deepEqual(s.machines.map(m=>[m.name,m.status,m.sessions,m.unmatched]),[['','ok',1,0],['invented-box','ok',2,2],['invented-down','error',1,0]]);
 assert.deepEqual(s.rankings.map(r=>r.key),['claude/interactive','claude/worker','codex/interactive','codex/worker']);console.log('quota consumer OK');`
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -187,6 +192,68 @@ assert.deepEqual(s.rankings.map(r=>r.key),['claude/interactive','claude/worker',
 	out, err := cmd.CombinedOutput()
 	if err != nil || string(out) != "quota consumer OK\n" {
 		t.Fatalf("consumer: %s %v", out, err)
+	}
+}
+
+// inventedFleet is two invented machines: one that answered with sessions on
+// accounts matched four ways, and one that has stopped answering.
+func inventedFleet(context.Context) []fleet.Host {
+	return []fleet.Host{
+		{Name: "invented-box", Status: fleet.OK, SeenAt: 1933160370, Leases: []fleet.Lease{
+			// Same subscription under another account name: matched by identity.
+			{Account: "claude/personal", Provider: "claude", Identity: "ONE@invented.test", Mode: "long", Pane: "%2", PID: 7, Workspace: "/invented/remote"},
+			// No identity on either side: matched by id.
+			{Account: "codex/two", Provider: "codex", Mode: "interactive", PID: 8, Cwd: "/invented/cwd"},
+			// Same id, a different subscription: not matched.
+			{Account: "claude/one", Provider: "claude", Identity: "someone-else@invented.test", Mode: "long", PID: 9},
+			// An account this machine does not have.
+			{Account: "claude/elsewhere", Provider: "claude", Identity: "elsewhere@invented.test", Mode: "long", PID: 10},
+		}},
+		{Name: "invented-down", Status: fleet.Failed, SeenAt: 1933160000, Error: "invented: Connection refused", Leases: []fleet.Lease{
+			{Account: "claude/one", Provider: "claude", Identity: "one@invented.test", Mode: "interactive", PID: 11},
+		}},
+	}
+}
+
+func TestNavQuotasFleetSessions(t *testing.T) {
+	deps := quotaDeps(quotaStore(t))
+	deps.fleet = inventedFleet
+	w := factoryGet(t, quotaFactory(t, deps), "/api/nav/quotas")
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var body navQuotasBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	type row struct{ machine, pane, cwd string }
+	got := map[string][]row{}
+	for _, a := range body.Accounts {
+		for _, l := range a.Leases {
+			got[a.ID] = append(got[a.ID], row{l.Machine, l.Pane, l.Cwd})
+		}
+	}
+	want := map[string][]row{
+		"claude/one": {{"", "%7", "/invented/live"}, {"invented-box", "%2", ""}, {"invented-down", "", ""}},
+		"codex/two":  {{"invented-box", "", "/invented/cwd"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sessions: %+v", got)
+	}
+	machines := []navQuotaMachine{}
+	for _, m := range body.Machines {
+		m.SeenAt = nil
+		machines = append(machines, m)
+	}
+	if !reflect.DeepEqual(machines, []navQuotaMachine{
+		{Here: true, Status: "ok", Sessions: 1},
+		{Name: "invented-box", Status: "ok", Sessions: 2, Unmatched: 2},
+		{Name: "invented-down", Status: "error", Error: "invented: Connection refused", Sessions: 1},
+	}) {
+		t.Fatalf("machines: %+v", machines)
+	}
+	if body.Machines[2].SeenAt == nil || *body.Machines[2].SeenAt != 1933160000 {
+		t.Fatalf("seen: %+v", body.Machines[2])
 	}
 }
 

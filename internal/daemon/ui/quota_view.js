@@ -115,6 +115,8 @@ export function createQuotaView(document, options) {
 
   // A new read retires the one in flight; shown is the last accepted snapshot.
   let mounted = false, disposed = false, flight = null, shown = null, shownNode = null, render = 0, copying = null;
+  // Accounts whose session list the person opened; kept across refreshes.
+  const openSessions = new Set();
 
   function node(tag, className, text) {
     const n = document.createElement(tag);
@@ -123,9 +125,9 @@ export function createQuotaView(document, options) {
     return n;
   }
   function hidden(text) { return node("span", "nav-quotas-sr", text); }
-  function listen(target, callback, list = removes) {
-    target.addEventListener("click", callback);
-    list.push(() => target.removeEventListener("click", callback));
+  function listen(target, callback, list = removes, type = "click") {
+    target.addEventListener(type, callback);
+    list.push(() => target.removeEventListener(type, callback));
   }
   function unlisten(list) { for (const remove of list.splice(0)) remove(); }
   function say(message) {
@@ -221,8 +223,26 @@ export function createQuotaView(document, options) {
     parts.forEach((p, i) => { if (i) sub.append(" · "); sub.append(p); });
     return sub;
   }
-  function leaseRow(l) {
+  // Where a session runs: this machine, or another one, with the age of its
+  // last answer when that machine did not answer the last ask.
+  function machineText(machines, name, now) {
+    if (name === "") return "here";
+    const m = machines.get(name);
+    if (!m || m.status === "ok") return name;
+    return `${name} (${m.seenAt === null ? "no answer" : ago(now, m.seenAt)})`;
+  }
+  function leaseRow(l, machines, now) {
     const row = node("li", "nav-quotas-lease");
+    if (machines.size) {
+      const where = node("span", "nav-quotas-lease-machine", l.machine || "here"), m = machines.get(l.machine);
+      if (m && m.status !== "ok") {
+        where.setAttribute("data-status", m.status);
+        where.title = machineText(machines, l.machine, now);
+        where.append(hidden(` (not answering; last answer ${m.seenAt === null ? "never" : ago(now, m.seenAt)})`));
+      }
+      row.append(where);
+    }
+    row.setAttribute("data-here", l.machine === "" ? "true" : "false");
     const mode = [l.mode || "session"];
     if (l.drain) mode.push(l.drain);
     if (l.depth) mode.push(`d${l.depth}`);
@@ -260,7 +280,42 @@ export function createQuotaView(document, options) {
     }
     return box;
   }
-  function accountCard(a, now, token) {
+  // The account's long and interactive sessions on every machine, collapsed
+  // to one line of counts so every account stays above the fold.
+  function sessions(a, machines, now) {
+    const box = node("details", "nav-quotas-sessions");
+    const counts = new Map();
+    for (const l of a.leases) counts.set(l.machine, (counts.get(l.machine) || 0) + 1);
+    const n = a.leases.length, parts = [`${n} session${n === 1 ? "" : "s"}`];
+    if (machines.size) {
+      // Machines in the server's order: here first, then [fleet] order.
+      for (const name of ["", ...machines.keys()]) if (counts.has(name)) parts.push(`${counts.get(name)} ${machineText(machines, name, now)}`);
+    }
+    box.append(node("summary", "", parts.join(" · ")));
+    const list = node("ul", "nav-quotas-leases");
+    list.setAttribute("aria-label", `Sessions on ${a.id}`);
+    for (const l of a.leases) list.append(leaseRow(l, machines, now));
+    box.append(list);
+    box.open = openSessions.has(a.id);
+    listen(box, () => { if (box.open) openSessions.add(a.id); else openSessions.delete(a.id); }, drawn, "toggle");
+    return box;
+  }
+  // Other machines that answer for these subscriptions, and what each said.
+  function machineLine(s, now) {
+    const line = node("p", "nav-quotas-machines");
+    line.append("Sessions from this machine");
+    for (const m of s.machines.slice(1)) {
+      let text = m.name;
+      if (m.status === "pending") text += ": asking…";
+      else if (m.status === "error") text += m.seenAt === null ? ": not answering" : `: not answering since ${ago(now, m.seenAt)}`;
+      if (m.unmatched > 0) text += ` (${m.unmatched} on accounts not set up here)`;
+      const span = node("span", "nav-quotas-machine", text);
+      span.setAttribute("data-status", m.status);
+      line.append(", ", span);
+    }
+    return line;
+  }
+  function accountCard(a, now, token, machines) {
     const card = node("article", "nav-quotas-card");
     const standing = quotaStanding(a);
     card.setAttribute("data-standing", standing.kind);
@@ -283,12 +338,7 @@ export function createQuotaView(document, options) {
       card.append(list);
     } else card.append(node("p", "nav-quotas-empty", "no telemetry yet"));
     card.append(subLine(a, now), details(a, now));
-    if (a.leases.length) {
-      const list = node("ul", "nav-quotas-leases");
-      list.setAttribute("aria-label", `Sessions on ${a.id}`);
-      for (const l of a.leases) list.append(leaseRow(l));
-      card.append(list);
-    }
+    if (a.leases.length) card.append(sessions(a, machines, now));
     return card;
   }
   // One table, a group of rows per provider and mode, as on the dashboard.
@@ -330,6 +380,9 @@ export function createQuotaView(document, options) {
     const token = render, now = s.generatedAt;
     const out = node("div", "nav-quotas-snapshot");
     out.setAttribute("data-stale", "false");
+    // Other machines by name; empty when [fleet] lists none.
+    const machines = new Map(s.machines.slice(1).map(m => [m.name, m]));
+    if (machines.size) out.append(machineLine(s, now));
     const poll = [s.poll.lastAt === null ? "not polled yet" : `polled ${ago(now, s.poll.lastAt)}`];
     if (s.poll.intervalS > 0) poll.push(`every ${quotaSpan(0, s.poll.intervalS)}`);
     if (s.poll.polling) poll.push("polling…");
@@ -349,7 +402,7 @@ export function createQuotaView(document, options) {
         h.id = `nav-quotas-provider-${token}-${i}`;
         column.setAttribute("aria-labelledby", h.id);
         column.append(h);
-        for (const a of p.accounts) column.append(accountCard(a, now, token));
+        for (const a of p.accounts) column.append(accountCard(a, now, token, machines));
         columns.append(column);
       });
       out.append(columns);
@@ -357,6 +410,12 @@ export function createQuotaView(document, options) {
     if (s.rankings.length) out.append(rankingTable(s.rankings));
     const tech = node("details", "nav-quotas-technical"), facts = node("ul", "nav-quotas-detail-list");
     facts.append(node("li", "", `Machine identity used for sessions: ${s.hostname}`), node("li", "", `Read ${local(now)}`));
+    for (const m of machines.values()) {
+      const li = node("li", "");
+      li.append(`${m.name}: ${m.status === "ok" ? "answered" : m.status === "pending" ? "not asked yet" : "did not answer"}${m.seenAt === null ? "" : `, last answer ${local(m.seenAt)}`}`);
+      if (m.error) li.append(node("pre", "nav-quotas-raw-text", m.error));
+      facts.append(li);
+    }
     tech.append(node("summary", "", "Technical details"), facts);
     out.append(tech);
 

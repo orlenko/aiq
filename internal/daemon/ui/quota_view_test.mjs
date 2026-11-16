@@ -24,7 +24,8 @@ class Element extends Target {
   getAttribute(k) { return this.attrs.get(k) ?? null; }
   contains(n) { return this === n || this.children.some(c => c.contains(n)); }
   get isConnected() { return this === this.ownerDocument.body || Boolean(this.parentNode?.isConnected); }
-  click() { for (const f of [...(this.listeners.get("click") || [])]) f(); }
+  click() { this.fire("click"); }
+  fire(k) { for (const f of [...(this.listeners.get(k) || [])]) f(); }
   focus() { this.ownerDocument.activeElement = this; }
 }
 const walk = n => [n, ...n.children.flatMap(walk)];
@@ -40,8 +41,8 @@ const account = (id, provider, extra = {}) => ({id, provider, plan: "max", label
   login: login(), eligible: true, ineligible: "", exhausted: false, reason: "", cooldown_until: null, rank: 1, score: 3.5, rung: 0,
   terms: ["5h 83% used"], reset_credits: 0, reset_credit_expires_at: null, extra_usage: null, poll_error: "", observed_at: NOW - 60,
   windows: [win(), win({key: "seven_day", label: "7d", kind: "weekly", used_pct: null, resets_at: null, binding: false, scope: "invented-model"})],
-  leases: [{mode: "long", drain: "", depth: 0, pane: "%7", pid: 11, workspace: "/invented/work", cwd: "/invented/cwd", why: ""}], ...extra});
-const doc = (extra = {}) => ({schema: 1, generated_at: NOW, hostname: "invented-host-identity",
+  leases: [{mode: "long", drain: "", depth: 0, pane: "%7", pid: 11, workspace: "/invented/work", cwd: "/invented/cwd", why: "", machine: ""}], ...extra});
+const doc = (extra = {}) => ({schema: 2, generated_at: NOW, hostname: "invented-host-identity",
   poll: {last_at: NOW - 120, interval_s: 300, polling: false, error: ""},
   model_scope: [{provider: "claude", scope: "invented-model"}],
   accounts: [account("claude/a", "claude"), account("claude/b", "claude", {rank: 2, score: null, rung: 1}), account("codex/c", "codex")],
@@ -50,7 +51,9 @@ const doc = (extra = {}) => ({schema: 1, generated_at: NOW, hostname: "invented-
       {id: "claude/a", score: 3.5, rung: 0, eligible: true, reason: "", terms: ["5h 83% used"]},
       {id: "claude/b", score: null, rung: 1, eligible: true, reason: "", terms: []},
       {id: "claude/z", score: null, rung: 0, eligible: false, reason: "invented: logged out", terms: []}]},
-    {key: "claude/worker", entries: []}], ...extra});
+    {key: "claude/worker", entries: []}],
+  machines: [{name: "", here: true, status: "ok", seen_at: NOW, error: "", sessions: 3, unmatched: 0}], ...extra});
+const remote = (machine, extra = {}) => ({mode: "interactive", drain: "", depth: 0, pane: "", pid: 4242, workspace: "", cwd: "/invented/remote", why: "", machine, ...extra});
 
 function fixture(extra = {}) {
   const window = new Target(), calls = [], copies = [], announcements = [];
@@ -182,7 +185,7 @@ test("reset credits, cooldown, exhaustion and leases", async () => {
   d.accounts[0].reset_credits = 2; d.accounts[0].reset_credit_expires_at = NOW + 86400;
   d.accounts[1].exhausted = true; d.accounts[1].eligible = false; d.accounts[1].reason = "invented: 5h at 100%";
   d.accounts[2].cooldown_until = NOW + 600;
-  d.accounts[2].leases = [{mode: "worker", drain: "requested", depth: 2, pane: "", pid: 4242, workspace: "", cwd: "/invented/cwd", why: "invented why"}];
+  d.accounts[2].leases = [{mode: "worker", drain: "requested", depth: 2, pane: "", pid: 4242, workspace: "", cwd: "/invented/cwd", why: "invented why", machine: ""}];
   await f.resolve(0, d);
   const subs = f.find("nav-quotas-sub").map(n => n.textContent);
   assert.match(subs[0], / · ⟳ 2 reset credits, next expires .* · seen 1m ago$/);
@@ -248,6 +251,53 @@ test("a copy that fails is reported; a disabled account offers no command", asyn
   assert.equal(f.announcements.at(-1), "Could not copy the login command");
 });
 
+test("without other machines, sessions collapse to a count and name no machine", async () => {
+  const f = fixture(); f.mount(); await f.resolve();
+  assert.equal(f.find("nav-quotas-machines").length, 0);
+  const box = f.find("nav-quotas-sessions")[0];
+  assert.equal(box.tagName, "details");
+  assert.equal(box.open, false);
+  assert.equal(box.children[0].textContent, "1 session");
+  assert.equal(f.find("nav-quotas-lease-machine").length, 0);
+});
+
+test("sessions from other machines join their account, counted per machine", async () => {
+  const f = fixture(); f.mount();
+  const d = doc();
+  d.machines.push({name: "invented-box", here: false, status: "ok", seen_at: NOW - 30, error: "", sessions: 2, unmatched: 1},
+    {name: "invented-down", here: false, status: "error", seen_at: NOW - 600, error: "invented: Permission denied (publickey).", sessions: 1, unmatched: 0},
+    {name: "invented-new", here: false, status: "pending", seen_at: null, error: "", sessions: 0, unmatched: 0});
+  d.accounts[0].leases.push(remote("invented-box"), remote("invented-box", {mode: "long", pane: "%3", workspace: "/invented/remote-work"}), remote("invented-down"));
+  await f.resolve(0, d);
+  assert.equal(f.find("nav-quotas-machines")[0].textContent,
+    "Sessions from this machine, invented-box (1 on accounts not set up here), invented-down: not answering since 10m ago, invented-new: asking…");
+  const [box] = f.find("nav-quotas-sessions");
+  assert.equal(box.children[0].textContent, "4 sessions · 1 here · 2 invented-box · 1 invented-down (10m ago)");
+  const rows = walk(box).filter(n => n.className === "nav-quotas-lease");
+  assert.deepEqual(rows.map(r => r.getAttribute("data-here")), ["true", "false", "false", "false"]);
+  assert.equal(rows[2].textContent, "invented-boxlong%3/invented/remote-work");
+  assert.equal(rows[1].textContent, "invented-boxinteractivepid 4242/invented/remote");
+  assert.equal(rows[3].textContent, "invented-down (not answering; last answer 10m ago)interactivepid 4242/invented/remote");
+  // A machine's raw error is only inside the technical disclosure.
+  const raw = walk(f.document.body).find(n => n.tagName === "pre" && n.textContent === "invented: Permission denied (publickey).");
+  let p = raw; while (p && p.tagName !== "details") p = p.parentNode;
+  assert.equal(p.className, "nav-quotas-technical");
+});
+
+test("an opened session list stays open across refreshes", async () => {
+  const f = fixture(); f.mount(); await f.resolve();
+  const box = f.find("nav-quotas-sessions")[1];
+  box.open = true; box.fire("toggle");
+  f.view.refresh();
+  await f.resolve(1);
+  assert.deepEqual(f.find("nav-quotas-sessions").map(b => b.open), [false, true, false]);
+  const again = f.find("nav-quotas-sessions")[1];
+  again.open = false; again.fire("toggle");
+  f.view.refresh();
+  await f.resolve(2);
+  assert.deepEqual(f.find("nav-quotas-sessions").map(b => b.open), [false, false, false]);
+});
+
 test("the next-pick table keeps order, score, tier and reason", async () => {
   const f = fixture(); f.mount(); await f.resolve();
   const tables = f.find("nav-quotas-table");
@@ -297,7 +347,7 @@ test("a failed refresh keeps the last display and labels it as old", async () =>
   assert.match(f.find("nav-quotas-stale")[0].textContent, /^Refresh failed\./);
   // A refused document is a failure too; the stale notice is not repeated.
   f.view.refresh();
-  await f.resolve(2, {...doc(), schema: 2});
+  await f.resolve(2, {...doc(), schema: 1});
   assert.equal(f.find("nav-quotas-stale").length, 1);
   f.view.refresh();
   await f.resolve(3);
@@ -345,7 +395,7 @@ test("redraws drop the previous render's listeners and move focus out of replace
   f.view.refresh(); await f.resolve(1, d);
   assert.equal(old.count(), 0);
   assert.equal(f.document.activeElement.className, "nav-quotas-refresh");
-  assert.equal(f.listeners(), 2); // Refresh plus one copy button.
+  assert.equal(f.listeners(), 5); // Refresh, one copy button and three session lists.
   old.click();
   assert.equal(f.copies.length, 0);
 });
