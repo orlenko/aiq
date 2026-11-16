@@ -263,7 +263,7 @@ export function createAppHost(document,options) {
     return section;
   }
   function render(parsed,focus){
-    clearRoute();if(!alive())return;
+    clearRoute();if(!alive())return;status.textContent="";
     currentAddress=parsed;if(parsed.dir)lastDirectory=parsed.dir;
     root.setAttribute("data-nav-page",parsed.path);machine.hidden=parsed.path==="/quotas";
     showAskOrigin(selected(parsed));
@@ -279,7 +279,7 @@ export function createAppHost(document,options) {
     windowLabel.hidden=!selected(parsed)&&!(parsed.path==="/long"&&parsed.dir);windowSelect.value=String(parsed.anchor?50:lastPrompts);
     recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help"||parsed.path==="/long";catalogStatus.textContent="";directoryTree.replaceChildren();directoryTree.hidden=true;allSessions.hidden=["/long","/help","/quotas"].includes(parsed.path);
     scopeMenu.hidden=["/asks","/long","/help","/quotas"].includes(parsed.path);searchLabel.hidden=parsed.path==="/help"||parsed.path==="/quotas";search.placeholder=parsed.path==="/asks"?"Filter loaded asks":"Filter loaded sessions";
-    readingOptions.hidden=windowLabel.hidden;back.hidden=!selected(parsed)&&parsed.path!=="/long";
+    readingOptions.hidden=windowLabel.hidden;back.hidden=!selected(parsed)&&!(parsed.path==="/long"&&parsed.dir);
     title.textContent=parsed.path==="/long"?"Workspaces":parsed.path==="/asks"?"Asks":parsed.path==="/quotas"?"Quotas":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
     title.hidden=Boolean(selected(parsed))||parsed.path==="/quotas";
     controls.hidden=workersLabel.hidden&&liveLabel.hidden&&windowLabel.hidden&&back.hidden;

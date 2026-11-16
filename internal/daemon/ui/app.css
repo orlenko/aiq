@@ -255,3 +255,6 @@ body:has(#nav-app-root[data-auth-controls="true"]:not([hidden])) #nav-auth-root 
 .nav-ask-context-tools .nav-controller-refresh {margin:0;font-size:.75rem!important;}
 .nav-ask-context .nav-feed[data-prose="true"] .nav-feed-message {margin:.8rem 0;padding:.25rem 0;}
 .nav-ask-context .nav-feed[data-prose="true"] .nav-feed-message[data-kind="you"],.nav-ask-context .nav-feed[data-prose="true"] .nav-feed-message[data-kind="steer"] {padding:.8rem 1rem;}
+
+.nav-app[data-nav-page="/long"] .nav-long>h2 {display:none;}
+.nav-app[data-nav-page="/long"] .nav-long {padding-top:0;}
