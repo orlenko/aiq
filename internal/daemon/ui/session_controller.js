@@ -212,6 +212,7 @@ export function createSessionController(document, options) {
       const reasons={request:"The server could not complete the request.",timeout:"The request timed out.",cancelled:"The request was cancelled.",terminal:"The connection could not be verified. Reopen the UI to reconnect.",unavailable:"The request could not be completed."};
       reason=" "+reasons[code];
       try{const d=Object.getOwnPropertyDescriptor(error,"status");if(code==="request"&&d&&Object.hasOwn(d,"value")&&[400,404,409,413,500,503].includes(d.value))reason=` The server returned HTTP ${d.value}.`;}catch{}
+      try{const d=Object.getOwnPropertyDescriptor(error,"reason"),messages={list_too_large:" The session list exceeds its size limit. Choose a project to narrow it.",list_busy:" The session index is busy. Try again.",request_cancelled:" The session scan was interrupted. Try again."};if(code==="request"&&d&&Object.hasOwn(d,"value")&&typeof d.value==="string"&&Object.hasOwn(messages,d.value))reason=messages[d.value];}catch{}
       listState(code,Boolean(listView));
     }
     status(op, target, op.channel === "list" ? (listView ? "Sessions unavailable; showing previous results." : "Sessions unavailable.")+reason :

@@ -200,7 +200,7 @@ func TestNavSessionsValidationBeforeIO(t *testing.T) {
 }
 
 func TestNavSessionsLiteralDTOAndOwnership(t *testing.T) {
-	label := "<script>\"&\n\x1b日本語\u2028" + strings.Repeat("長", 200)
+	label := "<script>\"&\n\x1b日本語\u2028" + strings.Repeat("長", 100)
 	row := transcript.Summary{Provider: "claude", ID: navTestID, Path: "NEVER-EXPORT-TRANSCRIPT", Cwd: "/fixture", Label: label, Title: "title", Model: "model", Branch: "branch", Started: time.Date(2026, 1, 2, 3, 4, 5, 6, time.FixedZone("fixture", 3600)), Turns: 2, Tools: 3, Bypass: true}
 	roots := transcript.Roots{ClaudeProjects: []string{"/configured/claude"}, CodexSessions: []string{"/configured/codex"}, AgyAppData: []string{"/configured/agy"}, CodexIndex: []string{"/not-coverage/index"}, CopilotAppData: []string{"/unsupported/copilot"}, Labels: map[string]string{"/configured/claude": "NOT-AN-ACCOUNT-FACT"}}
 	h := navTestHandler(t, []transcript.Summary{row}, func(d *navSessionsDeps, _ *navSessionsLimits) { d.roots = roots })

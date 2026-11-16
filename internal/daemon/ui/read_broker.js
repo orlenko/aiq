@@ -4,6 +4,7 @@ function unavailable(cause) {
   try{const d=Object.getOwnPropertyDescriptor(cause,"code");if(d&&Object.hasOwn(d,"value")&&["request","timeout","cancelled","terminal"].includes(d.value))code=d.value;}catch{}
   Object.defineProperty(error,"code",{value:code});
   if(code==="request")try{const d=Object.getOwnPropertyDescriptor(cause,"status");if(d&&Object.hasOwn(d,"value")&&[400,404,409,413,500,503].includes(d.value))Object.defineProperty(error,"status",{value:d.value});}catch{}
+  if(code==="request"&&error.status===503)try{const d=Object.getOwnPropertyDescriptor(cause,"reason");if(d&&Object.hasOwn(d,"value")&&["list_too_large","list_busy","request_cancelled"].includes(d.value))Object.defineProperty(error,"reason",{value:d.value});}catch{}
   return error;
 }
 function queryCopy(kind, query) {

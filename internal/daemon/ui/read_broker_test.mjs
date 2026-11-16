@@ -103,3 +103,12 @@ test('retired reads discard diagnostic information along with their obsolete res
  const waiting=assert.rejects(r.read('sessions',list),error=>error.code==='unavailable'&&error.status===undefined);
  await tick();r.dispose();reject(Object.assign(new Error('private'),{code:'request',status:503}));await waiting;b.close();
 });
+
+test('broker forwards only allowed request reasons and never invokes reason accessors',async()=>{
+ for(const [code,status,reason,wanted]of [['request',503,'list_too_large','list_too_large'],['request',503,'list_busy','list_busy'],['request',503,'private detail',undefined],['request',400,'list_busy',undefined],['terminal',503,'list_busy',undefined]]){
+  const broker=createReadBroker({sessions:()=>Promise.reject(Object.assign(new Error('private'),{code,status,reason}))});
+  await assert.rejects(broker.route().read('sessions',list),e=>{assert.equal(e.reason,wanted);return true;});broker.close();
+ }
+ let invoked=0;const cause=Object.defineProperty(Object.assign(new Error('private'),{code:'request',status:503}),'reason',{get(){invoked++;return 'list_busy';}}),broker=createReadBroker({sessions:()=>Promise.reject(cause)});
+ await assert.rejects(broker.route().read('sessions',list),e=>e.reason===undefined);assert.equal(invoked,0);broker.close();
+});

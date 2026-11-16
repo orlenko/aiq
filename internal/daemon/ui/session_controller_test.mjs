@@ -606,3 +606,11 @@ test('detail-ready callback observes only the mounted current feed and can repla
  const g=fixture({onDetailReady(){throw Error('invented callback');}});g.mount();g.controller.selectConversation(scope('A'));
  g.detailCalls[0].resolve(detail());await tick();assert(g.document.body.textContent.includes('Conversation ready.'));g.clean();
 });
+
+test('safe session failure reasons explain retries while previous results remain available',async()=>{
+ for(const [reason,expected]of [['list_too_large','exceeds its size limit'],['list_busy','index is busy'],['request_cancelled','scan was interrupted'],['invented private reason','HTTP 503']]){
+  const f=fixture();f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(sessions());await tick();
+  f.controller.loadSessions(query());f.listCalls[1].reject(Object.assign(new Error('invented private body'),{code:'request',status:503,reason}));await tick();
+  const status=find(f,n=>has(n,'nav-controller-status'))[0];assert(status.textContent.includes(expected));assert(status.textContent.includes('showing previous results'));assert(!status.textContent.includes('private'));assert(f.document.body.textContent.includes('row A'));assert(byText(f,'Retry sessions'));f.clean();
+ }
+});
