@@ -81,6 +81,8 @@ export function createSessionController(document, options) {
   const listPane = pane("Sessions", "sessions"), detailPane = pane("Conversation", "conversation");
   const conversationOnly=options?.conversationOnly??false;if(typeof conversationOnly!=="boolean")fail();
   listPane.root.hidden=conversationOnly;
+  detailPane.root.hidden=!conversationOnly;
+  root.setAttribute("data-reading",String(conversationOnly));root.setAttribute("data-conversation-only",String(conversationOnly));
   root.append(listPane.root, detailPane.root);
   let mounted = false, disposed = false, frozen=false, activeScope = null, listQuery = null, selection = null, listView = null;
   const current = {list:null, detail:null}, serial = {list:0n, detail:0n}, removes = [];
@@ -221,32 +223,41 @@ export function createSessionController(document, options) {
   function listCommit(op, data) {
     const view = {root:node("div", "nav-controller-list"), rows:[], removes:[]};
     try {
-      view.root.append(node("p", "nav-controller-facts", op.query.all?"All directories":`Directory: ${data.dir}`),
+      const diagnostics=node("details","nav-session-diagnostics"),diagnosticTitle=node("summary","","Snapshot details");
+      diagnostics.append(diagnosticTitle,
+        node("p", "nav-controller-facts", op.query.all?"All directories":`Directory: ${data.dir}`),
         node("p", "nav-controller-facts", `Scanned ${data.scanned} of ${data.of}; unreadable ${data.unreadable_count}; partial: ${data.partial ? "yes" : "no"}`));
+      view.root.append(node("p","nav-session-count",`${data.sessions.length} ${data.sessions.length===1?"session":"sessions"}${data.partial?" · partial results":""}`),diagnostics);
       if(data.activity){
         const value=data.activity,date=new Date(value.observed.ms),stamp=value.observed.known&&Number.isFinite(date.getTime())?date.toLocaleString():"unknown time";
-        view.root.append(node("p","nav-controller-facts",`Activity snapshot: ${stamp}. Refresh to check again.`),node("p","nav-controller-elsewhere",`${value.known?"":"At least "}${value.live} verified managed sessions · ${value.elsewhere} elsewhere${value.known?"":" · other managed state unknown"}${value.claude_open_known?"":" · Claude registrations incomplete"}`));
+        diagnostics.append(node("p","nav-controller-facts",`Activity snapshot: ${stamp}. Refresh to check again.`),node("p","nav-controller-elsewhere",`${value.known?"":"At least "}${value.live} verified managed sessions · ${value.elsewhere} elsewhere${value.known?"":" · other managed state unknown"}${value.claude_open_known?"":" · Claude registrations incomplete"}`));
       }
-      for (const rootPath of data.roots_searched) view.root.append(node("p", "nav-controller-facts", `Root searched: ${rootPath}`));
+      for (const rootPath of data.roots_searched) diagnostics.append(node("p", "nav-controller-facts", `Root searched: ${rootPath}`));
       const rows = node("ul", "nav-controller-rows"); view.root.append(rows);
       for (const value of data.sessions) {
         const li = node("li", "nav-controller-row"), item = {button:null}; view.rows.push(item); rows.append(li);
         const activity=value.activity,live=activity?.live??"unknown";li.setAttribute("data-nav-live",live);
         const labels={unknown:"Live state unknown",recent:"Recent activity (not verified live)",open:`Registered open in pid ${activity?.pid??0} (process exists; session not verified)`,live:"Verified running · aiq long",ended:"Managed session verified ended"};
-        li.append(node("p","nav-controller-activity",labels[live]));
+        const brief={unknown:"◌ Unknown",recent:"◔ Recent write",open:"○ Open, registered",live:"● Live",ended:"Ended, verified"};
+        const activityLabel=node("p","nav-controller-activity",brief[live]??brief.unknown);activityLabel.title=labels[live]??labels.unknown;li.append(activityLabel);
         const label = `${value.provider} · ${value.label} · ${value.id}`;
         if (value.selectable) {
-          item.button = node("button", "nav-controller-select", label); item.button.type = "button"; li.append(item.button);
+          item.button = node("button", "nav-controller-select", value.label||value.title||"Untitled conversation"); item.button.type = "button";item.button.title=label;li.append(item.button);
           const selectedScope = {provider:value.provider, id:value.id};
           const click = () => { if (mounted && !disposed && listView === view) select(selectedScope, {item, view}); };
           item.button.addEventListener("click", click);
           view.removes.push(() => item.button.removeEventListener("click", click));
         } else li.append(node("p", "nav-controller-unavailable", `${label} · Unavailable for selection`));
-        commandControls(li,value,()=>mounted&&!disposed&&listView===view,view.removes);
+        const summary=node("div","nav-session-summary"),project=node("span","nav-session-project",value.cwd?value.cwd.split("/").filter(Boolean).at(-1)||"/":"Unknown project"),agent=node("span","nav-session-agent",`${value.provider}${value.model?" · "+value.model:""}`),size=node("span","nav-session-size",`${value.turns} ${value.turns===1?"turn":"turns"}`),updated=node("span","nav-session-updated",value.updated);
+        project.title=value.cwd||"Directory unknown";updated.title=value.updated;summary.append(project,agent,size,updated);li.append(summary);
+        const details=node("details","nav-session-commands"),toggle=node("summary","","Copy commands and details"),panel=node("div","nav-session-command-panel");
+        details.append(toggle,panel);li.append(details);
+        panel.append(node("p","nav-controller-facts",labels[live]??labels.unknown));
+        commandControls(panel,value,()=>mounted&&!disposed&&listView===view,view.removes);
         const drainLabels={"":"no wrap-up recorded",requested:"wrapping up · moves at turn end",draining:"wrapping up · moves at turn end",ready:"wrap-up ready",waiting:"waiting for an account"};
-        if(activity?.managed)li.append(node("p","nav-controller-facts",`Recorded account: ${activity.account} · launcher: ${activity.launcher||"bare"} · terminal: ${activity.pane} · ${Object.hasOwn(drainLabels,activity.drain)?drainLabels[activity.drain]:"drain state unknown"}${activity.drain_manual?" · requested by you":""}`));
-        if(activity?.workspace){const link=node("a","nav-controller-workspace",activity.continued?"Current session in workspace →":"Workspace history and terminal controls →");link.href="/long?dir="+encodeForm(activity.workspace);link.rel="noreferrer";li.append(link);}
-        li.append(node("p", "nav-controller-facts", `Title: ${value.title} · Directory: ${value.cwd||"Unknown"}`),
+        if(activity?.managed)panel.append(node("p","nav-controller-facts",`Recorded account: ${activity.account} · launcher: ${activity.launcher||"bare"} · terminal: ${activity.pane} · ${Object.hasOwn(drainLabels,activity.drain)?drainLabels[activity.drain]:"drain state unknown"}${activity.drain_manual?" · requested by you":""}`));
+        if(activity?.workspace){const link=node("a","nav-controller-workspace",activity.continued?"Current session in workspace →":"Workspace history and terminal controls →");link.href="/long?dir="+encodeForm(activity.workspace);link.rel="noreferrer";panel.append(link);}
+        panel.append(node("p", "nav-controller-facts", `${value.provider} · ${value.id}`),node("p", "nav-controller-facts", `Title: ${value.title} · Directory: ${value.cwd||"Unknown"}`),
           node("p", "nav-controller-facts", `Model: ${value.model} · Branch: ${value.branch} · Updated: ${value.updated}`),
           node("p", "nav-controller-facts", `Turns: ${value.turns} · Tools: ${value.tools} · Worker: ${value.worker ? "yes" : "no"} · Bypass: ${value.bypass ? "yes" : "no"}`));
       }
@@ -407,7 +418,7 @@ export function createSessionController(document, options) {
       if (!activeScope || activeScope.dir !== op.query.canonicalDir || activeScope.workers !== op.query.workers || activeScope.all!==op.query.all) {
         oldDetail = current.detail; current.detail = null; ++serial.detail;
         activeScope = {dir:op.query.canonicalDir, workers:op.query.workers,all:op.query.all}; op.scope = activeScope;
-        selection = null; clearList();
+        selection = null; clearList();root.setAttribute("data-reading",String(conversationOnly));detailPane.root.hidden=!conversationOnly;
         detailPane.status.textContent = ""; detailPane.root.setAttribute("aria-busy", "false");
       }
       listQuery = {...op.query};
@@ -420,6 +431,7 @@ export function createSessionController(document, options) {
   function select(value, trigger = null) {
     if (!mounted || disposed || frozen) return;
     const {op, previous} = reserve("detail");
+    root.setAttribute("data-reading","true");detailPane.root.hidden=false;
     selection = null; markers();
     try {
       op.query = scope(value);

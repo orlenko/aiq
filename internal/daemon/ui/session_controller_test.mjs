@@ -85,6 +85,22 @@ async function readyLong(){
   const value=detail();value.selection='A'.repeat(43);f.detailCalls[0].resolve(value);await tick();return f;
 }
 
+test('finder hides the unused conversation pane but reveals loading and failure after selection',async()=>{
+ const f=fixture();f.mount();
+ const host=find(f,n=>has(n,'nav-controller'))[0],panes=find(f,n=>has(n,'nav-controller-pane'));
+ assert.equal(host.getAttribute('data-reading'),'false');assert.equal(panes[1].hidden,true);
+ f.controller.loadSessions(query());f.listCalls[0].resolve(sessions());await tick();
+ f.controller.selectConversation(scope('A'));assert.equal(panes[1].hidden,false);assert.equal(host.getAttribute('data-reading'),'true');
+ f.detailCalls[0].reject(new Error('invented unavailable conversation'));await tick();assert.equal(panes[1].hidden,false);assert(f.document.body.textContent.includes('Conversation unavailable.'));
+ f.controller.loadSessions(query('/fixture/B'));assert.equal(panes[1].hidden,true);assert.equal(host.getAttribute('data-reading'),'false');f.clean();
+});
+test('compact session rows keep full targeting metadata and copy actions inside disclosure',async()=>{
+ const f=fixture({readCommands:true,resumeCommands:true});f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(sessions('/fixture/A',[row('A',{provider:'codex'})]));await tick();
+ const purpose=find(f,n=>has(n,'nav-controller-select'))[0],menu=find(f,n=>has(n,'nav-session-commands'))[0];
+ assert.equal(purpose.textContent,'row A');assert(purpose.title.includes(ids.A));assert(menu.textContent.includes(ids.A));
+ for(const text of ['Copy read command','Copy follow command','Copy resume command','Copy bare resume command','Copy auto resume command','Copy long auto resume command'])assert(menu.contains(byText(f,text)),text);
+ byText(f,'Copy read command').click();await tick();assert.equal(f.copies.at(-1),`aiq convo ${ids.A}`);f.clean();
+});
 test('workspace rollover at the tail replaces one feed and shows a session divider without focus movement',async()=>{
   const f=await readyLong(),first=find(f,n=>n.tagName==='article')[0],focusCount=f.document.focusCalls.length;
   f.poll();await tick();assert.deepEqual(f.longCalls[1].q,{dir:'/fixture/A',history:false});
