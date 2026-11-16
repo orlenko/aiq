@@ -269,7 +269,7 @@ export function createAsksView(document, data, options) {
     if(!selectedInbox||!matches(selectedInbox)){
       const row=rows.find(row=>row.session===selectedSession&&row.data.state==="open"&&matches(row))??
         (explicit||!selectedSession||selectedSession.pending===0?rows.find(row=>row.data.state==="open"&&matches(row))??rows.find(matches):null);
-      if(row){selectedSession=row.session;if(!row.group.expanded)toggleGroup(row.group);selectInbox(row);}else if(selectedInbox)selectInbox(null);
+      if(row){if(selectedSession!==row.session)cancelBulk();selectedSession=row.session;if(!row.group.expanded)toggleGroup(row.group);selectInbox(row);}else if(selectedInbox)selectInbox(null);
     }
     syncSessions();inboxPanel.hidden=!selectedInbox||!matches(selectedInbox);return rows.some(matches);
   }

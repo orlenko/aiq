@@ -36,7 +36,10 @@ export function highlightPeekPassage(root,excerpt){
     for(const part of parts){const start=Math.max(match.start,part.start)-part.start,end=Math.min(match.end,part.end)-part.start;if(end<=start)continue;
       const tail=part.node.splitText(start);tail.splitText(end-start);const mark=root.ownerDocument.createElement("mark");mark.className="nav-ask-match";tail.replaceWith(mark);mark.append(tail);first??=mark;
     }
-    if(first){first.scrollIntoView({block:"center",behavior:"instant"});return true;}
+    if(first){
+      for(let parent=first.parentElement;parent&&parent!==root;parent=parent.parentElement)if(parent.tagName==="DETAILS")parent.open=true;
+      first.scrollIntoView({block:"center",behavior:"instant"});return true;
+    }
   }
   return false;
 }

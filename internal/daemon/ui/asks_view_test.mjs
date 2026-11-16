@@ -381,3 +381,13 @@ test('passive filter restoration does not replace a session that still has pendi
  assert.equal(f.view.setFilter('meteor'),true);assert.equal(f.view.viewState().sessionKey,key);assert.equal(find(f,'nav-asks-selected').filter(visible).length,0);
  f.view.setFilter('meteor',true);assert.notEqual(f.view.viewState().sessionKey,key);assert.equal(find(f,'nav-asks-selected').filter(visible).length,1);f.clean();
 });
+
+test('searching away permanently cancels a batch even when search returns before settlement',async()=>{
+ const data=snapshot();data.sections[0].items[1].id='12';for(const group of data.sections)for(const row of group.items)row.revision='a'.repeat(64);
+ data.sections[0].items[0].latest.lines[0].spans[0].t='original-session unique decision';data.sections[0].items[1].latest.lines[0].spans[0].t='other-session unique decision';
+ const pending=deferred();let flight;const f=fixture({inbox:true,onBatchAction:(items,scope,signal,valid)=>{flight={signal,valid};return pending.promise;}},data);f.mount();const key=f.view.viewState().sessionKey;
+ find(f,'nav-asks-bulk')[0].click();click(f,'Dismiss 3 asks');assert.equal(flight.valid(),true);
+ f.view.setFilter('other-session',true);assert.notEqual(f.view.viewState().sessionKey,key);assert.equal(flight.signal.aborted,true);
+ f.view.setFilter('original-session',true);assert.equal(f.view.viewState().sessionKey,key);assert.equal(flight.valid(),false);
+ pending.resolve();await tick();f.clean();
+});
