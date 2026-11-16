@@ -21,16 +21,26 @@ const marker = "<!-- aiq navigator private launch v1 -->\n"
 // Document validates the complete nested fragment and HTML before returning any
 // bytes. Calling it with a canonical 43-character placeholder admits size before
 // consuming a one-use code. No directory text is truncated or normalized.
+//
+// The handoff opens Asks. An empty directory opens every project's Asks
+// (/asks?all=true); any other directory must be absolute and clean, and opens
+// that directory's Asks (/asks?dir=...). There is no third shape.
 func Document(port int, directory, code string) ([]byte, error) {
-	if port < 1 || port > 65535 || !utf8.ValidString(directory) || directory == "" || len(directory) > 4096 ||
-		!path.IsAbs(directory) || path.Clean(directory) != directory || strings.Contains(directory, "\\") ||
-		strings.IndexFunc(directory, func(r rune) bool { return r < 32 || r == 127 }) >= 0 {
+	if port < 1 || port > 65535 {
 		return nil, ErrUnavailable
+	}
+	next := "/asks?all=true"
+	if directory != "" {
+		if !utf8.ValidString(directory) || len(directory) > 4096 ||
+			!path.IsAbs(directory) || path.Clean(directory) != directory || strings.Contains(directory, "\\") ||
+			strings.IndexFunc(directory, func(r rune) bool { return r < 32 || r == 127 }) >= 0 {
+			return nil, ErrUnavailable
+		}
+		next = "/asks?" + url.Values{"dir": {directory}}.Encode()
 	}
 	if _, err := navauth.Decode32(code); err != nil {
 		return nil, ErrUnavailable
 	}
-	next := "/sessions?" + url.Values{"dir": {directory}}.Encode()
 	fragment := url.Values{"code": {code}, "next": {next}}.Encode()
 	if len(fragment) > 8192 {
 		return nil, ErrUnavailable
