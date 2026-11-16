@@ -101,6 +101,12 @@ test('compact session rows keep full targeting metadata and copy actions inside 
  for(const text of ['Copy read command','Copy follow command','Copy resume command','Copy bare resume command','Copy auto resume command','Copy long auto resume command'])assert(menu.contains(byText(f,text)),text);
  byText(f,'Copy read command').click();await tick();assert.equal(f.copies.at(-1),`aiq convo ${ids.A}`);f.clean();
 });
+test('prose reader keeps terminal actions in a disclosure and can hide its session rail',async()=>{
+ const f=fixture({prose:true,readCommands:true,resumeCommands:true});f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(sessions());await tick();f.controller.selectConversation(scope('A'));f.detailCalls[0].resolve(detail());await tick();
+ const metadata=find(f,n=>has(n,'nav-conversation-details'))[0];assert(metadata);const read=find(f,n=>n.tagName==='button'&&n.textContent==='Copy read command'&&metadata.contains(n))[0];assert(read);
+ read.click();await tick();assert.equal(f.copies.at(-1),`aiq convo ${ids.A}`);
+ byText(f,'Hide sessions').click();assert.equal(find(f,n=>has(n,'nav-controller'))[0].getAttribute('data-rail-hidden'),'true');byText(f,'Show sessions').click();assert.equal(find(f,n=>has(n,'nav-controller'))[0].getAttribute('data-rail-hidden'),'false');f.clean();
+});
 test('workspace rollover at the tail replaces one feed and shows a session divider without focus movement',async()=>{
   const f=await readyLong(),first=find(f,n=>n.tagName==='article')[0],focusCount=f.document.focusCalls.length;
   f.poll();await tick();assert.deepEqual(f.longCalls[1].q,{dir:'/fixture/A',history:false});

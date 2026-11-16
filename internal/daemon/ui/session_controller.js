@@ -56,6 +56,7 @@ export function createSessionController(document, options) {
   if (selectedCallback && (!Object.hasOwn(selectedCallback,"value") || typeof selectedCallback.value!=="function")) fail();
   const readingOption=Object.getOwnPropertyDescriptor(options ?? {},"readingControls"), shortcutOption=Object.getOwnPropertyDescriptor(options ?? {},"shortcutsEnabled");
   const readingControls=readingOption ? readingOption.value : false;
+  const prose=options.prose??false;if(typeof prose!=="boolean")fail();
   let shortcutsEnabled=shortcutOption ? shortcutOption.value : ()=>true;
   const commandOption=Object.getOwnPropertyDescriptor(options ?? {},"readCommands");
   const readCommands=commandOption ? commandOption.value : false;
@@ -86,6 +87,10 @@ export function createSessionController(document, options) {
   root.append(listPane.root, detailPane.root);
   let mounted = false, disposed = false, frozen=false, activeScope = null, listQuery = null, selection = null, listView = null;
   const current = {list:null, detail:null}, serial = {list:0n, detail:0n}, removes = [];
+  let railVisible=!(window.matchMedia?.("(max-width: 48rem)")?.matches??false);
+  const railToggle=node("button","nav-session-rail-toggle","Hide sessions");railToggle.type="button";
+  if(prose&&!conversationOnly){const toolbar=node("div","nav-controller-pane-toolbar");toolbar.append(detailPane.heading,railToggle,detailPane.refresh);detailPane.root.prepend(toolbar);const toggle=()=>{if(!mounted||disposed)return;railVisible=!railVisible;syncRail();};railToggle.addEventListener("click",toggle);removes.push(()=>railToggle.removeEventListener("click",toggle));}
+  function syncRail(){if(!prose||conversationOnly)return;const reading=root.getAttribute("data-reading")==="true";listPane.root.hidden=reading&&!railVisible;root.setAttribute("data-rail-hidden",String(reading&&!railVisible));railToggle.textContent=railVisible?"Hide sessions":"Show sessions";railToggle.setAttribute("aria-expanded",String(railVisible));}
   function node(tag, className, value) {
     const n = document.createElement(tag); n.className = className;
     if (value !== undefined) n.textContent = value;
@@ -286,12 +291,14 @@ export function createSessionController(document, options) {
     try {
       const s = data.session;
       candidate.headers=detailHeaderText(data).map(text=>node("p","nav-controller-facts",text));
-      candidate.root.append(...candidate.headers);
-      commandControls(candidate.root,s,()=>alive(op)&&!candidate.retired,candidate.removes);
-      if(!conversationOnly&&s.cwd){try{directory(s.cwd);const link=node("a","nav-controller-workspace","Workspace history and terminal controls →");link.href="/long?dir="+encodeForm(s.cwd);link.rel="noreferrer";candidate.root.append(link);}catch{}}
+      const metadata=prose?node("details","nav-conversation-details"):candidate.root;
+      if(prose){metadata.append(node("summary","","Terminal commands and details"));candidate.root.append(node("p","nav-conversation-meta",`${s.cwd.split("/").filter(Boolean).at(-1)||"Unknown project"} · ${s.provider}${s.model?" · "+s.model:""}`),metadata);}
+      metadata.append(...candidate.headers);
+      commandControls(metadata,s,()=>alive(op)&&!candidate.retired,candidate.removes);
+      if(!conversationOnly&&s.cwd){try{directory(s.cwd);const link=node("a","nav-controller-workspace","Workspace history and terminal controls →");link.href="/long?dir="+encodeForm(s.cwd);link.rel="noreferrer";metadata.append(link);}catch{}}
       candidate.child = createConversationFeed(document, data, {window,
         idPrefix:`${idPrefix}-feed-${op.version}`, expectedScope:op.query,
-        readingControls, shortcutsEnabled:()=>alive(op)&&!candidate.retired&&shortcutsEnabled(),
+        readingControls,prose, shortcutsEnabled:()=>alive(op)&&!candidate.retired&&shortcutsEnabled(),
         copyText:raw => { if (alive(op) && !candidate.retired) return copyText(raw); },
         announce:value => { if (alive(op) && !candidate.retired) announce(value); }});
       candidate.root.append(candidate.child.fragment);
@@ -418,7 +425,7 @@ export function createSessionController(document, options) {
       if (!activeScope || activeScope.dir !== op.query.canonicalDir || activeScope.workers !== op.query.workers || activeScope.all!==op.query.all) {
         oldDetail = current.detail; current.detail = null; ++serial.detail;
         activeScope = {dir:op.query.canonicalDir, workers:op.query.workers,all:op.query.all}; op.scope = activeScope;
-        selection = null; clearList();root.setAttribute("data-reading",String(conversationOnly));detailPane.root.hidden=!conversationOnly;
+        selection = null; clearList();root.setAttribute("data-reading",String(conversationOnly));detailPane.root.hidden=!conversationOnly;syncRail();
         detailPane.status.textContent = ""; detailPane.root.setAttribute("aria-busy", "false");
       }
       listQuery = {...op.query};
@@ -431,7 +438,7 @@ export function createSessionController(document, options) {
   function select(value, trigger = null) {
     if (!mounted || disposed || frozen) return;
     const {op, previous} = reserve("detail");
-    root.setAttribute("data-reading","true");detailPane.root.hidden=false;
+    root.setAttribute("data-reading","true");detailPane.root.hidden=false;syncRail();
     selection = null; markers();
     try {
       op.query = scope(value);

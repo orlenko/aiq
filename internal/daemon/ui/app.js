@@ -3,6 +3,7 @@ import {createReadBroker} from "./read_broker.js";
 import {createSessionController} from "./session_controller.js";
 import {createAsksController} from "./asks_controller.js";
 import {createLongView} from "./long_view.js";
+import {createQuotaView} from "./quota_view.js";
 import {captureDirectories} from "./controller_data.js";
 
 const owners=new WeakMap();
@@ -56,21 +57,25 @@ export function createAppHost(document,options) {
   if (!window || document.defaultView!==window || root?.ownerDocument!==document || typeof isCurrent!=="function") throw refused();
   const limits={};for(const key of ["rows","arrayEntries","stringUnits"]){const n=options.limits?.[key];if(!Number.isSafeInteger(n)||n<=0)throw refused();limits[key]=n;}
   const initial=options.initialNext,broker=createReadBroker(readers),owner={},removes=[];
-  let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true,lastPrompts=50,scopeReason="";
+  const askViews=new Map();
+  const askKey=parsed=>parsed.all?"all":"dir:"+parsed.dir;
+  let mounted=false,disposed=false,current=null,generation=0n,placementEpoch=0n,lastDirectory="",currentAddress=null,shortcuts=true,lastPrompts=50,scopeReason="",sharedScope={all:true,dir:""},askOrigin=null;
   const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   const button=(text,cls="")=>{const n=node("button",cls,text);n.type="button";return n;};
   const shell=node("div","nav-shell"),header=node("header","nav-header"),nav=node("nav","nav-tabs");nav.setAttribute("aria-label","Navigator pages");
   const title=node("h2","nav-page-title","Sessions");title.tabIndex=-1;
-  const links=new Map();for(const [path,label]of [["/sessions","Sessions"],["/long","Workspaces"],["/asks","Asks"],["/help","Help"]]){const a=node("a","nav-tab",label);a.href=path;a.rel="noreferrer";links.set(path,a);nav.append(a);}
-  const back=button("← Back","nav-back");header.append(back,nav);
+  const links=new Map();for(const [path,label]of [["/asks","Asks"],["/sessions","Sessions"],["/long","Workspaces"],["/quotas","Quotas"],["/help","Help"]]){const a=node("a","nav-tab",label);a.href=path;a.rel="noreferrer";links.set(path,a);nav.append(a);}
+  const brand=node("a","nav-brand","aiq");brand.href="/asks?all=true";
+  const back=button("← Back","nav-back");header.append(brand,nav);
   const toolbar=node("form","nav-toolbar"),dirLabel=node("label","nav-directory-label","Directory"),dirInput=node("input","nav-directory"),apply=button("Show directory");
   dirInput.type="text";dirInput.autocomplete="off";dirInput.spellcheck=false;dirInput.placeholder="/absolute/project/path";dirLabel.append(dirInput);apply.type="submit";
   const allLabel=node("label","nav-toggle"),allInput=node("input");allInput.type="checkbox";allLabel.append(allInput,document.createTextNode(" All Asks"));
   toolbar.append(dirLabel,apply,allLabel);
   const recentLabel=node("label","nav-directory-label","Recent directories"),recent=node("select","nav-recent-directories"),catalogStatus=node("p","nav-catalog-status");
   recentLabel.append(recent);toolbar.append(recentLabel,catalogStatus);
-  const allSessions=button("All Sessions","nav-all-sessions"),directoryTree=node("details","nav-directory-tree");
+  const allSessions=button("All projects","nav-all-sessions"),directoryTree=node("details","nav-directory-tree");
   toolbar.append(allSessions);
+  const scopeMenu=node("details","nav-scope-menu"),scopeSummary=node("summary","nav-scope-summary","All projects"),scopePopup=node("div","nav-scope-popup");scopePopup.append(toolbar,directoryTree);scopeMenu.append(scopeSummary,scopePopup);header.append(scopeMenu);
   const controls=node("div","nav-controls"),searchLabel=node("label","nav-search-label","Search loaded results"),search=node("input","nav-search");search.type="search";search.autocomplete="off";searchLabel.append(search);
   const workersLabel=node("label","nav-toggle"),workers=node("input");workers.type="checkbox";workersLabel.append(workers,document.createTextNode(" Workers"));
   const liveLabel=node("label","nav-toggle"),liveOnly=node("input","nav-live-only");liveOnly.type="checkbox";liveLabel.append(liveOnly,document.createTextNode(" Live or registered open only"));
@@ -78,24 +83,34 @@ export function createAppHost(document,options) {
   const windowLabel=node("label","nav-window-label","Conversation window"),windowSelect=node("select","nav-window");
   for(const [value,label]of [["50","Last 50 prompts"],["100","Last 100 prompts"],["500","Last 500 prompts"],["all","Show all"]]){const option=node("option","",label);option.value=value;windowSelect.append(option);}windowLabel.append(windowSelect);
   const themeLabel=node("label","nav-theme-label","Theme"),theme=node("select","nav-theme");for(const [value,label]of [["system","System"],["light","Light"],["dark","Dark"]]){const o=node("option","",label);o.value=value;theme.append(o);}themeLabel.append(theme);
-  controls.append(searchLabel,liveLabel,workersLabel,marksLabel,windowLabel,themeLabel);
+  search.placeholder="Filter loaded asks";header.append(searchLabel);
+  const readingOptions=node("details","nav-reading-options");readingOptions.append(node("summary","","Reading options"),marksLabel,windowLabel);
+  controls.append(back,liveLabel,workersLabel,readingOptions);
+  const tabMenu=node("details","nav-tab-menu"),tabSummary=node("summary","","Tab unlocked"),forget=button("Forget this tab"),tabFacts=node("p","","Forgetting this tab does not revoke other tabs or server sessions. Login expires after 30 minutes of inactivity or eight hours total.");
+  const tabPopup=node("div","nav-tab-popup");tabPopup.append(forget,tabFacts,themeLabel);tabMenu.append(tabSummary,tabPopup);header.append(tabMenu);
+  const hasAuth=typeof options.auth?.forget==="function"&&typeof options.auth?.state==="function";tabMenu.hidden=!hasAuth;root.setAttribute("data-auth-controls",String(hasAuth));
   const status=node("p","nav-app-status");status.setAttribute("role","status");status.setAttribute("aria-live","polite");
   const note=node("p","nav-snapshot-note","Claude and Codex conversations update while visible. Scroll up to pause; End or Jump to newest resumes. Antigravity is a refreshing snapshot. Unverified live state stays unknown.");
   const placement=node("aside","nav-placement");placement.hidden=true;
+  const askReturn=node("aside","nav-ask-return"),backToAsks=button("← Back to Asks"),askContext=node("span");askReturn.hidden=true;askReturn.append(backToAsks,askContext);
   const copyFallback=node("aside","nav-copy-fallback");copyFallback.hidden=true;
   const content=node("div","nav-app-content");
+  const filterEmpty=node("div","nav-filter-empty"),filterMessage=node("p"),clearFilter=button("Clear filter");filterEmpty.hidden=true;filterEmpty.append(filterMessage,clearFilter);
   const helpDialog=node("dialog","nav-key-dialog"),closeHelp=button("Close keyboard help"),keyText=node("p","","Tab stays with your browser. In a list: j/k or arrows move, Home/End move to an edge, Enter opens. / searches loaded results; Esc clears search or goes back. In a focused conversation: n/p move between prompt headings.");
   const shortcutLabel=node("label","nav-toggle"),shortcutInput=node("input");shortcutInput.type="checkbox";shortcutInput.checked=true;shortcutLabel.append(shortcutInput,document.createTextNode(" Enable single-key shortcuts"));helpDialog.append(node("h2","","Keyboard help"),keyText,shortcutLabel,closeHelp);
-  const helpButton=button("? Keyboard help","nav-key-help");header.append(helpButton);
-  shell.append(header,title,toolbar,directoryTree,controls,note,status,placement,copyFallback,content,helpDialog);
+  const helpButton=button("Keyboard help","nav-key-help");tabPopup.append(helpButton);
+  shell.append(header,title,controls,status,placement,askReturn,copyFallback,filterEmpty,content,helpDialog);
   function alive(){if(!mounted||disposed||owners.get(root)!==owner||!root.isConnected)return false;try{return Boolean(isCurrent())&&!disposed&&owners.get(root)===owner;}catch{return false;}}
   function active(op){return alive()&&current===op&&!op.retired;}
   function listen(target,type,fn){const wrapped=e=>{if(alive())fn(e);};removes.push(()=>target.removeEventListener(type,wrapped));target.addEventListener(type,wrapped);}
   function normalizeStatuses(){for(const n of content.querySelectorAll('[role="status"]')){n.removeAttribute("role");n.setAttribute("aria-live","off");}}
   function announce(text){if(!alive())return;normalizeStatuses();filter();status.textContent=text;}
   function filter(){
-    if(!alive())return;const q=search.value.toLocaleLowerCase();
-    for(const row of content.querySelectorAll(".nav-controller-row,.nav-asks-item"))row.hidden=q!==""&&!row.textContent.toLocaleLowerCase().includes(q)||liveOnly.checked&&currentAddress?.path.startsWith("/sessions")&&row.classList.contains("nav-controller-row")&&!["live","open"].includes(row.getAttribute("data-nav-live"));
+    if(!alive())return;if(current)current.filter=search.value;const q=search.value.toLocaleLowerCase();
+    const rows=[...content.querySelectorAll(".nav-controller-row,.nav-asks-item")];
+    for(const row of rows)row.hidden=q!==""&&!(row.getAttribute("data-filter-text")??row.textContent).toLocaleLowerCase().includes(q)||liveOnly.checked&&currentAddress?.path.startsWith("/sessions")&&row.classList.contains("nav-controller-row")&&!["live","open"].includes(row.getAttribute("data-nav-live"));
+    filterEmpty.hidden=!(rows.length&&q&&!rows.some(row=>!row.hidden));filterMessage.textContent=currentAddress?.path==="/asks"?"No loaded asks match.":"No loaded sessions match.";
+    const askPanel=content.querySelector(".nav-asks-inbox-detail"),selectedAsk=content.querySelector('.nav-asks-item[data-selected="true"]');if(askPanel)askPanel.hidden=Boolean(selectedAsk?.hidden);
     roving();
   }
   function roving(){
@@ -122,7 +137,9 @@ export function createAppHost(document,options) {
     }finally{if(copyFlights.get(document)===flight)copyFlights.delete(document);}
   }
   function clearRoute(){
-    const old=current;if(old)old.retired=true;current=null;++placementEpoch;
+    const old=current;
+    if(old?.asksKey){const value=old.controller?.viewState();if(value){askViews.delete(old.asksKey);askViews.set(old.asksKey,{value,filter:old.filter??"",scroll:window.scrollY});while(askViews.size>4)askViews.delete(askViews.keys().next().value);}}
+    if(old)old.retired=true;current=null;++placementEpoch;
     content.replaceChildren();placement.replaceChildren();placement.hidden=true;copyFallback.replaceChildren();copyFallback.hidden=true;
     try{old?.controller?.teardown();}catch{/* Captured route cleanup only. */}
     try{old?.lease?.dispose();}catch{/* Continue independent cleanup. */}
@@ -134,11 +151,15 @@ export function createAppHost(document,options) {
   }
   function navigate(next,{replace=false,pop=false,focus=true,automatic=false,reason=""}={}){
     let parsed;try{parsed=route(next);}catch{announce("Choose a navigator page and an absolute directory.");return;}
+    if(parsed.path==="/asks"&&!parsed.dir&&!parsed.all)parsed=route("/asks?all=true");
     if(!alive())return;if(!pop&&!navHistory(parsed.next,replace))return;
     scopeReason=automatic?(reason==="directory fallback"?"directory fallback":reason==="most recent found"?"most recent found":"most recent"):"";render(parsed,focus);
   }
   function selectionChanged(op,value){
     if(!active(op))return;
+    title.hidden=true;
+    workersLabel.hidden=true;liveLabel.hidden=true;
+    showAskOrigin(value);
     const next=address("/sessions/"+value.provider+"/"+value.id,currentAddress.dir,currentAddress.all);
     const previous=selected(currentAddress);
     if(previous&&previous.provider===value.provider&&previous.id===value.id)return;
@@ -185,10 +206,10 @@ export function createAppHost(document,options) {
       located=d.anchor;
     }catch{failed=true;}
     if(!active(op)||epoch!==placementEpoch)return;
-    if(located!==null){navigate(address("/sessions/"+value.provider+"/"+value.id,currentAddress.dir,false,located));return;}
-    const open=button("Open the session");placement.replaceChildren(node("p","",failed?"Turn placement unavailable; you can open the session.":"Turn not found; you can open the session."),open);
-    open.addEventListener("click",()=>{if(active(op)&&epoch===placementEpoch)navigate(address("/sessions/"+value.provider+"/"+value.id,currentAddress.dir));},{once:true});
+    askOrigin={askId:value.askId,provider:value.provider,id:value.id,next:currentAddress.next,located:located!==null};
+    navigate(address("/sessions/"+value.provider+"/"+value.id,currentAddress.dir,currentAddress.all,located??0));
   }
+  function showAskOrigin(value){const matches=value&&askOrigin&&value.id===askOrigin.id&&value.provider===askOrigin.provider;askReturn.hidden=!matches;if(matches)askContext.textContent=`Ask ${askOrigin.askId} · ${askOrigin.located?"Showing the located turn.":"Turn not located; showing the session."}`;}
   function help(){
     const section=node("section","nav-help");section.append(node("h3","","Read your sessions"),node("p","","Choose a directory to list its sessions, then open a conversation. Search filters only the results already loaded. Refresh reads a new snapshot; it never types into or resumes a session."),node("h3","","Asks"),node("p","","Choose a directory or explicitly select All Asks. Open a question’s conversation to locate its turn. When placement is uncertain, open the session yourself."),node("h3","","Login and privacy"),node("p","","Open this tab with aiq ui. Its login expires after 30 minutes without successful requests or eight hours total. Forget this tab clears its saved login; aiq ui --revoke signs out every browser. After a daemon restart or a terminal connection failure, run aiq ui again. Remote browsers and SSH forwarding are unsupported."),node("p","","Conversation window, theme, Markdown marks and keyboard choices last for this open page. Tab always belongs to your browser. Copy requires an explicit action. Session control remains in the terminal."));
     return section;
@@ -196,21 +217,33 @@ export function createAppHost(document,options) {
   function render(parsed,focus){
     clearRoute();if(!alive())return;
     currentAddress=parsed;if(parsed.dir)lastDirectory=parsed.dir;
-    const op={retired:false,controller:null,lease:null,scopeTouched:false};current=op;op.lease=broker.route();
+    root.setAttribute("data-nav-page",parsed.path);
+    showAskOrigin(selected(parsed));
+    if(parsed.path==="/asks"||parsed.path==="/sessions")sharedScope={all:parsed.all,dir:parsed.dir};
+    const shownScope=parsed.path==="/long"?{all:!parsed.dir,dir:parsed.dir}:sharedScope;
+    scopeSummary.textContent=shownScope.all?(parsed.path==="/long"?"All workspaces":"All projects"):shownScope.dir.split("/").filter(Boolean).at(-1)||"Choose project";scopeSummary.title=shownScope.dir;scopeMenu.open=false;
+    const restored=parsed.path==="/asks"?askViews.get(askKey(parsed)):null;
+    const op={retired:false,controller:null,lease:null,scopeTouched:false,asksKey:parsed.path==="/asks"?askKey(parsed):null,filter:restored?.filter??search.value,restoreAllowed:Boolean(restored)};current=op;op.lease=broker.route();
+    if(restored)search.value=restored.filter;
     if(!active(op))return;
-    dirInput.value=parsed.dir||lastDirectory;allInput.checked=parsed.path==="/asks"&&parsed.all;dirInput.disabled=allInput.checked;
-    allLabel.hidden=parsed.path!=="/asks";workersLabel.hidden=["/asks","/long","/help"].includes(parsed.path);marksLabel.hidden=parsed.path==="/asks"||parsed.path==="/help";
+    dirInput.value=parsed.dir||lastDirectory;allInput.checked=parsed.path==="/asks"&&parsed.all;dirInput.disabled=false;
+    allLabel.hidden=true;workersLabel.hidden=Boolean(selected(parsed))||["/asks","/long","/help","/quotas"].includes(parsed.path);marksLabel.hidden=["/asks","/help","/quotas"].includes(parsed.path);
     windowLabel.hidden=!selected(parsed)&&!(parsed.path==="/long"&&parsed.dir);windowSelect.value=String(parsed.anchor?50:lastPrompts);
-    recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help"||parsed.path==="/long";catalogStatus.textContent="";directoryTree.replaceChildren();directoryTree.hidden=true;allSessions.hidden=["/asks","/long","/help"].includes(parsed.path);
-    title.textContent=parsed.path==="/long"?"Workspaces":parsed.path==="/asks"?"Asks":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
+    recent.replaceChildren();recent.disabled=true;recentLabel.hidden=parsed.path==="/help"||parsed.path==="/long";catalogStatus.textContent="";directoryTree.replaceChildren();directoryTree.hidden=true;allSessions.hidden=["/long","/help","/quotas"].includes(parsed.path);
+    scopeMenu.hidden=["/help","/quotas"].includes(parsed.path);searchLabel.hidden=parsed.path==="/help"||parsed.path==="/quotas";search.placeholder=parsed.path==="/asks"?"Filter loaded asks":"Filter loaded sessions";
+    readingOptions.hidden=marksLabel.hidden&&windowLabel.hidden;back.hidden=!selected(parsed)&&parsed.path!=="/long";
+    title.textContent=parsed.path==="/long"?"Workspaces":parsed.path==="/asks"?"Asks":parsed.path==="/quotas"?"Quotas":parsed.path==="/help"?"Help":selected(parsed)?"Conversation":"Sessions";
+    title.hidden=Boolean(selected(parsed))||parsed.path==="/quotas";
     liveLabel.hidden=parsed.path!=="/sessions"||Boolean(selected(parsed));
     if(parsed.path==="/sessions"&&scopeReason)title.textContent+=" · "+scopeReason;
     document.title=title.textContent+" — aiq";
-    for(const[path,a]of links){a.href=address(path,parsed.dir||lastDirectory);if(path==="/sessions"&&parsed.path.startsWith("/sessions")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
+    for(const[path,a]of links){a.href=tabAddress(path);if(path==="/sessions"&&parsed.path.startsWith("/sessions")||path===parsed.path)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");}
     if(parsed.path==="/help"){content.append(help());if(focus)title.focus({preventScroll:true});return;}
-    if(parsed.path!=="/long"){recent.replaceChildren();recent.disabled=true;catalogStatus.textContent="Loading recent directories…";void loadDirectories(op,parsed);}
-    const announceCurrent=text=>{if(active(op))announce(text);};
-    if(parsed.path==="/long"){
+    if(!["/long","/quotas"].includes(parsed.path)){recent.replaceChildren();recent.disabled=true;catalogStatus.textContent="Loading recent directories…";void loadDirectories(op,parsed);}
+    const announceCurrent=text=>{if(active(op)){announce(text);if(text==="Asks updated"&&restored&&op.restoreAllowed)window.requestAnimationFrame(()=>{if(!active(op)||!op.restoreAllowed||document.activeElement!==title)return;op.restoreAllowed=false;if(op.controller.focusSelected())window.scrollTo({top:restored.scroll,behavior:"instant"});});}};
+    if(parsed.path==="/quotas"){
+      op.controller=createQuotaView(document,{window,limits,readQuotas:(q,s)=>op.lease.read("quotas",q,s),copyText:t=>copy(t,op),announce:announceCurrent});
+    }else if(parsed.path==="/long"){
       op.controller=createLongView(document,{window,dir:parsed.dir,idPrefix:"nav-long-"+(++generation),limits,
         detailQuery:{last:lastPrompts,markup:marks.checked,anchor:0},shortcutsEnabled:()=>shortcuts,
         readLong:(q,s)=>op.lease.read("long",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),readState:(q,s)=>op.lease.read("state",q,s),
@@ -219,12 +252,13 @@ export function createAppHost(document,options) {
     }else if(parsed.path==="/asks"){
       if(!parsed.all&&!parsed.dir){content.append(node("p","nav-empty","Choose a directory, or explicitly select All Asks."));if(focus)dirInput.focus();return;}
       op.controller=createAsksController(document,{window,idPrefix:"nav-app-asks-"+(++generation),limits,
+        inbox:true,viewState:restored?.value,
         readAsks:(q,s)=>op.lease.read("asks",q,s),copyText:t=>copy(t,op),announce:announceCurrent,
-        onConversation:v=>{if(active(op))navigate(address("/sessions/"+v.provider+"/"+v.id,parsed.dir));},
+        onConversation:v=>{if(active(op))navigate(address("/sessions/"+v.provider+"/"+v.id,parsed.dir,parsed.all));},
         onPlacement:v=>{void place(op,v);}});
     }else{
       op.controller=createSessionController(document,{window,idPrefix:"nav-app-session-"+(++generation),limits,
-        readingControls:true,readCommands:true,resumeCommands:true,autoFollow:true,shortcutsEnabled:()=>shortcuts,
+        readingControls:true,prose:true,readCommands:true,resumeCommands:true,autoFollow:true,shortcutsEnabled:()=>shortcuts,
         detailQuery:{last:parsed.anchor?50:lastPrompts,markup:marks.checked,anchor:parsed.anchor},
         readSessions:(q,s)=>op.lease.read("sessions",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),readState:(q,s)=>op.lease.read("state",q,s),
         onNewest:v=>{if(active(op))navigate(address("/sessions/"+v.provider+"/"+v.id,parsed.dir,parsed.all),{replace:true});},
@@ -233,6 +267,7 @@ export function createAppHost(document,options) {
     if(!active(op)){op.controller.teardown();return;}
     content.append(op.controller.fragment);
     if(!active(op)||!op.controller.mount()){try{op.controller.teardown();}catch{}return;}
+    if(parsed.path==="/quotas"){normalizeStatuses();const heading=content.querySelector(".nav-quotas-heading");if(focus&&active(op)&&heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}return;}
     if(parsed.path==="/long"){normalizeStatuses();if(focus&&active(op))title.focus({preventScroll:true});return;}
     if(parsed.path==="/asks")op.controller.loadScope({mode:parsed.all?"all":"directory",dir:parsed.dir});
     else{
@@ -243,6 +278,7 @@ export function createAppHost(document,options) {
     }
     normalizeStatuses();if(focus&&active(op))title.focus({preventScroll:true});
   }
+  function tabAddress(path){return path==="/help"||path==="/quotas"?address(path):path==="/long"?address(path,sharedScope.dir):address(path,sharedScope.dir,sharedScope.all);}
   function goBack(){try{if(window.history.state?.aiqNavigator===1&&window.history.length>1){window.history.back();return;}}catch{}const all=Boolean(currentAddress?.all&&currentAddress.path.startsWith("/sessions"));navigate(address("/sessions",all?"":currentAddress?.dir||lastDirectory,all),{replace:true});}
   function keys(e){
     if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)||e.target.isContentEditable)return;
@@ -259,10 +295,17 @@ export function createAppHost(document,options) {
     listen(toolbar,"submit",e=>{e.preventDefault();try{const dir=directory(dirInput.value);search.value="";navigate(address(currentAddress.path==="/long"?"/long":currentAddress.path==="/asks"?"/asks":"/sessions",dir));}catch{announce("Enter a complete absolute directory without dot segments.");}});
     listen(dirInput,"input",()=>{if(current)current.scopeTouched=true;});
     listen(recent,"change",()=>{if(!recent.value)return;try{const dir=directory(recent.value);search.value="";navigate(address(currentAddress.path==="/asks"?"/asks":"/sessions",dir));}catch{announce("Choose an available directory.");}});
-    for(const[path,a]of links)listen(a,"click",e=>{if(e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();search.value="";navigate(address(path,currentAddress?.dir||lastDirectory));});
+    for(const[path,a]of links)listen(a,"click",e=>{if(e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();search.value="";navigate(tabAddress(path));});
+    listen(brand,"click",e=>{if(e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();navigate("/asks?all=true");});
+    listen(forget,"click",()=>{if(hasAuth)options.auth.forget();});
+    listen(backToAsks,"click",()=>{if(askOrigin)navigate(askOrigin.next);});
+    listen(header,"keydown",e=>{if(e.key!=="Escape")return;for(const menu of [scopeMenu,tabMenu])if(menu.open&&menu.contains(e.target)){e.preventDefault();menu.open=false;menu.children[0].focus();}});
+    listen(document,"click",e=>{for(const menu of [scopeMenu,tabMenu])if(menu.open&&!menu.contains(e.target))menu.open=false;});
+    listen(document,"pointerdown",()=>{if(current)current.restoreAllowed=false;});listen(window,"wheel",()=>{if(current)current.restoreAllowed=false;});
     listen(allInput,"change",()=>{search.value="";navigate(address("/asks",allInput.checked?"":lastDirectory,allInput.checked));});
-    listen(allSessions,"click",()=>{if(current)current.scopeTouched=true;search.value="";navigate(address("/sessions","",true));});
+    listen(allSessions,"click",()=>{if(current)current.scopeTouched=true;search.value="";navigate(address(currentAddress.path==="/asks"?"/asks":"/sessions","",true));});
     listen(search,"input",filter);listen(liveOnly,"change",filter);listen(workers,"change",()=>render(currentAddress,false));listen(marks,"change",()=>render(currentAddress,false));
+    listen(clearFilter,"click",()=>{search.value="";filter();search.focus();});
     listen(windowSelect,"change",()=>{const value=windowSelect.value;if(!["50","100","500","all"].includes(value)){announce("Choose a conversation window.");return;}lastPrompts=value==="all"?"all":Number(value);navigate(address(currentAddress.path,currentAddress.dir,currentAddress.all),{replace:true,focus:false});});
     listen(search,"keydown",e=>{if(e.key==="Escape"){e.preventDefault();search.value="";filter();announce("Search cleared.");}});
     listen(theme,"change",()=>{if(["system","light","dark"].includes(theme.value))document.documentElement.dataset.navTheme=theme.value;});
@@ -270,7 +313,7 @@ export function createAppHost(document,options) {
     listen(content,"keydown",keys);removes.push(bindNavigatorRoving(content,alive));
     listen(window,"popstate",()=>{search.value="";navigate(window.location.pathname+window.location.search,{pop:true});});
     const location=window.location.pathname+window.location.search;
-    navigate(window.location.pathname==="/"?initial||"/sessions":location,{replace:true});
+    navigate(window.location.pathname==="/"?initial||"/asks?all=true":location,{replace:true});
     return alive();
   }
   function dispose(){
@@ -280,7 +323,7 @@ export function createAppHost(document,options) {
     for(const remove of removes){try{remove();}catch{}}removes.length=0;
     try{old?.controller?.teardown();}catch{}
     try{old?.lease?.dispose();}catch{}
-    broker.close();content.replaceChildren();placement.replaceChildren();copyFallback.replaceChildren();
+    broker.close();askViews.clear();askOrigin=null;content.replaceChildren();placement.replaceChildren();copyFallback.replaceChildren();
   }
   return Object.freeze({mount,dispose});
 }
