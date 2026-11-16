@@ -356,3 +356,10 @@ test('dismiss uses admitted revision once and retired or hidden panels cannot ac
  assert.deepEqual(calls,[{id:'9007199254740993',revision:'a'.repeat(64),action:'dismiss'}]);assert(Object.isFrozen(calls[0]));
  f.view.teardown();selected.click();pending.resolve();await tick();assert.equal(calls.length,1);f.clean();
 });
+
+
+test('reselecting the current ask or session preserves its host-owned conversation context',()=>{
+ const f=fixture({inbox:true});f.mount();const detail=find(f,'nav-asks-inbox-detail')[0],context=f.document.createElement('aside');context.textContent='Invented conversation context';detail.append(context);
+ const selected=find(f,'nav-asks-pick').find(n=>n.getAttribute('aria-current')==='true');selected.click();assert.equal(context.isConnected,true);assert(detail.contains(context));
+ find(f,'nav-asks-session-pick').find(n=>n.getAttribute('aria-current')==='true').click();assert.equal(context.isConnected,true);assert(detail.contains(context));f.clean();
+});

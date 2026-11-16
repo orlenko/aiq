@@ -55,7 +55,7 @@ function selected(value) {
 // Construction has no DOM publication, storage, network or clipboard effects.
 export function createAppHost(document,options) {
   const {window,root,isCurrent,readers}=options;
-  const actions=options.actions;let actionFlight=null,reopenContext=null;
+  const actions=options.actions;let actionFlight=null;
   if (!window || document.defaultView!==window || root?.ownerDocument!==document || typeof isCurrent!=="function") throw refused();
   const limits={};for(const key of ["rows","arrayEntries","stringUnits"]){const n=options.limits?.[key];if(!Number.isSafeInteger(n)||n<=0)throw refused();limits[key]=n;}
   const initial=options.initialNext,broker=createReadBroker(readers),owner={},removes=[];
@@ -209,7 +209,7 @@ export function createAppHost(document,options) {
   function askSelected(op,value){
     if(!active(op))return;
     const changed=!sameAsk(op.selectedAsk,value);if(changed){++placementEpoch;closeContext(op);}op.selectedAsk=value;
-    if(value&&sameAsk(op.reopenContext,value)){const requested=op.reopenContext;op.reopenContext=null;void place(op,requested);}else if(changed&&value&&["claude","codex","agy"].includes(value.provider)&&/^[0-9a-fA-F-]{36}$/.test(value.id))void place(op,value);
+    if(changed&&value&&["claude","codex","agy"].includes(value.provider)&&/^[0-9a-fA-F-]{36}$/.test(value.id))void place(op,value);
   }
   async function place(op,value){
     if(!active(op)||!sameAsk(op.selectedAsk,value)||!op.contextRoot)return;
@@ -255,11 +255,11 @@ export function createAppHost(document,options) {
     }finally{if(actionFlight===token)actionFlight=null;}
   }
   function toggleMarks(){
-    if(!alive())return;reopenContext=current?.contextValue??null;render(currentAddress,false);announce(marks.checked?"Markdown symbols shown. Shortcut: m.":"Markdown symbols hidden. Shortcut: m.");
+    if(!alive())return;const op=current;if(op?.contextValue)void place(op,op.contextValue);else op?.controller?.setMarkup?.(marks.checked);announce(marks.checked?"Markdown symbols shown. Shortcut: m.":"Markdown symbols hidden. Shortcut: m.");
   }
   function showAskOrigin(value){const matches=value&&askOrigin&&value.id===askOrigin.id&&value.provider===askOrigin.provider;askReturn.hidden=!matches;if(matches)askContext.textContent=`Ask ${askOrigin.askId} · ${askOrigin.located?"Showing the located turn.":"Turn not located; showing the session."}`;}
   function help(){
-    const section=node("section","nav-help");section.append(node("h3","","Read your sessions"),node("p","","Choose a directory to list its sessions, then open a conversation. Search filters only the results already loaded. Refresh reads a new snapshot; it never types into or resumes a session."),node("h3","","Asks"),node("p","","Choose a directory or explicitly select All Asks. Open a question’s conversation to locate its turn. When placement is uncertain, open the session yourself."),node("h3","","Login and privacy"),node("p","","Open this tab with aiq ui. Its login expires after 30 minutes without successful requests or eight hours total. Forget this tab clears its saved login; aiq ui --revoke signs out every browser. After a daemon restart or a terminal connection failure, run aiq ui again. Remote browsers and SSH forwarding are unsupported."),node("p","","Conversation window, theme, Markdown marks and keyboard choices last for this open page. Tab always belongs to your browser. Copy requires an explicit action. Session control remains in the terminal."));
+    const section=node("section","nav-help");section.append(node("h3","","Read your sessions"),node("p","","Choose a directory to list its sessions, then open a conversation. Search filters only the results already loaded. Refresh reads a new snapshot; it never types into or resumes a session."),node("h3","","Asks"),node("p","","Choose a session to review its pending asks. Dismiss an ask here when it no longer needs attention; Undo restores a dismissal. The adjacent pane shows its original conversation when the turn can be located, or labels a session fallback. Done and dismissed items remain available for restoration."),node("h3","","Login and privacy"),node("p","","Open this tab with aiq ui. Its login expires after 30 minutes without successful requests or eight hours total. Forget this tab clears its saved login; aiq ui --revoke signs out every browser. After a daemon restart or a terminal connection failure, run aiq ui again. Remote browsers and SSH forwarding are unsupported."),node("p","","Conversation window, theme, Markdown marks and keyboard choices last for this open page. Tab always belongs to your browser. Copy requires an explicit action. Session control remains in the terminal."));
     return section;
   }
   function render(parsed,focus){
@@ -271,7 +271,7 @@ export function createAppHost(document,options) {
     const shownScope=parsed.path==="/long"?{all:!parsed.dir,dir:parsed.dir}:sharedScope;
     scopeSummary.textContent=shownScope.all?(parsed.path==="/long"?"All workspaces":"All projects"):shownScope.dir.split("/").filter(Boolean).at(-1)||"Choose project";scopeSummary.title=shownScope.dir;scopeMenu.open=false;
     const restored=parsed.path==="/asks"?askViews.get(askKey(parsed)):null;
-    const op={retired:false,controller:null,lease:null,scopeTouched:false,asksKey:parsed.path==="/asks"?askKey(parsed):null,filter:restored?.filter??search.value,restoreAllowed:Boolean(restored),reopenContext};current=op;reopenContext=null;op.lease=broker.route();
+    const op={retired:false,controller:null,lease:null,scopeTouched:false,asksKey:parsed.path==="/asks"?askKey(parsed):null,filter:restored?.filter??search.value,restoreAllowed:Boolean(restored)};current=op;op.lease=broker.route();
     if(restored)search.value=restored.filter;
     if(!active(op))return;
     dirInput.value=parsed.dir||lastDirectory;allInput.checked=parsed.path==="/asks"&&parsed.all;dirInput.disabled=false;
@@ -293,9 +293,9 @@ export function createAppHost(document,options) {
     if(parsed.path==="/quotas"){
       op.controller=createQuotaView(document,{window,limits,readQuotas:(q,s)=>op.lease.read("quotas",q,s),copyText:t=>copy(t,op),announce:announceCurrent});
     }else if(parsed.path==="/long"){
-      op.controller=createLongView(document,{window,dir:parsed.dir,idPrefix:"nav-long-"+(++generation),limits,
+      op.controller=createLongView(document,{window,prose:true,dir:parsed.dir,idPrefix:"nav-long-"+(++generation),limits,
         detailQuery:{last:lastPrompts,markup:marks.checked,anchor:0},shortcutsEnabled:()=>shortcuts,
-        readLong:(q,s)=>op.lease.read("long",q,s),readAsks:(q,s)=>op.lease.read("asks",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),readState:(q,s)=>op.lease.read("state",q,s),
+        readLong:(q,s)=>op.lease.read("long",q,s),readConversation:(q,s)=>op.lease.read("conversation",q,s),readState:(q,s)=>op.lease.read("state",q,s),
         copyText:t=>copy(t,op),announce:announceCurrent,onWorkspace:dir=>{if(active(op))navigate(address("/long",dir));},
         onConversation:(value,dir)=>{if(active(op))navigate(address("/sessions/"+value.provider+"/"+value.id,dir));}});
     }else if(parsed.path==="/asks"){

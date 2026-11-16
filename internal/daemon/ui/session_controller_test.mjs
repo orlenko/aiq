@@ -531,16 +531,27 @@ test('prose following owns the page scrollbar and pauses when the person scrolls
  f.document.scrollingElement.scrollTop=400;f.window.emit('scroll');const previous=scrolls.length;f.detailCalls[1].resolve(detail());await tick();assert.equal(scrolls.length,previous);f.clean();assert.equal(f.window.count(),0);
 });
 
-test('workspace list sorts by actual activity or pending asks and keeps unknown counts unknown',async()=>{
- const {snapshot}=await import('./asks_values.mjs');let resolveAsks;const asksPromise=new Promise(r=>resolveAsks=r);
- const f=longFixture('',{readAsks:()=>asksPromise});await tick();
+test('workspace list sorts by actual activity or admitted pending asks and keeps unknown counts unknown',async()=>{
+ const f=longFixture('');await tick();
  const data=longValue('A',true,{kind:'list',requested_dir:'',workspace:'',workspace_known:false,state:'records',lease:null,current:null,current_spans:[],earlier:[],workspaces:[
-  {workspace:'/fixture/A',recorded_leases:1,sessions:1,updated:{ms:1000,known:true}},
-  {workspace:'/fixture/B',recorded_leases:1,sessions:1,updated:{ms:3000,known:true}},
-  {workspace:'/fixture/C',recorded_leases:1,sessions:1,updated:{ms:0,known:false}},
+  {workspace:'/fixture/A',recorded_leases:1,sessions:1,updated:{ms:1000,known:true},pending_asks:4,pending_asks_known:true},
+  {workspace:'/fixture/B',recorded_leases:1,sessions:1,updated:{ms:3000,known:true},pending_asks:0,pending_asks_known:true},
+  {workspace:'/fixture/C',recorded_leases:1,sessions:1,updated:{ms:0,known:false},pending_asks:0,pending_asks_known:false},
  ]});
  f.longCalls[0].resolve(data);await tick();const links=()=>find(f,n=>n.tagName==='a').map(n=>n.textContent);assert.deepEqual(links(),['/fixture/B','/fixture/A','/fixture/C']);assert(f.document.body.textContent.includes('Asks unknown'));
- const asks=snapshot();asks.scope={mode:'all',dir:''};for(const group of asks.sections)for(const row of group.items)row.workspace='/fixture/A';resolveAsks({data:asks});await tick();
  const sort=find(f,n=>has(n,'nav-long-sort-select'))[0];sort.value='asks';sort.emit('change');assert.deepEqual(links(),['/fixture/A','/fixture/B','/fixture/C']);assert(f.document.body.textContent.includes('4 pending asks'));assert(f.document.body.textContent.includes('0 pending asks'));
  sort.value='name';sort.emit('change');assert.deepEqual(links(),['/fixture/A','/fixture/B','/fixture/C']);f.clean();
+});
+
+test('Markdown toggle refreshes only the selected conversation with its new query',async()=>{
+ const f=fixture({prose:true});f.mount();f.controller.loadSessions(query());f.listCalls[0].resolve(sessions());await tick();f.controller.selectConversation(scope('A'));f.detailCalls[0].resolve(detail());await tick();
+ assert.equal(f.controller.setMarkup(true),true);assert.equal(f.listCalls.length,1);assert.equal(f.detailCalls.length,2);assert.equal(f.detailCalls[1].q.markup,true);
+ const next=detail();next.markup=true;f.detailCalls[1].resolve(next);await tick();assert(f.document.body.textContent.includes('Conversation ready.'));f.clean();assert.equal(f.controller.setMarkup(false),false);
+});
+
+
+test('production workspace prose also follows through the page scrollbar',async()=>{
+ const f=longFixture('/fixture/A',{prose:true});f.document.scrollingElement={scrollHeight:1800,scrollTop:0};f.window.innerHeight=600;f.window.scrollTo=q=>{f.document.scrollingElement.scrollTop=q.top;};
+ await tick();f.longCalls[0].resolve(longValue());await tick();const value=detail();value.selection='A'.repeat(43);f.detailCalls[0].resolve(value);await tick();
+ assert.equal(find(f,n=>has(n,'nav-controller-follow-content')).length,0);assert.equal(find(f,n=>has(n,'nav-controller-page-follow')).length,1);assert.equal(f.document.scrollingElement.scrollTop,1200);f.clean();
 });

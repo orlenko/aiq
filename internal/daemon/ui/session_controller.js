@@ -518,5 +518,5 @@ export function createSessionController(document, options) {
       return true;
     } catch { teardown(); return false; }
   }
-  return {fragment, mount, loadSessions, selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
+  return {fragment, mount, loadSessions, setMarkup:value=>{if(typeof value!=="boolean"||disposed)return false;detailQuery.markup=value;if(selection)select({...selection.scope});return true;},selectConversation:value => select(value), refresh, freeze, canFollow, teardown};
 }

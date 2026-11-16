@@ -1,14 +1,14 @@
-import {captureAsks} from "./asks_data.js";
 import {captureLong} from "./controller_data.js";
 import {directory,encodeForm} from "./auth_codec.js";
 import {createSessionController,navigatorLeaseCommand} from "./session_controller.js";
 
 const refused=()=>new TypeError("Workspace view unavailable");
 export function createLongView(document,options){
-  const {window,dir,idPrefix,limits,readAsks,readLong,readConversation,readState,copyText,announce,onWorkspace,onConversation}=options;
+  const {window,dir,idPrefix,limits,readLong,readConversation,readState,copyText,announce,onWorkspace,onConversation}=options;
   if(!window||window!==document.defaultView||typeof dir!=="string"||!/^nav-long-[0-9]+$/.test(idPrefix)||
     ![readLong,readConversation,readState,copyText,announce,onWorkspace,onConversation].every(fn=>typeof fn==="function"))throw refused();
   if(dir)directory(dir);
+  const conversationQuery={...options.detailQuery},prose=options.prose??false;if(typeof prose!=="boolean")throw refused();
   const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   const button=(text,cls="")=>{const n=node("button",cls,text);n.type="button";return n;};
   const fragment=document.createDocumentFragment(),root=node("section","nav-long"),heading=node("h2","",dir?"Workspace":"Long workspaces");
@@ -23,7 +23,6 @@ export function createLongView(document,options){
   moves.append(node("p","","Moves work · moves the session to another account at its next turn end and archives its note."),drain);
   actions.append(actionTarget,attach,moves,actionState);actions.hidden=!dir;root.insertBefore(actions,notice);
   const allWorkspaces=button("All workspaces","nav-long-all");allWorkspaces.hidden=!dir;root.insertBefore(allWorkspaces,meta);
-  let askCounts=null,askFlight=null;
   let mounted=false,disposed=false,flight=null,timer=null,wantFull=false,metadata=null,fullMetadata=null,controller=null,scope=null,
     frozen=false,parkedAuto=false,pending=null,leaseKey=null,account=null,version=0,fullKey=null,lastSuccess=null,displayedTarget=null,copyBusy=false;
   const removes=[],linkRemoves={meta:[],history:[]};let deferredHistory=null,deferredMeta=null;
@@ -74,11 +73,11 @@ export function createLongView(document,options){
       content.append(node("p","",value.workspaces.length+" workspaces · this machine"+(value.partial?" · partial history":"")));
       const list=node("ul","nav-controller-rows");
       const ordered=[...value.workspaces].sort((a,b)=>{
-        if(sort.value==="asks"&&askCounts){const delta=(askCounts.get(b.workspace)??0)-(askCounts.get(a.workspace)??0);if(delta)return delta;}
+        if(sort.value==="asks"){const delta=b.pending_asks-a.pending_asks;if(delta)return delta;if(a.pending_asks_known!==b.pending_asks_known)return a.pending_asks_known?-1:1;}
         if(sort.value!=="name"){if(a.updated.known!==b.updated.known)return a.updated.known?-1:1;if(a.updated.known&&a.updated.ms!==b.updated.ms)return b.updated.ms-a.updated.ms;}
         return a.workspace.localeCompare(b.workspace);
       });
-      for(const row of ordered){const item=node("li","nav-controller-row");item.append(link(row.workspace,"/long?dir="+encodeForm(row.workspace),()=>onWorkspace(row.workspace),"meta"),node("p","nav-long-row-facts",`${row.sessions} recorded sessions · ${askCounts===null?"Asks unknown":(askCounts.get(row.workspace)??0)+" pending asks"} · ${row.updated.known?"Last activity "+time(row.updated):"Activity time unknown"}`));list.append(item);}
+      for(const row of ordered){const item=node("li","nav-controller-row");item.append(link(row.workspace,"/long?dir="+encodeForm(row.workspace),()=>onWorkspace(row.workspace),"meta"),node("p","nav-long-row-facts",`${row.sessions} recorded sessions · ${row.pending_asks_known?row.pending_asks+" pending asks":row.pending_asks?row.pending_asks+"+ pending asks":"Asks unknown"} · ${row.updated.known?"Last activity "+time(row.updated):"Activity time unknown"}`));list.append(item);}
       if(!value.workspaces.length)content.append(node("p","",value.partial?"Workspace history could not be completely mapped.":"No recorded long workspaces."));
       content.append(list);
     }else{
@@ -127,8 +126,8 @@ export function createLongView(document,options){
     controller?.teardown();controller=null;scope={...next};frozen=false;parkedAuto=false;pending=null;newest.hidden=false;
     const content=document.createDocumentFragment();
     if(wasDifferent){const divider=node("p","nav-long-divider","Session changed · previous session "+previous.provider+" · "+previous.id+" is available in history.");divider.setAttribute("role","separator");content.append(divider);}
-    controller=createSessionController(document,{window,idPrefix:idPrefix+"-session-"+(++version),limits,conversationOnly:true,
-      detailQuery:options.detailQuery,readingControls:true,readCommands:true,resumeCommands:true,autoFollow:true,shortcutsEnabled:options.shortcutsEnabled,
+    controller=createSessionController(document,{window,idPrefix:idPrefix+"-session-"+(++version),limits,conversationOnly:true,prose,
+      detailQuery:conversationQuery,readingControls:true,readCommands:true,resumeCommands:true,autoFollow:true,shortcutsEnabled:options.shortcutsEnabled,
       readSessions:()=>Promise.reject(refused()),readConversation,readState,copyText,announce,
       onNewest:()=>{if(alive()){showSession(metadata?.current??scope,true);}},onSelection:()=>{}});
     content.append(controller.fragment);feed.replaceChildren(content);
@@ -179,19 +178,9 @@ export function createLongView(document,options){
       if(wantFull&&!document.hidden)request(true);else schedule();
     });
   }
-  function requestAsks(){
-    if(dir||!alive()||typeof readAsks!=="function"||askFlight)return;
-    const job={abort:new window.AbortController()};askFlight=job;
-    Promise.resolve().then(()=>{if(!alive()||job.abort.signal.aborted)throw refused();return readAsks({mode:"all",dir:""},job.abort.signal);}).then(envelope=>{
-      if(!alive()||askFlight!==job||job.abort.signal.aborted)return;
-      const snapshot=captureAsks(envelope.data,{mode:"all",dir:""},limits),counts=new Map();
-      for(const group of snapshot.sections.slice(0,3))for(const row of group.items)counts.set(row.workspace,(counts.get(row.workspace)??0)+1);
-      askCounts=counts;if(metadata)drawMeta(metadata);
-    }).catch(()=>{if(alive()&&askFlight===job&&!job.abort.signal.aborted){askCounts=null;if(metadata)drawMeta(metadata);}}).finally(()=>{if(askFlight===job)askFlight=null;});
-  }
   function mount(){
     if(disposed)return false;if(mounted)return alive();if(!root.isConnected)return false;mounted=true;
-    listen(refresh,"click",()=>{request(true);requestAsks();});
+    listen(refresh,"click",()=>{request(true);});
     listen(sort,"change",()=>{if(["updated","asks","name"].includes(sort.value)&&metadata)drawMeta(metadata);});
     listen(attach,"click",()=>copyLease("attach"));listen(drain,"click",()=>copyLease("drain"));
     listen(actions,"focusout",()=>queueMicrotask(updateActions));
@@ -205,12 +194,12 @@ export function createLongView(document,options){
       if(document.hidden){if(timer!==null){window.clearTimeout(timer);timer=null;}wantFull=wantFull||Boolean(flight?.full)||!metadata;try{flight?.abort.abort();}catch{}}
       else if(!flight)request(!metadata||wantFull);
     });
-    updateActions();request(true);requestAsks();return alive();
+    updateActions();request(true);return alive();
   }
   function teardown(){
     if(disposed)return;disposed=true;mounted=false;if(timer!==null)window.clearTimeout(timer);
-    try{flight?.abort.abort();askFlight?.abort.abort();}catch{}controller?.teardown();controller=null;
+    try{flight?.abort.abort();}catch{}controller?.teardown();controller=null;
     for(const remove of removes)try{remove();}catch{}removes.length=0;clearLinks("meta");clearLinks("history");root.remove();metadata=fullMetadata=deferredHistory=deferredMeta=scope=pending=displayedTarget=null;
   }
-  return Object.freeze({fragment,mount,teardown});
+  return Object.freeze({fragment,mount,teardown,setMarkup:value=>{if(typeof value!=="boolean"||disposed)return false;conversationQuery.markup=value;controller?.setMarkup(value);return true;}});
 }

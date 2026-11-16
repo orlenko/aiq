@@ -216,6 +216,7 @@ export function createAsksView(document, data, options) {
   }
   function selectInbox(row){
     if(!inbox||phase!=="ready"||!root?.isConnected||row&&!row.group.expanded)return;
+    if(row&&selectedInbox===row){syncSessions();controls();return;}
     if(selectedInbox){selectedInbox.panel.hidden=true;selectedInbox.article.append(selectedInbox.panel);selectedInbox.pick.removeAttribute("aria-current");selectedInbox.article.setAttribute("data-selected","false");}
     selectedInbox=row;inboxPanel.replaceChildren();
     if(row){selectedSession=row.session;syncSessions();if(sessionQuestions)selectedSession.item.append(sessionQuestions);row.panel.hidden=false;inboxPanel.append(row.panel);row.pick.setAttribute("aria-current","true");row.article.setAttribute("data-selected","true");}
