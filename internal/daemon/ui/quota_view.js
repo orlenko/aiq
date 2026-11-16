@@ -63,25 +63,28 @@ export function quotaLoginCommand(id, provider) {
 }
 
 function rungText(rung) {
-  if (rung === 1) return "uses paid extra usage";
-  if (rung > 1) return `last-resort provider #${rung - 1}`;
+  if (rung === 1) return "extra usage";
+  if (rung > 1) return `last resort #${rung - 1}`;
   return "";
 }
 
-// The account's headline state, most urgent first, from structured fields only.
+// The account's headline badge, most urgent first, from structured fields only.
 export function quotaStanding(a) {
-  if (!a.enabled) return {kind: "off", text: "Disabled"};
-  if (!a.login.hasCredential || a.login.cli === "out") return {kind: "bad", text: "Not logged in", login: true};
-  if (a.login.cli === "unreadable") return {kind: "bad", text: "Login could not be read"};
-  if (a.login.cliMismatch) return {kind: "bad", text: `CLI is logged in as ${a.login.cliIdentity || "someone else"}`, login: true};
-  if (a.exhausted) return {kind: "bad", text: a.reason ? `Exhausted: ${a.reason}` : "Exhausted"};
-  if (!a.eligible) return {kind: "warn", text: a.ineligible ? `Not used now: ${a.ineligible}` : "Not used now"};
-  const parts = [`Rank ${a.rank}`, a.score === null ? "score unknown" : `score ${a.score.toFixed(1)}/h`];
+  if (!a.enabled) return {kind: "off", text: "disabled"};
+  if (!a.login.hasCredential || a.login.cli === "out") return {kind: "bad", text: "no login", login: true};
+  if (a.login.cli === "unreadable") return {kind: "bad", text: "login unreadable"};
+  if (a.login.cliMismatch) return {kind: "bad", text: `CLI is ${a.login.cliIdentity || "someone else"}`, login: true};
+  if (a.exhausted) return {kind: "bad", text: "exhausted"};
+  if (!a.eligible) return {kind: "warn", text: a.ineligible || "not eligible"};
+  const parts = [`#${a.rank}`, a.score === null ? "score unknown" : `${a.score.toFixed(1)}/h`];
   const rung = rungText(a.rung);
   if (rung) parts.push(rung);
   return {kind: a.rank === 1 ? "first" : "ok", text: parts.join(" · ")};
 }
 
+// The Quotas page in the dashboard's compact layout: one column per provider,
+// a short card per account, then the next-pick table. Detail that the old
+// dashboard kept in tooltips sits in one small disclosure per card.
 export function createQuotaView(document, options) {
   const window = field(options, "window");
   let readQuotas = field(options, "readQuotas"), announce = field(options, "announce"), copyText = field(options, "copyText");
@@ -98,6 +101,7 @@ export function createQuotaView(document, options) {
   const fragment = document.createDocumentFragment();
   const root = node("section", "nav-quotas"), title = node("h1", "nav-quotas-heading", "Quotas");
   const toolbar = node("div", "nav-quotas-toolbar"), refreshButton = node("button", "nav-quotas-refresh", "Refresh");
+  const meta = node("p", "nav-quotas-meta", "");
   const status = node("p", "nav-quotas-status", "Quotas not loaded yet"), content = node("div", "nav-quotas-content");
   title.id = "nav-quotas-heading";
   root.setAttribute("aria-labelledby", title.id);
@@ -105,8 +109,8 @@ export function createQuotaView(document, options) {
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   content.setAttribute("aria-busy", "false");
-  toolbar.append(refreshButton, status);
-  root.append(title, toolbar, content);
+  toolbar.append(title, meta, refreshButton, status);
+  root.append(toolbar, content);
   fragment.append(root);
 
   // A new read retires the one in flight; shown is the last accepted snapshot.
@@ -118,6 +122,7 @@ export function createQuotaView(document, options) {
     if (text !== undefined) n.textContent = text;
     return n;
   }
+  function hidden(text) { return node("span", "nav-quotas-sr", text); }
   function listen(target, callback, list = removes) {
     target.addEventListener("click", callback);
     list.push(() => target.removeEventListener("click", callback));
@@ -140,29 +145,9 @@ export function createQuotaView(document, options) {
     if (seconds === null || now === null) return "never";
     return seconds > now ? `${quotaSpan(now, seconds)} after this read` : `${quotaSpan(seconds, now)} ago`;
   }
-  function until(now, seconds) {
+  function inSpan(now, seconds) {
     if (seconds === null || now === null) return "";
-    return seconds <= now ? `due ${local(seconds)}` : `in ${quotaSpan(now, seconds)} (${local(seconds)})`;
-  }
-  // A visible one-line summary with the raw text behind a disclosure.
-  function problem(className, summaryText, raw) {
-    const box = node("div", `nav-quotas-problem ${className}`);
-    box.append(node("p", "nav-quotas-problem-summary", summaryText));
-    if (raw) {
-      const details = node("details", "nav-quotas-raw"), summary = node("summary", "", "Show the error text");
-      details.append(summary, node("pre", "nav-quotas-raw-text", raw));
-      box.append(details);
-    }
-    return box;
-  }
-  function copyButton(label, text, token) {
-    const b = node("button", "nav-quotas-copy", label);
-    b.type = "button";
-    const command = node("code", "nav-quotas-command", text);
-    listen(b, () => copy(token, text), drawn);
-    const wrap = node("p", "nav-quotas-remedy");
-    wrap.append(command, b);
-    return wrap;
+    return seconds <= now ? "due" : `in ${quotaSpan(now, seconds)}`;
   }
   function copy(token, text) {
     if (disposed || !mounted || token !== render || copying || !root.isConnected) return;
@@ -179,145 +164,164 @@ export function createQuotaView(document, options) {
       else finish(true);
     } catch { finish(false); }
   }
+  function remedy(id, command, token) {
+    const wrap = node("p", "nav-quotas-remedy");
+    const b = node("button", "nav-quotas-copy", "Copy");
+    b.type = "button";
+    b.setAttribute("aria-label", `Copy login command for ${id}`);
+    listen(b, () => copy(token, command), drawn);
+    wrap.append(node("code", "nav-quotas-command", command), b);
+    return wrap;
+  }
 
+  // name | bar | used%, as on the dashboard. The bar is decoration; the text
+  // says used and left. A window without a reading shows "–", never 0%.
   function windowRow(w, now) {
     const row = node("li", "nav-quotas-window");
     row.setAttribute("data-binding", w.binding ? "true" : "false");
-    const name = node("span", "nav-quotas-window-name", w.label || w.key);
+    row.title = [w.key, w.source || "unknown source", `read ${ago(now, w.observedAt)}`].join(" · ");
     const bar = node("span", "nav-quotas-bar");
     bar.setAttribute("aria-hidden", "true");
-    let reading;
+    const value = node("span", "nav-quotas-window-value");
     if (w.used === null) {
       bar.setAttribute("data-unknown", "true");
-      reading = "usage unknown";
+      value.append(node("span", "", "–"), hidden(" usage unknown"));
     } else {
       const fill = node("span", "nav-quotas-fill");
-      const width = Math.min(100, w.used);
-      fill.style.width = `${width}%`;
+      fill.style.width = `${Math.min(100, w.used)}%`;
       fill.setAttribute("data-level", w.used >= 95 ? "bad" : w.used >= 80 ? "warn" : "ok");
       bar.append(fill);
-      reading = `${quotaPercent(w.used)} used · ${quotaPercent(w.remaining)} left`;
+      value.append(node("span", "", quotaPercent(w.used)), hidden(` used, ${quotaPercent(w.remaining)} left`));
     }
-    const value = node("span", "nav-quotas-window-value", reading);
-    const facts = [];
-    if (w.resetsAt !== null) facts.push(`resets ${until(now, w.resetsAt)}`);
-    else facts.push("reset time unknown");
-    facts.push(w.binding ? "limits this account" : "does not limit this account");
-    if (w.scope) facts.push(`model scope ${w.scope}`);
-    facts.push(`from ${w.source || "unknown source"}`);
-    facts.push(`read ${ago(now, w.observedAt)}`);
-    row.append(name, bar, value, node("span", "nav-quotas-window-facts", facts.join(" · ")));
+    row.append(node("span", "nav-quotas-window-name", w.label || w.key), bar, value);
     return row;
+  }
+  function money(e) {
+    const parts = [e.balanceMinor === null ? "balance unknown" : `${quotaMoney(e.currency, e.balanceMinor)} prepaid`];
+    if (e.limitMinor > 0) parts.push(`${quotaMoney(e.currency, e.usedMinor)} of ${quotaMoney(e.currency, e.limitMinor)} this month`);
+    else if (e.usedMinor > 0) parts.push(`${quotaMoney(e.currency, e.usedMinor)} this month`);
+    if (e.limitReached) parts.push("monthly limit reached");
+    return `extra usage ${parts.join(", ")}${e.note ? ` (${e.note})` : ""}`;
+  }
+  // The dashboard's one-line summary under the bars.
+  function subLine(a, now) {
+    const sub = node("p", "nav-quotas-sub");
+    const parts = [];
+    const add = (text, className = "") => parts.push(node("span", className, text));
+    const resets = a.windows.filter(w => w.binding && w.resetsAt !== null).map(w => `${w.label || w.key} resets ${inSpan(now, w.resetsAt)}`);
+    if (resets.length) add(resets.join(", "));
+    if (a.exhausted && a.reason) add(a.reason, "nav-quotas-bad");
+    if (a.cooldownUntil !== null && (now === null || a.cooldownUntil > now)) add(`cooling down, usable ${inSpan(now, a.cooldownUntil)}`, "nav-quotas-warn");
+    if (a.resetCredits > 0) {
+      add(`⟳ ${a.resetCredits} reset credit${a.resetCredits === 1 ? "" : "s"}${a.resetCreditExpiresAt === null ? "" : `, next expires ${local(a.resetCreditExpiresAt)}`}`, "nav-quotas-credit");
+    } else if (a.exhausted && (a.provider === "claude" || a.provider === "codex")) add("no reset credit");
+    if (a.extraUsage) add(money(a.extraUsage));
+    if (a.pollError) add("last usage read failed", "nav-quotas-bad");
+    add(a.observedAt === null ? "never read" : `seen ${ago(now, a.observedAt)}`);
+    parts.forEach((p, i) => { if (i) sub.append(" · "); sub.append(p); });
+    return sub;
   }
   function leaseRow(l) {
     const row = node("li", "nav-quotas-lease");
     const mode = [l.mode || "session"];
-    if (l.drain) mode.push(`wrap-up ${l.drain}`);
-    if (l.depth) mode.push(`nested depth ${l.depth}`);
-    const target = l.pane || (l.pid ? `process ${l.pid}` : "terminal unknown");
-    const workspace = l.workspace || l.cwd || "workspace unknown";
+    if (l.drain) mode.push(l.drain);
+    if (l.depth) mode.push(`d${l.depth}`);
+    const target = l.pane || (l.pid ? `pid ${l.pid}` : "terminal unknown");
     row.append(node("span", "nav-quotas-lease-mode", mode.join(" · ")), node("span", "nav-quotas-lease-target", target),
-      node("span", "nav-quotas-lease-workspace", workspace));
-    if (l.why) row.append(node("p", "nav-quotas-lease-why", l.why));
+      node("span", "nav-quotas-lease-workspace", l.workspace || l.cwd || "workspace unknown"));
+    row.setAttribute("data-mode", l.mode);
+    if (l.why) row.append(node("span", "nav-quotas-lease-why", l.why));
     return row;
+  }
+  // Everything the dashboard showed only in tooltips, plus raw errors.
+  function details(a, now) {
+    const box = node("details", "nav-quotas-details"), list = node("ul", "nav-quotas-detail-list");
+    box.append(node("summary", "", "Details"), list);
+    const item = text => list.append(node("li", "", text));
+    for (const w of a.windows) {
+      const facts = [w.used === null ? "usage unknown" : `${quotaPercent(w.used)} used, ${quotaPercent(w.remaining)} left`,
+        w.resetsAt === null ? "reset time unknown" : `resets ${local(w.resetsAt)}`,
+        w.binding ? "limits this account" : "does not limit this account"];
+      if (w.scope) facts.push(`model scope ${w.scope}`);
+      facts.push(`from ${w.source || "unknown source"}`, `read ${ago(now, w.observedAt)}`);
+      item(`${w.label || w.key}: ${facts.join(" · ")}`);
+    }
+    const login = [`CLI login ${a.login.cli}`];
+    if (a.login.cliIdentity) login.push(`as ${a.login.cliIdentity}`);
+    if (a.login.checkedAt !== null) login.push(`checked ${ago(now, a.login.checkedAt)}`);
+    item(login.join(" · "));
+    if (!a.eligible && a.ineligible) item(`not eligible: ${a.ineligible}`);
+    for (const t of a.terms) list.append(node("li", "nav-quotas-term", t));
+    for (const [label, raw] of [["Login error", a.login.problem], ["Last usage read error", a.pollError]]) {
+      if (!raw) continue;
+      const li = node("li", "");
+      li.append(`${label}:`, node("pre", "nav-quotas-raw-text", raw));
+      list.append(li);
+    }
+    return box;
   }
   function accountCard(a, now, token) {
     const card = node("article", "nav-quotas-card");
     const standing = quotaStanding(a);
     card.setAttribute("data-standing", standing.kind);
-    const head = node("header", "nav-quotas-card-head");
-    const heading = node("h3", "nav-quotas-account", a.id);
-    head.append(heading);
-    const who = [a.plan, a.label || a.identity].filter(Boolean).join(" · ");
-    if (who) head.append(node("p", "nav-quotas-who", who));
-    head.append(node("p", "nav-quotas-standing", standing.text));
+    const head = node("h3", "nav-quotas-card-head");
+    head.append(node("span", "nav-quotas-account", a.id));
+    if (a.plan) head.append(node("span", "nav-quotas-plan", a.plan));
+    const who = node("span", "nav-quotas-who", a.label || a.identity);
+    if (a.identity) who.title = a.identity;
+    head.append(who, node("span", "nav-quotas-badge", standing.text));
     card.append(head);
-    if (standing.login && a.enabled) {
+    if (standing.login) {
       const command = quotaLoginCommand(a.id, a.provider);
-      if (command) card.append(copyButton(`Copy login command for ${a.id}`, command, token));
+      if (command) card.append(remedy(a.id, command, token));
     }
-    if (a.login.cli === "unreadable") card.append(problem("nav-quotas-login-problem", "The stored login could not be read; aiq keeps the last known state.", a.login.problem));
-    if (a.cooldownUntil !== null && (now === null || a.cooldownUntil > now)) card.append(node("p", "nav-quotas-cooldown", `Cooling down, usable again ${until(now, a.cooldownUntil)}`));
-
+    if (a.login.cli === "unreadable") card.append(node("p", "nav-quotas-bad nav-quotas-note", "The stored login could not be read; see Details."));
     if (a.windows.length) {
       const list = node("ul", "nav-quotas-windows");
       list.setAttribute("aria-label", `Usage windows for ${a.id}`);
       for (const w of a.windows) list.append(windowRow(w, now));
       card.append(list);
-    } else card.append(node("p", "nav-quotas-empty", "No usage reading yet"));
-
-    const facts = node("ul", "nav-quotas-facts");
-    if (a.resetCredits > 0) {
-      const expiry = a.resetCreditExpiresAt === null ? "" : `, next expires ${local(a.resetCreditExpiresAt)}`;
-      facts.append(node("li", "nav-quotas-credits", `${a.resetCredits} reset credit${a.resetCredits === 1 ? "" : "s"}${expiry}`));
-    } else if (a.exhausted && (a.provider === "claude" || a.provider === "codex")) {
-      facts.append(node("li", "nav-quotas-credits", "No reset credit"));
-    }
-    const e = a.extraUsage;
-    if (e) {
-      const parts = [e.balanceMinor === null ? "balance unknown" : `${quotaMoney(e.currency, e.balanceMinor)} prepaid`];
-      if (e.limitMinor > 0) parts.push(`${quotaMoney(e.currency, e.usedMinor)} of ${quotaMoney(e.currency, e.limitMinor)} used this month`);
-      else if (e.usedMinor > 0) parts.push(`${quotaMoney(e.currency, e.usedMinor)} used this month`);
-      if (e.limitReached) parts.push("monthly limit reached");
-      const item = node("li", "nav-quotas-extra", `Paid extra usage: ${parts.join(", ")}`);
-      if (e.note) item.append(node("span", "nav-quotas-note", ` (${e.note})`));
-      facts.append(item);
-    }
-    facts.append(node("li", "nav-quotas-seen", a.observedAt === null ? "Never read" : `Last read ${ago(now, a.observedAt)}`));
-    card.append(facts);
-    if (a.pollError) card.append(problem("nav-quotas-poll-problem", "The last usage read failed; the values above may be old.", a.pollError));
-
+    } else card.append(node("p", "nav-quotas-empty", "no telemetry yet"));
+    card.append(subLine(a, now), details(a, now));
     if (a.leases.length) {
       const list = node("ul", "nav-quotas-leases");
       list.setAttribute("aria-label", `Sessions on ${a.id}`);
       for (const l of a.leases) list.append(leaseRow(l));
       card.append(list);
     }
-    if (a.terms.length || a.login.checkedAt !== null || a.login.cliIdentity) {
-      const details = node("details", "nav-quotas-technical"), summary = node("summary", "", "Scoring details");
-      details.append(summary);
-      if (a.terms.length) {
-        const terms = node("ul", "nav-quotas-terms");
-        for (const t of a.terms) terms.append(node("li", "", t));
-        details.append(terms);
-      }
-      const login = [`CLI login: ${a.login.cli}`];
-      if (a.login.cliIdentity) login.push(`as ${a.login.cliIdentity}`);
-      if (a.login.checkedAt !== null) login.push(`checked ${ago(now, a.login.checkedAt)}`);
-      details.append(node("p", "", login.join(" · ")));
-      card.append(details);
-    }
     return card;
   }
-  function rankingTable(r) {
-    const box = node("section", "nav-quotas-ranking");
-    const table = node("table", "nav-quotas-table"), caption = node("caption", "", `${r.provider} · ${r.mode === "worker" ? "workers" : "interactive sessions"}`);
-    const head = node("thead"), headRow = node("tr");
-    for (const text of ["Order", "Account", "Score", "Why"]) {
-      const th = node("th", "", text);
-      th.setAttribute("scope", "col");
+  // One table, a group of rows per provider and mode, as on the dashboard.
+  function rankingTable(rankings) {
+    const box = node("section", "nav-quotas-rankings"), h = node("h2", "nav-quotas-section-heading", "Next pick");
+    h.id = `nav-quotas-rankings-${render}`;
+    box.setAttribute("aria-labelledby", h.id);
+    const table = node("table", "nav-quotas-table");
+    for (const r of rankings) {
+      const body = node("tbody"), headRow = node("tr"), th = node("th", "nav-quotas-ranking-key", `${r.provider} · ${r.mode}`);
+      th.colSpan = 3;
+      th.setAttribute("scope", "colgroup");
       headRow.append(th);
+      body.append(headRow);
+      r.entries.forEach((e, i) => {
+        const tr = node("tr");
+        tr.setAttribute("data-eligible", e.eligible ? "true" : "false");
+        const id = node("th", "nav-quotas-mono", `${i + 1}. ${e.id}`);
+        id.setAttribute("scope", "row");
+        const score = e.eligible ? (e.score === null ? "score unknown" : `${e.score.toFixed(1)}/h`) : "";
+        const why = e.eligible ? [rungText(e.rung), ...e.terms].filter(Boolean).join(" + ") : e.reason;
+        tr.append(id, node("td", "nav-quotas-mono", score), node("td", "nav-quotas-why", why));
+        body.append(tr);
+      });
+      if (!r.entries.length) {
+        const tr = node("tr"), td = node("td", "nav-quotas-empty", "no account");
+        td.colSpan = 3;
+        tr.append(td);
+        body.append(tr);
+      }
+      table.append(body);
     }
-    head.append(headRow);
-    const body = node("tbody");
-    r.entries.forEach((e, i) => {
-      const tr = node("tr");
-      tr.setAttribute("data-eligible", e.eligible ? "true" : "false");
-      const id = node("th", "", e.id);
-      id.setAttribute("scope", "row");
-      const score = e.eligible ? (e.score === null ? "unknown" : `${e.score.toFixed(1)}/h`) : "not eligible";
-      const why = e.eligible ? [rungText(e.rung), ...e.terms].filter(Boolean).join(" · ") : e.reason;
-      tr.append(node("td", "", String(i + 1)), id, node("td", "", score), node("td", "nav-quotas-why", why));
-      body.append(tr);
-    });
-    if (!r.entries.length) {
-      const tr = node("tr"), td = node("td", "nav-quotas-empty", "No account");
-      td.colSpan = 4;
-      tr.append(td);
-      body.append(tr);
-    }
-    table.append(caption, head, body);
-    box.append(table);
+    box.append(h, table);
     return box;
   }
   function draw(s) {
@@ -326,37 +330,34 @@ export function createQuotaView(document, options) {
     const token = render, now = s.generatedAt;
     const out = node("div", "nav-quotas-snapshot");
     out.setAttribute("data-stale", "false");
-    const poll = [];
-    poll.push(s.poll.lastAt === null ? "aiq has not polled yet" : `aiq last polled ${ago(now, s.poll.lastAt)}`);
+    const poll = [s.poll.lastAt === null ? "not polled yet" : `polled ${ago(now, s.poll.lastAt)}`];
     if (s.poll.intervalS > 0) poll.push(`every ${quotaSpan(0, s.poll.intervalS)}`);
-    if (s.poll.polling) poll.push("polling now");
-    out.append(node("p", "nav-quotas-poll", `${poll.join(" · ")}. Read ${local(now)}.`));
-    if (s.poll.error) out.append(problem("nav-quotas-poll-error", "The last poll reported an error.", s.poll.error));
-
-    if (!s.providers.length) out.append(node("p", "nav-quotas-empty", "No accounts. Add one with: aiq account add <provider> <name>"));
-    for (const p of s.providers) {
-      const group = node("section", "nav-quotas-provider");
-      const h = node("h2", "nav-quotas-provider-heading", p.provider);
-      h.id = `nav-quotas-provider-${token}-${s.providers.indexOf(p)}`;
-      group.setAttribute("aria-labelledby", h.id);
-      const cards = node("div", "nav-quotas-cards");
-      for (const a of p.accounts) cards.append(accountCard(a, now, token));
-      group.append(h, cards);
-      out.append(group);
+    if (s.poll.polling) poll.push("polling…");
+    for (const m of s.modelScope) if (m.scope) poll.push(`${m.provider} scope: ${m.scope}`);
+    meta.textContent = poll.join(" · ");
+    if (s.poll.error) {
+      const box = node("details", "nav-quotas-poll-error");
+      box.append(node("summary", "nav-quotas-bad", "The last poll reported an error"), node("pre", "nav-quotas-raw-text", s.poll.error));
+      out.append(box);
     }
-    if (s.rankings.length) {
-      const picks = node("section", "nav-quotas-rankings"), h = node("h2", "", "Next pick");
-      h.id = `nav-quotas-rankings-${token}`;
-      picks.setAttribute("aria-labelledby", h.id);
-      picks.append(h);
-      for (const r of s.rankings) picks.append(rankingTable(r));
-      out.append(picks);
+    if (!s.providers.length) out.append(node("p", "nav-quotas-empty", "No accounts — run aiq account add <provider> <name>"));
+    else {
+      const columns = node("div", "nav-quotas-columns");
+      columns.style.setProperty("--nav-quota-cols", String(s.providers.length));
+      s.providers.forEach((p, i) => {
+        const column = node("section", "nav-quotas-column"), h = node("h2", "nav-quotas-provider-heading", p.provider);
+        h.id = `nav-quotas-provider-${token}-${i}`;
+        column.setAttribute("aria-labelledby", h.id);
+        column.append(h);
+        for (const a of p.accounts) column.append(accountCard(a, now, token));
+        columns.append(column);
+      });
+      out.append(columns);
     }
-    const tech = node("details", "nav-quotas-technical"), sum = node("summary", "", "Technical details");
-    const facts = node("ul", "nav-quotas-terms");
-    facts.append(node("li", "", `Machine identity used for sessions: ${s.hostname}`));
-    for (const m of s.modelScope) facts.append(node("li", "", `${m.provider} model scope: ${m.scope || "none"}`));
-    tech.append(sum, facts);
+    if (s.rankings.length) out.append(rankingTable(s.rankings));
+    const tech = node("details", "nav-quotas-technical"), facts = node("ul", "nav-quotas-detail-list");
+    facts.append(node("li", "", `Machine identity used for sessions: ${s.hostname}`), node("li", "", `Read ${local(now)}`));
+    tech.append(node("summary", "", "Technical details"), facts);
     out.append(tech);
 
     const focused = content.contains(document.activeElement);
@@ -364,7 +365,6 @@ export function createQuotaView(document, options) {
     shownNode = out;
     if (focused) refreshButton.focus();
   }
-
   function settle(token, ok, envelope) {
     if (disposed || token !== flight) return;
     flight = null;
@@ -374,10 +374,12 @@ export function createQuotaView(document, options) {
       try { snapshot = quotaSnapshot(field(envelope, "data"), limits); } catch { snapshot = null; }
     }
     if (snapshot) {
-      shown = snapshot;
-      draw(snapshot);
-      say(`Quotas updated, read ${local(snapshot.generatedAt)}`);
-      return;
+      try {
+        draw(snapshot);
+        shown = snapshot;
+        say(`Quotas updated, read ${local(snapshot.generatedAt)}`);
+        return;
+      } catch { /* A snapshot that cannot be drawn is a failed read. */ }
     }
     if (shown && shownNode) {
       // Keep the last accepted display as it is, and say how old it is.
