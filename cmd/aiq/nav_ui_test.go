@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -303,7 +305,11 @@ func TestUILaunchOneIssueAndUncertainRetention(t *testing.T) {
 				cancel()
 			}
 			var out bytes.Buffer
-			e := runUI(ctx, nil, runtime.GOOS, &out, p.deps)
+			var args []string
+			if mode == "oversized-directory" {
+				args = []string{"."} // Only an explicit directory reads the cwd.
+			}
+			e := runUI(ctx, args, runtime.GOOS, &out, p.deps)
 			if mode == "success" {
 				if e != nil {
 					t.Fatal(e)
@@ -330,6 +336,64 @@ func TestUILaunchOneIssueAndUncertainRetention(t *testing.T) {
 				}
 			} else if len(files) != 0 {
 				t.Fatal("pre-start failure residue")
+			}
+		})
+	}
+}
+
+// The handoff lands on Asks: every project's with no argument, else the given
+// directory's, resolved against the cwd when relative. Bare aiq ui never reads it.
+func TestUILaunchOpensAsksRoute(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("supported private-file platforms only")
+	}
+	for _, c := range []struct {
+		name string
+		args []string
+		next string
+	}{
+		{"bare", nil, "/asks?all=true"},
+		{"dot", []string{"."}, "/asks?dir=%2Finvented%2Fproject+%26%C3%A9"},
+		{"relative", []string{"sub/dir"}, "/asks?dir=%2Finvented%2Fproject+%26%C3%A9%2Fsub%2Fdir"},
+		{"absolute", []string{"/invented/other/"}, "/asks?dir=%2Finvented%2Fother"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newUITestPeer(t, "success")
+			cwdReads := 0
+			p.deps.cwd = func() (string, error) { cwdReads++; return "/invented/project &é", nil }
+			var next string
+			p.deps.open = func(ctx context.Context, path string) (bool, error) {
+				body, e := os.ReadFile(path)
+				if e != nil {
+					t.Fatal(e)
+				}
+				const prefix = `content="0;url=http://127.0.0.1:`
+				at := bytes.Index(body, []byte(prefix))
+				if at < 0 {
+					t.Fatal("no refresh target")
+				}
+				rest := string(body[at+len(prefix):])
+				rest = rest[strings.Index(rest, "#")+1 : strings.Index(rest, `"`)]
+				fields, e := url.ParseQuery(html.UnescapeString(rest))
+				if e != nil {
+					t.Fatal(e)
+				}
+				next = fields.Get("next")
+				return true, nil
+			}
+			var out bytes.Buffer
+			if e := runUI(context.Background(), c.args, runtime.GOOS, &out, p.deps); e != nil {
+				t.Fatal(e)
+			}
+			if next != c.next {
+				t.Fatalf("next = %q, want %q", next, c.next)
+			}
+			wantReads := 1
+			if c.name == "bare" || c.name == "absolute" {
+				wantReads = 0
+			}
+			if cwdReads != wantReads {
+				t.Fatalf("cwd reads = %d, want %d", cwdReads, wantReads)
 			}
 		})
 	}
