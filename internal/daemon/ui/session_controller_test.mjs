@@ -673,7 +673,7 @@ test('header filters compose with global search and survive refresh and a same-s
  assert.deepEqual(visible(),['row A']);assert.equal(f.controller.setFilter('pulse'),0);assert.deepEqual(visible(),[]);
  f.controller.setFilter('row');assert.deepEqual(visible(),['row A']);f.controller.refresh();f.listCalls[1].resolve(data);await tick();assert.deepEqual(visible(),['row A']);
  const snapshot=f.controller.snapshotSessions();f.clean();const next=fixture();next.mount();next.controller.loadSessions(query(),{snapshot});
- assert.equal(find(next,n=>n.getAttribute('aria-label')==='Filter provider')[0].value,'claude');assert.equal(find(next,n=>has(n,'nav-controller-row')&&!n.hidden).length,1);next.clean();
+ assert.equal(snapshot.filter,'row');assert.equal(find(next,n=>n.getAttribute('aria-label')==='Filter provider')[0].value,'claude');assert.equal(next.controller.snapshotSessions().filter,'row');assert.equal(find(next,n=>has(n,'nav-controller-row')&&!n.hidden).length,1);next.clean();
 });
 test('recorded workspace rows remain navigable without offering invalid conversation or copy controls',async()=>{
  const opened=[],f=fixture({readCommands:true,resumeCommands:true,onWorkspace:(...args)=>opened.push(args)});f.mount();f.controller.loadSessions(query());

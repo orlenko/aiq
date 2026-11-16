@@ -355,7 +355,7 @@ export function createAppHost(document,options) {
     if(parsed.path==="/long"){normalizeStatuses();if(focus&&active(op))title.focus({preventScroll:true});return;}
     if(parsed.path==="/asks")op.controller.loadScope({mode:parsed.all?"all":"directory",dir:parsed.dir});
     else{
-      if(parsed.all||parsed.dir){op.sessionsQuery={dir:parsed.dir,canonicalDir:parsed.dir,workers:workers.checked,all:parsed.all};op.controller.loadSessions(op.sessionsQuery,{snapshot:sessionViews.get(sessionKey(op.sessionsQuery))});}
+      if(parsed.all||parsed.dir){op.sessionsQuery={dir:parsed.dir,canonicalDir:parsed.dir,workers:workers.checked,all:parsed.all};const snapshot=sessionViews.get(sessionKey(op.sessionsQuery));if(typeof snapshot?.filter==="string"&&snapshot.filter.length<=4096)search.value=snapshot.filter;op.controller.loadSessions(op.sessionsQuery,{snapshot});}
       const pick=selected(parsed);if(pick)op.controller.selectConversation(pick);
       if(!pick&&!parsed.dir&&!parsed.all)announce("Choose an absolute directory to load sessions.");
     }

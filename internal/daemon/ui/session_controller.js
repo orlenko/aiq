@@ -467,7 +467,7 @@ export function createSessionController(document, options) {
   }
   function snapshotSessions(){
     if(!mounted||disposed||!listView)return null;
-    return {query:{...listView.query},data:captureSessions(listView.data,listView.query.canonicalDir,limits,listView.query.all),gridState:listView.grid.viewState()};
+    return {query:{...listView.query},data:captureSessions(listView.data,listView.query.canonicalDir,limits,listView.query.all),gridState:listView.grid.viewState(),filter:filterText};
   }
   function loadSessions(value, options={}) {
     if (!mounted || disposed || frozen) return;
@@ -493,7 +493,7 @@ export function createSessionController(document, options) {
       let cached=null;
       try{
         const snapshot=field(options,"snapshot"),saved=field(snapshot,"query");
-        if(["dir","canonicalDir","workers","all"].every(key=>field(saved,key)===op.query[key])){cached=captureSessions(field(snapshot,"data"),op.query.canonicalDir,limits,op.query.all);op.gridState=Object.getOwnPropertyDescriptor(snapshot,"gridState")?.value;}
+        if(["dir","canonicalDir","workers","all"].every(key=>field(saved,key)===op.query[key])){cached=captureSessions(field(snapshot,"data"),op.query.canonicalDir,limits,op.query.all);op.gridState=Object.getOwnPropertyDescriptor(snapshot,"gridState")?.value;const filter=Object.getOwnPropertyDescriptor(snapshot,"filter")?.value;if(typeof filter==="string"&&filter.length<=4096)filterText=filter;}
       }catch{/* A missing, stale or malformed cache cannot block the live read. */}
       if(cached&&alive(op))listCommit(op,cached);
     }
