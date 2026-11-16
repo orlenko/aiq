@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,65 @@ func TestNavLongGroupingAndSubdirectoryMapping(t *testing.T) {
 	unknown := longRead(t, f, x.work+"/sub", true)
 	if !unknown.Partial || unknown.WorkspaceKnown || unknown.State == "never" || len(unknown.Earlier) != 4 || unknown.UnmappedLaunches != 6 {
 		t.Fatal("unknown mapping guessed away records", unknown)
+	}
+}
+
+func TestNavLongWorkspaceUpdatedUsesLatestMappedTranscript(t *testing.T) {
+	x := newNavAppFixture(t, 0, "Invented answer")
+	olderID := "00000002-0000-4000-8000-000000000002"
+	newerID := "00000003-0000-4000-8000-000000000003"
+	missingID := "00000004-0000-4000-8000-000000000004"
+	newer := x.at.Add(3 * time.Hour)
+	writeSession := func(id string, updated time.Time) {
+		t.Helper()
+		user, err := json.Marshal(map[string]any{"type": "user", "sessionId": id, "cwd": x.work,
+			"timestamp": x.at.Format(time.RFC3339Nano), "message": map[string]string{"role": "user", "content": "Invented request"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		answer, err := json.Marshal(map[string]any{"type": "assistant", "sessionId": id, "cwd": x.work,
+			"timestamp": updated.Format(time.RFC3339Nano), "message": map[string]any{"id": "invented-answer", "role": "assistant",
+				"content": []map[string]string{{"type": "text", "text": "Invented reply"}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		goldenWrite(t, filepath.Join(x.roots.ClaudeProjects[0], claudeNonAlnum.ReplaceAllString(x.work, "-"), id+".jsonl"), string(user), string(answer))
+	}
+	writeSession(olderID, x.at.Add(time.Minute))
+	writeSession(newerID, newer)
+	in := x.input(nil)
+	in.workspace = func(_ context.Context, dir string) (string, bool) { return dir, true }
+	in.metadata = func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
+		rows := []state.NavigatorLaunch{}
+		for i, item := range []struct{ id, workspace string }{
+			{newerID, x.work}, {olderID, x.work}, {newerID, x.work},
+			{missingID, x.work + "/missing"}, {newerID, x.work + "/contradicted"},
+		} {
+			rows = append(rows, state.NavigatorLaunch{ID: int64(i + 1), Provider: "claude", Mode: state.ModeLong,
+				SessionID: item.id, Cwd: item.workspace, StartedMS: newer.Add(24 * time.Hour).UnixMilli()})
+		}
+		return &state.NavigatorSnapshot{Launches: rows, Leases: []state.NavigatorLease{{ID: 1, Mode: state.ModeLong,
+			Workspace: x.work + "/lease-only", StartedAt: newer.Add(48 * time.Hour).Unix()}}}, nil
+	}
+	f, err := newNavFactory(in, navProductionPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := longRead(t, f, "", true)
+	got := map[string]navLongWorkspace{}
+	for _, workspace := range body.Workspaces {
+		got[workspace.Workspace] = workspace
+	}
+	if len(got) != 3 || got[x.work].Sessions != 2 || got[x.work].Updated != (navWireTime{MS: newer.UnixMilli(), Known: true}) {
+		t.Fatalf("workspace update did not use newest matching transcript: %+v", body.Workspaces)
+	}
+	for _, path := range []string{x.work + "/missing", x.work + "/lease-only"} {
+		if got[path].Updated != (navWireTime{}) {
+			t.Fatalf("unavailable transcript update guessed from recorded time: %+v", got[path])
+		}
+	}
+	if _, exists := got[x.work+"/contradicted"]; exists {
+		t.Fatal("contradicting transcript was counted toward workspace freshness")
 	}
 }
 

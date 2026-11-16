@@ -167,6 +167,7 @@ func (r *navWorkspaceResolver) resolve(dir string) navWorkspaceResult {
 type navLongTranscript struct {
 	available bool
 	workspace navWorkspaceResult
+	updated   navWireTime
 }
 
 func (f *navFactory) buildLongMetadata(ctx context.Context, q navLongQuery, snapshot *state.NavigatorSnapshot, run *navListRun) (navLongBody, error) {
@@ -239,6 +240,9 @@ func (f *navFactory) buildLongMetadata(ctx context.Context, q navLongQuery, snap
 				s, e := run.summary(ctx, hit.Path)
 				if e == nil && s.Provider == provider && s.ID == id {
 					value.available = true
+					// Only the verified transcript summary supplies freshness. A missing
+					// or unshowable timestamp stays unknown, never a launch time.
+					value.updated, _ = navConversationTime(s.Updated)
 					if s.Cwd != "" {
 						if !q.history && body.WorkspaceKnown && s.Cwd == body.Workspace {
 							value.workspace = navWorkspaceResult{body.Workspace, true}
@@ -317,7 +321,10 @@ func (f *navFactory) buildLongMetadata(ctx context.Context, q navLongQuery, snap
 				if info.workspace.known && info.workspace.root != scope.root {
 					continue
 				}
-				addWorkspace(scope.root)
+				workspace := addWorkspace(scope.root)
+				if info.updated.Known && (!workspace.Updated.Known || info.updated.MS > workspace.Updated.MS) {
+					workspace.Updated = info.updated
+				}
 				if rootGroups[scope.root] == nil {
 					rootGroups[scope.root] = map[string]bool{}
 				}
