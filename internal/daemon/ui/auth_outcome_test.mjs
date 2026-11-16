@@ -90,3 +90,12 @@ test('deadline diagnostic remains fixed while timeout still retires the private 
  assert.equal(x.s.snapshot().kind,'terminal');assert.equal(x.events.filter(v=>v==='detached').length,1);assert.equal(x.values.get(key),bearer);
  await assert.rejects(x.s.asks(query),error=>error.code==='cancelled');x.s.dispose();
 });
+
+test('signed small list errors forward fixed reasons without raw response text',async()=>{
+ for(const reason of ['list_too_large','list_busy','request_cancelled','invented private detail']){
+  const x=setup({fetcher:()=>response(JSON.stringify({error:reason,details:'invented private body'}),503)});await x.s.ready;
+  await assert.rejects(x.s.asks(query),error=>{assert.equal(error.code,'request');assert.equal(error.status,503);assert.equal(error.reason,reason==='invented private detail'?undefined:reason);assert.equal(error.message,'Navigator request unavailable');return true;});x.s.dispose();
+ }
+ const x=setup({fetcher:()=>response(JSON.stringify({error:'list_too_large',padding:'x'.repeat(600)}),503)});await x.s.ready;
+ await assert.rejects(x.s.asks(query),error=>error.reason===undefined);x.s.dispose();
+});

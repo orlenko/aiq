@@ -25,7 +25,7 @@ func TestNavigatorAuthOutcomeNodeFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth outcome fixtures failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"tests 11", "pass 11", "fail 0", "cancelled 0", "skipped 0"} {
+	for _, want := range []string{"tests 12", "pass 12", "fail 0", "cancelled 0", "skipped 0"} {
 		if !regexp.MustCompile(`(?m)^# ` + want + `$`).Match(out) {
 			t.Fatalf("auth outcome fixtures incomplete:\n%s", out)
 		}

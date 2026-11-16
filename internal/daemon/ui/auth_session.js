@@ -194,7 +194,15 @@ export function createTabSession(options) {
       const raw=new Uint8Array(total);let offset=0;
       for (const chunk of chunks) { raw.set(chunk,offset);offset+=chunk.byteLength; }
       if(proof) { await proof.verify(response.headers.get("X-Aiq-Tab-Proof"),status,mime??"",response.headers.get("X-Aiq-Build"),raw,etag);if(!valid())bad(); }
-      if(status!==200&&!notModified)throw failure(actionRequest?(status===409?"conflict":"unavailable"):"request",{code:"request",status});
+      if(status!==200&&!notModified){
+        const diagnostic={code:"request",status};
+        // Only fixed codes from a small, verified error response cross into UI.
+        if(!actionRequest&&status===503&&raw.length<=512)try{
+          const reason=JSON.parse(new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(raw))?.error;
+          if(["list_too_large","list_busy","request_cancelled"].includes(reason))diagnostic.reason=reason;
+        }catch{/* Unknown response text retains the fixed HTTP fallback. */}
+        throw failure(actionRequest?(status===409?"conflict":"unavailable"):"request",diagnostic);
+      }
       const value=decode(raw,{status,etag});
       if (!valid()) bad();
       return value;
@@ -312,6 +320,7 @@ export function createTabSession(options) {
       const diagnostic=diagnostics.get(error),out=new TypeError(UNAVAILABLE);
       Object.defineProperty(out,"code",{value:diagnostic?.code??category});
       if(diagnostic?.status!==undefined)Object.defineProperty(out,"status",{value:diagnostic.status});
+      if(diagnostic?.reason!==undefined)Object.defineProperty(out,"reason",{value:diagnostic.reason});
       throw out;
     }
   }

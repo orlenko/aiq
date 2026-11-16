@@ -5,12 +5,27 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/orlenko/aiq/internal/diagnostic"
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
 var errNavListFatal = errors.New("navigator list build failed")
+
+// Navigator labels are display previews. Keep complete prompts in the shared
+// transcript cache; do not admit them for every candidate in a list scan.
+func navListPreview(text string) string {
+	const limit = 512 // UTF-8 bytes, including the ellipsis.
+	if len(text) <= limit {
+		return text
+	}
+	end := limit - len("…")
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end] + "…"
+}
 
 type navListFlags struct {
 	internal, resource, discovery, partial bool
@@ -147,6 +162,7 @@ func (r *navListRun) summary(ctx context.Context, path string) (out transcript.S
 		}
 		return transcript.Summary{}, err
 	}
+	s.Label, s.Title = navListPreview(s.Label), navListPreview(s.Title)
 	if !r.reserve(512, s.Provider, s.ID, s.Path, s.Cwd, s.Label, s.Title, s.Model, s.Branch) {
 		return transcript.Summary{}, errNavListFatal
 	}
@@ -189,7 +205,7 @@ func (r *navListRun) CodexNames(ctx context.Context) (out map[string]string) {
 	r.mu.Unlock()
 	out = make(map[string]string, len(ids))
 	for _, id := range ids {
-		title := names[id]
+		title := navListPreview(names[id])
 		if title == "" {
 			continue
 		}
