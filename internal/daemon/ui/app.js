@@ -13,10 +13,10 @@ const refused=()=>new TypeError("Navigator view unavailable");
 export function setNavigatorRoving(group,active) {
   // ARIA busy controls remain focusable, including after async re-enable.
   const rows=[...group.querySelectorAll(".nav-controller-row,.nav-asks-item")].filter(n=>!n.hidden);
-  const entries=rows.map(row=>({row,controls:[...row.querySelectorAll("button,a")].filter(c=>!c.disabled&&!c.hidden&&
+  const entries=rows.map(row=>({row,controls:[...row.querySelectorAll("button,a,summary")].filter(c=>!c.disabled&&!c.hidden&&
     (c.tagName!=="A"||c.hasAttribute("href"))&&c.getClientRects().length>0)})).filter(e=>e.controls.length>0);
   const chosen=entries.find(e=>e.row.contains(active))??entries.find(e=>e.row.dataset.current==="true")??entries[0];
-  for(const row of rows){row.dataset.current=String(row===chosen?.row);for(const c of row.querySelectorAll("button,a"))c.tabIndex=row===chosen?.row&&chosen.controls.includes(c)?0:-1;}
+  for(const row of rows){row.dataset.current=String(row===chosen?.row);for(const c of row.querySelectorAll("button,a,summary"))c.tabIndex=row===chosen?.row&&chosen.controls.includes(c)?0:-1;}
   return entries;
 }
 export function bindNavigatorRoving(content,isCurrent) {

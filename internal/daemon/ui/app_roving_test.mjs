@@ -62,3 +62,11 @@ test('switching off single-key shortcuts preserves native row access without tak
   assert.equal(navigateNavigatorRows(event('End'),active,false),true);assert.equal(active,b);
  }
 });
+
+test('native command disclosures join the selected row tab stops without exposing closed contents',()=>{
+ const first=control(),summary=control({tagName:'SUMMARY'}),copy=control({visible:false}),other=control(),otherSummary=control({tagName:'SUMMARY'});
+ const rows=[row([first,summary,copy]),row([other,otherSummary])],g=group(rows);
+ setNavigatorRoving(g,summary);assert.equal(summary.tabIndex,0);assert.equal(first.tabIndex,0);assert.equal(copy.tabIndex,-1);assert.equal(otherSummary.tabIndex,-1);
+ copy.visible=true;setNavigatorRoving(g,summary);assert.equal(copy.tabIndex,0);
+ setNavigatorRoving(g,other);assert.equal(first.tabIndex,-1);assert.equal(summary.tabIndex,-1);assert.equal(copy.tabIndex,-1);assert.equal(otherSummary.tabIndex,0);
+});
