@@ -1,4 +1,5 @@
 export const MAX_REPLY = 4194304;
+const COMMANDS=["hello","asks","ask-detail","ask-action","target","quotas","sessions","conversation","ask-context"];
 const PROVIDERS = new Set(["claude","codex","agy"]);
 const ERRORS = new Set(["busy","unavailable","not_set_up","too_large","invalid_request","not_found","conflict","unknown_outcome","preparing","internal"]);
 const HEX64 = /^[a-f0-9]{64}$/;
@@ -108,7 +109,9 @@ export class Bridge {
         try { r=await this.exec(path,["__app","hello"],{on:source.machine,timeout:12000}); } catch { throw new BridgeError("unavailable"); }
       }
       if(r.code!==0) throw new BridgeError(r.code===2?"update_required":"unavailable");
-      const e=decode(r.stdout,"hello"); source.host=e.host.id; return source.host;
+      const e=decode(r.stdout,"hello");
+      if(!Array.isArray(e.data.commands)||COMMANDS.some(command=>!e.data.commands.includes(command)))throw new BridgeError("update_required");
+      source.host=e.host.id; return source.host;
     });
     try{return await source.hello;} finally{source.hello=null;}
   }

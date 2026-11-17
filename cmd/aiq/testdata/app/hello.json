@@ -25,7 +25,10 @@
    "ask-detail",
    "ask-action",
    "target",
-   "quotas"
+   "quotas",
+   "sessions",
+   "conversation",
+   "ask-context"
   ]
  }
 }

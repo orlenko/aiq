@@ -687,8 +687,7 @@ The Herdr desktop app can show aiq's asks, session history and quotas in a
 native mod tab. Install the mod on the computer running the app:
 
 ```bash
-aiq __app install
-aiq __app open
+aiq ui --herdr
 ```
 
 The open command reuses an existing aiq mod tab. Installation updates only

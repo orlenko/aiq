@@ -51,7 +51,7 @@ const (
 	appInternal       = "internal"
 )
 
-var appCommands = []string{"hello", "asks", "ask-detail", "ask-action", "target", "quotas"}
+var appCommands = []string{"hello", "asks", "ask-detail", "ask-action", "target", "quotas", "sessions", "conversation", "ask-context"}
 
 type appHost struct {
 	ID   string `json:"id"`
@@ -114,6 +114,14 @@ func appProductionEnv() appEnv {
 }
 
 func cmdApp(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "install":
+			return appInstall(args[1:])
+		case "open":
+			return appOpen(args[1:])
+		}
+	}
 	return appRun(appProductionEnv(), args, os.Stdout)
 }
 
@@ -197,6 +205,21 @@ func (env appEnv) dispatch(ctx context.Context, kind string, args []string, host
 			return appFailure(appInvalid)
 		}
 		return env.quotasData(ctx)
+	case "sessions", "conversation", "ask-context":
+		out, err := appHistoryRunWithInput(ctx, env.input, kind, args, env.readAsk)
+		if err != nil {
+			switch code := err.Error(); code {
+			case appBusy, appUnavailable, appNotSetUp, appTooLarge, appInvalid, appNotFound, appConflict, "preparing":
+				return appFailure(code)
+			default:
+				return appFailure(appUnavailable)
+			}
+		}
+		omitted := map[string]int64{}
+		for key, n := range out.Omitted {
+			omitted[key] = int64(n)
+		}
+		return appResult{data: out.Data, partial: out.Partial, omitted: omitted}
 	}
 	return appFailure(appInvalid)
 }

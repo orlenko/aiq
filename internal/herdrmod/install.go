@@ -73,6 +73,22 @@ func Install(appHome string) error {
 		m.Files[entry.Name()] = digest(b)
 	}
 	if exists {
+		old, err := os.ReadFile(filepath.Join(target, manifestName))
+		if err != nil {
+			return errors.New("cannot inspect the aiq mod manifest")
+		}
+		var previous manifest
+		if json.Unmarshal(old, &previous) == nil && len(previous.Files) == len(m.Files) {
+			same := true
+			for name, hash := range m.Files {
+				same = same && previous.Files[name] == hash
+			}
+			if same {
+				return nil
+			}
+		}
+	}
+	if exists {
 		for _, name := range generatedFiles {
 			path := filepath.Join(target, name)
 			info, err := os.Lstat(path)

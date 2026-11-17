@@ -211,6 +211,29 @@ func TestAppHistoryLongMessageExcerptKeepsMatchingQuote(t *testing.T) {
 	}
 }
 
+func TestAppHistoryPreservesWhoSuppliedAPrompt(t *testing.T) {
+	s := &transcript.Session{Turns: []transcript.Turn{{Prompt: "Invented peer message", Source: transcript.Peer}, {Prompt: "Invented notice", Source: transcript.Notice}, {Prompt: "Invented takeover", Source: transcript.Aiq}, {Prompt: "Invented human request", Source: transcript.Human}}}
+	rows, err := appHistoryMessages(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, source := range []string{"peer", "notice", "aiq"} {
+		if rows[i].Role == "user" || rows[i].Source != source {
+			t.Fatal("attributed external text to the person", rows[i])
+		}
+	}
+	if rows[3].Role != "user" || rows[3].Source != "" {
+		t.Fatal("lost human attribution", rows[3])
+	}
+}
+
+func TestAppHistoryRejectsRepeatedEmptyFlag(t *testing.T) {
+	_, err := (appHistoryDeps{}).run(context.Background(), transcript.Roots{}, "sessions", []string{"--limit", "", "--limit", "1"})
+	if err != appHistoryFailure("invalid_request") {
+		t.Fatal("repeated flag was admitted", err)
+	}
+}
+
 func FuzzAppHistoryCursor(f *testing.F) {
 	for _, s := range []string{"", "0.00000000000000000000000000000000", "../../x", "12.bad", "-1.ffffffffffffffffffffffffffffffff"} {
 		f.Add(s)
@@ -221,4 +244,25 @@ func FuzzAppHistoryCursor(f *testing.F) {
 		}
 		_, _, _, _ = appHistoryRecent(context.Background(), nil, 100, s)
 	})
+}
+
+func TestAppGoldenHistory(t *testing.T) {
+	env, x := appTestEnv(t)
+	window, code := env.appReadAsks(context.Background(), appOne("17"))
+	if code != "" || len(window.Items) != 1 {
+		t.Fatal("invented ask unavailable", code)
+	}
+	ask := window.Items[0]
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	path := filepath.Join(projects, "invented", fullIDFixtureID+".jsonl")
+	writeLinesTB(t, path, `{"type":"user","sessionId":"`+fullIDFixtureID+`","cwd":"/invented/work","timestamp":"2031-07-01T10:58:00Z","message":{"content":"Prepare the invented branch."}}`,
+		`{"type":"assistant","timestamp":"2031-07-01T10:59:30Z","message":{"content":[{"type":"text","text":`+jsonString(ask.LastQuote)+`}]}}`)
+	env.input.roots = func(context.Context) (transcript.Roots, error) {
+		return transcript.Roots{ClaudeProjects: []string{projects}}, nil
+	}
+	env.input.metadata = nil
+	appGolden(t, "sessions", env, x, "sessions")
+	appGolden(t, "conversation", env, x, "conversation", "--provider", "claude", "--id", fullIDFixtureID)
+	appGolden(t, "ask-context", env, x, "ask-context", "--id", "17", "--revision", state.AskActionRevision(ask))
 }

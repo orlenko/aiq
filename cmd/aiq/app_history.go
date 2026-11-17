@@ -49,10 +49,14 @@ func appHistoryRunWithInput(ctx context.Context, in navFactoryInput, kind string
 func (d appHistoryDeps) run(ctx context.Context, roots transcript.Roots, kind string, args []string) (appHistoryOutput, error) {
 	opts := map[string]string{}
 	for len(args) > 0 {
-		if len(args) < 2 || !strings.HasPrefix(args[0], "--") || opts[args[0][2:]] != "" {
+		if len(args) < 2 || !strings.HasPrefix(args[0], "--") {
 			return appHistoryOutput{}, appHistoryFailure("invalid_request")
 		}
-		opts[args[0][2:]] = args[1]
+		key := args[0][2:]
+		if _, duplicate := opts[key]; duplicate {
+			return appHistoryOutput{}, appHistoryFailure("invalid_request")
+		}
+		opts[key] = args[1]
 		args = args[2:]
 	}
 	allowed := map[string]bool{}
@@ -313,6 +317,7 @@ type appHistoryMessage struct {
 	Key       string `json:"key"`
 	Turn      int    `json:"turn"`
 	Role      string `json:"role"`
+	Source    string `json:"source,omitempty"`
 	At        int64  `json:"at_ms"`
 	Text      string `json:"text"`
 	Bytes     int    `json:"bytes"`
@@ -360,7 +365,20 @@ func appHistoryMessagesWithQuote(ctx context.Context, s *transcript.Session, quo
 		if ctx.Err() != nil {
 			return nil, appHistoryFailure("busy")
 		}
-		add(i, "user", t.Prompt, t.Started)
+		role, source := "user", ""
+		switch t.Source {
+		case transcript.Aiq:
+			role, source = "system", "aiq"
+		case transcript.Peer:
+			role, source = "system", "peer"
+		case transcript.Notice:
+			role, source = "system", "notice"
+		}
+		before := len(out)
+		add(i, role, t.Prompt, t.Started)
+		if len(out) > before {
+			out[len(out)-1].Source = source
+		}
 		if len(t.Items) > 0 {
 			for _, item := range t.Items {
 				role := "assistant"

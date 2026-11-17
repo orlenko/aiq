@@ -18,8 +18,16 @@ func TestInstallPreservesPersonalChanges(t *testing.T) {
 	if err := Install(home); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Stat(filepath.Join(home, "mods", "aiq", "main.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := Install(home); err != nil {
 		t.Fatal("managed update:", err)
+	}
+	after, err := os.Stat(filepath.Join(home, "mods", "aiq", "main.js"))
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("unchanged install would reload the active view", err)
 	}
 	path := filepath.Join(home, "mods", "aiq", "main.js")
 	if err := os.WriteFile(path, []byte("// personal changes"), 0600); err != nil {

@@ -18,9 +18,13 @@ aiq __app ask-action --id N --revision HEX64 --action dismiss|restore --host HOS
 aiq __app target     --ask N --revision HEX64
 aiq __app target     --provider claude|codex|agy --conversation ID
 aiq __app quotas
+aiq __app sessions [--limit N] [--before CURSOR]
+aiq __app conversation --provider claude|codex|agy --id ID [--at MS | --before KEY | --after KEY]
+aiq __app ask-context --id N --revision HEX64
 ```
 
-Planned for the next slices: `sessions`, `conversation`, `ask-context`.
+The public launcher is `aiq ui --herdr`. Internal `__app install` and `__app open`
+install the bundled personal mod and open it for diagnostics.
 
 Arguments come only as `--name value` pairs, each at most once. Values are enums, decimal ids, lowercase hex, or conversation ids. No paths or free text are accepted. Anything else is `invalid_request`.
 
@@ -45,7 +49,7 @@ Arguments come only as `--name value` pairs, each at most once. Values are enums
 | `generated_at_ms` | unix ms |
 | `partial` | rows or facts are missing; never read missing as zero |
 | `omitted` | counts of rows left out, by reason (`rows`) |
-| `error.code` | `busy` `unavailable` `not_set_up` `too_large` `invalid_request` `not_found` `conflict` `unknown_outcome` `internal` |
+| `error.code` | `busy` `unavailable` `not_set_up` `too_large` `invalid_request` `not_found` `conflict` `unknown_outcome` `preparing` `internal` |
 
 ## hello (`hello.json`)
 
@@ -99,3 +103,29 @@ The app then requires `hc get <machine/address> --json` to show `state:"live"`, 
 - `poll.known` is always false: a bridge process cannot read the daemon's poll bookkeeping. Use each account's `observed_at` for freshness.
 - `model_scope`, `accounts` and `rankings` have the same fields and units as `/api/nav/quotas` schema 2. Times are unix seconds, not ms.
 - The app shows one section per Herdr machine and does not merge subscriptions.
+
+## sessions (`sessions.json`)
+
+Configured transcript candidates are sorted by file modification time before
+parsing the most recent `limit` (default 100, maximum 500). `window.cursor`
+continues through older candidates. `omitted.older` and `omitted.unreadable`
+describe the missing history. Names are bounded previews. Launch metadata and
+open-ask counts are separate observations; unavailable counts stay unknown.
+Times ending in `_ms` are milliseconds. Workspace-only rows have no conversation
+ID and do not fabricate a transcript.
+
+## conversation and ask-context (`conversation.json`, `ask-context.json`)
+
+Messages have stable opaque keys, raw text, source attribution, timestamp,
+original and displayed byte counts, and a truncation flag. A display window
+contains at most 200 messages and a conservative 3 MiB text allowance; each
+message is capped at 256 KiB. Cursors page earlier or later messages without
+overlap. A changed or missing cursor returns `conflict`.
+
+Ask context first checks the ask revision, then locates its quote in the
+conversation. `placement.confidence` is `time+text`, `time` or `none`; the
+matching message has `anchor:true`. The window is centred on the question,
+including questions late in a long turn or message. No match returns an empty
+window with `confidence:none`, rather than implying that the session tail is
+the original context. Conversation text is escaped before native rendering;
+document HTML and remote media are never passed through.

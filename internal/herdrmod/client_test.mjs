@@ -6,7 +6,7 @@ import {Selection,groups,rowKey,sessionKey,localTime} from './mod/state.js';
 import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget} from './mod/protocol.js';
 const host='3f0c9a1e5b7d24680aceb13579bdf024',revision='1'.repeat(64);
 const row=(id,session='first')=>({id:String(id),host,machine:null,revision,provider:'claude',conversation_id:session,workspace:'/invented/'+session,raised_at_ms:id,state:'open',first:{preview:'Question',bytes:8,truncated:false},latest:{preview:'Question',bytes:8,truncated:false}});
-const envelope=(kind,data,source=host)=>({schema:1,ok:true,kind,host:{id:source,name:'invented'},aiq:'invented',generated_at_ms:123,partial:false,omitted:{},data});
+const envelope=(kind,data,source=host)=>({schema:1,ok:true,kind,host:{id:source,name:'invented'},aiq:'invented',generated_at_ms:123,partial:false,omitted:{},data:kind==='hello'?{...data,commands:['hello','asks','ask-detail','ask-action','target','quotas','sessions','conversation','ask-context']}:data});
 test('dismissing stays within the selected session until its last ask',()=>{
   const a=row(1),b=row(2),other=row(9,'other'),s=new Selection();s.choose(a);
   assert.equal(s.reconcile(groups([b,other])).id,'2');assert.equal(s.group,sessionKey(b));
@@ -90,6 +90,6 @@ test('native client fixtures match the Go bridge contract',()=>{
   // a second independently maintained version of the protocol.
   const root=new URL('../../cmd/aiq/testdata/app/',import.meta.url);
   const hello=readFileSync(new URL('hello.json',root),'utf8');
-  for(const [file,kind] of [['hello','hello'],['asks','asks'],['ask-context','ask-context'],['quotas','quotas'],['sessions','sessions'],['conversation','conversation'],['ask-action.ok','ask-action']])decode(readFileSync(new URL(file+'.json',root),'utf8'),kind);
+  for(const [file,kind] of [['hello','hello'],['asks','asks'],['ask-detail','ask-detail'],['ask-context','ask-context'],['quotas','quotas'],['sessions','sessions'],['conversation','conversation'],['ask-action.ok','ask-action'],['target','target']])decode(readFileSync(new URL(file+'.json',root),'utf8'),kind);
   assert.equal(decode(hello,'hello').schema,1);
 });

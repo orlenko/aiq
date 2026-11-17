@@ -274,7 +274,7 @@ export default class AIQ extends View {
     const t=theme();
     return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.map(m=>
       v_flex().id(id+"-"+m.key).p(16).gap(10).border(1).border_color(m.anchor||this.match===m.key?t.accent:t.border).rounded(6).bg(m.anchor||this.match===m.key?t.raised:t.surface).children([
-        label(`${m.role} · ${localTime(m.at_ms)}${m.anchor?" · matching ask":""}`,true),this.prose(id+"-text-"+m.key,m.text,this.marks),...(m.truncated?[label("Message truncated at its display limit.",true)]:[])
+        label(`${m.source||m.role} · ${localTime(m.at_ms)}${m.anchor?" · matching ask":""}`,true),this.prose(id+"-text-"+m.key,m.text,this.marks),...(m.truncated?[label("Message excerpt · display limit reached.",true)]:[])
       ])));
   }
   pageControls(data,row,cx,context=false) {

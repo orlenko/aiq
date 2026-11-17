@@ -47,6 +47,17 @@ func appInstall(args []string) error {
 	return nil
 }
 
+func openHerdrUI() error {
+	home, err := herdrAppHome()
+	if err != nil {
+		return err
+	}
+	if err := herdrmod.Install(home); err != nil {
+		return err
+	}
+	return appOpen(nil)
+}
+
 func appOpen(args []string) error {
 	if len(args) != 0 {
 		return errors.New("usage: aiq __app open")
@@ -62,14 +73,23 @@ func appOpen(args []string) error {
 	defer cancel()
 	// An already loaded mod handles this without opening a duplicate tab. No
 	// terminal is created or resumed by either command.
-	if exec.CommandContext(ctx, "herdr-app", "do", "aiq.activate").Run() == nil {
-		return nil
+	for attempt := 0; attempt < 5; attempt++ {
+		if exec.CommandContext(ctx, "herdr-app", "do", "aiq.activate").Run() == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return errors.New("Herdr app did not respond")
+		}
+		if exec.CommandContext(ctx, "herdr-app", "do", "tab.new", `{"mod":"aiq","name":"aiq"}`).Run() == nil {
+			return nil
+		}
+		// The app discovers a newly installed folder asynchronously. Before
+		// another creation attempt, activate any copy the prior attempt made.
+		select {
+		case <-ctx.Done():
+			return errors.New("Herdr app did not respond")
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
-	if ctx.Err() != nil {
-		return errors.New("Herdr app did not respond")
-	}
-	if exec.CommandContext(ctx, "herdr-app", "do", "tab.new", `{"mod":"aiq","name":"aiq"}`).Run() != nil {
-		return errors.New("cannot open the aiq mod; start Herdr and try again")
-	}
-	return nil
+	return errors.New("cannot open the aiq mod; start Herdr and try again")
 }
