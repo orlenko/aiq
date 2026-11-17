@@ -695,6 +695,10 @@ aiq's own personal mod; it refuses to replace a locally edited or unrelated
 mod and does not change Herdr layouts or keys. Herdr app 0.1.16 or later is
 required. This is the desktop app mod system, not the Herdr TUI plugin system.
 
+Use **Appearance** in the aiq toolbar to choose Herdr, Light, or Dark.
+The choice is saved for that pane. The surrounding window and terminals
+use Herdr's own appearance.
+
 Machines come from Herdr's connections. Each machine needs an updated aiq
 binary on its command path; its bridge reads that machine's configured aiq
 data and transcript roots. No browser listener, browser token, fleet polling

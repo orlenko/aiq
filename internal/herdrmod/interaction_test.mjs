@@ -53,3 +53,22 @@ test('Review asks selects the conversation when launch cwd is beneath its worksp
  assert.equal(view.current().id,a.id);assert.ok(view.groupList().some(g=>g.rows.some(r=>r.id===a.id)));
  assert.equal(view.query,'');
 });
+
+test('appearance choice is remembered and leaves ask selection intact',t=>{
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem: key => values.get(key),
+    setItem: (key, value) => values.set(key,value),
+  };
+  t.after(()=>delete globalThis.localStorage);
+
+  const a=row(1), {cx,view}=setup([a]);
+  assert.equal(view.appearance,'Herdr');
+  view.appearanceOpen = true;
+  const choices = view.appearancePicker().handlers.content.handlers.children;
+  choices[1].handlers.click({},cx);
+  assert.equal(view.appearance,'Light');
+  assert.equal(view.appearanceOpen,false);
+  assert.equal(view.current().id,a.id);
+  assert.equal(setup([a]).view.appearance,'Light');
+});

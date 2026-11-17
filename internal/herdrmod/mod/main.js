@@ -1,9 +1,9 @@
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
-import { exec, hc, machines, panes, focused, run, theme, checking, nextCommand } from "herdr";
+import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Popover, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
+import { exec, hc, machines, panes, focused, run, checking, nextCommand } from "herdr";
 import { Bridge, matchesTarget } from "./protocol.js";
 import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText } from "./state.js";
-import { button, label, panel, makeProse } from "./ui.js";
+import { appearances, createUI, loadAppearance, saveAppearance, makeProse } from "./ui.js";
 
 // Each card has four 20px lines, three 4px gaps, 24px of padding and a border.
 const askCardHeight = 120;
@@ -11,7 +11,11 @@ const askCardMargin = 3;
 
 export default class AIQ extends View {
   init(_props,cx) {
-    this.bridge=new Bridge(exec);this.sources=new Map();this.selection=new Selection();this.prose=makeProse();
+    this.appearance = loadAppearance();
+    this.appearanceOpen = false;
+    this.ui = createUI(() => this.appearance);
+    this.prose = makeProse(this.ui.colors);
+    this.bridge=new Bridge(exec);this.sources=new Map();this.selection=new Selection();
     this.tab="asks";this.machine="all";this.section="pending";this.query="";this.marks=false;this.hasAsks=false;this.liveOnly=false;this.workers=false;this.tablePage=0;
     this.detail=null;this.context=null;this.conversation=null;this.busy=false;this.notice="";this.undo=[];this.sort="updated_ms";this.desc=true;this.size={width:1200,height:800};
     this.scroll=ScrollHandle.new();this.contextScroll=ScrollHandle.new();this.handle=cx.focus_handle();
@@ -190,19 +194,35 @@ export default class AIQ extends View {
   status(s,kind) {
     const c=this.cache(s,kind),name=s.machine??"Here";
     const status=c.error?errorText(c.error):c.loading?"Refreshing…":kind==="asks"&&c.value?.data.setup==="not_set_up"?"Asks not enabled":c.value?.partial?"Partial data · updated "+localTime(c.value.generated_at_ms):c.value?"Updated "+localTime(c.value.generated_at_ms):s.layout==="unavailable"?"Herdr connection unavailable":"Not loaded";
-    return label(name+" · "+status+(c.error&&c.value?" · showing last known data":""),true);
+    return this.ui.label(name+" · "+status+(c.error&&c.value?" · showing last known data":""),true);
+  }
+  appearancePicker() {
+    const t = this.ui.colors();
+    return Popover.new("appearance").anchor("top_right").open(this.appearanceOpen)
+      .on_open_change((open, cx) => { this.appearanceOpen = open; cx.notify(); })
+      .trigger(div().px(12).py(7).rounded(5).border(1).border_color(t.border).bg(t.surface)
+        .text_color(t.foreground).text_size(13).child(`Appearance · ${this.appearance} ▾`))
+      .content(v_flex().w(150).p(6).gap(4).rounded(6).border(1).border_color(t.border).bg(t.chrome)
+        .children(appearances.map(value => this.ui.button("appearance-" + value, value, (_event, cx) => {
+          this.appearance = value;
+          this.appearanceOpen = false;
+          saveAppearance(value);
+          cx.notify();
+        }, value === this.appearance))));
   }
   toolbar(cx) {
-    return h_flex().gap(12).items_center().px(24).py(14).border_b(1).border_color(theme().border).children([
+    const t = this.ui.colors();
+    return h_flex().gap(12).items_center().px(24).py(14).bg(t.chrome).border_b(1).border_color(t.border).children([
       div().font_semibold().text_size(20).child("aiq"),
-      ...["asks","sessions","quotas"].map(tab=>button("tab-"+tab,tab[0].toUpperCase()+tab.slice(1),(_e,cx)=>this.setTab(tab,cx),this.tab===tab)),
+      ...["asks","sessions","quotas"].map(tab=>this.ui.button("tab-"+tab,tab[0].toUpperCase()+tab.slice(1),(_e,cx)=>this.setTab(tab,cx),this.tab===tab)),
       div().flex_1(),
-      button("marks",this.marks?"Markdown symbols ✓":"Markdown symbols",(_e,cx)=>{this.marks=!this.marks;cx.notify();},this.marks),
-      button("refresh",this.conversation?"Refresh conversation":"Refresh",(_e,cx)=>this.conversation?this.openConversation(this.conversation.row,cx,{at:this.conversation.value?.messages.find(m=>m.anchor)?.at_ms||this.conversation.value?.messages[0]?.at_ms}):this.refresh(cx))
+      this.appearancePicker(),
+      this.ui.button("marks",this.marks?"Markdown symbols ✓":"Markdown symbols",(_e,cx)=>{this.marks=!this.marks;cx.notify();},this.marks),
+      this.ui.button("refresh",this.conversation?"Refresh conversation":"Refresh",(_e,cx)=>this.conversation?this.openConversation(this.conversation.row,cx,{at:this.conversation.value?.messages.find(m=>m.anchor)?.at_ms||this.conversation.value?.messages[0]?.at_ms}):this.refresh(cx))
     ]);
   }
   render(cx) {
-    const t=theme();
+    const t=this.ui.colors();
     return v_flex().id("root").size_full().min_h(0).bg(t.surface).text_color(t.foreground).text_size(14).track_focus(this.handle)
       .on_size_change((size,cx)=>{if(size.width!==this.size.width||size.height!==this.size.height){this.size=size;cx.notify();}})
       .on_key_down((e,cx)=>{
@@ -211,31 +231,31 @@ export default class AIQ extends View {
       }).children([
         this.toolbar(cx),
         h_flex().px(24).py(8).gap(8).items_center().children([
-          label("Machines",true),...["all",...this.sources.keys()].map(key=>button("machine-"+key,key==="all"?"All":key||"Here",(_e,cx)=>{this.machine=key;this.tablePage=0;this.reconcile(cx);this.refresh(cx);cx.notify();},this.machine===key))
+          this.ui.label("Machines",true),...["all",...this.sources.keys()].map(key=>this.ui.button("machine-"+key,key==="all"?"All":key||"Here",(_e,cx)=>{this.machine=key;this.tablePage=0;this.reconcile(cx);this.refresh(cx);cx.notify();},this.machine===key))
         ]),
         h_flex().px(24).py(4).gap(18).flex_wrap().children(this.sourceList().map(s=>this.status(s,this.tab))),
-        this.notice||this.undo.length?h_flex().px(24).py(8).gap(12).items_center().children([label(this.notice||`${this.undo.length} dismissal${this.undo.length===1?"":"s"} can be undone.`),...(this.undo.length?[button("undo","Undo",(_e,cx)=>this.dismiss(this.undo,cx,"restore"),false,this.busy)]:[])]):null,
+        this.notice||this.undo.length?h_flex().px(24).py(8).gap(12).items_center().children([this.ui.label(this.notice||`${this.undo.length} dismissal${this.undo.length===1?"":"s"} can be undone.`),...(this.undo.length?[this.ui.button("undo","Undo",(_e,cx)=>this.dismiss(this.undo,cx,"restore"),false,this.busy)]:[])]):null,
         this.conversation?this.conversationView(cx):this.tab==="asks"?this.asksView(cx):this.tab==="sessions"?this.sessionsView(cx):this.quotasView(cx)
       ].filter(Boolean));
   }
   asksView(cx) {
-    const list=this.groupList(),row=this.current(),group=list.find(g=>g.key===this.selection.group),t=theme();
-    const sidebar = v_flex().size_full().min_w(0).min_h(0).children([
+    const list=this.groupList(),row=this.current(),group=list.find(g=>g.key===this.selection.group),t=this.ui.colors();
+    const sidebar = v_flex().size_full().min_w(0).min_h(0).bg(t.chrome).children([
         v_flex().p(16).gap(10).children([
-          Input.new(this.filter).border(1).border_color(t.border).p(8).rounded(5),
-          h_flex().gap(8).flex_wrap().children([button("pending","Pending",(_e,cx)=>{this.section="pending";this.reconcile(cx);cx.notify();},this.section==="pending"),button("done","Done / dismissed",(_e,cx)=>{this.section="done";this.reconcile(cx);cx.notify();},this.section==="done")]),
-          label(`${list.length} sessions · ${list.reduce((n,g)=>n+g.rows.length,0)} loaded asks`,true)
+          this.ui.input(this.filter).rounded(5),
+          h_flex().gap(8).flex_wrap().children([this.ui.button("pending","Pending",(_e,cx)=>{this.section="pending";this.reconcile(cx);cx.notify();},this.section==="pending"),this.ui.button("done","Done / dismissed",(_e,cx)=>{this.section="done";this.reconcile(cx);cx.notify();},this.section==="done")]),
+          this.ui.label(`${list.length} sessions · ${list.reduce((n,g)=>n+g.rows.length,0)} loaded asks`,true)
         ]),
         div().id("session-group-viewport").relative().flex_1().min_h(0).w_full().on_size_change((size,cx)=>{if(Math.abs(this.groupsHeight-size.height)>1||Math.abs(this.groupsWidth-size.width)>1){this.groupsHeight=size.height;this.groupsWidth=size.width;cx.notify();}}).children([
           v_virtual_list("session-groups",list.length,askCardHeight + 2 * askCardMargin,i=>list[i].key,range=>list.slice(range.start,range.end).map(g=>
             v_flex().id("group-"+g.key).w(Math.max(1,this.groupsWidth-16)).mx(8).my(askCardMargin).p(12).gap(4).h(askCardHeight).rounded(6).border(1).border_color(g.key===this.selection.group?t.accent:t.border).bg(g.key===this.selection.group?t.raised:t.surface).children([
               h_flex().h(20).flex_shrink_0().gap(8).justify_between().children([
                 div().min_w(0).font_semibold().line_height("20px").truncate().child(g.workspace.split("/").filter(Boolean).pop()||"Unknown workspace"),
-                label(g.rows.length).line_height("20px").flex_shrink_0()
+                this.ui.label(g.rows.length).line_height("20px").flex_shrink_0()
               ]),
-              label(g.name?g.name+" · "+g.provider:g.provider+" · "+g.rows[0].conversation_id.slice(0,8),true).line_height("20px").flex_shrink_0().truncate(),
-              label((g.machine??"Here")+" · "+localTime(g.updated),true).line_height("20px").flex_shrink_0().truncate(),
-              label(g.workspace,true).line_height("20px").flex_shrink_0().truncate()
+              this.ui.label(g.name?g.name+" · "+g.provider:g.provider+" · "+g.rows[0].conversation_id.slice(0,8),true).line_height("20px").flex_shrink_0().truncate(),
+              this.ui.label((g.machine??"Here")+" · "+localTime(g.updated),true).line_height("20px").flex_shrink_0().truncate(),
+              this.ui.label(g.workspace,true).line_height("20px").flex_shrink_0().truncate()
             ]))).h(Math.max(1,this.groupsHeight)).w_full().track_scroll(this.groupsScroll).on_item_click((key,cx)=>{const group=list.find(g=>g.key===key);if(group)this.choose(group.rows[0],cx);}),
           Scrollbar.vertical("session-groups").absolute().inset_0()
         ]),
@@ -243,7 +263,7 @@ export default class AIQ extends View {
     ].filter(Boolean));
     const detail = row && group
       ? this.askView(row,group,cx)
-      : panel("ask-empty").child(label("Choose a session to review its asks.",true));
+      : this.ui.panel("ask-empty").child(this.ui.label("Choose a session to review its asks.",true));
     const sidebarMax = Math.max(260, Math.min(640, this.size.width * 0.5));
     return h_resizable("asks-split").w_full().flex_1().min_h(0)
       .h(Math.max(300,this.size.height-150))
@@ -255,68 +275,68 @@ export default class AIQ extends View {
     const dismissable=group.rows.filter(r=>r.state==="open"||r.state==="probably-done");
     const restore=row.state==="dismissed"||row.state==="closed";
     const question=v_flex().h_full().flex_1().min_w(0).min_h(0).children([
-      v_flex().px(24).py(16).gap(10).border_b(1).border_color(theme().border).children([
+      v_flex().px(24).py(16).gap(10).border_b(1).border_color(this.ui.colors().border).children([
         h_flex().gap(8).items_center().children([
           div().flex_1().min_w(0).font_semibold().truncate().child(group.name||group.workspace),
-          button("prev","←",(_e,cx)=>this.choose(group.rows[index-1],cx),false,index<=0),label(`${index+1} / ${group.rows.length}`),button("next","→",(_e,cx)=>this.choose(group.rows[index+1],cx),false,index>=group.rows.length-1)
+          this.ui.button("prev","←",(_e,cx)=>this.choose(group.rows[index-1],cx),false,index<=0),this.ui.label(`${index+1} / ${group.rows.length}`),this.ui.button("next","→",(_e,cx)=>this.choose(group.rows[index+1],cx),false,index>=group.rows.length-1)
         ]),
-        ...(group.name?[label(group.workspace,true)]:[]),
-        label(`${row.provider} · ${row.conversation_id.slice(0,8)} · ${row.machine??"Here"}`,true),
-        ...(dismissable.length?[h_flex().gap(8).children([button("batch",`Dismiss ${dismissable.length} session asks`,(_e,cx)=>this.dismiss(dismissable,cx),false,this.busy)])]:[])
+        ...(group.name?[this.ui.label(group.workspace,true)]:[]),
+        this.ui.label(`${row.provider} · ${row.conversation_id.slice(0,8)} · ${row.machine??"Here"}`,true),
+        ...(dismissable.length?[h_flex().gap(8).children([this.ui.button("batch",`Dismiss ${dismissable.length} session asks`,(_e,cx)=>this.dismiss(dismissable,cx),false,this.busy)])]:[])
       ]),
-      panel("question").child(v_flex().gap(16).children([
-        label(`First asked ${localTime(row.raised_at_ms)}${row.repeats?" · repeated "+row.repeats+" times":""} · Ask ${row.id}`,true),
-        this.detail?.loading?label("Loading full ask…",true):null,
-        this.detail?.error?label(errorText(this.detail.error),true):null,
+      this.ui.panel("question").child(v_flex().gap(16).children([
+        this.ui.label(`First asked ${localTime(row.raised_at_ms)}${row.repeats?" · repeated "+row.repeats+" times":""} · Ask ${row.id}`,true),
+        this.detail?.loading?this.ui.label("Loading full ask…",true):null,
+        this.detail?.error?this.ui.label(errorText(this.detail.error),true):null,
         this.prose("ask-text-"+row.id,data?.latest.text??row.latest.preview,this.marks),
-        (data?.latest.truncated || !data&&row.latest.truncated)?label("This excerpt is truncated.",true):null,
+        (data?.latest.truncated || !data&&row.latest.truncated)?this.ui.label("This excerpt is truncated.",true):null,
         h_flex().gap(8).flex_wrap().children([
-          button("dismiss",restore?"Restore":"Dismiss",(_e,cx)=>this.dismiss([row],cx,restore?"restore":"dismiss"),true,this.busy),
-          ...(row.state==="probably-done"?[button("reopen","Reopen ask",(_e,cx)=>this.dismiss([row],cx,"restore"),false,this.busy)]:[]),
-          button("peek",peeking?"Close context":"Peek at original context",(_e,cx)=>this.peek(row,cx),peeking),
-          button("copy","Copy ask",(_e,cx)=>cx.write_to_clipboard(data?.latest.text??row.latest.preview),false,!data),
-          button("terminal",row.terminal?.relation==="workspace_current"?"Current workspace terminal":"Go to terminal",(_e,cx)=>this.focusTerminal(row,cx),false,this.busy||!row.terminal)
+          this.ui.button("dismiss",restore?"Restore":"Dismiss",(_e,cx)=>this.dismiss([row],cx,restore?"restore":"dismiss"),true,this.busy),
+          ...(row.state==="probably-done"?[this.ui.button("reopen","Reopen ask",(_e,cx)=>this.dismiss([row],cx,"restore"),false,this.busy)]:[]),
+          this.ui.button("peek",peeking?"Close context":"Peek at original context",(_e,cx)=>this.peek(row,cx),peeking),
+          this.ui.button("copy","Copy ask",(_e,cx)=>cx.write_to_clipboard(data?.latest.text??row.latest.preview),false,!data),
+          this.ui.button("terminal",row.terminal?.relation==="workspace_current"?"Current workspace terminal":"Go to terminal",(_e,cx)=>this.focusTerminal(row,cx),false,this.busy||!row.terminal)
         ]),
-        !row.terminal?label(terminalText(row.terminal_reason),true):null,
-        label("Reply in the session’s terminal.",true)
+        !row.terminal?this.ui.label(terminalText(row.terminal_reason),true):null,
+        this.ui.label("Reply in the session’s terminal.",true)
       ].filter(Boolean)))
     ]);
     return h_flex().h_full().items_stretch().flex_1().min_w(0).min_h(0).children([question,...(peeking?[this.contextView(row,cx)]:[])]);
   }
   contextView(row,cx) {
-    const c=this.context,t=theme();
-    return v_flex().h_full().w("46%").min_w(0).min_h(0).border_l(1).border_color(t.border).children([
+    const c=this.context,t=this.ui.colors();
+    return v_flex().h_full().w("46%").min_w(0).min_h(0).bg(t.chrome).border_l(1).border_color(t.border).children([
       v_flex().px(24).py(16).gap(10).border_b(1).border_color(t.border).children([
-        h_flex().gap(8).items_center().children([div().font_semibold().flex_1().child("Original context"),button("refresh-context","Refresh",(_e,cx)=>{this.selection.peek=null;this.peek(row,cx);}),button("close-context","Close",(_e,cx)=>{this.selection.peek=null;this.context=null;cx.notify();})]),
-        Input.new(this.search).border(1).border_color(t.border).p(8).rounded(5),
-        label(c?.value?.placement?.confidence==="time+text"?"Matched ask highlighted below":c?.value?.placement?.confidence==="time"?"Located by timestamp; check the highlighted message":"Original turn not located",true)
+        h_flex().gap(8).items_center().children([div().font_semibold().flex_1().child("Original context"),this.ui.button("refresh-context","Refresh",(_e,cx)=>{this.selection.peek=null;this.peek(row,cx);}),this.ui.button("close-context","Close",(_e,cx)=>{this.selection.peek=null;this.context=null;cx.notify();})]),
+        this.ui.input(this.search).rounded(5),
+        this.ui.label(c?.value?.placement?.confidence==="time+text"?"Matched ask highlighted below":c?.value?.placement?.confidence==="time"?"Located by timestamp; check the highlighted message":"Original turn not located",true)
       ]),
-      c?.loading?panel("context-loading").child("Loading conversation…"):c?.error?panel("context-error").child(errorText(c.error)):this.messageList(c?.value,this.contextScroll,"context-messages"),
+      c?.loading?this.ui.panel("context-loading").child("Loading conversation…"):c?.error?this.ui.panel("context-error").child(errorText(c.error)):this.messageList(c?.value,this.contextScroll,"context-messages"),
       c?.value?this.pageControls(c.value,{machine:row.machine,host:row.host,provider:row.provider,id:row.conversation_id},cx,true):null
     ].filter(Boolean));
   }
   messageList(data,scroll,id) {
-    if(!data?.messages.length)return panel(id).child(label("No messages in this window.",true));
-    const t=theme();
+    if(!data?.messages.length)return this.ui.panel(id).child(this.ui.label("No messages in this window.",true));
+    const t=this.ui.colors();
     return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.map(m=>
       v_flex().id(id+"-"+m.key).p(16).gap(10).border(1).border_color(m.anchor||this.match===m.key?t.accent:t.border).rounded(6).bg(m.anchor||this.match===m.key?t.raised:t.surface).children([
-        label(`${m.source||m.role} · ${localTime(m.at_ms)}${m.anchor?" · matching ask":""}`,true),this.prose(id+"-text-"+m.key,m.text,this.marks),...(m.truncated?[label("Message excerpt · display limit reached.",true)]:[])
+        this.ui.label(`${m.source||m.role} · ${localTime(m.at_ms)}${m.anchor?" · matching ask":""}`,true),this.prose(id+"-text-"+m.key,m.text,this.marks),...(m.truncated?[this.ui.label("Message excerpt · display limit reached.",true)]:[])
       ])));
   }
   pageControls(data,row,cx,context=false) {
     return h_flex().px(24).py(12).gap(8).children([
-      button("earlier","Earlier messages",(_e,cx)=>this.openConversation(row,cx,{before:data.cursor.before}),false,!data.cursor?.before),
-      button("later","Later messages",(_e,cx)=>this.openConversation(row,cx,{after:data.cursor.after}),false,!data.cursor?.after),
-      ...(context?[button("full","Full conversation",(_e,cx)=>this.openConversation(row,cx,data.messages?.some(m=>m.anchor)?{anchor:data.messages.find(m=>m.anchor).key}:{at:data.placement?.anchor_ms}))]:[])
+      this.ui.button("earlier","Earlier messages",(_e,cx)=>this.openConversation(row,cx,{before:data.cursor.before}),false,!data.cursor?.before),
+      this.ui.button("later","Later messages",(_e,cx)=>this.openConversation(row,cx,{after:data.cursor.after}),false,!data.cursor?.after),
+      ...(context?[this.ui.button("full","Full conversation",(_e,cx)=>this.openConversation(row,cx,data.messages?.some(m=>m.anchor)?{anchor:data.messages.find(m=>m.anchor).key}:{at:data.placement?.anchor_ms}))]:[])
     ]);
   }
   conversationView(cx) {
     const c=this.conversation;
     return v_flex().h(Math.max(300,this.size.height-150)).flex_1().min_h(0).children([
       h_flex().px(24).py(14).gap(12).items_center().children([
-        button("back","← Back",(_e,cx)=>{this.conversation=null;cx.notify();}),label(c.row.name||c.row.cwd||c.row.id),div().flex_1(),Input.new(this.search).w(300).border(1).border_color(theme().border).p(8)
+        this.ui.button("back","← Back",(_e,cx)=>{this.conversation=null;cx.notify();}),this.ui.label(c.row.name||c.row.cwd||c.row.id),div().flex_1(),this.ui.input(this.search).w(300)
       ]),
-      c.loading?panel("conversation-loading").child("Loading conversation…"):c.error?panel("conversation-error").child(errorText(c.error)):this.messageList(c.value,this.scroll,"conversation"),
+      c.loading?this.ui.panel("conversation-loading").child("Loading conversation…"):c.error?this.ui.panel("conversation-error").child(errorText(c.error)):this.messageList(c.value,this.scroll,"conversation"),
       c.value?this.pageControls(c.value,c.row,cx):null
     ].filter(Boolean));
   }
@@ -332,32 +352,32 @@ export default class AIQ extends View {
     const widths=["22%","26%","8%","8%","6%","17%","7%","6%"];
     return v_flex().h(Math.max(300,this.size.height-150)).flex_1().min_h(0).px(24).py(16).gap(14).children([
       h_flex().gap(8).items_center().flex_wrap().children([
-        Input.new(this.filter).w(320).border(1).border_color(theme().border).p(8),
-        ...[["hasAsks","Has asks"],["liveOnly","Live only"],["workers","Include workers"]].map(([key,text])=>button("filter-"+key,text,(_e,cx)=>{this[key]=!this[key];this.tablePage=0;cx.notify();},this[key])),
-        label(`${rows.length} loaded rows`,true),div().flex_1(),
-        ...this.sourceList().filter(s=>s.sessions?.value?.data.window.cursor).map(s=>button("older-"+machineKey(s.machine),"Older · "+(s.machine??"Here"),(_e,cx)=>this.load(s,"sessions",cx,{before:s.sessions.value.data.window.cursor},true),false,s.sessions.loading))
+        this.ui.input(this.filter).w(320),
+        ...[["hasAsks","Has asks"],["liveOnly","Live only"],["workers","Include workers"]].map(([key,text])=>this.ui.button("filter-"+key,text,(_e,cx)=>{this[key]=!this[key];this.tablePage=0;cx.notify();},this[key])),
+        this.ui.label(`${rows.length} loaded rows`,true),div().flex_1(),
+        ...this.sourceList().filter(s=>s.sessions?.value?.data.window.cursor).map(s=>this.ui.button("older-"+machineKey(s.machine),"Older · "+(s.machine??"Here"),(_e,cx)=>this.load(s,"sessions",cx,{before:s.sessions.value.data.window.cursor},true),false,s.sessions.loading))
       ]),
       h_flex().gap(8).items_center().children([
-        button("read-selected","Read conversation",(_e,cx)=>this.openConversation(selected,cx),false,!selected?.id),
-        button("asks-selected","Review asks",(_e,cx)=>this.showSessionAsks(selected,cx),false,!selected?.pending_asks_known||selected.pending_asks<1),
-        button("terminal-selected","Go to terminal",(_e,cx)=>this.focusTerminal(selected,cx),false,this.busy||(!selected?.id&&!selected?.lease_id)||!["live","open"].includes(selected.live)&&!selected.terminal),
-        label("Select a row · double-click to read",true)
+        this.ui.button("read-selected","Read conversation",(_e,cx)=>this.openConversation(selected,cx),false,!selected?.id),
+        this.ui.button("asks-selected","Review asks",(_e,cx)=>this.showSessionAsks(selected,cx),false,!selected?.pending_asks_known||selected.pending_asks<1),
+        this.ui.button("terminal-selected","Go to terminal",(_e,cx)=>this.focusTerminal(selected,cx),false,this.busy||(!selected?.id&&!selected?.lease_id)||!["live","open"].includes(selected.live)&&!selected.terminal),
+        this.ui.label("Select a row · double-click to read",true)
       ]),
       div().id("sessions-table-scroll").min_h(0).flex_1().child(
         Table.new("sessions-grid").flex().flex_col().flex_1().min_h(0).h_full().w_full().accessibility_label("Sessions across machines").row_count(rows.length+1).column_count(cols.length).children([
-          TableHeader.new("headers").flex().flex_col().w_full().child(TableRow.new("header-row",1).flex().flex_row().items_center().w_full().children(cols.map(([key,title],i)=>TableHead.new("head-"+key,i+1).w(widths[i]).min_w(0).flex_shrink_0().p(6).child(key==="terminal"?label(title):button("sort-"+key,title+(this.sort===key?(this.desc?" ↓":" ↑"):""),(_e,cx)=>{this.desc=this.sort===key?!this.desc:true;this.sort=key;this.tablePage=0;cx.notify();}).px(6).w_full().truncate())))),
+          TableHeader.new("headers").flex().flex_col().w_full().child(TableRow.new("header-row",1).flex().flex_row().items_center().w_full().children(cols.map(([key,title],i)=>TableHead.new("head-"+key,i+1).w(widths[i]).min_w(0).flex_shrink_0().p(6).child(key==="terminal"?this.ui.label(title):this.ui.button("sort-"+key,title+(this.sort===key?(this.desc?" ↓":" ↑"):""),(_e,cx)=>{this.desc=this.sort===key?!this.desc:true;this.sort=key;this.tablePage=0;cx.notify();}).px(6).w_full().truncate())))),
           TableBody.new("session-body").flex().flex_col().flex_1().min_h(0).w_full().child(
             div().id("session-grid-viewport").relative().flex_1().min_h(0).min_w(0).w_full().track_focus(this.gridFocus).on_size_change((size,cx)=>{if(Math.abs(this.gridHeight-size.height)>1||Math.abs(this.gridWidth-size.width)>1){this.gridHeight=size.height;this.gridWidth=size.width;cx.notify();}}).on_key_down((event,cx)=>{
               const index=rows.findIndex(r=>keyFor(r)===this.tableSelected);
               if(event.keystroke==="up"||event.keystroke==="down"){const next=Math.max(0,Math.min(rows.length-1,index+(event.keystroke==="down"?1:-1)));if(rows[next]){this.tableSelected=keyFor(rows[next]);this.gridScroll.scroll_to_item(next,"center");cx.stop_propagation();cx.notify();}}
               const current=rows.find(r=>keyFor(r)===this.tableSelected);if(event.keystroke==="enter"&&current?.id){this.openConversation(current,cx);cx.stop_propagation();}
             }).children([
-            v_virtual_list("session-rows",rows.length,40,i=>keyFor(rows[i]),range=>rows.slice(range.start,range.end).map((r,i)=>TableRow.new("session-"+keyFor(r),range.start+i+2).flex().flex_row().items_center().h(40).w(Math.max(1,this.gridWidth)).bg(keyFor(r)===this.tableSelected?theme().raised:theme().surface).children(cols.map(([key],j)=>{
+            v_virtual_list("session-rows",rows.length,40,i=>keyFor(rows[i]),range=>rows.slice(range.start,range.end).map((r,i)=>TableRow.new("session-"+keyFor(r),range.start+i+2).flex().flex_row().items_center().h(40).w(Math.max(1,this.gridWidth)).bg(keyFor(r)===this.tableSelected?this.ui.colors().raised:this.ui.colors().surface).children(cols.map(([key],j)=>{
             let value=key==="name"?(r.name||r.id.slice(0,8)||"Workspace history"):key==="machine"?(r.machine??"Here"):key==="pending_asks"?(r.pending_asks_known?String(r.pending_asks):"Unknown"):key==="updated_ms"?localTime(r.updated_ms):r[key];
             if(key==="name"&&!r.id)value="Recorded workspace";
             if(key==="terminal")value=r.terminal?"Linked":"—";
-            const child=label(value).truncate();
-            return TableCell.new("cell-"+i+"-"+j,j+1).w(widths[j]).min_w(0).flex_shrink_0().p(6).border_b(1).border_color(theme().border).child(child);
+            const child=this.ui.label(value).truncate();
+            return TableCell.new("cell-"+i+"-"+j,j+1).w(widths[j]).min_w(0).flex_shrink_0().p(6).border_b(1).border_color(this.ui.colors().border).child(child);
           })))).h(Math.max(1,this.gridHeight)).w_full().track_scroll(this.gridScroll).on_item_click((key,cx)=>{
             const row=rows.find(r=>keyFor(r)===key);if(!row)return;
             const now=Date.now(),double=this.lastRowClick?.key===key&&now-this.lastRowClick.at>=0&&now-this.lastRowClick.at<350;
@@ -369,7 +389,7 @@ export default class AIQ extends View {
     ]);
   }
   quotasView(cx) {
-    const t=theme();
+    const t=this.ui.colors();
     return v_flex().id("quotas-scroll").h(Math.max(300,this.size.height-150)).flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).gap(24).children(this.sourceList().map(s=>{
       const e=s.quotas?.value;
       return v_flex().gap(12).children([
@@ -377,20 +397,20 @@ export default class AIQ extends View {
         ...(e?[h_flex().gap(16).items_start().children(["agy","claude","codex",...(e.data.accounts.some(a=>a.provider==="copilot")?["copilot"]:[])].map(provider=>v_flex().flex_1().min_w(0).gap(10).children([
           div().text_color(t.muted).font_semibold().child(provider.toUpperCase()),
           ...e.data.accounts.filter(a=>a.provider===provider).map(a=>v_flex().p(16).gap(10).rounded(6).border(1).border_color(t.border).children([
-            h_flex().justify_between().children([div().font_semibold().child(a.id.startsWith(provider+"/")?a.id:provider+"/"+a.id),label(a.rank&&a.score!==null?`#${a.rank} · ${Number(a.score).toFixed(1)}/h`:"Unranked",true)]),
-            label([a.plan,a.label||a.identity].filter(Boolean).join(" · "),true),
+            h_flex().justify_between().children([div().font_semibold().child(a.id.startsWith(provider+"/")?a.id:provider+"/"+a.id),this.ui.label(a.rank&&a.score!==null?`#${a.rank} · ${Number(a.score).toFixed(1)}/h`:"Unranked",true)]),
+            this.ui.label([a.plan,a.label||a.identity].filter(Boolean).join(" · "),true),
             ...a.windows.map(w=>v_flex().gap(5).children([
-              h_flex().justify_between().children([label(w.label),label(w.used_pct===null||w.used_pct<0?"Unknown":w.used_pct.toFixed(0)+"%")]),
+              h_flex().justify_between().children([this.ui.label(w.label),this.ui.label(w.used_pct===null||w.used_pct<0?"Unknown":w.used_pct.toFixed(0)+"%")]),
               div().h(6).rounded(3).bg(t.raised).child(div().h(6).rounded(3).w(Math.max(0,Math.min(100,w.used_pct))+"%").bg(w.used_pct>=95?t.ansi1:w.used_pct>=80?t.ansi3:t.ansi2)),
-              label("Resets "+localTime(w.resets_at_ms),true)
+              this.ui.label("Resets "+localTime(w.resets_at_ms),true)
             ])),
-            a.reset_credits?label(a.reset_credits+" reset credits",true):null,
-            !a.eligible?label(a.ineligible||a.reason||"Currently ineligible",true):null,
-            ...a.leases.map(l=>label(`${l.mode} · ${l.workspace||l.cwd}`,true)),
-            label("Read "+localTime(a.observed_at_ms),true),
-            a.poll_error?label("Latest quota read failed.",true):null
+            a.reset_credits?this.ui.label(a.reset_credits+" reset credits",true):null,
+            !a.eligible?this.ui.label(a.ineligible||a.reason||"Currently ineligible",true):null,
+            ...a.leases.map(l=>this.ui.label(`${l.mode} · ${l.workspace||l.cwd}`,true)),
+            this.ui.label("Read "+localTime(a.observed_at_ms),true),
+            a.poll_error?this.ui.label("Latest quota read failed.",true):null
           ].filter(Boolean)))
-        ])))]:[label("No quota snapshot available.",true)])
+        ])))]:[this.ui.label("No quota snapshot available.",true)])
       ]);
     }));
   }
