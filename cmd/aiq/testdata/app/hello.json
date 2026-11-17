@@ -1,0 +1,31 @@
+{
+ "schema": 1,
+ "ok": true,
+ "kind": "hello",
+ "aiq": "0.9.2+invented",
+ "host": {
+  "id": "649f434e4088c8c9da118a48bd530c3c",
+  "name": "invented-host"
+ },
+ "generated_at_ms": 1940673600000,
+ "partial": false,
+ "omitted": {},
+ "data": {
+  "schemas": {
+   "min": 1,
+   "max": 1
+  },
+  "setup": {
+   "asks": "ready",
+   "quotas": "ready"
+  },
+  "commands": [
+   "hello",
+   "asks",
+   "ask-detail",
+   "ask-action",
+   "target",
+   "quotas"
+  ]
+ }
+}
