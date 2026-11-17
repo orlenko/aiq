@@ -49,6 +49,7 @@ type appTargets struct {
 	snapshot *state.NavigatorSnapshot
 	failed   bool
 	done     map[int64]appTargetResult
+	inter    *appInteractive
 }
 
 func (env appEnv) targets(ctx context.Context) *appTargets {
@@ -87,6 +88,21 @@ func (t *appTargets) forConversation(provider, id string) (*appTerminal, string)
 				return nil, appAmbiguous
 			}
 			match = l
+		}
+	}
+	if provider == "claude" {
+		in := t.interactive()
+		for i := range t.snapshot.Leases {
+			l := &t.snapshot.Leases[i]
+			if l.Mode == state.ModeInteractive && in.links[l.ID] == id {
+				if match != nil {
+					return nil, appAmbiguous
+				}
+				match = l
+			}
+		}
+		if match == nil && in.failed {
+			return nil, appUnknownTerm // an interactive session may hold it
 		}
 	}
 	if match == nil {
@@ -137,6 +153,9 @@ func (t *appTargets) resolve(l *state.NavigatorLease, relation string) (*appTerm
 }
 
 func (t *appTargets) check(l *state.NavigatorLease) appTargetResult {
+	if l.Mode == state.ModeInteractive {
+		return t.checkInteractive(l)
+	}
 	if !herdr.IsRef(l.Pane) {
 		return appTargetResult{reason: appNotHerdr}
 	}

@@ -89,6 +89,12 @@ The bridge exports a terminal only after these checks:
 
 The app then requires `hc get <machine/address> --json` to show `state:"live"`, `pid == terminal_pid` and `labels["aiq.target"] == label` before it focuses. A kept replacement shell keeps the label but fails the pid check.
 
+Interactive sessions (`aiq claude` and the like, not `aiq long`) are targets too, with fewer witnesses:
+- At launch, aiq records the terminal only when the current Herdr core answers and the terminal's root process shares aiq's TTY. It writes nothing into that terminal, so there is no label: `witness.label` is `""`.
+- On each read, the bridge requires three things. The lease's process must still be the one that took the lease. The recorded terminal root must be its ancestor. The core must still show that ID, a live terminal at that address, and that root pid.
+- A Claude conversation is linked to an interactive lease only through Claude's own `sessions/<pid>.json`, for the lease's process or a descendant, written after that process started. Codex and Antigravity interactive conversations are never linked; their sessions are reached by lease only.
+- The app checks `state:"live"` and `pid == terminal_pid`, and checks the label only when it is non-empty.
+
 `terminal_reason` values:
 - `no_lease`
 - `ambiguous`
@@ -96,6 +102,7 @@ The app then requires `hc get <machine/address> --json` to show `state:"live"`, 
 - `ended`
 - `unknown`
 - `label_missing`
+- `interactive_unmapped`: an interactive session with no recorded Herdr terminal
 
 ## quotas (`quotas.json`)
 

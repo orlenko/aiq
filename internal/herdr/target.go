@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"path/filepath"
 	"strconv"
 )
 
@@ -85,7 +86,7 @@ func verifyTarget(c Core, label string) (Target, string) {
 	if t.State != "live" || t.Address != c.Terminal || t.PID != c.PID {
 		return Target{}, TargetEnded
 	}
-	if t.Labels[TargetLabel] != label {
+	if label != "" && t.Labels[TargetLabel] != label {
 		return Target{}, TargetLabelMissing
 	}
 	return Target{CoreID: c.ID, Terminal: c.Terminal, PID: c.PID, Label: label}, ""
@@ -96,4 +97,16 @@ func verifyTarget(c Core, label string) (Target, string) {
 // (label_missing); it never stops the child.
 func (c Core) labelTarget(ref string, generation uint64) error {
 	return c.call("terminal.label", map[string]any{"terminal": c.Terminal, "labels": map[string]string{TargetLabel: WitnessLabel(ref, generation)}}, nil)
+}
+
+// VerifyTerminal checks, read-only, that core socket still has core id with
+// a live terminal at address whose root process is pid. It is the check for
+// a terminal aiq recorded but did not start (an interactive session), so
+// there is no witness label: a replacement shell fails the pid check.
+func VerifyTerminal(socket, id, address string, pid int) (Target, string) {
+	c := Core{Socket: socket, ID: id, Terminal: address, PID: pid}
+	if !filepath.IsAbs(socket) || id == "" || !terminalID.MatchString(address) || pid <= 0 {
+		return Target{}, TargetUnknown
+	}
+	return verifyTarget(c, "")
 }
