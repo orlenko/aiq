@@ -179,8 +179,8 @@ export default class AIQ extends View {
     }catch(e){this.notice=e.terminalReason?terminalText(e.terminalReason):errorText(e.code??"unavailable");}this.busy=false;cx.notify();});
   }
   showSessionAsks(row,cx){
-    this.tab="asks";this.conversation=null;this.section="pending";this.machine=machineKey(row.machine);this.query=row.cwd||row.workspace||"";this.filter.set_value(this.query);
-    const match=this.askRows().find(a=>a.host===row.host&&a.state==="open"&&a.provider===row.provider&&(row.id?a.conversation_id===row.id:a.workspace===row.cwd));
+    this.tab="asks";this.conversation=null;this.section="pending";this.machine=machineKey(row.machine);this.query=row.id?"":row.workspace||row.cwd||"";this.filter.set_value(this.query);
+    const match=this.askRows().find(a=>a.host===row.host&&a.state==="open"&&a.provider===row.provider&&(row.id?a.conversation_id===row.id:a.workspace===(row.workspace||row.cwd)));
     if(match)this.choose(match,cx);else this.reconcile(cx);this.refresh(cx);cx.notify();
   }
   status(s,kind) {

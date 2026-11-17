@@ -233,7 +233,7 @@ func (env appEnv) linkSessionTargets(ctx context.Context, data any) {
 		return
 	}
 	rows, ok := d["rows"].([]map[string]any)
-	if !ok || len(rows) == 0 {
+	if !ok {
 		return
 	}
 	t := env.targets(ctx)

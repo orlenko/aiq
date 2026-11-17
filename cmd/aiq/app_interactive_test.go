@@ -261,3 +261,20 @@ func TestAppInteractiveSessionRowsAndFreshLeaseTarget(t *testing.T) {
 		t.Fatal("mixed target selectors accepted")
 	}
 }
+
+func TestAppInteractiveRowsWithoutHistory(t *testing.T) {
+	f := newAppInteractiveFixture(t)
+	data := map[string]any{"rows": []map[string]any{}}
+	f.env.linkSessionTargets(context.Background(), data)
+	seen := map[string]bool{}
+	for _, r := range data["rows"].([]map[string]any) {
+		id, _ := r["lease_id"].(string)
+		seen[id] = true
+		if id == "9" && r["terminal"] == nil {
+			t.Fatal("verified interactive row has no terminal")
+		}
+	}
+	if !seen["8"] || !seen["9"] || !seen["10"] {
+		t.Fatal("interactive lease omitted from empty history", seen)
+	}
+}

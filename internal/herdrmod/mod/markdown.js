@@ -15,6 +15,9 @@ function inline(text) {
       let n = 1; while (text[i+n] === "`") n++;
       const end = text.indexOf("`".repeat(n), i+n);
       if (end >= 0) { out.push("<code>"+escapeHTML(text.slice(i+n,end))+"</code>"); i=end+n;plain=i;continue; }
+      // Consume the whole unmatched run. Retrying its suffix one character
+      // at a time makes a long literal run quadratic in the render path.
+      out.push(escapeHTML(text.slice(i,i+n)));i+=n;plain=i;continue;
     }
     const mark = text.startsWith("**",i) ? "**" : text.startsWith("__",i) ? "__" : null;
     if (mark) {

@@ -1,3 +1,4 @@
+import {spawnSync} from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -106,4 +107,11 @@ test('native client fixtures match the Go bridge contract',()=>{
   const hello=readFileSync(new URL('hello.json',root),'utf8');
   for(const [file,kind] of [['hello','hello'],['asks','asks'],['ask-detail','ask-detail'],['ask-context','ask-context'],['quotas','quotas'],['sessions','sessions'],['conversation','conversation'],['ask-action.ok','ask-action'],['target','target']])decode(readFileSync(new URL(file+'.json',root),'utf8'),kind);
   assert.equal(decode(hello,'hello').schema,1);
+});
+
+test('unmatched inline backtick runs render within a child-process watchdog',()=>{
+ const url=new URL('./mod/markdown.js',import.meta.url).href;
+ const script=`import {documentHTML} from ${JSON.stringify(url)};const raw='prefix '+String.fromCharCode(96).repeat(256*1024);if(documentHTML(raw)!=='<p>'+raw+'</p>')process.exit(2);`;
+ const r=spawnSync(process.execPath,['--input-type=module','-e',script],{timeout:3000,encoding:'utf8'});
+ assert.equal(r.error,undefined);assert.equal(r.status,0,r.stderr);
 });

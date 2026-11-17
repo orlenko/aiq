@@ -43,3 +43,13 @@ test('Escape closes a peek and never changes the selected tab',()=>{
   assert.equal(view.tab,'asks');assert.equal(view.selection.peek,null);
   rendered.handlers.key({key:'escape',keystroke:'escape'},cx);assert.equal(view.tab,'asks');
 });
+
+test('Review asks selects the conversation when launch cwd is beneath its workspace',async()=>{
+ const a={...row(1,'first'),workspace:'/invented/repo'},other=row(2,'other');
+ const {cx,view}=setup([a,other]);view.refresh=()=>{};
+ view.bridge={read:async()=>({data:{id:a.id,revision:a.revision,latest:{text:'Question'}}})};
+ view.showSessionAsks({host,machine:null,provider:'claude',id:'first',cwd:'/invented/repo/subdir',workspace:'/invented/repo'},cx);
+ await cx.drain();view.reconcile(cx);await cx.drain();
+ assert.equal(view.current().id,a.id);assert.ok(view.groupList().some(g=>g.rows.some(r=>r.id===a.id)));
+ assert.equal(view.query,'');
+});
