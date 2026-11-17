@@ -186,6 +186,9 @@ func Run(o Options) (int, error) {
 					out.Error = "Herdr registration could not be recorded"
 				} else {
 					s.status("idle", "")
+					// Best effort: without its witness label the child is simply
+					// not offered as a native go-to target.
+					_ = s.r.Core.labelTarget(s.r.Ref, s.r.Generation)
 				}
 			case "hook":
 				if q.Hook == nil || s.r.State != "running" || s.options.Hook == nil {

@@ -248,6 +248,8 @@ func main() {
 	switch cmd {
 	case "__launch":
 		err = cmdLaunch(args)
+	case "__app":
+		err = cmdApp(args)
 	case "run":
 		if len(args) == 0 {
 			err = fmt.Errorf("usage: aiq run <provider> [flags] -- [args]")

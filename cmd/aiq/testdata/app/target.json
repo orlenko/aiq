@@ -1,0 +1,25 @@
+{
+ "schema": 1,
+ "ok": true,
+ "kind": "target",
+ "aiq": "0.9.2+invented",
+ "host": {
+  "id": "649f434e4088c8c9da118a48bd530c3c",
+  "name": "invented-host"
+ },
+ "generated_at_ms": 1940673600000,
+ "partial": false,
+ "omitted": {},
+ "data": {
+  "terminal": {
+   "relation": "origin",
+   "address": "t7",
+   "core_id": "0b1c2d3e4f5a69788796a5b4c3d2e1f0",
+   "witness": {
+    "terminal_pid": 4321,
+    "label": "9e8d7c6b5a4938270123456789abcdef"
+   }
+  },
+  "terminal_reason": ""
+ }
+}
