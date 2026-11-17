@@ -1,7 +1,7 @@
 import { div } from "gpui-kit";
-import { Button, TextView, Input } from "gpui-base";
+import { Button, TextView, Input, v_flex, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
 import { theme } from "herdr";
-import { documentHTML } from "./markdown.js";
+import { documentBlocks } from "./markdown.js";
 export const appearances = ["Herdr", "Light", "Dark"];
 const appearanceKey = "aiq.appearance";
 
@@ -68,18 +68,57 @@ export function createUI(getAppearance) {
   };
 }
 
+function richText(id, html, color) {
+  return TextView.html(id,html).w_full().min_w(0).text_color(color)
+    .selectable(true).scrollable(false).on_link_click(()=>{});
+}
+
+function proseTable(id, block, colors) {
+  const { table, weights, align } = block;
+  const rows = table.map((row, index) => {
+    const header = index === 0;
+    return TableRow.new(id+"-row-"+index,index+1).flex().items_stretch().w_full()
+      .bg(header ? colors.raised : index % 2 ? colors.surface : colors.chrome)
+      .border_t(header ? 0 : 1).border_color(colors.border)
+      .children(row.map((cell, col) => {
+        const key = id+"-"+index+"-"+col;
+        const text = richText(key+"-text","<p>"+(header?"<strong>"+cell+"</strong>":cell)+"</p>",colors.foreground);
+        if (align[col] === "center") text.text_center();
+        if (align[col] === "right") text.text_right();
+        return (header ? TableHead : TableCell).new(key,col+1)
+          .min_w(0).flex_basis(42).flex_grow(weights[col]).px(10).py(8)
+          .border_l(col ? 1 : 0).border_color(colors.border).child(text);
+      }));
+  });
+  return Table.new(id).row_count(table.length).column_count(weights.length)
+    .accessibility_label("Message table").w_full().min_w(0).rounded(6).overflow_hidden()
+    .border(1).border_color(colors.border)
+    .child(TableHeader.new(id+"-head").child(rows[0]))
+    .child(TableBody.new(id+"-body").children(rows.slice(1)));
+}
+
 export function makeProse(colors) {
   const cache=new Map();let bytes=0;
   const prose=(id,text,marks=false)=>{
     const key=id+":"+marks;let entry=cache.get(key);
     if(!entry || entry.text!==text){
       if(entry){bytes-=entry.bytes;cache.delete(key);}
-      const html=documentHTML(text,marks);entry={text,html,bytes:2*(text.length+html.length)};
+      const blocks=documentBlocks(text,marks);
+      const size=blocks.reduce((total, block)=>total+(block.html?.length ?? block.table.flat().reduce((sum,cell)=>sum+cell.length,0)),0);
+      entry={text,blocks,bytes:2*(text.length+size)};
       while(cache.size && (cache.size>=32||bytes+entry.bytes>8*1024*1024)){const key=cache.keys().next().value;bytes-=cache.get(key).bytes;cache.delete(key);}
       if(entry.bytes<=8*1024*1024){cache.set(key,entry);bytes+=entry.bytes;}
     }
-    return TextView.html(id,entry.html).text_color(colors().foreground)
-      .selectable(true).scrollable(false).on_link_click(()=>{});
+    const t = colors();
+    return v_flex().w_full().min_w(0).max_w(1320).gap(12)
+      .children(entry.blocks.map((block,index)=>{
+        const key = id+"-"+index;
+        if (block.table) return proseTable(key,block,t);
+        const text = richText(key,block.html,block.quote?t.muted:t.foreground);
+        return block.quote
+          ? div().w_full().min_w(0).border_l(3).border_color(t.accent).bg(t.chrome).px(14).py(8).child(text)
+          : text;
+      }));
   };
   prose.clear=()=>{cache.clear();bytes=0;};return prose;
 }

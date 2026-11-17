@@ -2,7 +2,7 @@ import {spawnSync} from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {documentHTML} from './mod/markdown.js';
+import {documentBlocks} from './mod/markdown.js';
 import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows} from './mod/state.js';
 import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget} from './mod/protocol.js';
 const host='3f0c9a1e5b7d24680aceb13579bdf024',revision='1'.repeat(64);
@@ -48,13 +48,54 @@ test('interactive witnesses require live address and pid while long witnesses al
 });
 test('native formatting never produces resource-bearing or document supplied HTML',()=>{
   const payloads=['![private](https://invalid.example/track)','![reference][id]\n\n[id]: https://invalid.example/pixel','<img src="https://invalid.example/x">','<iframe src=x></iframe>','<script>alert(1)</script>','<a href="command:run">run</a>','<video poster=x>','&#60;img src=x&#62;','```html\n<img src=x>\n```','**<img src=x>**','`<img src=x>`','<style>@import "https://invalid.example"</style>'];
-  const allowed=new Set(['p','br','strong','pre','code','blockquote']);
+  const allowed=new Set(['p','strong','pre','code','h2']);
   for(const payload of payloads)for(const marks of [false,true]) {
-    const html=documentHTML(payload,marks);
+    const tablePayload=payload.replaceAll('\n',' ');
+    const html=documentBlocks(`${payload}\n\n## ${tablePayload}\n\n> ${tablePayload}\n\n| Heading | Result |\n| --- | --- |\n| A | ${tablePayload} |\n`,marks)
+      .flatMap(block=>block.table ? block.table.flat() : [block.html]).join('\n');
     for(const tag of html.matchAll(/<\/?([^>]+)>/g))assert.ok(allowed.has(tag[1]),tag[0]);
     assert.doesNotMatch(html,/<(?:img|script|a|iframe|style|video)\b/i);
   }
-  assert.match(documentHTML('**Keep this** and `code`'),/<strong>Keep this<\/strong> and <code>code<\/code>/);
+  assert.match(documentBlocks('**Keep this** and `code`')[0].html,/<strong>Keep this<\/strong> and <code>code<\/code>/);
+});
+test('native reader keeps Markdown tables and quoted paragraphs structured',()=>{
+  const raw=[
+    '## Tuesday', '',
+    '| ID | Question | Choice |', '| ---: | :--- | :---: |',
+    '| A1 | Read `a\\|b` and **check** the output | Yes |',
+    '| A2 | Waiting on a response |', '',
+    '> Use `report --preview` before', '> you publish the report.', '>',
+    '> Send a copy to the group.', '',
+    'Later:', '',
+    'Item | Owner', '--- | ---', 'Report | Sam', '',
+    '3. Verify the result',
+  ].join('\n');
+  const [intro, first, quote, divider, second, ending]=documentBlocks(raw);
+  assert.equal(intro.html,'<h2>Tuesday</h2>');
+  assert.deepEqual(first.table,[
+    ['ID','Question','Choice'],
+    ['A1','Read <code>a|b</code> and <strong>check</strong> the output','Yes'],
+    ['A2','Waiting on a response',''],
+  ]);
+  assert.deepEqual(first.align,['right','left','center']);
+  assert.ok(first.weights[0]<first.weights[1]);
+  assert.deepEqual(quote,{
+    html:'<p>Use <code>report --preview</code> before you publish the report.</p>\n<p>Send a copy to the group.</p>',
+    quote:true,
+  });
+  assert.equal(divider.html,'<p>Later:</p>');
+  assert.deepEqual(second.table,[['Item','Owner'],['Report','Sam']]);
+  assert.equal(ending.html,'<p>3. Verify the result</p>');
+  assert.equal(documentBlocks(raw,true)[0].html,'<pre>'+raw.replaceAll('>','&gt;')+'</pre>');
+  assert.equal(documentBlocks('```md\n'+raw+'\n```').length,1);
+  assert.equal(documentBlocks('| A | B |\n| --- |').some(block=>block.table),false);
+});
+test('oversized tables preserve all rows without mounting a cell view for each',()=>{
+  const raw='| A | B |\n| --- | --- |\n'+Array.from({length:500},(_,i)=>`| Row ${i} | Value |`).join('\n');
+  const blocks=documentBlocks(raw);
+  assert.equal(blocks.length,1);
+  assert.equal(blocks[0].table,undefined);
+  assert.match(blocks[0].html,/<p>\| Row 499 \| Value \|<\/p>$/);
 });
 test('argv has a closed action vocabulary and never interpolates shell input',()=>{
   assert.deepEqual(argsFor('ask-action',{id:'17',revision,action:'dismiss',host}),['__app','ask-action','--id','17','--revision',revision,'--action','dismiss','--host',host]);
@@ -111,7 +152,7 @@ test('native client fixtures match the Go bridge contract',()=>{
 
 test('unmatched inline backtick runs render within a child-process watchdog',()=>{
  const url=new URL('./mod/markdown.js',import.meta.url).href;
- const script=`import {documentHTML} from ${JSON.stringify(url)};const raw='prefix '+String.fromCharCode(96).repeat(256*1024);if(documentHTML(raw)!=='<p>'+raw+'</p>')process.exit(2);`;
+ const script=`import {documentBlocks} from ${JSON.stringify(url)};const raw='prefix '+String.fromCharCode(96).repeat(256*1024);if(documentBlocks(raw)[0].html!=='<p>'+raw+'</p>')process.exit(2);`;
  const r=spawnSync(process.execPath,['--input-type=module','-e',script],{timeout:3000,encoding:'utf8'});
  assert.equal(r.error,undefined);assert.equal(r.status,0,r.stderr);
 });
