@@ -140,7 +140,12 @@ func TestAppHistoryAskContextLocatesOriginalMessage(t *testing.T) {
 	id := fixtureID(6, 1)
 	path := filepath.Join(root, "projects", "invented", id+".jsonl")
 	quote := "Should I keep the invented fixture or regenerate it?"
-	writeLinesTB(t, path, `{"type":"user","sessionId":"`+id+`","cwd":"/invented/work","timestamp":"2026-01-01T12:00:00Z","message":{"content":"Prepare the invented fixture."}}`, `{"type":"assistant","timestamp":"2026-01-01T12:00:01Z","message":{"content":[{"type":"text","text":"`+quote+`"}]}}`)
+	lines := []string{`{"type":"user","sessionId":"` + id + `","cwd":"/invented/work","timestamp":"2026-01-01T12:00:00Z","message":{"content":"Prepare the invented fixture."}}`}
+	for i := 0; i < 100; i++ {
+		lines = append(lines, fmt.Sprintf(`{"type":"assistant","timestamp":"2026-01-01T12:00:01Z","message":{"id":"invented-%d","content":[{"type":"text","text":"Progress %d on the invented fixture."}]}}`, i, i))
+	}
+	lines = append(lines, `{"type":"assistant","timestamp":"2026-01-01T12:00:01Z","message":{"content":[{"type":"text","text":"`+quote+`"}]}}`)
+	writeLinesTB(t, path, lines...)
 	roots := transcript.Roots{ClaudeProjects: []string{filepath.Join(root, "projects")}}
 	ask := state.Ask{ID: 17, Provider: "claude", SessionID: id, RaisedAt: time.Date(2026, 1, 1, 12, 0, 2, 0, time.UTC).Unix(), FirstQuote: quote, LastQuote: quote, State: state.AskOpen}
 	d := appHistoryDeps{cache: transcript.NewCache(), source: transcript.NewIndex(roots), readAsk: func(_ context.Context, id int64, revision string) (state.Ask, error) {
@@ -177,6 +182,32 @@ func TestAppHistoryUnicodeBoundaryAndDuplicateAnswer(t *testing.T) {
 	rows, err := appHistoryMessages(context.Background(), s)
 	if err != nil || len(rows) != 2 || rows[1].Text != "Corrected answer" {
 		t.Fatal(rows, err)
+	}
+}
+
+func TestAppHistoryWindowCapsMessageCount(t *testing.T) {
+	s := &transcript.Session{Provider: "claude", ID: fixtureID(7, 1)}
+	for i := 0; i < 5000; i++ {
+		s.Turns = append(s.Turns, transcript.Turn{Prompt: "Continue", Reply: "Done"})
+	}
+	window, partial, err := appHistoryWindow(context.Background(), s, 0, "", "")
+	if err != nil || !partial {
+		t.Fatal(err, partial)
+	}
+	if len(window["messages"].([]appHistoryMessage)) != 200 {
+		t.Fatal("native view would render an unbounded number of messages")
+	}
+}
+
+func TestAppHistoryLongMessageExcerptKeepsMatchingQuote(t *testing.T) {
+	quote := "Should I keep the invented fixture or regenerate it?"
+	s := &transcript.Session{Turns: []transcript.Turn{{Prompt: "Invented work", Reply: strings.Repeat("Earlier progress. ", 30000) + quote}}}
+	rows, err := appHistoryMessagesWithQuote(context.Background(), s, []string{quote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || !rows[1].Truncated || !strings.Contains(rows[1].Text, quote) || len(rows[1].Text) > 256<<10 {
+		t.Fatal("excerpt lost the ask at the end of a long message")
 	}
 }
 

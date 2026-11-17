@@ -322,6 +322,9 @@ type appHistoryMessage struct {
 }
 
 func appHistoryMessages(ctx context.Context, s *transcript.Session) ([]appHistoryMessage, error) {
+	return appHistoryMessagesWithQuote(ctx, s, nil)
+}
+func appHistoryMessagesWithQuote(ctx context.Context, s *transcript.Session, quotes []string) ([]appHistoryMessage, error) {
 	out := []appHistoryMessage{}
 	add := func(turn int, role, text string, at time.Time) {
 		if text == "" {
@@ -331,6 +334,26 @@ func appHistoryMessages(ctx context.Context, s *transcript.Session) ([]appHistor
 		sum := sha256.Sum256([]byte(text))
 		key := fmt.Sprintf("m%d-%d-%x", turn, part, sum[:8])
 		short, cut := appHistoryText(text, 256<<10)
+		if cut {
+			for _, quote := range quotes {
+				if len(quote) < 16 || len(quote) > 256<<10 {
+					continue
+				}
+				at := strings.Index(text, quote)
+				if at < 0 {
+					continue
+				}
+				start := max(0, at-1024)
+				if at+len(quote)-start > 256<<10 {
+					start = at
+				}
+				for start > 0 && !utf8.RuneStart(text[start]) {
+					start--
+				}
+				short, _ = appHistoryText(text[start:], 256<<10)
+				break
+			}
+		}
 		out = append(out, appHistoryMessage{Key: key, Turn: turn, Role: role, At: appHistoryMillis(at), Text: short, Bytes: len(short), FullBytes: len(text), Truncated: cut})
 	}
 	for i, t := range s.Turns {
@@ -395,7 +418,11 @@ func appHistoryWindow(ctx context.Context, s *transcript.Session, at int64, befo
 		if anchor < 0 {
 			return nil, false, appHistoryFailure("not_found")
 		}
+		all[anchor].Anchor = true
 	}
+	return appHistorySlice(s, all, anchor, before, after)
+}
+func appHistorySlice(s *transcript.Session, all []appHistoryMessage, anchor int, before, after string) (map[string]any, bool, error) {
 	start, end := 0, len(all)
 	if before != "" || after != "" {
 		key := before
@@ -443,7 +470,7 @@ func appHistoryWindow(ctx context.Context, s *transcript.Session, at int64, befo
 	} else if after != "" {
 		size := 0
 		j := start
-		for j < end {
+		for j < end && j-start < 200 {
 			cost := len(all[j].Text)*6 + 512
 			if j > start && size+cost > budget {
 				break
@@ -455,7 +482,7 @@ func appHistoryWindow(ctx context.Context, s *transcript.Session, at int64, befo
 	} else {
 		size := 0
 		i := end
-		for i > start {
+		for i > start && end-i < 200 {
 			cost := len(all[i-1].Text)*6 + 512
 			if i < end && size+cost > budget {
 				break
@@ -501,35 +528,61 @@ func (d appHistoryDeps) askContext(ctx context.Context, opts map[string]string) 
 	if at == nil {
 		return appHistoryOutput{Data: data, Omitted: map[string]int{}}, nil
 	}
-	window, partial, err := appHistoryWindow(ctx, s, *at, "", "")
+	all, err := appHistoryMessagesWithQuote(ctx, s, []string{ask.LastQuote, ask.FirstQuote})
+	if err != nil {
+		return appHistoryOutput{}, err
+	}
+	turn := -1
+	for i, t := range s.Turns {
+		if appHistoryMillis(t.Started) == *at {
+			turn = i
+			break
+		}
+	}
+	anchor := -1
+	matched := false
+	// A turn can contain hundreds of messages. Centre the peek on the actual
+	// question rather than on the human prompt at the beginning of that turn.
+	for _, q := range []string{ask.LastQuote, ask.FirstQuote} {
+		if len(strings.TrimSpace(q)) < 16 {
+			continue
+		}
+		for i, m := range all {
+			if m.Turn == turn && m.Role == "assistant" && strings.Contains(m.Text, q) {
+				anchor = i
+				matched = true
+			}
+		}
+		if matched {
+			break
+		}
+	}
+	if anchor < 0 {
+		for i, m := range all {
+			if m.Turn == turn && m.Role == "assistant" {
+				anchor = i
+				break
+			}
+		}
+	}
+	if anchor < 0 {
+		return appHistoryOutput{Data: data, Omitted: map[string]int{}}, nil
+	}
+	all[anchor].Anchor = true
+	window, partial, err := appHistorySlice(s, all, anchor, "", "")
 	if err != nil {
 		return appHistoryOutput{}, err
 	}
 	messages := window["messages"].([]appHistoryMessage)
-	matched := false
-	for i := range messages {
-		if messages[i].Role != "assistant" {
-			continue
-		}
-		for _, q := range []string{ask.FirstQuote, ask.LastQuote} {
-			if len(strings.TrimSpace(q)) >= 16 && strings.Contains(messages[i].Text, q) {
-				messages[i].Anchor = true
-				matched = true
-				break
-			}
-		}
-	}
 	confidence := "time+text"
 	if !matched {
 		confidence = "time"
-		for i := range messages {
-			if messages[i].Role == "assistant" {
-				messages[i].Anchor = true
-				break
-			}
-		}
 	}
-	data["placement"] = map[string]any{"confidence": confidence, "anchor_ms": *at}
+	anchorAt := all[anchor].At
+	if anchorAt <= 0 {
+		anchorAt = *at
+	}
+	data["placement"] = map[string]any{"confidence": confidence, "anchor_ms": anchorAt}
 	data["messages"] = messages
 	data["cursor"] = window["cursor"]
 	return appHistoryOutput{Data: data, Partial: partial, Omitted: map[string]int{}}, nil
