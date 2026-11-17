@@ -1,0 +1,132 @@
+{
+ "schema": 1,
+ "ok": true,
+ "kind": "quotas",
+ "aiq": "0.9.2+invented",
+ "host": {
+  "id": "649f434e4088c8c9da118a48bd530c3c",
+  "name": "invented-host"
+ },
+ "generated_at_ms": 1940673600000,
+ "partial": false,
+ "omitted": {},
+ "data": {
+  "poll": {
+   "known": false
+  },
+  "model_scope": [
+   {
+    "provider": "claude",
+    "scope": ""
+   },
+   {
+    "provider": "codex",
+    "scope": ""
+   },
+   {
+    "provider": "agy",
+    "scope": ""
+   },
+   {
+    "provider": "copilot",
+    "scope": ""
+   }
+  ],
+  "accounts": [
+   {
+    "id": "alpha",
+    "provider": "claude",
+    "plan": "max",
+    "label": "",
+    "identity": "alpha@example.invalid",
+    "enabled": true,
+    "login": {
+     "has_credential": true,
+     "cli": "unknown",
+     "cli_identity": "",
+     "cli_mismatch": false,
+     "checked_at": null,
+     "problem": ""
+    },
+    "eligible": true,
+    "ineligible": "",
+    "exhausted": false,
+    "reason": "",
+    "cooldown_until": null,
+    "rank": 1,
+    "score": 66.0270379338176,
+    "rung": 0,
+    "terms": [
+     "5h 62% left / 1.0h = 63.1",
+     "1 reset credit(s), expiry unknown: 1×100% / 168.0h × 5 = 3.0"
+    ],
+    "reset_credits": 1,
+    "reset_credit_expires_at": null,
+    "extra_usage": null,
+    "poll_error": "",
+    "observed_at": 1940673540,
+    "windows": [
+     {
+      "key": "five_hour",
+      "label": "5h",
+      "kind": "short",
+      "scope": "",
+      "binding": true,
+      "used_pct": 38,
+      "resets_at": 1940677140,
+      "window_seconds": 0,
+      "source": "probe",
+      "observed_at": 1940673540
+     }
+    ],
+    "leases": [
+     {
+      "mode": "long",
+      "drain": "",
+      "depth": 0,
+      "pane": "%7",
+      "pid": 1,
+      "workspace": "/invented/work",
+      "cwd": "/invented/work",
+      "why": "",
+      "machine": ""
+     }
+    ]
+   }
+  ],
+  "rankings": [
+   {
+    "key": "claude/interactive",
+    "entries": [
+     {
+      "id": "alpha",
+      "score": 66.0270379338176,
+      "rung": 0,
+      "eligible": true,
+      "reason": "",
+      "terms": [
+       "5h 62% left / 1.0h = 63.1",
+       "1 reset credit(s), expiry unknown: 1×100% / 168.0h × 5 = 3.0"
+      ]
+     }
+    ]
+   },
+   {
+    "key": "claude/worker",
+    "entries": [
+     {
+      "id": "alpha",
+      "score": 66.0270379338176,
+      "rung": 0,
+      "eligible": true,
+      "reason": "",
+      "terms": [
+       "5h 62% left / 1.0h = 63.1",
+       "1 reset credit(s), expiry unknown: 1×100% / 168.0h × 5 = 3.0"
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -681,6 +681,54 @@ else can read; each request checks the key is still there.
 
 It watches only sessions running under `aiq long`, on this machine only.
 
+## Native Herdr app
+
+The Herdr desktop app can show aiq's asks, session history and quotas in a
+native mod tab. Install the mod on the computer running the app:
+
+```bash
+aiq ui --herdr
+```
+
+The open command reuses an existing aiq mod tab. Installation updates only
+aiq's own personal mod; it refuses to replace a locally edited or unrelated
+mod and does not change Herdr layouts or keys. Herdr app 0.1.16 or later is
+required. This is the desktop app mod system, not the Herdr TUI plugin system.
+
+Machines come from Herdr's connections. Each machine needs an updated aiq
+binary on its command path; its bridge reads that machine's configured aiq
+data and transcript roots. No browser listener, browser token, fleet polling
+configuration or new network service is required. Missing installations and
+unavailable machines have separate status messages; failed refreshes keep
+the last known rows in memory. Closing the mod clears its data cache.
+
+Asks are grouped by session, with a local timestamp above each question.
+Dismiss an ask or the session's loaded asks directly; Undo restores the
+last dismissal batch. Actions check the source identity and row revision.
+Review stays within the current session until its last pending ask is gone.
+The conversation peek belongs to the selected ask, loads on demand, and
+scrolls to and highlights its matching message when located. Search covers
+the loaded messages; paging reads another bounded window. Escape closes a
+peek. Cmd+Shift+M toggles Markdown symbols within the mod.
+
+Go to terminal checks the running terminal afresh before focusing it or
+opening Herdr's terminal peek. A current-workspace terminal is labelled as
+such when the ask belongs to an earlier conversation. Historical, ended or
+unmapped sessions remain readable without inventing a terminal mapping.
+The native reader renders a small formatting subset from escaped text;
+document HTML and remote images do not execute or load. Replies and session
+control remain in Herdr's existing terminal.
+
+Sessions uses sortable columns and loaded-text, live, asks and worker filters.
+Select a row for its actions, or double-click it to read the conversation.
+New interactive launches record their verified Herdr terminal. Claude can also
+link its registered conversation; other providers keep the terminal link on
+the workspace row until an exact conversation identity is available.
+It parses a recent candidate window first; Older continues through history.
+Partial results and unknown ask counts remain labelled. Quotas keeps separate
+machine sections and provider columns, with per-account observation times.
+The existing browser navigator remains available as a fallback.
+
 ## Local session navigator
 
 On macOS or Linux, enable the optional navigator in your config and restart

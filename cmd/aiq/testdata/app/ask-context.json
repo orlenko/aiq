@@ -1,0 +1,60 @@
+{
+ "schema": 1,
+ "ok": true,
+ "kind": "ask-context",
+ "aiq": "0.9.2+invented",
+ "host": {
+  "id": "649f434e4088c8c9da118a48bd530c3c",
+  "name": "invented-host"
+ },
+ "generated_at_ms": 1940673600000,
+ "partial": false,
+ "omitted": {},
+ "data": {
+  "conversation_id": "a1000000-1111-4222-8333-000000000001",
+  "cursor": {
+   "after": "",
+   "before": ""
+  },
+  "first": {
+   "bytes": 52,
+   "text": "Should I keep the invented fixture or regenerate it?",
+   "truncated": false
+  },
+  "id": "17",
+  "latest": {
+   "bytes": 451,
+   "text": "Shall I go ahead with option B and push the invented branch now, or wait for the review that is still running? Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. ",
+   "truncated": false
+  },
+  "messages": [
+   {
+    "key": "m0-0-8b06bb34ca13f40f",
+    "turn": 0,
+    "role": "user",
+    "at_ms": 1940669880000,
+    "text": "Prepare the invented branch.",
+    "bytes": 28,
+    "full_bytes": 28,
+    "truncated": false
+   },
+   {
+    "key": "m0-1-8868a3a63d2cc4be",
+    "turn": 0,
+    "role": "assistant",
+    "at_ms": 1940669970000,
+    "text": "Shall I go ahead with option B and push the invented branch now, or wait for the review that is still running? Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail.",
+    "bytes": 450,
+    "full_bytes": 450,
+    "truncated": false,
+    "anchor": true
+   }
+  ],
+  "placement": {
+   "anchor_ms": 1940669970000,
+   "confidence": "time+text"
+  },
+  "provider": "claude",
+  "revision": "3ca8563403cfb2d23bfb84fe687ef4ff24d1bf51994590b1fefa5759848a928e"
+ }
+}

@@ -22,12 +22,14 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 )
 
-const uiUsage = "usage: aiq ui [directory] | --info | --revoke | --help"
+const uiUsage = "usage: aiq ui [directory] | --herdr | --info | --revoke | --help"
 const uiHelpText = uiUsage + `
 
 Open the local navigator on Asks: every project's Asks with no argument, or
 the Asks of the given directory ("." for this one). Sessions and conversations
 are reached from there.
+--herdr installs or updates aiq's personal Herdr app mod and opens its native
+tab instead. It needs no browser navigator listener or browser login.
 Requires an already running daemon with [ui] navigator = true.
 Login is per tab and expires after 30 minutes idle or eight hours.
 --info prints authenticated directory and host information.
@@ -96,6 +98,9 @@ type uiDependencies struct {
 }
 
 func cmdUI(args []string) error {
+	if len(args) == 1 && args[0] == "--herdr" {
+		return openHerdrUI()
+	}
 	return runUI(context.Background(), args, goos, os.Stdout, uiDependencies{})
 }
 func canonicalUIData(data string) bool {

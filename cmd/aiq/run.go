@@ -457,6 +457,9 @@ func cmdRun(provider string, args []string) error {
 			return fmt.Errorf("register native long lease: %w", leaseErr)
 		}
 		lease.ID = leaseID
+		if mode == state.ModeInteractive && leaseErr == nil {
+			recordInteractiveTerminal(a.st, lease)
+		}
 		if native {
 			defer func() {
 				if st, err := state.Open(paths.StateDB()); err == nil {
