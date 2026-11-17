@@ -30,29 +30,129 @@ function inline(text) {
   }
   if(i>plain)out.push(escapeHTML(text.slice(plain,i)));return out.join("");
 }
-export function documentHTML(raw, marks = false) {
-  if (marks) return "<pre>"+escapeHTML(raw)+"</pre>";
+const quoteLine = /^ {0,3}>[ \t]?(.*)$/;
+const fenceLine = /^ {0,3}(`{3,}|~{3,})/;
+const headingLine = /^ {0,3}(#{1,6})[ \t]+(.+?)\s*$/;
+const bulletLine = /^\s*([-+*]|\d+[.)])\s+(.+)$/;
+const maxTableCells = 384;
+
+function tableCells(line) {
+  if (!line?.includes("|")) return null;
+  const row = line.trim();
+  const cells = [];
+  let start = 0;
+  for (const match of row.matchAll(/\\[\\|]|\|/g)) {
+    if (match[0] !== "|") continue;
+    if (match.index > 0) cells.push(row.slice(start, match.index).trim());
+    start = match.index + 1;
+  }
+  if (start === 0) return null;
+  if (start < row.length) cells.push(row.slice(start).trim());
+  return cells.map(cell => cell.replace(/\\([\\|])/g, (match, char) => char === "|" ? "|" : match));
+}
+
+function tableAt(lines, start, cellBudget) {
+  const separator = lines[start + 1];
+  if (!separator || !/^\s*[:|\-][ \t:|\-]*$/.test(separator)) return null;
+  const columns = tableCells(separator);
+  if (!columns?.length || !columns.every(cell => /^:?-+:?$/.test(cell))) return null;
+  const header = tableCells(lines[start]);
+  if (header?.length !== columns.length) return null;
+
+  const rows = [header];
+  let next = start + 2;
+  for (; next < lines.length; next++) {
+    const line = lines[next];
+    if (quoteLine.test(line) || fenceLine.test(line) || headingLine.test(line) || bulletLine.test(line)) break;
+    const cells = tableCells(line);
+    if (!cells || cells.length > columns.length) break;
+    rows.push(cells);
+  }
+  if (columns.length > 12 || rows.length * columns.length > cellBudget) {
+    // Preserve every row in a readable form without creating a native view per cell.
+    return { next, block: { html: lines.slice(start, next).map(line => "<p>"+inline(line)+"</p>").join("\n") } };
+  }
+  const weights = columns.map(() => 4);
+  const table = rows.map(row => columns.map((_, col) => {
+    const cell = row[col] ?? "";
+    weights[col] = Math.max(weights[col], Math.min(72, cell.length));
+    return inline(cell);
+  }));
+  const align = columns.map(cell => cell.endsWith(":") ? (cell.startsWith(":") ? "center" : "right") : "left");
+  return { next, block: { table, weights, align }, cells: rows.length * columns.length };
+}
+
+function paragraphHTML(lines) {
+  return "<p>"+inline(lines.join(" "))+"</p>";
+}
+
+export function documentBlocks(raw, marks = false) {
+  if (marks) return [{ html: "<pre>"+escapeHTML(raw)+"</pre>" }];
   const lines = String(raw).replace(/\r\n?/g,"\n").split("\n");
-  const out = []; let fence = null, code = [], paragraph = [];
-  const flush = () => { if (paragraph.length) { out.push("<p>"+paragraph.map(inline).join("<br>")+"</p>"); paragraph=[]; } };
-  for (const line of lines) {
-    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+  const blocks = [];
+  let html = [], fence = null, code = [], paragraph = [], cellBudget = maxTableCells;
+  const flush = () => {
+    if (paragraph.length) {
+      html.push(paragraphHTML(paragraph));
+      paragraph = [];
+    }
+  };
+  const flushBlock = () => {
+    flush();
+    if (html.length) {
+      blocks.push({ html: html.join("\n") });
+      html = [];
+    }
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const f = fenceLine.exec(line);
     if (f && (!fence || f[1][0] === fence[0] && f[1].length >= fence.length)) {
       flush();
-      if (fence) { out.push("<pre><code>"+escapeHTML(code.join("\n"))+"</code></pre>"); fence=null; code=[]; }
+      if (fence) { html.push("<pre><code>"+escapeHTML(code.join("\n"))+"</code></pre>"); fence=null; code=[]; }
       else fence=f[1];
       continue;
     }
     if (fence) { code.push(line); continue; }
     if (!line.trim()) { flush(); continue; }
-    const heading = /^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
-    const bullet = /^\s*(?:[-+*]|\d+[.)])\s+(.+)$/.exec(line);
-    const quote = /^\s*>\s?(.*)$/.exec(line);
-    if (heading || bullet || quote) {
+    const heading = headingLine.exec(line);
+    const bullet = bulletLine.exec(line);
+    const quote = quoteLine.exec(line);
+    if (quote) {
+      flushBlock();
+      const paragraphs = [];
+      let quoted = [], match = quote;
+      while (match) {
+        if (match[1].trim()) quoted.push(match[1]);
+        else if (quoted.length) {
+          paragraphs.push(paragraphHTML(quoted));
+          quoted = [];
+        }
+        match = quoteLine.exec(lines[++i] ?? "");
+      }
+      if (quoted.length) paragraphs.push(paragraphHTML(quoted));
+      if (paragraphs.length) blocks.push({ html: paragraphs.join("\n"), quote: true });
+      i--;
+    } else if (heading || bullet) {
       flush();
-      out.push(heading ? "<p><strong>"+inline(heading[1])+"</strong></p>" : bullet ? "<p>• "+inline(bullet[1])+"</p>" : "<blockquote>"+inline(quote[1])+"</blockquote>");
-    } else paragraph.push(line);
+      if (heading) {
+        const tag = "h"+heading[1].length;
+        html.push("<"+tag+">"+inline(heading[2].replace(/[ \t]+#+$/, ""))+"</"+tag+">");
+      } else {
+        const marker = bullet[1].length > 1 ? bullet[1] : "•";
+        html.push("<p>"+marker+" "+inline(bullet[2])+"</p>");
+      }
+    } else {
+      const table = tableAt(lines, i, cellBudget);
+      if (table) {
+        flushBlock();
+        blocks.push(table.block);
+        cellBudget -= table.cells ?? 0;
+        i = table.next - 1;
+      } else paragraph.push(line);
+    }
   }
-  if (fence) out.push("<pre><code>"+escapeHTML(code.join("\n"))+"</code></pre>");
-  flush(); return out.join("\n");
+  if (fence) html.push("<pre><code>"+escapeHTML(code.join("\n"))+"</code></pre>");
+  flushBlock();
+  return blocks;
 }
