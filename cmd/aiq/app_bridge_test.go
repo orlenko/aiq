@@ -267,7 +267,22 @@ func TestAppAsksStayUnderCap(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	doc := appCall(t, env, "asks")
+	// This checks the output cap at the store's maximum row count. The
+	// production wall-clock limit is deliberately separate: race instrumentation
+	// makes these 50,000 invented rows substantially slower to read.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	encoded, err := env.encode("asks", env.host(ctx), env.asks(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > appMaxBytes {
+		t.Fatal("reply exceeded cap", len(encoded))
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(encoded, &doc); err != nil {
+		t.Fatal(err)
+	}
 	data := appData(t, doc)
 	counts := data["counts"].(map[string]any)
 	if doc["partial"] != true || doc["omitted"].(map[string]any)["rows"].(float64) <= 0 || counts["closed_dismissed"].(float64) != 50000-2 || counts["open"].(float64) != 1 {

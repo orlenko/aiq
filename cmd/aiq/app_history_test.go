@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,9 +60,11 @@ func TestAppHistorySessionsColdWindowProgress(t *testing.T) {
 	projects := filepath.Join(root, "projects")
 	roots := transcript.Roots{ClaudeProjects: []string{projects}}
 	for i := 0; i < 5; i++ {
-		id := fixtureID(4, i)
+		id := appHistoryFixtureID(4, i)
 		path := filepath.Join(projects, "invented", id+".jsonl")
-		writeClaudeFixture(t, path, "/invented/work", id, 2, 0, rand.New(rand.NewSource(int64(i))))
+		appHistoryWriteLines(t, path,
+			fmt.Sprintf(`{"type":"user","sessionId":%q,"cwd":"/invented/work","timestamp":"2031-07-01T10:00:00Z","message":{"content":"Invented request."}}`, id),
+			fmt.Sprintf(`{"type":"assistant","sessionId":%q,"timestamp":"2031-07-01T10:00:01Z","message":{"content":[{"type":"text","text":"Invented reply."}]}}`, id))
 		at := time.Unix(100+int64(i), 0)
 		if err := os.Chtimes(path, at, at); err != nil {
 			t.Fatal(err)
@@ -94,7 +95,7 @@ func TestAppHistorySessionsColdWindowProgress(t *testing.T) {
 
 func TestAppHistoryWindowKeepsAnchorAndPagesBothDirections(t *testing.T) {
 	at := time.Unix(123, 0)
-	s := &transcript.Session{Provider: "claude", ID: fixtureID(5, 1)}
+	s := &transcript.Session{Provider: "claude", ID: appHistoryFixtureID(5, 1)}
 	for i := 0; i < 30; i++ {
 		s.Turns = append(s.Turns, transcript.Turn{Prompt: strings.Repeat("x", 256<<10), Started: at.Add(time.Duration(i) * time.Second), Reply: "Invented answer", ReplyAt: at.Add(time.Duration(i)*time.Second + time.Millisecond)})
 	}
@@ -137,7 +138,7 @@ func TestAppHistoryWindowKeepsAnchorAndPagesBothDirections(t *testing.T) {
 
 func TestAppHistoryAskContextLocatesOriginalMessage(t *testing.T) {
 	root := t.TempDir()
-	id := fixtureID(6, 1)
+	id := appHistoryFixtureID(6, 1)
 	path := filepath.Join(root, "projects", "invented", id+".jsonl")
 	quote := "Should I keep the invented fixture or regenerate it?"
 	lines := []string{`{"type":"user","sessionId":"` + id + `","cwd":"/invented/work","timestamp":"2026-01-01T12:00:00Z","message":{"content":"Prepare the invented fixture."}}`}
@@ -145,7 +146,7 @@ func TestAppHistoryAskContextLocatesOriginalMessage(t *testing.T) {
 		lines = append(lines, fmt.Sprintf(`{"type":"assistant","timestamp":"2026-01-01T12:00:01Z","message":{"id":"invented-%d","content":[{"type":"text","text":"Progress %d on the invented fixture."}]}}`, i, i))
 	}
 	lines = append(lines, `{"type":"assistant","timestamp":"2026-01-01T12:00:01Z","message":{"content":[{"type":"text","text":"`+quote+`"}]}}`)
-	writeLinesTB(t, path, lines...)
+	appHistoryWriteLines(t, path, lines...)
 	roots := transcript.Roots{ClaudeProjects: []string{filepath.Join(root, "projects")}}
 	ask := state.Ask{ID: 17, Provider: "claude", SessionID: id, RaisedAt: time.Date(2026, 1, 1, 12, 0, 2, 0, time.UTC).Unix(), FirstQuote: quote, LastQuote: quote, State: state.AskOpen}
 	d := appHistoryDeps{cache: transcript.NewCache(), source: transcript.NewIndex(roots), readAsk: func(_ context.Context, id int64, revision string) (state.Ask, error) {
@@ -186,7 +187,7 @@ func TestAppHistoryUnicodeBoundaryAndDuplicateAnswer(t *testing.T) {
 }
 
 func TestAppHistoryWindowCapsMessageCount(t *testing.T) {
-	s := &transcript.Session{Provider: "claude", ID: fixtureID(7, 1)}
+	s := &transcript.Session{Provider: "claude", ID: appHistoryFixtureID(7, 1)}
 	for i := 0; i < 5000; i++ {
 		s.Turns = append(s.Turns, transcript.Turn{Prompt: "Continue", Reply: "Done"})
 	}
@@ -253,10 +254,10 @@ func TestAppHistoryQuotePlacementIgnoresFormattingButRefusesAmbiguity(t *testing
 func TestAppHistorySlowCandidateDoesNotTrapOlderPaging(t *testing.T) {
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")
-	newer := filepath.Join(projects, "invented", fixtureID(8, 1)+".jsonl")
-	older := filepath.Join(projects, "invented", fixtureID(8, 2)+".jsonl")
-	writeLinesTB(t, newer, "{}")
-	writeLinesTB(t, older, "{}")
+	newer := filepath.Join(projects, "invented", appHistoryFixtureID(8, 1)+".jsonl")
+	older := filepath.Join(projects, "invented", appHistoryFixtureID(8, 2)+".jsonl")
+	appHistoryWriteLines(t, newer, "{}")
+	appHistoryWriteLines(t, older, "{}")
 	os.Chtimes(newer, time.Unix(200, 0), time.Unix(200, 0))
 	os.Chtimes(older, time.Unix(100, 0), time.Unix(100, 0))
 	roots := transcript.Roots{ClaudeProjects: []string{projects}}
@@ -264,7 +265,7 @@ func TestAppHistorySlowCandidateDoesNotTrapOlderPaging(t *testing.T) {
 		if path == newer {
 			return transcript.Summary{}, transcript.ErrBudget
 		}
-		return transcript.Summary{Provider: "claude", ID: fixtureID(8, 2), Label: "Invented older session"}, nil
+		return transcript.Summary{Provider: "claude", ID: appHistoryFixtureID(8, 2), Label: "Invented older session"}, nil
 	}}
 	out, err := d.run(context.Background(), roots, "sessions", []string{"--limit", "1"})
 	if err != nil {
@@ -308,8 +309,8 @@ func TestAppGoldenHistory(t *testing.T) {
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")
 	path := filepath.Join(projects, "invented", fullIDFixtureID+".jsonl")
-	writeLinesTB(t, path, `{"type":"user","sessionId":"`+fullIDFixtureID+`","cwd":"/invented/work","timestamp":"2031-07-01T10:58:00Z","message":{"content":"Prepare the invented branch."}}`,
-		`{"type":"assistant","timestamp":"2031-07-01T10:59:30Z","message":{"content":[{"type":"text","text":`+jsonString(ask.LastQuote)+`}]}}`)
+	appHistoryWriteLines(t, path, `{"type":"user","sessionId":"`+fullIDFixtureID+`","cwd":"/invented/work","timestamp":"2031-07-01T10:58:00Z","message":{"content":"Prepare the invented branch."}}`,
+		`{"type":"assistant","timestamp":"2031-07-01T10:59:30Z","message":{"content":[{"type":"text","text":`+appHistoryJSONString(ask.LastQuote)+`}]}}`)
 	env.input.roots = func(context.Context) (transcript.Roots, error) {
 		return transcript.Roots{ClaudeProjects: []string{projects}}, nil
 	}
@@ -318,3 +319,18 @@ func TestAppGoldenHistory(t *testing.T) {
 	appGolden(t, "conversation", env, x, "conversation", "--provider", "claude", "--id", fullIDFixtureID)
 	appGolden(t, "ask-context", env, x, "ask-context", "--id", "17", "--revision", state.AskActionRevision(ask))
 }
+
+func appHistoryFixtureID(kind, i int) string {
+	return fmt.Sprintf("%08x-0000-4000-8000-%012x", kind, i)
+}
+func appHistoryWriteLines(t testing.TB, path string, lines ...string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appHistoryJSONString(s string) string { b, _ := json.Marshal(s); return string(b) }
