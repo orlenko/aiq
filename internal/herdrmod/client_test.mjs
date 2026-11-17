@@ -89,7 +89,7 @@ test('native client fixtures match the Go bridge contract',()=>{
   // Once the bridge is present these are the actual golden files, rather than
   // a second independently maintained version of the protocol.
   const root=new URL('../../cmd/aiq/testdata/app/',import.meta.url);
-  let hello;try{hello=readFileSync(new URL('hello.json',root),'utf8');}catch(e){if(e.code==='ENOENT')return;throw e;}
+  const hello=readFileSync(new URL('hello.json',root),'utf8');
   for(const [file,kind] of [['hello','hello'],['asks','asks'],['ask-context','ask-context'],['quotas','quotas'],['sessions','sessions'],['conversation','conversation'],['ask-action.ok','ask-action']])decode(readFileSync(new URL(file+'.json',root),'utf8'),kind);
   assert.equal(decode(hello,'hello').schema,1);
 });

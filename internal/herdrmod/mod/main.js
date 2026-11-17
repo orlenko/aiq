@@ -41,7 +41,7 @@ export default class AIQ extends View {
     if(changed){this.selection.generation++;this.selection.peek=null;}
     if(before!==this.selection.ask || changed){this.detail=null;this.context=null;if(row)this.loadDetail(row,cx);}
   }
-  setTab(tab,cx){this.tab=tab;this.conversation=null;this.notice="";this.prose.clear();this.refresh(cx);cx.notify();}
+  setTab(tab,cx){this.tab=tab;this.conversation=null;this.selection.peek=null;this.context=null;this.notice="";this.prose.clear();this.refresh(cx);cx.notify();}
   refresh(cx) {
     if(checking())return;
     const current=machines();
@@ -58,14 +58,15 @@ export default class AIQ extends View {
     const token={};s[kind]={...old,loading:true,error:null,token};cx.notify();
     cx.spawn(async cx=>{
       try {
-        const e=await this.bridge.read(s.machine,kind,options,()=>s[kind]?.token===token);
+        const e=await this.bridge.read(s.machine,kind,options,()=>s[kind]?.token===token&&this.tab===kind&&this.sourceList().includes(s));
         if(s[kind]?.token!==token)return;
         if(append && old.value) e.data.rows=[...old.value.data.rows,...e.data.rows];
         s[kind]={value:e,loading:false,error:null};
       }catch(e){
         if(s[kind]?.token!==token)return;
         // Source identity changed: old rows cannot authorize writes on a new DB.
-        if(e.code==="source_changed") {
+        if(e.code==="superseded")s[kind]={value:old.value,loading:false,error:old.error??null};
+        else if(e.code==="source_changed") {
           for(const key of ["asks","sessions","quotas"])s[key]={value:null,loading:false,error:"source_changed",token:null};
           this.notice=errorText("source_changed");
         } else s[kind]={value:old.value,loading:false,error:e.code??"unavailable"};
@@ -185,7 +186,7 @@ export default class AIQ extends View {
       ...["asks","sessions","quotas"].map(tab=>button("tab-"+tab,tab[0].toUpperCase()+tab.slice(1),(_e,cx)=>this.setTab(tab,cx),this.tab===tab)),
       div().flex_1(),
       button("marks",this.marks?"Markdown symbols ✓":"Markdown symbols",(_e,cx)=>{this.marks=!this.marks;cx.notify();},this.marks),
-      button("refresh","Refresh",(_e,cx)=>this.refresh(cx))
+      button("refresh",this.conversation?"Refresh conversation":"Refresh",(_e,cx)=>this.conversation?this.openConversation(this.conversation.row,cx,{at:this.conversation.value?.messages.find(m=>m.anchor)?.at_ms||this.conversation.value?.messages[0]?.at_ms}):this.refresh(cx))
     ]);
   }
   render(cx) {
@@ -260,7 +261,7 @@ export default class AIQ extends View {
     const c=this.context,t=theme();
     return v_flex().h_full().w(Math.max(360,this.size.width*0.43)).min_h(0).border_l(1).border_color(t.border).children([
       v_flex().px(24).py(16).gap(10).border_b(1).border_color(t.border).children([
-        h_flex().gap(8).items_center().children([div().font_semibold().flex_1().child("Original context"),button("close-context","Close",(_e,cx)=>{this.selection.peek=null;this.context=null;cx.notify();})]),
+        h_flex().gap(8).items_center().children([div().font_semibold().flex_1().child("Original context"),button("refresh-context","Refresh",(_e,cx)=>{this.selection.peek=null;this.peek(row,cx);}),button("close-context","Close",(_e,cx)=>{this.selection.peek=null;this.context=null;cx.notify();})]),
         Input.new(this.search).border(1).border_color(t.border).p(8).rounded(5),
         label(c?.value?.placement?.confidence==="time+text"?"Matched ask highlighted below":c?.value?.placement?.confidence==="time"?"Located by timestamp; check the highlighted message":"Original turn not located",true)
       ]),
