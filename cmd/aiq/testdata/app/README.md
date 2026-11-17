@@ -19,7 +19,7 @@ aiq __app target     --ask N --revision HEX64
 aiq __app target     --provider claude|codex|agy --conversation ID
 aiq __app quotas
 aiq __app sessions [--limit N] [--before CURSOR]
-aiq __app conversation --provider claude|codex|agy --id ID [--at MS | --before KEY | --after KEY]
+aiq __app conversation --provider claude|codex|agy --id ID [--anchor KEY | --at MS | --before KEY | --after KEY]
 aiq __app ask-context --id N --revision HEX64
 ```
 
@@ -138,3 +138,5 @@ including questions late in a long turn or message. No match returns an empty
 window with `confidence:none`, rather than implying that the session tail is
 the original context. Conversation text is escaped before native rendering;
 document HTML and remote media are never passed through.
+
+A full-context transition uses the matching message key (`--anchor`), because timestamps can repeat. Missing keys return `conflict`; they never silently select another message. Quota accounts also include Copilot when configured.

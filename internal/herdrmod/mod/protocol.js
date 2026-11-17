@@ -40,7 +40,7 @@ export function decode(stdout, kind, expectedHost=null) {
   } else if (kind === "quotas") {
     require(Array.isArray(d.accounts) && d.accounts.length<=10000);
     for (const a of d.accounts) {
-      require(object(a) && str(a.id,512) && PROVIDERS.has(a.provider) && Array.isArray(a.windows) && a.windows.length<=128 && Array.isArray(a.leases) && a.leases.length<=10000);
+      require(object(a) && str(a.id,512) && (PROVIDERS.has(a.provider)||a.provider==="copilot") && Array.isArray(a.windows) && a.windows.length<=128 && Array.isArray(a.leases) && a.leases.length<=10000);
       if(a.observed_at_ms===undefined)a.observed_at_ms=wireSeconds(a.observed_at);
       for(const w of a.windows) {
         require(object(w) && str(w.label,512) && (w.used_pct===null || typeof w.used_pct === "number" && Number.isFinite(w.used_pct)));
@@ -79,7 +79,8 @@ export function argsFor(kind, options={}) {
   if(kind === "conversation") {
     push("provider",options.provider,PROVIDERS.has(options.provider)); push("id",options.id,ID.test(options.id));
     for(const key of ["before","after"]) if(options[key]) push(key,options[key],str(options[key],512)&&/^[a-zA-Z0-9._:-]+$/.test(options[key]));
-    if(options.at) push("at",options.at,Number.isSafeInteger(options.at)&&options.at>0);
+    if(options.anchor)push("anchor",options.anchor,/^m[0-9]+-[0-9]+-[a-f0-9]{16}$/.test(options.anchor));
+    else if(options.at) push("at",options.at,Number.isSafeInteger(options.at)&&options.at>0);
     return out;
   }
   throw new BridgeError("invalid_request");

@@ -163,6 +163,28 @@ func TestAppHistoryAskContextLocatesOriginalMessage(t *testing.T) {
 	if data["placement"].(map[string]any)["confidence"] != "time+text" {
 		t.Fatal("unique quote was not located")
 	}
+	var key string
+	for _, m := range data["messages"].([]appHistoryMessage) {
+		if m.Anchor {
+			key = m.Key
+		}
+	}
+	full, err := d.run(context.Background(), roots, "conversation", []string{"--provider", "claude", "--id", id, "--anchor", key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact := false
+	for _, m := range full.Data.(map[string]any)["messages"].([]appHistoryMessage) {
+		if m.Anchor && strings.Contains(m.Text, quote) {
+			exact = true
+		}
+	}
+	if !exact {
+		t.Fatal("full context lost the exact ask among equal timestamps")
+	}
+	if _, err := d.run(context.Background(), roots, "conversation", []string{"--provider", "claude", "--id", id, "--anchor", "missing"}); err != appHistoryFailure("conflict") {
+		t.Fatal("missing anchor was not explicit", err)
+	}
 	found := false
 	for _, m := range data["messages"].([]appHistoryMessage) {
 		if m.Anchor && strings.Contains(m.Text, quote) {

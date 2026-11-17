@@ -259,6 +259,7 @@ func (env appEnv) linkSessionTargets(ctx context.Context, data any) {
 			represented[id] = true
 		}
 		if term != nil {
+			row["live"] = "live"
 			represented[term.CoreID+"/"+term.Address] = true
 		}
 	}

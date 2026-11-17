@@ -232,8 +232,8 @@ func TestAppInteractiveSessionRowsAndFreshLeaseTarget(t *testing.T) {
 	data := map[string]any{"rows": rows}
 	f.env.linkSessionTargets(context.Background(), data)
 	got := data["rows"].([]map[string]any)
-	if got[0]["terminal"] == nil {
-		t.Fatal("registered conversation was not linked")
+	if got[0]["terminal"] == nil || got[0]["live"] != "live" {
+		t.Fatal("registered running conversation was not linked as live")
 	}
 	seen := map[string]bool{}
 	for _, r := range got[1:] {
