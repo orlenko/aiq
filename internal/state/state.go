@@ -369,7 +369,8 @@ func Open(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE usage ADD COLUMN cli_login_error TEXT`)
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
 		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
-		"launcher TEXT", "transcript TEXT", "drain_manual INTEGER", "why TEXT"} {
+		"launcher TEXT", "transcript TEXT", "drain_manual INTEGER", "why TEXT",
+		"term_socket TEXT", "term_core TEXT", "term_address TEXT", "term_pid INTEGER"} {
 		db.Exec(`ALTER TABLE leases ADD COLUMN ` + col)
 	}
 	db.Exec(`ALTER TABLE launches ADD COLUMN args TEXT`)

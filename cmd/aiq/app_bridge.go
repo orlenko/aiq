@@ -104,13 +104,21 @@ type appEnv struct {
 	input     navFactoryInput
 	quotas    *navQuotaDeps
 	resolve   func(ref string) (herdr.Target, string)
+	// Interactive sessions' recorded terminals (app_interactive.go).
+	leaseTerminals func(ctx context.Context, host string) (map[int64]state.LeaseTerminal, error)
+	procs          func(context.Context) (appProcs, error)
+	verifyTerminal func(state.LeaseTerminal) (herdr.Target, string)
 }
 
 func appProductionEnv() appEnv {
 	in := navProductionInput()
 	return appEnv{version: version, now: time.Now, identity: pool.HostnameContext, hostname: os.Hostname,
 		dataDir: paths.DataDir(), asksPath: filepath.Join(paths.DataDir(), asksDBName), statePath: paths.StateDB(),
-		input: in, quotas: appProductionQuotas(), resolve: herdr.ResolveTarget}
+		input: in, quotas: appProductionQuotas(), resolve: herdr.ResolveTarget,
+		leaseTerminals: appProductionLeaseTerminals, procs: appProductionProcs,
+		verifyTerminal: func(r state.LeaseTerminal) (herdr.Target, string) {
+			return herdr.VerifyTerminal(r.Socket, r.Core, r.Address, int(r.TerminalPID))
+		}}
 }
 
 func cmdApp(args []string) error {
