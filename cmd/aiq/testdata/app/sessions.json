@@ -11,6 +11,7 @@
  "partial": false,
  "omitted": {
   "older": 0,
+  "slow": 0,
   "unreadable": 0
  },
  "data": {

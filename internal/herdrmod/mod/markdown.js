@@ -4,26 +4,28 @@ export function escapeHTML(text) {
   return String(text).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 function inline(text) {
-  let out = "", i = 0;
+  const out=[];let i=0,plain=0;
   while (i < text.length) {
+    const c=text.charCodeAt(i);if(c!==92&&c!==96&&c!==42&&c!==95){i++;continue;}
+    if(i>plain)out.push(escapeHTML(text.slice(plain,i)));
     if (text[i] === "\\" && i + 1 < text.length) {
-      out += escapeHTML(text[i + 1]); i += 2; continue;
+      out.push(escapeHTML(text[i + 1])); i += 2;plain=i;continue;
     }
     if (text[i] === "`") {
       let n = 1; while (text[i+n] === "`") n++;
       const end = text.indexOf("`".repeat(n), i+n);
-      if (end >= 0) { out += "<code>"+escapeHTML(text.slice(i+n,end))+"</code>"; i=end+n; continue; }
+      if (end >= 0) { out.push("<code>"+escapeHTML(text.slice(i+n,end))+"</code>"); i=end+n;plain=i;continue; }
     }
     const mark = text.startsWith("**",i) ? "**" : text.startsWith("__",i) ? "__" : null;
     if (mark) {
       const end = text.indexOf(mark,i+2);
-      if (end > i+2) { out += "<strong>"+escapeHTML(text.slice(i+2,end))+"</strong>"; i=end+2; continue; }
+      if (end > i+2) { out.push("<strong>"+escapeHTML(text.slice(i+2,end))+"</strong>"); i=end+2;plain=i;continue; }
     }
     // Links remain readable, including their destination. They are deliberately
     // not resource-bearing HTML: copying retains the original Markdown.
-    out += escapeHTML(text[i++]);
+    out.push(escapeHTML(text[i++]));plain=i;
   }
-  return out;
+  if(i>plain)out.push(escapeHTML(text.slice(plain,i)));return out.join("");
 }
 export function documentHTML(raw, marks = false) {
   if (marks) return "<pre>"+escapeHTML(raw)+"</pre>";

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {documentHTML} from './mod/markdown.js';
-import {Selection,groups,rowKey,sessionKey,localTime} from './mod/state.js';
+import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows} from './mod/state.js';
 import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget} from './mod/protocol.js';
 const host='3f0c9a1e5b7d24680aceb13579bdf024',revision='1'.repeat(64);
 const row=(id,session='first')=>({id:String(id),host,machine:null,revision,provider:'claude',conversation_id:session,workspace:'/invented/'+session,raised_at_ms:id,state:'open',first:{preview:'Question',bytes:8,truncated:false},latest:{preview:'Question',bytes:8,truncated:false}});
@@ -24,6 +24,13 @@ test('groups distinguish machine, provider and conversation even in the same pat
 });
 test('one conversation remains one group when its working directory changes',()=>{
   assert.equal(groups([row(1),{...row(2),workspace:'/invented/elsewhere'}]).length,1);
+});
+test('older session windows do not duplicate recorded workspace rows',()=>{
+  const workspace={kind:'workspace',provider:'claude',id:'',cwd:'/invented/work',updated_ms:2};
+  const first={kind:'session',provider:'claude',id:'one',updated_ms:3};
+  const second={kind:'session',provider:'claude',id:'two',updated_ms:1};
+  const rows=mergeSessionRows([workspace,first],[{...workspace,updated_ms:1},second]);
+  assert.equal(rows.length,3);assert.equal(rows.find(r=>r.kind==='workspace').updated_ms,2);
 });
 test('navigation rejects kept shells, other generations and other addresses',()=>{
   const t={relation:'origin',address:'t7',core_id:'invented-core',witness:{terminal_pid:123,label:'9'.repeat(32)}};

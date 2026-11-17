@@ -9,7 +9,7 @@ const str = (x,n=262144) => typeof x === "string" && x.length <= n;
 export class BridgeError extends Error { constructor(code) { super(code); this.code=code; } }
 function require(ok) { if (!ok) throw new BridgeError("internal"); }
 function messages(rows) {
-  require(Array.isArray(rows) && rows.length <= 10000);
+  require(Array.isArray(rows) && rows.length <= 40);
   for (const row of rows) require(object(row) && str(row.key,512) && str(row.text) && ["user","assistant","system","tool"].includes(row.role) && Number.isSafeInteger(row.at_ms));
 }
 export function decode(stdout, kind, expectedHost=null) {

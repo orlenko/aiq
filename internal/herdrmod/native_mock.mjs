@@ -15,5 +15,8 @@ export const div=element,h_flex=element,v_flex=element;
 export const Button={new:element},Table=Button,TableHeader=Button,TableBody=Button,TableRow=Button,TableHead=Button,TableCell=Button,Input=Button;
 export const TextView={html:element};
 export const ScrollHandle={new:()=>({last:null,scroll_to_item(i){this.last=i;}})};
+export const VirtualListScrollHandle=ScrollHandle;
+export const Scrollbar={vertical:element};
+export function v_virtual_list(){return element();}
 export const InputState={new:()=>({text:'',on(){},value(){return this.text;},set_value(text){this.text=text;}})};
 export function context(){const tasks=[];return {tasks,notify(){},stop_propagation(){},focus_handle(){return {focus(){}};},timer:{every(){}},spawn(fn){const p=fn(this);tasks.push(p);return p;},async drain(){while(tasks.length)await tasks.shift();}};}

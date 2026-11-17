@@ -194,7 +194,7 @@ func TestAppHistoryWindowCapsMessageCount(t *testing.T) {
 	if err != nil || !partial {
 		t.Fatal(err, partial)
 	}
-	if len(window["messages"].([]appHistoryMessage)) != 200 {
+	if len(window["messages"].([]appHistoryMessage)) != 40 {
 		t.Fatal("native view would render an unbounded number of messages")
 	}
 }
@@ -231,6 +231,58 @@ func TestAppHistoryRejectsRepeatedEmptyFlag(t *testing.T) {
 	_, err := (appHistoryDeps{}).run(context.Background(), transcript.Roots{}, "sessions", []string{"--limit", "", "--limit", "1"})
 	if err != appHistoryFailure("invalid_request") {
 		t.Fatal("repeated flag was admitted", err)
+	}
+}
+
+func TestAppHistoryQuotePlacementIgnoresFormattingButRefusesAmbiguity(t *testing.T) {
+	at := time.Unix(100, 0)
+	quote := "Should I remove the invented fixture and run the migration now?"
+	s := &transcript.Session{Turns: []transcript.Turn{{Started: at, Reply: "Should I remove the **invented fixture**\nand run the migration now?"}}}
+	ask := state.Ask{RaisedAt: 200, FirstQuote: quote, LastQuote: quote}
+	anchor, err := appHistoryPlaceAsk(context.Background(), ask, s)
+	if err != nil || anchor == nil || *anchor != at.UnixMilli() {
+		t.Fatal("formatting hid a unique original question", anchor, err)
+	}
+	s.Turns = append(s.Turns, transcript.Turn{Started: at.Add(time.Second), Reply: s.Turns[0].Reply})
+	anchor, err = appHistoryPlaceAsk(context.Background(), ask, s)
+	if err != nil || anchor != nil {
+		t.Fatal("ambiguous quote was assigned to a turn", anchor, err)
+	}
+}
+
+func TestAppHistorySlowCandidateDoesNotTrapOlderPaging(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	newer := filepath.Join(projects, "invented", fixtureID(8, 1)+".jsonl")
+	older := filepath.Join(projects, "invented", fixtureID(8, 2)+".jsonl")
+	writeLinesTB(t, newer, "{}")
+	writeLinesTB(t, older, "{}")
+	os.Chtimes(newer, time.Unix(200, 0), time.Unix(200, 0))
+	os.Chtimes(older, time.Unix(100, 0), time.Unix(100, 0))
+	roots := transcript.Roots{ClaudeProjects: []string{projects}}
+	d := appHistoryDeps{input: navFactoryInput{now: time.Now}, source: transcript.NewIndex(roots), summary: func(_ context.Context, path string) (transcript.Summary, error) {
+		if path == newer {
+			return transcript.Summary{}, transcript.ErrBudget
+		}
+		return transcript.Summary{Provider: "claude", ID: fixtureID(8, 2), Label: "Invented older session"}, nil
+	}}
+	out, err := d.run(context.Background(), roots, "sessions", []string{"--limit", "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Partial || out.Omitted["slow"] != 1 {
+		t.Fatal("slow input became an empty complete result", out)
+	}
+	cursor := out.Data.(map[string]any)["window"].(map[string]any)["cursor"].(string)
+	if cursor == "" {
+		t.Fatal("slow newest candidate trapped the one-shot client")
+	}
+	next, err := d.run(context.Background(), roots, "sessions", []string{"--limit", "1", "--before", cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Data.(map[string]any)["rows"].([]map[string]any)) != 1 {
+		t.Fatal("could not advance past a slow candidate")
 	}
 }
 

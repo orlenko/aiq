@@ -1,23 +1,25 @@
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, ScrollHandle, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
 import { exec, hc, machines, panes, focused, run, theme, checking, nextCommand } from "herdr";
 import { Bridge, matchesTarget } from "./protocol.js";
-import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText } from "./state.js";
+import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText } from "./state.js";
 import { button, label, panel, makeProse } from "./ui.js";
 
 export default class AIQ extends View {
   init(_props,cx) {
     this.bridge=new Bridge(exec);this.sources=new Map();this.selection=new Selection();this.prose=makeProse();
-    this.tab="asks";this.machine="all";this.section="pending";this.query="";this.marks=false;this.hasAsks=false;this.liveOnly=false;this.workers=false;
+    this.tab="asks";this.machine="all";this.section="pending";this.query="";this.marks=false;this.hasAsks=false;this.liveOnly=false;this.workers=false;this.tablePage=0;
     this.detail=null;this.context=null;this.conversation=null;this.busy=false;this.notice="";this.undo=[];this.sort="updated_ms";this.desc=true;this.size={width:1200,height:800};
     this.scroll=ScrollHandle.new();this.contextScroll=ScrollHandle.new();this.handle=cx.focus_handle();
+    this.gridScroll=VirtualListScrollHandle.new();this.groupsScroll=VirtualListScrollHandle.new();this.gridFocus=cx.focus_handle();this.gridHeight=400;this.gridWidth=800;this.groupsHeight=400;this.groupsWidth=320;this.tableSelected=null;
     this.filter=InputState.new({placeholder:"Filter sessions, projects or asks"});
-    this.filter.on("change",(_e,cx)=>{this.query=this.filter.value();this.reconcile(cx);cx.notify();});
+    this.filter.on("change",(_e,cx)=>{this.query=this.filter.value();this.tablePage=0;this.reconcile(cx);cx.notify();});
     this.search=InputState.new({placeholder:"Find in loaded conversation"});
     this.search.on("submit",(_e,cx)=>this.findContext(cx));
     if(!checking()) {
       this.refresh(cx);
       cx.timer.every(30000,cx=>{if(this.visible() && !this.busy && this.tab==="asks")this.refresh(cx);});
+      cx.timer.every(60000,cx=>{if(this.visible() && !this.busy && this.tab==="quotas")this.refresh(cx);});
       cx.spawn(async cx=>{for(;;){const command=await nextCommand();if(command==="activate"){
         const pane=panes().find(p=>p.mod==="aiq");if(pane)run("pane.focus",{pane:pane.pane});this.handle.focus();cx.notify();
       }else if(command==="focus"){this.handle.focus();}}});
@@ -36,10 +38,11 @@ export default class AIQ extends View {
   groupList(){return groups(this.askRows(),this.query,this.section);}
   current(){return this.askRows().find(r=>rowKey(r)===this.selection.ask)??null;}
   reconcile(cx) {
-    const before=this.selection.ask,row=this.selection.reconcile(this.groupList());
+    const before=this.selection.ask,beforeGroup=this.selection.group,list=this.groupList(),row=this.selection.reconcile(list);
+    if(beforeGroup!==this.selection.group){const index=list.findIndex(g=>g.key===this.selection.group);if(index>=0)this.groupsScroll.scroll_to_item(index,"center");}
     const changed=!!row && this.detail?.revision && this.detail.revision!==row.revision;
     if(changed){this.selection.generation++;this.selection.peek=null;}
-    if(before!==this.selection.ask || changed){this.detail=null;this.context=null;if(row)this.loadDetail(row,cx);}
+    if(before!==this.selection.ask || changed){this.detail=null;this.context=null;this.match=null;this.search.set_value("");this.prose.clear();if(row)this.loadDetail(row,cx);}
   }
   setTab(tab,cx){this.tab=tab;this.conversation=null;this.selection.peek=null;this.context=null;this.notice="";this.prose.clear();this.refresh(cx);cx.notify();}
   refresh(cx) {
@@ -60,7 +63,7 @@ export default class AIQ extends View {
       try {
         const e=await this.bridge.read(s.machine,kind,options,()=>s[kind]?.token===token&&this.tab===kind&&this.sourceList().includes(s));
         if(s[kind]?.token!==token)return;
-        if(append && old.value) e.data.rows=[...old.value.data.rows,...e.data.rows];
+        if(append && old.value) e.data.rows=mergeSessionRows(old.value.data.rows,e.data.rows);
         s[kind]={value:e,loading:false,error:null};
       }catch(e){
         if(s[kind]?.token!==token)return;
@@ -75,7 +78,7 @@ export default class AIQ extends View {
     });
   }
   choose(row,cx) {
-    this.selection.choose(row);this.detail=null;this.context=null;this.notice="";this.search.set_value("");
+    this.selection.choose(row);this.detail=null;this.context=null;this.match=null;this.notice="";this.search.set_value("");
     this.prose.clear();
     this.loadDetail(row,cx);cx.notify();
   }
@@ -92,7 +95,7 @@ export default class AIQ extends View {
   peek(row,cx) {
     if(checking())return;
     if(this.selection.peek===rowKey(row)){this.selection.peek=null;this.context=null;cx.notify();return;}
-    const token={};this.selection.peek=rowKey(row);this.context={loading:true,token};
+    const token={};this.selection.peek=rowKey(row);this.context={loading:true,token};this.match=null;
     const generation=this.selection.generation;
     cx.spawn(async cx=>{try{
       const e=await this.bridge.read(row.machine,"ask-context",row,()=>generation===this.selection.generation&&this.context?.token===token);
@@ -164,7 +167,7 @@ export default class AIQ extends View {
     this.busy=true;cx.spawn(async cx=>{try{
       // Ask actions use an exact row revision. Sessions resolve by provider/id.
       const e=await this.bridge.read(row.machine,"target",row);
-      const target=e.data.terminal;if(!target)throw {code:"not_found"};
+      const target=e.data.terminal;if(!target)throw {terminalReason:e.data.terminal_reason||"unknown"};
       const address=(row.machine?row.machine+"/":"")+target.address;
       const r=await hc(["get",address,"--json"]);
       if(r.code!==0)throw {code:"unavailable"};
@@ -173,7 +176,12 @@ export default class AIQ extends View {
       const visible=panes().find(p=>p.terminal===address);
       run(visible?"pane.focus":"terminal.peek",{terminal:address});
       this.notice=target.relation==="workspace_current"?"Opened the workspace’s current terminal; this ask is from an earlier conversation.":"Opened the session terminal.";
-    }catch(e){this.notice=errorText(e.code??"unavailable");}this.busy=false;cx.notify();});
+    }catch(e){this.notice=e.terminalReason?terminalText(e.terminalReason):errorText(e.code??"unavailable");}this.busy=false;cx.notify();});
+  }
+  showSessionAsks(row,cx){
+    this.tab="asks";this.conversation=null;this.section="pending";this.machine=machineKey(row.machine);this.query=row.cwd||row.workspace||"";this.filter.set_value(this.query);
+    const match=this.askRows().find(a=>a.host===row.host&&a.state==="open"&&a.provider===row.provider&&(row.id?a.conversation_id===row.id:a.workspace===row.cwd));
+    if(match)this.choose(match,cx);else this.reconcile(cx);this.refresh(cx);cx.notify();
   }
   status(s,kind) {
     const c=this.cache(s,kind),name=s.machine??"Here";
@@ -199,7 +207,7 @@ export default class AIQ extends View {
       }).children([
         this.toolbar(cx),
         h_flex().px(24).py(8).gap(8).items_center().children([
-          label("Machines",true),...["all",...this.sources.keys()].map(key=>button("machine-"+key,key==="all"?"All":key||"Here",(_e,cx)=>{this.machine=key;this.reconcile(cx);this.refresh(cx);cx.notify();},this.machine===key))
+          label("Machines",true),...["all",...this.sources.keys()].map(key=>button("machine-"+key,key==="all"?"All":key||"Here",(_e,cx)=>{this.machine=key;this.tablePage=0;this.reconcile(cx);this.refresh(cx);cx.notify();},this.machine===key))
         ]),
         h_flex().px(24).py(4).gap(18).flex_wrap().children(this.sourceList().map(s=>this.status(s,this.tab))),
         this.notice||this.undo.length?h_flex().px(24).py(8).gap(12).items_center().children([label(this.notice||`${this.undo.length} dismissal${this.undo.length===1?"":"s"} can be undone.`),...(this.undo.length?[button("undo","Undo",(_e,cx)=>this.dismiss(this.undo,cx,"restore"),false,this.busy)]:[])]):null,
@@ -215,11 +223,14 @@ export default class AIQ extends View {
           h_flex().gap(8).children([button("pending","Pending",(_e,cx)=>{this.section="pending";this.reconcile(cx);cx.notify();},this.section==="pending"),button("done","Done / dismissed",(_e,cx)=>{this.section="done";this.reconcile(cx);cx.notify();},this.section==="done")]),
           label(`${list.length} sessions · ${list.reduce((n,g)=>n+g.rows.length,0)} loaded asks`,true)
         ]),
-        v_flex().id("session-groups").flex_1().min_h(0).overflow_y_scrollbar().px(8).gap(5).children(list.map(g=>
-          v_flex().id("group-"+g.key).p(12).gap(5).rounded(6).border(1).border_color(g.key===this.selection.group?t.accent:t.border).bg(g.key===this.selection.group?t.raised:t.surface).on_click((_e,cx)=>this.choose(g.rows[0],cx)).children([
-            h_flex().justify_between().children([div().font_semibold().child(g.workspace.split("/").filter(Boolean).pop()||"Unknown workspace"),label(g.rows.length)]),
-            label(g.name||g.provider+" · "+g.rows[0].conversation_id.slice(0,8),true),label((g.machine??"Here")+" · "+localTime(g.updated),true),label(g.workspace,true)
-          ]))),
+        div().id("session-group-viewport").relative().flex_1().min_h(0).w_full().on_size_change((size,cx)=>{if(Math.abs(this.groupsHeight-size.height)>1||Math.abs(this.groupsWidth-size.width)>1){this.groupsHeight=size.height;this.groupsWidth=size.width;cx.notify();}}).children([
+          v_virtual_list("session-groups",list.length,116,i=>list[i].key,range=>list.slice(range.start,range.end).map(g=>
+            v_flex().id("group-"+g.key).w(Math.max(1,this.groupsWidth-16)).mx(8).my(3).p(12).gap(5).h(110).rounded(6).border(1).border_color(g.key===this.selection.group?t.accent:t.border).bg(g.key===this.selection.group?t.raised:t.surface).children([
+              h_flex().justify_between().children([div().font_semibold().truncate().child(g.workspace.split("/").filter(Boolean).pop()||"Unknown workspace"),label(g.rows.length)]),
+              label(g.name||g.provider+" · "+g.rows[0].conversation_id.slice(0,8),true).truncate(),label((g.machine??"Here")+" · "+localTime(g.updated),true).truncate(),label(g.workspace,true).truncate()
+            ]))).h(Math.max(1,this.groupsHeight)).w_full().track_scroll(this.groupsScroll).on_item_click((key,cx)=>{const group=list.find(g=>g.key===key);if(group)this.choose(group.rows[0],cx);}),
+          Scrollbar.vertical("session-groups").absolute().inset_0()
+        ]),
         !list.length?div().p(16).child("No matching asks in the loaded data."):null
       ].filter(Boolean)),
       row&&group?this.askView(row,group,cx):panel("ask-empty").child(label("Choose a session to review its asks.",true))
@@ -239,7 +250,7 @@ export default class AIQ extends View {
         ...(dismissable.length?[h_flex().gap(8).children([button("batch",`Dismiss ${dismissable.length} session asks`,(_e,cx)=>this.dismiss(dismissable,cx),false,this.busy)])]:[])
       ]),
       panel("question").child(v_flex().gap(16).children([
-        label(`Asked ${localTime(row.raised_at_ms)} · Ask ${row.id}`,true),
+        label(`First asked ${localTime(row.raised_at_ms)}${row.repeats?" · repeated "+row.repeats+" times":""} · Ask ${row.id}`,true),
         this.detail?.loading?label("Loading full ask…",true):null,
         this.detail?.error?label(errorText(this.detail.error),true):null,
         this.prose("ask-text-"+row.id,data?.latest.text??row.latest.preview,this.marks),
@@ -251,7 +262,7 @@ export default class AIQ extends View {
           button("copy","Copy ask",(_e,cx)=>cx.write_to_clipboard(data?.latest.text??row.latest.preview),false,!data),
           button("terminal",row.terminal?.relation==="workspace_current"?"Current workspace terminal":"Go to terminal",(_e,cx)=>this.focusTerminal(row,cx),false,this.busy||!row.terminal)
         ]),
-        !row.terminal?label("Terminal unavailable · "+(row.terminal_reason??"unknown"),true):null,
+        !row.terminal?label(terminalText(row.terminal_reason),true):null,
         label("Reply in the session’s terminal.",true)
       ].filter(Boolean)))
     ]);
@@ -300,21 +311,45 @@ export default class AIQ extends View {
     rows=rows.filter(r=>[r.name,r.cwd,r.provider,r.machine??"Here",r.live].join(" ").toLowerCase().includes(q));
     rows=rows.filter(r=>(this.workers||!r.worker)&&(!this.hasAsks||r.pending_asks_known&&r.pending_asks>0)&&(!this.liveOnly||r.live==="live"));
     const direction=this.desc?-1:1,key=this.sort;rows.sort((a,b)=>direction*(typeof a[key]==="number"?a[key]-b[key]:String(a[key]??"").localeCompare(String(b[key]??""))));
-    const cols=[["name","Session"],["cwd","Workspace"],["machine","Machine"],["provider","Provider"],["pending_asks","Asks"],["updated_ms","Last activity"],["live","Status"]];
+    const keyFor=r=>[r.host,r.provider,r.kind,r.id||r.cwd].join("\u001f");
+    const selected=rows.find(r=>keyFor(r)===this.tableSelected);
+    const cols=[["name","Session"],["cwd","Workspace"],["machine","Machine"],["provider","Provider"],["pending_asks","Asks"],["updated_ms","Last activity"],["live","Status"],["terminal","Terminal"]];
+    const widths=["22%","26%","8%","8%","6%","17%","7%","6%"];
     return v_flex().h(Math.max(300,this.size.height-150)).flex_1().min_h(0).px(24).py(16).gap(14).children([
       h_flex().gap(8).items_center().flex_wrap().children([
         Input.new(this.filter).w(320).border(1).border_color(theme().border).p(8),
-        ...[["hasAsks","Has asks"],["liveOnly","Live only"],["workers","Include workers"]].map(([key,text])=>button("filter-"+key,text,(_e,cx)=>{this[key]=!this[key];cx.notify();},this[key])),
+        ...[["hasAsks","Has asks"],["liveOnly","Live only"],["workers","Include workers"]].map(([key,text])=>button("filter-"+key,text,(_e,cx)=>{this[key]=!this[key];this.tablePage=0;cx.notify();},this[key])),
         label(`${rows.length} loaded rows`,true),div().flex_1(),
         ...this.sourceList().filter(s=>s.sessions?.value?.data.window.cursor).map(s=>button("older-"+machineKey(s.machine),"Older · "+(s.machine??"Here"),(_e,cx)=>this.load(s,"sessions",cx,{before:s.sessions.value.data.window.cursor},true),false,s.sessions.loading))
       ]),
-      div().id("sessions-table-scroll").min_h(0).flex_1().overflow_y_scrollbar().child(
-        Table.new("sessions-grid").w_full().accessibility_label("Sessions across machines").row_count(rows.length+1).column_count(cols.length).children([
-          TableHeader.new("headers").child(TableRow.new("header-row",1).children(cols.map(([key,title],i)=>TableHead.new("head-"+key,i+1).p(10).child(button("sort-"+key,title+(this.sort===key?(this.desc?" ↓":" ↑"):""),(_e,cx)=>{this.desc=this.sort===key?!this.desc:true;this.sort=key;cx.notify();}))))),
-          TableBody.new("session-body").children(rows.map((r,i)=>TableRow.new("session-"+r.host+"-"+r.provider+"-"+(r.id||r.cwd),i+2).children(cols.map(([key],j)=>{
+      h_flex().gap(8).items_center().children([
+        button("read-selected","Read conversation",(_e,cx)=>this.openConversation(selected,cx),false,!selected?.id),
+        button("asks-selected","Review asks",(_e,cx)=>this.showSessionAsks(selected,cx),false,!selected?.pending_asks_known||selected.pending_asks<1),
+        button("terminal-selected","Go to terminal",(_e,cx)=>this.focusTerminal(selected,cx),false,this.busy||!selected?.id||!["live","open"].includes(selected.live)&&!selected.terminal),
+        label("Select a row · double-click to read",true)
+      ]),
+      div().id("sessions-table-scroll").min_h(0).flex_1().child(
+        Table.new("sessions-grid").flex().flex_col().flex_1().min_h(0).h_full().w_full().accessibility_label("Sessions across machines").row_count(rows.length+1).column_count(cols.length).children([
+          TableHeader.new("headers").flex().flex_col().w_full().child(TableRow.new("header-row",1).flex().flex_row().items_center().w_full().children(cols.map(([key,title],i)=>TableHead.new("head-"+key,i+1).w(widths[i]).min_w(0).flex_shrink_0().p(6).child(key==="terminal"?label(title):button("sort-"+key,title+(this.sort===key?(this.desc?" ↓":" ↑"):""),(_e,cx)=>{this.desc=this.sort===key?!this.desc:true;this.sort=key;this.tablePage=0;cx.notify();}).px(6).w_full().truncate())))),
+          TableBody.new("session-body").flex().flex_col().flex_1().min_h(0).w_full().child(
+            div().id("session-grid-viewport").relative().flex_1().min_h(0).min_w(0).w_full().track_focus(this.gridFocus).on_size_change((size,cx)=>{if(Math.abs(this.gridHeight-size.height)>1||Math.abs(this.gridWidth-size.width)>1){this.gridHeight=size.height;this.gridWidth=size.width;cx.notify();}}).on_key_down((event,cx)=>{
+              const index=rows.findIndex(r=>keyFor(r)===this.tableSelected);
+              if(event.keystroke==="up"||event.keystroke==="down"){const next=Math.max(0,Math.min(rows.length-1,index+(event.keystroke==="down"?1:-1)));if(rows[next]){this.tableSelected=keyFor(rows[next]);this.gridScroll.scroll_to_item(next,"center");cx.stop_propagation();cx.notify();}}
+              const current=rows.find(r=>keyFor(r)===this.tableSelected);if(event.keystroke==="enter"&&current?.id){this.openConversation(current,cx);cx.stop_propagation();}
+            }).children([
+            v_virtual_list("session-rows",rows.length,40,i=>keyFor(rows[i]),range=>rows.slice(range.start,range.end).map((r,i)=>TableRow.new("session-"+keyFor(r),range.start+i+2).flex().flex_row().items_center().h(40).w(Math.max(1,this.gridWidth)).bg(keyFor(r)===this.tableSelected?theme().raised:theme().surface).children(cols.map(([key],j)=>{
             let value=key==="name"?(r.name||r.id.slice(0,8)||"Workspace history"):key==="machine"?(r.machine??"Here"):key==="pending_asks"?(r.pending_asks_known?String(r.pending_asks):"Unknown"):key==="updated_ms"?localTime(r.updated_ms):r[key];
-            return TableCell.new("cell-"+i+"-"+j,j+1).p(10).border_b(1).border_color(theme().border).child(key==="name"?button("open-session-"+i,String(value),(_e,cx)=>this.openConversation(r,cx),false,!r.id):label(value));
-          }))))
+            if(key==="name"&&!r.id)value="Recorded workspace";
+            if(key==="terminal")value=r.terminal?"Linked":"—";
+            const child=label(value).truncate();
+            return TableCell.new("cell-"+i+"-"+j,j+1).w(widths[j]).min_w(0).flex_shrink_0().p(6).border_b(1).border_color(theme().border).child(child);
+          })))).h(Math.max(1,this.gridHeight)).w_full().track_scroll(this.gridScroll).on_item_click((key,cx)=>{
+            const row=rows.find(r=>keyFor(r)===key);if(!row)return;
+            const now=Date.now(),double=this.lastRowClick?.key===key&&now-this.lastRowClick.at>=0&&now-this.lastRowClick.at<350;
+            this.tableSelected=key;this.lastRowClick={key,at:now};this.gridFocus.focus();if(double&&row.id)this.openConversation(row,cx);cx.notify();
+          }),
+            Scrollbar.vertical("session-rows").absolute().inset_0()
+          ]))
         ]))
     ]);
   }

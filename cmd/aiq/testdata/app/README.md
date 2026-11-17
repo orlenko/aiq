@@ -109,7 +109,9 @@ The app then requires `hc get <machine/address> --json` to show `state:"live"`, 
 Configured transcript candidates are sorted by file modification time before
 parsing the most recent `limit` (default 100, maximum 500). `window.cursor`
 continues through older candidates. `omitted.older` and `omitted.unreadable`
-describe the missing history. Names are bounded previews. Launch metadata and
+describe the missing history; `omitted.slow` counts parses that did not finish
+their two-second share of the request. Paging advances past them, so one slow
+file cannot trap a cold one-shot process. Names are bounded previews. Launch metadata and
 open-ask counts are separate observations; unavailable counts stay unknown.
 Times ending in `_ms` are milliseconds. Workspace-only rows have no conversation
 ID and do not fabricate a transcript.
@@ -118,7 +120,7 @@ ID and do not fabricate a transcript.
 
 Messages have stable opaque keys, raw text, source attribution, timestamp,
 original and displayed byte counts, and a truncation flag. A display window
-contains at most 200 messages and a conservative 3 MiB text allowance; each
+contains at most 40 messages and a conservative 3 MiB text allowance; each
 message is capped at 256 KiB. Cursors page earlier or later messages without
 overlap. A changed or missing cursor returns `conflict`.
 

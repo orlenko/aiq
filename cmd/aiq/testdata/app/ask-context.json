@@ -27,10 +27,32 @@
    "text": "Shall I go ahead with option B and push the invented branch now, or wait for the review that is still running? Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. ",
    "truncated": false
   },
-  "messages": [],
+  "messages": [
+   {
+    "key": "m0-0-8b06bb34ca13f40f",
+    "turn": 0,
+    "role": "user",
+    "at_ms": 1940669880000,
+    "text": "Prepare the invented branch.",
+    "bytes": 28,
+    "full_bytes": 28,
+    "truncated": false
+   },
+   {
+    "key": "m0-1-8868a3a63d2cc4be",
+    "turn": 0,
+    "role": "assistant",
+    "at_ms": 1940669970000,
+    "text": "Shall I go ahead with option B and push the invented branch now, or wait for the review that is still running? Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail.",
+    "bytes": 450,
+    "full_bytes": 450,
+    "truncated": false,
+    "anchor": true
+   }
+  ],
   "placement": {
-   "anchor_ms": 0,
-   "confidence": "none"
+   "anchor_ms": 1940669970000,
+   "confidence": "time+text"
   },
   "provider": "claude",
   "revision": "3ca8563403cfb2d23bfb84fe687ef4ff24d1bf51994590b1fefa5759848a928e"

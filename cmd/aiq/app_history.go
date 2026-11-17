@@ -31,6 +31,7 @@ type appHistoryDeps struct {
 	cache   *transcript.Cache
 	source  transcript.AllDiscovery
 	readAsk appHistoryAskReader
+	summary func(context.Context, string) (transcript.Summary, error)
 }
 
 // appHistoryRun reads local configured roots. It neither starts a daemon nor
@@ -212,8 +213,10 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 	if err != nil {
 		return appHistoryOutput{}, err
 	}
+	names := d.source.CodexNames(ctx)
 	summaries := []transcript.Summary{}
 	scanned := 0
+	slow := 0
 	cursor := ""
 	byID := map[string]int{}
 	parseCtx := ctx
@@ -222,13 +225,25 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 		parseCtx, parseCancel = context.WithDeadline(ctx, deadline.Add(-time.Second))
 	}
 	defer parseCancel()
+	parseSummary := d.summary
+	if parseSummary == nil {
+		parseSummary = d.cache.Summary
+	}
 	for _, candidate := range selected {
 		if parseCtx.Err() != nil {
 			break
 		}
-		row, err := d.cache.Summary(parseCtx, candidate.candidate.Path)
+		one, cancelOne := context.WithTimeout(parseCtx, 2*time.Second)
+		row, err := parseSummary(one, candidate.candidate.Path)
+		cancelOne()
 		if errors.Is(err, transcript.ErrBudget) {
-			break
+			slow++
+			scanned++
+			cursor = fmt.Sprintf("%d.%s", candidate.at, candidate.key)
+			if parseCtx.Err() != nil {
+				break
+			}
+			continue
 		}
 		scanned++
 		cursor = fmt.Sprintf("%d.%s", candidate.at, candidate.key)
@@ -245,6 +260,9 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 		}
 		if row.Cwd == "" {
 			row.Cwd = candidate.candidate.Directory
+		}
+		if row.Provider == "codex" && names[row.ID] != "" {
+			row.Label = names[row.ID]
 		}
 		key := row.Provider + "/" + row.ID
 		if _, ok := byID[key]; ok {
@@ -285,8 +303,8 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 	if older == 0 {
 		cursor = ""
 	}
-	partial := older > 0 || unreadable > 0 || extraErr != nil || extras.partial
-	return appHistoryOutput{Data: map[string]any{"window": map[string]any{"limit": limit, "scanned": scanned, "of": total, "cursor": cursor}, "activity": map[string]any{"known": extraErr == nil && extras.summary.Known, "live": extras.summary.Live}, "rows": rows}, Partial: partial, Omitted: map[string]int{"older": older, "unreadable": unreadable}}, nil
+	partial := older > 0 || unreadable > 0 || slow > 0 || extraErr != nil || extras.partial
+	return appHistoryOutput{Data: map[string]any{"window": map[string]any{"limit": limit, "scanned": scanned, "of": total, "cursor": cursor}, "activity": map[string]any{"known": extraErr == nil && extras.summary.Known, "live": extras.summary.Live}, "rows": rows}, Partial: partial, Omitted: map[string]int{"older": older, "unreadable": unreadable, "slow": slow}}, nil
 }
 
 func (d appHistoryDeps) session(ctx context.Context, provider, id string) (*transcript.Session, error) {
@@ -488,7 +506,7 @@ func appHistorySlice(s *transcript.Session, all []appHistoryMessage, anchor int,
 	} else if after != "" {
 		size := 0
 		j := start
-		for j < end && j-start < 200 {
+		for j < end && j-start < 40 {
 			cost := len(all[j].Text)*6 + 512
 			if j > start && size+cost > budget {
 				break
@@ -500,7 +518,7 @@ func appHistorySlice(s *transcript.Session, all []appHistoryMessage, anchor int,
 	} else {
 		size := 0
 		i := end
-		for i > start && end-i < 200 {
+		for i > start && end-i < 40 {
 			cost := len(all[i-1].Text)*6 + 512
 			if i < end && size+cost > budget {
 				break
@@ -539,7 +557,7 @@ func (d appHistoryDeps) askContext(ctx context.Context, opts map[string]string) 
 	if err != nil {
 		return appHistoryOutput{}, err
 	}
-	at, err := navPlaceAsk(ctx, state.AskPlacement{Provider: ask.Provider, SessionID: ask.SessionID, RaisedAt: ask.RaisedAt, FirstQuote: ask.FirstQuote, LatestQuote: ask.LastQuote}, s)
+	at, err := appHistoryPlaceAsk(ctx, ask, s)
 	if err != nil {
 		return appHistoryOutput{}, appHistoryFailure("unavailable")
 	}
@@ -566,7 +584,7 @@ func (d appHistoryDeps) askContext(ctx context.Context, opts map[string]string) 
 			continue
 		}
 		for i, m := range all {
-			if m.Turn == turn && m.Role == "assistant" && strings.Contains(m.Text, q) {
+			if m.Turn == turn && m.Role == "assistant" && appHistoryContainsQuote(m.Text, q) {
 				anchor = i
 				matched = true
 			}
@@ -608,4 +626,54 @@ func (d appHistoryDeps) askContext(ctx context.Context, opts map[string]string) 
 func appHistoryQuote(raw string) map[string]any {
 	text, cut := appHistoryText(raw, 256<<10)
 	return map[string]any{"text": text, "bytes": len(raw), "truncated": cut}
+}
+
+func appHistoryContainsQuote(text, quote string) bool {
+	if len(strings.TrimSpace(quote)) < 16 {
+		return false
+	}
+	if strings.Contains(text, quote) {
+		return true
+	}
+	normalize := func(s string) string {
+		return strings.Join(strings.Fields(strings.NewReplacer("`", "", "*", "", "_", "").Replace(s)), " ")
+	}
+	q := normalize(quote)
+	return len(q) >= 32 && strings.Contains(normalize(text), q)
+}
+func appHistoryPlaceAsk(ctx context.Context, ask state.Ask, s *transcript.Session) (*int64, error) {
+	at, err := navPlaceAsk(ctx, state.AskPlacement{Provider: ask.Provider, SessionID: ask.SessionID, RaisedAt: ask.RaisedAt, FirstQuote: ask.FirstQuote, LatestQuote: ask.LastQuote}, s)
+	if err != nil || at != nil {
+		return at, err
+	}
+	var found *int64
+	for _, turn := range s.Turns {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if turn.Started.IsZero() || turn.Started.Unix() > ask.RaisedAt {
+			continue
+		}
+		matched := false
+		contains := func(text string) {
+			matched = matched || appHistoryContainsQuote(text, ask.LastQuote) || appHistoryContainsQuote(text, ask.FirstQuote)
+		}
+		contains(turn.Reply)
+		for _, text := range turn.Earlier {
+			contains(text)
+		}
+		for _, item := range turn.Items {
+			if item.Kind != transcript.ItemSteer {
+				contains(item.Text)
+			}
+		}
+		if matched {
+			if found != nil {
+				return nil, nil
+			}
+			value := turn.Started.UnixMilli()
+			found = &value
+		}
+	}
+	return found, nil
 }
