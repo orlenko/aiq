@@ -3,11 +3,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {documentBlocks} from './mod/markdown.js';
-import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows} from './mod/state.js';
+import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows,omissionNotice} from './mod/state.js';
 import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget} from './mod/protocol.js';
 const host='3f0c9a1e5b7d24680aceb13579bdf024',revision='1'.repeat(64);
 const row=(id,session='first')=>({id:String(id),host,machine:null,revision,provider:'claude',conversation_id:session,workspace:'/invented/'+session,raised_at_ms:id,state:'open',first:{preview:'Question',bytes:8,truncated:false},latest:{preview:'Question',bytes:8,truncated:false}});
 const envelope=(kind,data,source=host)=>({schema:1,ok:true,kind,host:{id:source,name:'invented'},aiq:'invented',generated_at_ms:123,partial:false,omitted:{},data:kind==='hello'?{...data,commands:['hello','asks','ask-detail','ask-action','target','quotas','sessions','conversation','ask-context']}:data});
+test('history omission notices give actionable reasons while older pages stay ordinary',()=>{
+  assert.equal(omissionNotice({omitted:{older:100,too_large:0}}),'');
+  assert.equal(omissionNotice({omitted:{too_large:2,slow:1,metadata_limit:1}}),
+    '2 transcripts skipped by the file size limit · 1 transcript skipped by the read time limit · Session details omitted by the metadata limit');
+  assert.equal(omissionNotice({omitted:{records:3}}),'3 transcript records skipped by the record size limit');
+  assert.equal(omissionNotice({omitted:{rows:1}}),'1 ask omitted by the list limit');
+});
 test('dismissing stays within the selected session until its last ask',()=>{
   const a=row(1),b=row(2),other=row(9,'other'),s=new Selection();s.choose(a);
   assert.equal(s.reconcile(groups([b,other])).id,'2');assert.equal(s.group,sessionKey(b));

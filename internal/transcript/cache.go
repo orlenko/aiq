@@ -182,6 +182,14 @@ type CacheStats struct {
 // NewCache is a Cache with the navigator's bounds.
 func NewCache() *Cache { return newCache(defaultCacheConfig) }
 
+// NewCacheWithFileLimit changes the largest admitted transcript. The other
+// cache bounds, including how many parses can run together, still apply.
+func NewCacheWithFileLimit(bytes int64) *Cache {
+	cfg := defaultCacheConfig
+	cfg.ceiling = bytes
+	return newCache(cfg)
+}
+
 func newCache(cfg cacheConfig) *Cache {
 	return &Cache{
 		cfg:             cfg,

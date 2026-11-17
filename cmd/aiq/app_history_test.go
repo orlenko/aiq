@@ -93,6 +93,69 @@ func TestAppHistorySessionsColdWindowProgress(t *testing.T) {
 	}
 }
 
+func TestAppHistoryLargeSessionAndLaunchHistory(t *testing.T) {
+	env, x := appTestEnv(t)
+	path := filepath.Join(x.roots.ClaudeProjects[0], claudeNonAlnum.ReplaceAllString(x.work, "-"), fullIDFixtureID+".jsonl")
+	// Use a sparse oversized record between real fixture turns to exercise
+	// the file allowance and the separate per-record omission notice.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(`{"type":"assistant","message":{"content":"`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(159 << 20); err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := fmt.Fprintf(f, "\"}}\n"+`{"type":"user","sessionId":%q,"cwd":%q,"timestamp":"2031-04-05T12:01:00Z","message":{"content":"Invented follow-up question"}}`+"\n"+
+		`{"type":"assistant","timestamp":"2031-04-05T12:01:01Z","message":{"content":[{"type":"text","text":"Invented follow-up answer"}]}}`+"\n", fullIDFixtureID, x.work)
+	if closeErr := f.Close(); writeErr != nil || closeErr != nil {
+		t.Fatal(writeErr, closeErr)
+	}
+	readMetadata := env.input.metadata
+	env.input.metadata = func(ctx context.Context, limits state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
+		snapshot, err := readMetadata(ctx, limits)
+		if err != nil {
+			return nil, err
+		}
+		for i := int64(2); i <= 17000; i++ {
+			snapshot.Launches = append(snapshot.Launches, state.NavigatorLaunch{ID: i, Provider: "claude", Cwd: appTestOtherWS, Mode: state.ModeInteractive})
+		}
+		return snapshot, nil
+	}
+	sessions := appData(t, appCall(t, env, "sessions"))["rows"].([]any)
+	if len(sessions) != 1 {
+		t.Fatal("large session was not loaded", sessions)
+	}
+	row := sessions[0].(map[string]any)
+	if row["id"] != fullIDFixtureID || row["lease_id"] != "7" || row["live"] != "live" || row["pending_asks"] != float64(1) {
+		t.Fatal("large session lost its launch metadata or asks", row)
+	}
+	history := appCall(t, env, "conversation", "--provider", "claude", "--id", fullIDFixtureID)
+	if history["partial"] != true || history["omitted"].(map[string]any)["records"] != float64(1) {
+		t.Fatal("history did not report the skipped record", history)
+	}
+	messages := appData(t, history)["messages"].([]any)
+	if len(messages) < 2 || messages[len(messages)-2].(map[string]any)["text"] != "Invented follow-up question" ||
+		messages[len(messages)-1].(map[string]any)["text"] != "Invented follow-up answer" {
+		t.Fatal("history lost the question or answer after the skipped record", messages)
+	}
+
+	if err := os.Truncate(path, appHistoryFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	env.input.metadata = func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error) {
+		return nil, state.ErrNavigatorSnapshotTooLarge
+	}
+	skipped := appCall(t, env, "sessions")
+	omitted := skipped["omitted"].(map[string]any)
+	if skipped["partial"] != true || omitted["too_large"] != float64(1) || omitted["metadata_limit"] != float64(1) {
+		t.Fatal("sessions did not report the size and metadata limits separately", skipped)
+	}
+}
+
 func TestAppHistoryWindowKeepsAnchorAndPagesBothDirections(t *testing.T) {
 	at := time.Unix(123, 0)
 	s := &transcript.Session{Provider: "claude", ID: appHistoryFixtureID(5, 1)}
