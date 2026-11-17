@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/orlenko/aiq/internal/herdr"
 	"github.com/orlenko/aiq/internal/state"
@@ -189,6 +190,17 @@ type appTargetReply struct {
 // conversation, read when the person clicks; the app never navigates from a
 // cached target.
 func (env appEnv) target(ctx context.Context, f map[string]string) appResult {
+	if f["lease"] != "" {
+		if len(f) != 1 {
+			return appFailure(appInvalid)
+		}
+		id, err := strconv.ParseInt(f["lease"], 10, 64)
+		if err != nil {
+			return appFailure(appInvalid)
+		}
+		term, reason := env.targets(ctx).forLease(id)
+		return appResult{data: appTargetReply{term, reason}}
+	}
 	byAsk := f["ask"] != "" || f["revision"] != ""
 	byConversation := f["provider"] != "" || f["conversation"] != ""
 	if byAsk == byConversation || byAsk && (f["ask"] == "" || f["revision"] == "") || byConversation && (f["provider"] == "" || f["conversation"] == "") {
@@ -211,4 +223,71 @@ func (env appEnv) target(ctx context.Context, f map[string]string) appResult {
 	}
 	term, reason := env.targets(ctx).forAsk(a)
 	return appResult{data: appTargetReply{term, reason}}
+}
+
+// linkSessionTargets annotates the bounded history window from one fresh launch
+// snapshot. The app still resolves again on a click; these are display hints.
+func (env appEnv) linkSessionTargets(ctx context.Context, data any) {
+	d, ok := data.(map[string]any)
+	if !ok {
+		return
+	}
+	rows, ok := d["rows"].([]map[string]any)
+	if !ok || len(rows) == 0 {
+		return
+	}
+	t := env.targets(ctx)
+	represented := map[string]bool{}
+	for _, row := range rows {
+		var term *appTerminal
+		var reason string
+		if id, _ := row["id"].(string); id != "" {
+			provider, _ := row["provider"].(string)
+			term, reason = t.forConversation(provider, id)
+		} else if lease, _ := row["lease_id"].(string); lease != "" {
+			id, err := strconv.ParseInt(lease, 10, 64)
+			if err == nil {
+				term, reason = t.forLease(id)
+			} else {
+				reason = appUnknownTerm
+			}
+		} else {
+			reason = appNoLease
+		}
+		row["terminal"], row["terminal_reason"] = term, reason
+		if id, _ := row["lease_id"].(string); id != "" {
+			represented[id] = true
+		}
+		if term != nil {
+			represented[term.CoreID+"/"+term.Address] = true
+		}
+	}
+	// Interactive providers without an exact registered conversation still have
+	// a lease row. Do not guess a transcript from its directory or title.
+	if t.failed {
+		return
+	}
+	for i := range t.snapshot.Leases {
+		l := &t.snapshot.Leases[i]
+		provider := appLeaseProvider(l)
+		if !appProviderPattern.MatchString(provider) {
+			continue
+		}
+		id := strconv.FormatInt(l.ID, 10)
+		if l.Mode != state.ModeInteractive || l.Depth != 0 || represented[id] {
+			continue
+		}
+		term, reason := t.forLease(l.ID)
+		if term != nil && represented[term.CoreID+"/"+term.Address] {
+			continue
+		}
+		live := "unknown"
+		if term != nil {
+			live = "live"
+		} else if reason == appEnded {
+			live = "ended"
+		}
+		rows = append(rows, map[string]any{"kind": "workspace", "provider": appLeaseProvider(l), "id": "", "lease_id": id, "cwd": l.Cwd, "workspace": l.Cwd, "workspace_known": false, "name": "", "title": "", "model": "", "branch": "", "started_ms": time.Unix(l.StartedAt, 0).UnixMilli(), "updated_ms": time.Unix(l.StartedAt, 0).UnixMilli(), "turns": 0, "tools": 0, "worker": false, "pending_asks": 0, "pending_asks_known": false, "live": live, "account": l.AccountID, "launcher": l.Launcher, "terminal": term, "terminal_reason": reason})
+	}
+	d["rows"] = rows
 }

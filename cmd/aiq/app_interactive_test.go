@@ -225,3 +225,39 @@ func TestAppProductionProcsListsThisProcess(t *testing.T) {
 		t.Fatal("own process checks")
 	}
 }
+
+func TestAppInteractiveSessionRowsAndFreshLeaseTarget(t *testing.T) {
+	f := newAppInteractiveFixture(t)
+	rows := []map[string]any{{"id": appInterClaudeID, "provider": "claude"}}
+	data := map[string]any{"rows": rows}
+	f.env.linkSessionTargets(context.Background(), data)
+	got := data["rows"].([]map[string]any)
+	if got[0]["terminal"] == nil {
+		t.Fatal("registered conversation was not linked")
+	}
+	seen := map[string]bool{}
+	for _, r := range got[1:] {
+		if id, _ := r["lease_id"].(string); id != "" {
+			seen[id] = true
+			if id == "9" && r["terminal"] == nil {
+				t.Fatal("unregistered Codex lease lost its exact terminal")
+			}
+		}
+	}
+	if seen["8"] || !seen["9"] || !seen["10"] {
+		t.Fatal("interactive row duplication or omission", seen)
+	}
+	reply := appData(t, appCall(t, f.env, "target", "--lease", "9"))
+	if reply["terminal"] == nil {
+		t.Fatal("fresh lease resolution failed")
+	}
+	f.procs[3001] = appProc{ppid: 1, start: time.Now().Add(time.Hour)}
+	reply = appData(t, appCall(t, f.env, "target", "--lease", "9"))
+	if reply["terminal"] != nil {
+		t.Fatal("stale lease remained navigable")
+	}
+	bad := appCall(t, f.env, "target", "--lease", "9", "--conversation", appInterCodexID)
+	if bad["ok"] == true {
+		t.Fatal("mixed target selectors accepted")
+	}
+}

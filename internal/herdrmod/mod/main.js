@@ -311,7 +311,7 @@ export default class AIQ extends View {
     rows=rows.filter(r=>[r.name,r.cwd,r.provider,r.machine??"Here",r.live].join(" ").toLowerCase().includes(q));
     rows=rows.filter(r=>(this.workers||!r.worker)&&(!this.hasAsks||r.pending_asks_known&&r.pending_asks>0)&&(!this.liveOnly||r.live==="live"));
     const direction=this.desc?-1:1,key=this.sort;rows.sort((a,b)=>direction*(typeof a[key]==="number"?a[key]-b[key]:String(a[key]??"").localeCompare(String(b[key]??""))));
-    const keyFor=r=>[r.host,r.provider,r.kind,r.id||r.cwd].join("\u001f");
+    const keyFor=r=>[r.host,r.provider,r.kind,r.id||r.lease_id||r.cwd].join("\u001f");
     const selected=rows.find(r=>keyFor(r)===this.tableSelected);
     const cols=[["name","Session"],["cwd","Workspace"],["machine","Machine"],["provider","Provider"],["pending_asks","Asks"],["updated_ms","Last activity"],["live","Status"],["terminal","Terminal"]];
     const widths=["22%","26%","8%","8%","6%","17%","7%","6%"];
@@ -325,7 +325,7 @@ export default class AIQ extends View {
       h_flex().gap(8).items_center().children([
         button("read-selected","Read conversation",(_e,cx)=>this.openConversation(selected,cx),false,!selected?.id),
         button("asks-selected","Review asks",(_e,cx)=>this.showSessionAsks(selected,cx),false,!selected?.pending_asks_known||selected.pending_asks<1),
-        button("terminal-selected","Go to terminal",(_e,cx)=>this.focusTerminal(selected,cx),false,this.busy||!selected?.id||!["live","open"].includes(selected.live)&&!selected.terminal),
+        button("terminal-selected","Go to terminal",(_e,cx)=>this.focusTerminal(selected,cx),false,this.busy||(!selected?.id&&!selected?.lease_id)||!["live","open"].includes(selected.live)&&!selected.terminal),
         label("Select a row · double-click to read",true)
       ]),
       div().id("sessions-table-scroll").min_h(0).flex_1().child(

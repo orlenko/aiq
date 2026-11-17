@@ -720,6 +720,10 @@ document HTML and remote images do not execute or load. Replies and session
 control remain in Herdr's existing terminal.
 
 Sessions uses sortable columns and loaded-text, live, asks and worker filters.
+Select a row for its actions, or double-click it to read the conversation.
+New interactive launches record their verified Herdr terminal. Claude can also
+link its registered conversation; other providers keep the terminal link on
+the workspace row until an exact conversation identity is available.
 It parses a recent candidate window first; Older continues through history.
 Partial results and unknown ask counts remain labelled. Quotas keeps separate
 machine sections and provider columns, with per-account observation times.

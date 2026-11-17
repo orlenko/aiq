@@ -27,6 +27,7 @@
     "id": "a1000000-1111-4222-8333-000000000001",
     "kind": "session",
     "launcher": "",
+    "lease_id": "",
     "live": "unknown",
     "model": "",
     "name": "Prepare the invented branch.",

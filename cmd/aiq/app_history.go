@@ -289,6 +289,7 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 			r["live"] = extras.activity[i].Live
 			r["account"] = extras.activity[i].Account
 			r["launcher"] = extras.activity[i].Launcher
+			r["lease_id"] = extras.activity[i].LeaseID
 		}
 		rows = append(rows, r)
 	}
@@ -296,7 +297,7 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 		for _, s := range extras.rows {
 			started, _ := time.Parse(time.RFC3339Nano, s.Started)
 			updated, _ := time.Parse(time.RFC3339Nano, s.Updated)
-			rows = append(rows, map[string]any{"kind": "workspace", "provider": s.Provider, "id": "", "cwd": s.Cwd, "name": "", "title": "", "model": "", "branch": "", "started_ms": appHistoryMillis(started), "updated_ms": appHistoryMillis(updated), "turns": 0, "tools": 0, "worker": false, "workspace": s.Workspace, "workspace_known": s.WorkspaceKnown, "pending_asks": s.PendingAsks, "pending_asks_known": s.PendingAsksKnown, "live": s.Activity.Live, "account": s.Activity.Account, "launcher": s.Activity.Launcher, "terminal": nil, "terminal_reason": "no_lease"})
+			rows = append(rows, map[string]any{"kind": "workspace", "provider": s.Provider, "id": "", "cwd": s.Cwd, "name": "", "title": "", "model": "", "branch": "", "started_ms": appHistoryMillis(started), "updated_ms": appHistoryMillis(updated), "turns": 0, "tools": 0, "worker": false, "workspace": s.Workspace, "workspace_known": s.WorkspaceKnown, "pending_asks": s.PendingAsks, "pending_asks_known": s.PendingAsksKnown, "live": s.Activity.Live, "account": s.Activity.Account, "launcher": s.Activity.Launcher, "lease_id": s.Activity.LeaseID, "terminal": nil, "terminal_reason": "no_lease"})
 		}
 	}
 	older := total - scanned

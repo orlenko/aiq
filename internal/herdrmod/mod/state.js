@@ -2,7 +2,7 @@ export const machineKey = machine => machine ?? "";
 export const sessionKey = row => [row.host,row.provider,row.conversation_id||"workspace:"+row.workspace].join("\u001f");
 export const rowKey = row => row.host+":"+row.id;
 export function mergeSessionRows(before,after) {
-  const key=r=>[r.kind,r.provider,r.id||r.cwd].join("\u001f"),rows=new Map(before.map(r=>[key(r),r]));
+  const key=r=>[r.kind,r.provider,r.id||r.lease_id||r.cwd].join("\u001f"),rows=new Map(before.map(r=>[key(r),r]));
   for(const row of after){const old=rows.get(key(row));if(!old||row.updated_ms>=old.updated_ms)rows.set(key(row),row);}
   return [...rows.values()];
 }

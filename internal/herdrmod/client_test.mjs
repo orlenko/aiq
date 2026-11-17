@@ -38,6 +38,13 @@ test('navigation rejects kept shells, other generations and other addresses',()=
   assert.ok(matchesTarget(t,live));
   for(const changed of [{pid:124},{address:'t8'},{state:'finished'},{labels:{'aiq.target':'8'.repeat(32)}}])assert.equal(matchesTarget(t,{...live,...changed}),false);
 });
+test('interactive witnesses require live address and pid while long witnesses also require the generation label',()=>{
+ const t={relation:'origin',address:'t7',core_id:'invented-core',witness:{terminal_pid:123,label:''}};
+ const live={address:'t7',state:'live',pid:123,labels:{}};
+ assert.ok(matchesTarget(t,live));
+ for(const change of [{pid:124},{state:'finished'},{address:'t8'}])assert.equal(matchesTarget(t,{...live,...change}),false);
+ assert.deepEqual(argsFor('target',{id:'',lease_id:'8'}),['__app','target','--lease','8']);
+});
 test('native formatting never produces resource-bearing or document supplied HTML',()=>{
   const payloads=['![private](https://invalid.example/track)','![reference][id]\n\n[id]: https://invalid.example/pixel','<img src="https://invalid.example/x">','<iframe src=x></iframe>','<script>alert(1)</script>','<a href="command:run">run</a>','<video poster=x>','&#60;img src=x&#62;','```html\n<img src=x>\n```','**<img src=x>**','`<img src=x>`','<style>@import "https://invalid.example"</style>'];
   const allowed=new Set(['p','br','strong','pre','code','blockquote']);

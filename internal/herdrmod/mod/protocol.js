@@ -62,6 +62,7 @@ export function argsFor(kind, options={}) {
   if (["hello","asks","quotas"].includes(kind)) return out;
   if(kind==="target") {
     if(options.revision) {push("ask",options.id,/^\d+$/.test(options.id));push("revision",options.revision,HEX64.test(options.revision));}
+    else if(options.lease_id && !options.id)push("lease",options.lease_id,/^[1-9][0-9]{0,17}$/.test(options.lease_id));
     else {push("provider",options.provider,PROVIDERS.has(options.provider));push("conversation",options.id,ID.test(options.id));}
     return out;
   }
@@ -83,8 +84,8 @@ export function argsFor(kind, options={}) {
   }
   throw new BridgeError("invalid_request");
 }
-export function validTarget(t) { return object(t) && ["origin","workspace_current"].includes(t.relation) && /^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$/.test(t.address) && str(t.core_id,128) && object(t.witness) && Number.isSafeInteger(t.witness.terminal_pid) && t.witness.terminal_pid>0 && /^[a-f0-9]{32}$/.test(t.witness.label); }
-export function matchesTarget(target,live) { return validTarget(target) && object(live) && live.pid===target.witness.terminal_pid && live.address===target.address && live.labels?.["aiq.target"]===target.witness.label && live.state==="live"; }
+export function validTarget(t) { return object(t) && ["origin","workspace_current"].includes(t.relation) && /^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$/.test(t.address) && str(t.core_id,128) && object(t.witness) && Number.isSafeInteger(t.witness.terminal_pid) && t.witness.terminal_pid>0 && (t.witness.label==="" || /^[a-f0-9]{32}$/.test(t.witness.label)); }
+export function matchesTarget(target,live) { return validTarget(target) && object(live) && live.pid===target.witness.terminal_pid && live.address===target.address && (!target.witness.label || live.labels?.["aiq.target"]===target.witness.label) && live.state==="live"; }
 export class Bridge {
   constructor(exec) { this.exec=exec; this.sources=new Map(); this.active=0; this.waiters=[]; }
   async slot(fn) {

@@ -203,7 +203,7 @@ func (env appEnv) dispatch(ctx context.Context, kind string, args []string, host
 		}
 		return env.askAction(ctx, f["id"], f["revision"], f["action"])
 	case "target":
-		f, ok := appFlags(args, map[string]*regexp.Regexp{"ask": appIDPattern, "revision": appRevisionPattern, "provider": appProviderPattern, "conversation": appConversationPattern})
+		f, ok := appFlags(args, map[string]*regexp.Regexp{"ask": appIDPattern, "revision": appRevisionPattern, "provider": appProviderPattern, "conversation": appConversationPattern, "lease": appIDPattern})
 		if !ok {
 			return appFailure(appInvalid)
 		}
@@ -222,6 +222,9 @@ func (env appEnv) dispatch(ctx context.Context, kind string, args []string, host
 			default:
 				return appFailure(appUnavailable)
 			}
+		}
+		if kind == "sessions" {
+			env.linkSessionTargets(ctx, out.Data)
 		}
 		omitted := map[string]int64{}
 		for key, n := range out.Omitted {
