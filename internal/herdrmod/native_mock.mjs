@@ -11,7 +11,7 @@ export const theme=()=>new Proxy({},{get:()=>'#888888'});
 export class View {}
 function element(){const state={handlers:{}};return new Proxy(state,{get:(s,key)=>key==='handlers'?s.handlers:(...args)=>{if(key==='on_key_down')s.handlers.key=args[0];return elementWith(s);}});}
 function elementWith(state){return new Proxy(state,{get:(s,key)=>key==='handlers'?s.handlers:(...args)=>{if(key==='on_key_down')s.handlers.key=args[0];return elementWith(s);}});}
-export const div=element,h_flex=element,v_flex=element;
+export const div=element,h_flex=element,v_flex=element,h_resizable=element,resizable_panel=element;
 export const Button={new:element},Table=Button,TableHeader=Button,TableBody=Button,TableRow=Button,TableHead=Button,TableCell=Button,Input=Button;
 export const TextView={html:element};
 export const ScrollHandle={new:()=>({last:null,scroll_to_item(i){this.last=i;}})};

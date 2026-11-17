@@ -1,9 +1,13 @@
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
+import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
 import { exec, hc, machines, panes, focused, run, theme, checking, nextCommand } from "herdr";
 import { Bridge, matchesTarget } from "./protocol.js";
 import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText } from "./state.js";
 import { button, label, panel, makeProse } from "./ui.js";
+
+// Each card has four 20px lines, three 4px gaps, 24px of padding and a border.
+const askCardHeight = 120;
+const askCardMargin = 3;
 
 export default class AIQ extends View {
   init(_props,cx) {
@@ -216,25 +220,35 @@ export default class AIQ extends View {
   }
   asksView(cx) {
     const list=this.groupList(),row=this.current(),group=list.find(g=>g.key===this.selection.group),t=theme();
-    return h_flex().flex_1().h(Math.max(300,this.size.height-150)).min_h(0).items_stretch().children([
-      v_flex().h_full().w(320).min_w(260).border_r(1).border_color(t.border).min_h(0).children([
+    const sidebar = v_flex().size_full().min_w(0).min_h(0).children([
         v_flex().p(16).gap(10).children([
           Input.new(this.filter).border(1).border_color(t.border).p(8).rounded(5),
-          h_flex().gap(8).children([button("pending","Pending",(_e,cx)=>{this.section="pending";this.reconcile(cx);cx.notify();},this.section==="pending"),button("done","Done / dismissed",(_e,cx)=>{this.section="done";this.reconcile(cx);cx.notify();},this.section==="done")]),
+          h_flex().gap(8).flex_wrap().children([button("pending","Pending",(_e,cx)=>{this.section="pending";this.reconcile(cx);cx.notify();},this.section==="pending"),button("done","Done / dismissed",(_e,cx)=>{this.section="done";this.reconcile(cx);cx.notify();},this.section==="done")]),
           label(`${list.length} sessions · ${list.reduce((n,g)=>n+g.rows.length,0)} loaded asks`,true)
         ]),
         div().id("session-group-viewport").relative().flex_1().min_h(0).w_full().on_size_change((size,cx)=>{if(Math.abs(this.groupsHeight-size.height)>1||Math.abs(this.groupsWidth-size.width)>1){this.groupsHeight=size.height;this.groupsWidth=size.width;cx.notify();}}).children([
-          v_virtual_list("session-groups",list.length,116,i=>list[i].key,range=>list.slice(range.start,range.end).map(g=>
-            v_flex().id("group-"+g.key).w(Math.max(1,this.groupsWidth-16)).mx(8).my(3).p(12).gap(5).h(110).rounded(6).border(1).border_color(g.key===this.selection.group?t.accent:t.border).bg(g.key===this.selection.group?t.raised:t.surface).children([
-              h_flex().justify_between().children([div().font_semibold().truncate().child(g.workspace.split("/").filter(Boolean).pop()||"Unknown workspace"),label(g.rows.length)]),
-              label(g.name?g.name+" · "+g.provider:g.provider+" · "+g.rows[0].conversation_id.slice(0,8),true).truncate(),label((g.machine??"Here")+" · "+localTime(g.updated),true).truncate(),label(g.workspace,true).truncate()
+          v_virtual_list("session-groups",list.length,askCardHeight + 2 * askCardMargin,i=>list[i].key,range=>list.slice(range.start,range.end).map(g=>
+            v_flex().id("group-"+g.key).w(Math.max(1,this.groupsWidth-16)).mx(8).my(askCardMargin).p(12).gap(4).h(askCardHeight).rounded(6).border(1).border_color(g.key===this.selection.group?t.accent:t.border).bg(g.key===this.selection.group?t.raised:t.surface).children([
+              h_flex().h(20).flex_shrink_0().gap(8).justify_between().children([
+                div().min_w(0).font_semibold().line_height("20px").truncate().child(g.workspace.split("/").filter(Boolean).pop()||"Unknown workspace"),
+                label(g.rows.length).line_height("20px").flex_shrink_0()
+              ]),
+              label(g.name?g.name+" · "+g.provider:g.provider+" · "+g.rows[0].conversation_id.slice(0,8),true).line_height("20px").flex_shrink_0().truncate(),
+              label((g.machine??"Here")+" · "+localTime(g.updated),true).line_height("20px").flex_shrink_0().truncate(),
+              label(g.workspace,true).line_height("20px").flex_shrink_0().truncate()
             ]))).h(Math.max(1,this.groupsHeight)).w_full().track_scroll(this.groupsScroll).on_item_click((key,cx)=>{const group=list.find(g=>g.key===key);if(group)this.choose(group.rows[0],cx);}),
           Scrollbar.vertical("session-groups").absolute().inset_0()
         ]),
         !list.length?div().p(16).child("No matching asks in the loaded data."):null
-      ].filter(Boolean)),
-      row&&group?this.askView(row,group,cx):panel("ask-empty").child(label("Choose a session to review its asks.",true))
-    ]);
+    ].filter(Boolean));
+    const detail = row && group
+      ? this.askView(row,group,cx)
+      : panel("ask-empty").child(label("Choose a session to review its asks.",true));
+    const sidebarMax = Math.max(260, Math.min(640, this.size.width * 0.5));
+    return h_resizable("asks-split").w_full().flex_1().min_h(0)
+      .h(Math.max(300,this.size.height-150))
+      .child(resizable_panel().size(320).size_range(260, sidebarMax).child(sidebar))
+      .child(resizable_panel().size_range(300).child(detail));
   }
   askView(row,group,cx) {
     const index=group.rows.findIndex(r=>rowKey(r)===rowKey(row)),peeking=this.selection.peek===rowKey(row),data=this.detail?.value;
@@ -271,7 +285,7 @@ export default class AIQ extends View {
   }
   contextView(row,cx) {
     const c=this.context,t=theme();
-    return v_flex().h_full().w(Math.max(360,this.size.width*0.43)).min_h(0).border_l(1).border_color(t.border).children([
+    return v_flex().h_full().w("46%").min_w(0).min_h(0).border_l(1).border_color(t.border).children([
       v_flex().px(24).py(16).gap(10).border_b(1).border_color(t.border).children([
         h_flex().gap(8).items_center().children([div().font_semibold().flex_1().child("Original context"),button("refresh-context","Refresh",(_e,cx)=>{this.selection.peek=null;this.peek(row,cx);}),button("close-context","Close",(_e,cx)=>{this.selection.peek=null;this.context=null;cx.notify();})]),
         Input.new(this.search).border(1).border_color(t.border).p(8).rounded(5),
