@@ -32,7 +32,7 @@ function inline(text) {
 }
 const quoteLine = /^ {0,3}>[ \t]?(.*)$/;
 const fenceLine = /^ {0,3}(`{3,}|~{3,})/;
-const headingLine = /^ {0,3}(#{1,6})[ \t]+(.+?)\s*$/;
+const headingLine = /^ {0,3}(#{1,6})[ \t]+(\S.*)$/;
 const bulletLine = /^\s*([-+*]|\d+[.)])\s+(.+)$/;
 const maxTableCells = 384;
 
@@ -137,7 +137,8 @@ export function documentBlocks(raw, marks = false) {
       flush();
       if (heading) {
         const tag = "h"+heading[1].length;
-        html.push("<"+tag+">"+inline(heading[2].replace(/[ \t]+#+$/, ""))+"</"+tag+">");
+        const title = heading[2].trimEnd().replace(/(?:^|[ \t])#+$/, "").trimEnd();
+        html.push("<"+tag+">"+inline(title)+"</"+tag+">");
       } else {
         const marker = bullet[1].length > 1 ? bullet[1] : "•";
         html.push("<p>"+marker+" "+inline(bullet[2])+"</p>");
