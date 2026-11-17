@@ -292,7 +292,7 @@ export default class AIQ extends View {
     return h_flex().px(24).py(12).gap(8).children([
       button("earlier","Earlier messages",(_e,cx)=>this.openConversation(row,cx,{before:data.cursor.before}),false,!data.cursor?.before),
       button("later","Later messages",(_e,cx)=>this.openConversation(row,cx,{after:data.cursor.after}),false,!data.cursor?.after),
-      ...(context?[button("full","Full conversation",(_e,cx)=>this.openConversation(row,cx,{at:data.placement?.anchor_ms}))]:[])
+      ...(context?[button("full","Full conversation",(_e,cx)=>this.openConversation(row,cx,data.messages?.some(m=>m.anchor)?{anchor:data.messages.find(m=>m.anchor).key}:{at:data.placement?.anchor_ms}))]:[])
     ]);
   }
   conversationView(cx) {
@@ -359,7 +359,7 @@ export default class AIQ extends View {
       const e=s.quotas?.value;
       return v_flex().gap(12).children([
         div().font_semibold().text_size(18).child(s.machine??"Here"),
-        ...(e?[h_flex().gap(16).items_start().children(["agy","claude","codex"].map(provider=>v_flex().flex_1().min_w(0).gap(10).children([
+        ...(e?[h_flex().gap(16).items_start().children(["agy","claude","codex",...(e.data.accounts.some(a=>a.provider==="copilot")?["copilot"]:[])].map(provider=>v_flex().flex_1().min_w(0).gap(10).children([
           div().text_color(t.muted).font_semibold().child(provider.toUpperCase()),
           ...e.data.accounts.filter(a=>a.provider===provider).map(a=>v_flex().p(16).gap(10).rounded(6).border(1).border_color(t.border).children([
             h_flex().justify_between().children([div().font_semibold().child(a.id.startsWith(provider+"/")?a.id:provider+"/"+a.id),label(a.rank&&a.score!==null?`#${a.rank} · ${Number(a.score).toFixed(1)}/h`:"Unranked",true)]),

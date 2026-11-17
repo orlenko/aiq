@@ -115,3 +115,10 @@ test('unmatched inline backtick runs render within a child-process watchdog',()=
  const r=spawnSync(process.execPath,['--input-type=module','-e',script],{timeout:3000,encoding:'utf8'});
  assert.equal(r.error,undefined);assert.equal(r.status,0,r.stderr);
 });
+
+test('Copilot quotas do not hide the other configured providers',()=>{
+ const d=JSON.parse(readFileSync(new URL('../../cmd/aiq/testdata/app/quotas.json',import.meta.url),'utf8'));
+ d.data.accounts.push({...d.data.accounts[0],id:'copilot/invented',provider:'copilot'});
+ const result=decode(JSON.stringify(d),'quotas');assert.ok(result.data.accounts.some(a=>a.provider==='copilot'));assert.ok(result.data.accounts.some(a=>a.provider==='claude'));
+ const key='m0-100-0123456789abcdef';assert.deepEqual(argsFor('conversation',{provider:'claude',id:'invented-id',anchor:key}),['__app','conversation','--provider','claude','--id','invented-id','--anchor',key]);
+});

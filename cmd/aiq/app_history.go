@@ -65,7 +65,7 @@ func (d appHistoryDeps) run(ctx context.Context, roots transcript.Roots, kind st
 	case "sessions":
 		allowed = map[string]bool{"limit": true, "before": true}
 	case "conversation":
-		allowed = map[string]bool{"provider": true, "id": true, "at": true, "before": true, "after": true}
+		allowed = map[string]bool{"provider": true, "id": true, "at": true, "anchor": true, "before": true, "after": true}
 	case "ask-context":
 		allowed = map[string]bool{"id": true, "revision": true}
 	default:
@@ -82,7 +82,7 @@ func (d appHistoryDeps) run(ctx context.Context, roots transcript.Roots, kind st
 	if kind == "ask-context" {
 		return d.askContext(ctx, opts)
 	}
-	if !transcript.IsFullID(opts["provider"], opts["id"]) || appHistoryOptionCount(opts, "at", "before", "after") > 1 {
+	if !transcript.IsFullID(opts["provider"], opts["id"]) || appHistoryOptionCount(opts, "at", "anchor", "before", "after") > 1 {
 		return appHistoryOutput{}, appHistoryFailure("invalid_request")
 	}
 	var at int64
@@ -97,7 +97,7 @@ func (d appHistoryDeps) run(ctx context.Context, roots transcript.Roots, kind st
 	if err != nil {
 		return appHistoryOutput{}, err
 	}
-	data, partial, err := appHistoryWindow(ctx, s, at, opts["before"], opts["after"])
+	data, partial, err := appHistoryWindowAtKey(ctx, s, at, opts["before"], opts["after"], opts["anchor"])
 	return appHistoryOutput{Data: data, Partial: partial, Omitted: map[string]int{}}, err
 }
 func appHistoryOptionCount(opts map[string]string, keys ...string) int {
@@ -427,12 +427,26 @@ func appHistoryMessagesWithQuote(ctx context.Context, s *transcript.Session, quo
 	return out, nil
 }
 func appHistoryWindow(ctx context.Context, s *transcript.Session, at int64, before, after string) (map[string]any, bool, error) {
+	return appHistoryWindowAtKey(ctx, s, at, before, after, "")
+}
+func appHistoryWindowAtKey(ctx context.Context, s *transcript.Session, at int64, before, after, key string) (map[string]any, bool, error) {
 	all, err := appHistoryMessages(ctx, s)
 	if err != nil {
 		return nil, false, err
 	}
 	anchor := -1
-	if at > 0 {
+	if key != "" {
+		for i, m := range all {
+			if m.Key == key {
+				anchor = i
+				break
+			}
+		}
+		if anchor < 0 {
+			return nil, false, appHistoryFailure("conflict")
+		}
+		all[anchor].Anchor = true
+	} else if at > 0 {
 		for i, m := range all {
 			if m.At == at {
 				anchor = i
