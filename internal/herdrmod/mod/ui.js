@@ -86,7 +86,7 @@ function proseTable(id, block, colors) {
         if (align[col] === "center") text.text_center();
         if (align[col] === "right") text.text_right();
         return (header ? TableHead : TableCell).new(key,col+1)
-          .min_w(0).flex_basis(24).flex_grow(weights[col]).px(10).py(8)
+          .min_w(0).flex_basis(42).flex_grow(weights[col]).px(10).py(8)
           .border_l(col ? 1 : 0).border_color(colors.border).child(text);
       }));
   });
