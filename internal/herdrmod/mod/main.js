@@ -201,7 +201,7 @@ export default class AIQ extends View {
           label("Machines",true),...["all",...this.sources.keys()].map(key=>button("machine-"+key,key==="all"?"All":key||"Here",(_e,cx)=>{this.machine=key;this.reconcile(cx);this.refresh(cx);cx.notify();},this.machine===key))
         ]),
         h_flex().px(24).py(4).gap(18).flex_wrap().children(this.sourceList().map(s=>this.status(s,this.tab))),
-        this.notice?h_flex().px(24).py(8).gap(12).items_center().children([label(this.notice),...(this.undo.length?[button("undo","Undo",(_e,cx)=>this.dismiss(this.undo,cx,"restore"),false,this.busy)]:[])]):null,
+        this.notice||this.undo.length?h_flex().px(24).py(8).gap(12).items_center().children([label(this.notice||`${this.undo.length} dismissal${this.undo.length===1?"":"s"} can be undone.`),...(this.undo.length?[button("undo","Undo",(_e,cx)=>this.dismiss(this.undo,cx,"restore"),false,this.busy)]:[])]):null,
         this.conversation?this.conversationView(cx):this.tab==="asks"?this.asksView(cx):this.tab==="sessions"?this.sessionsView(cx):this.quotasView(cx)
       ].filter(Boolean));
   }
@@ -226,6 +226,8 @@ export default class AIQ extends View {
   }
   askView(row,group,cx) {
     const index=group.rows.findIndex(r=>rowKey(r)===rowKey(row)),peeking=this.selection.peek===rowKey(row),data=this.detail?.value;
+    const dismissable=group.rows.filter(r=>r.state==="open"||r.state==="probably-done");
+    const restore=row.state==="dismissed"||row.state==="closed";
     const question=v_flex().h_full().flex_1().min_w(0).min_h(0).children([
       v_flex().px(24).py(16).gap(10).border_b(1).border_color(theme().border).children([
         h_flex().gap(8).items_center().children([
@@ -233,7 +235,7 @@ export default class AIQ extends View {
           button("prev","←",(_e,cx)=>this.choose(group.rows[index-1],cx),false,index<=0),label(`${index+1} / ${group.rows.length}`),button("next","→",(_e,cx)=>this.choose(group.rows[index+1],cx),false,index>=group.rows.length-1)
         ]),
         label(`${row.provider} · ${row.conversation_id.slice(0,8)} · ${row.machine??"Here"}`,true),
-        h_flex().gap(8).children([button("batch",`Dismiss ${group.rows.length} session asks`,(_e,cx)=>this.dismiss(group.rows.filter(r=>r.state!=="dismissed"),cx),false,this.busy||!group.rows.some(r=>r.state!=="dismissed"))])
+        ...(dismissable.length?[h_flex().gap(8).children([button("batch",`Dismiss ${dismissable.length} session asks`,(_e,cx)=>this.dismiss(dismissable,cx),false,this.busy)])]:[])
       ]),
       panel("question").child(v_flex().gap(16).children([
         label(`Asked ${localTime(row.raised_at_ms)} · Ask ${row.id}`,true),
@@ -242,7 +244,8 @@ export default class AIQ extends View {
         this.prose("ask-text-"+row.id,data?.latest.text??row.latest.preview,this.marks),
         (data?.latest.truncated || !data&&row.latest.truncated)?label("This excerpt is truncated.",true):null,
         h_flex().gap(8).flex_wrap().children([
-          button("dismiss",row.state==="dismissed"?"Restore":"Dismiss",(_e,cx)=>this.dismiss([row],cx,row.state==="dismissed"?"restore":"dismiss"),true,this.busy),
+          button("dismiss",restore?"Restore":"Dismiss",(_e,cx)=>this.dismiss([row],cx,restore?"restore":"dismiss"),true,this.busy),
+          ...(row.state==="probably-done"?[button("reopen","Reopen ask",(_e,cx)=>this.dismiss([row],cx,"restore"),false,this.busy)]:[]),
           button("peek",peeking?"Close context":"Peek at original context",(_e,cx)=>this.peek(row,cx),peeking),
           button("copy","Copy ask",(_e,cx)=>cx.write_to_clipboard(data?.latest.text??row.latest.preview),false,!data),
           button("terminal",row.terminal?.relation==="workspace_current"?"Current workspace terminal":"Go to terminal",(_e,cx)=>this.focusTerminal(row,cx),false,this.busy||!row.terminal)
