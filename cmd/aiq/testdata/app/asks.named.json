@@ -1,0 +1,101 @@
+{
+ "schema": 1,
+ "ok": true,
+ "kind": "asks",
+ "aiq": "0.9.2+invented",
+ "host": {
+  "id": "649f434e4088c8c9da118a48bd530c3c",
+  "name": "invented-host"
+ },
+ "generated_at_ms": 1940673600000,
+ "partial": false,
+ "omitted": {},
+ "data": {
+  "setup": "ready",
+  "counts": {
+   "known": true,
+   "asks": 1,
+   "warnings": 0,
+   "other_open": 0,
+   "probably_done": 1,
+   "closed_dismissed": 0,
+   "open": 1
+  },
+  "watcher": {
+   "known": false,
+   "pass_at_ms": 0,
+   "error_at_ms": 0,
+   "last_error": "",
+   "watched": 0,
+   "waiting": 0
+  },
+  "rows": [
+   {
+    "id": "17",
+    "revision": "3ca8563403cfb2d23bfb84fe687ef4ff24d1bf51994590b1fefa5759848a928e",
+    "state": "open",
+    "section": "asks",
+    "provider": "claude",
+    "conversation_id": "a1000000-1111-4222-8333-000000000001",
+    "workspace": "/invented/work",
+    "raised_at_ms": 1940670000000,
+    "state_at_ms": 1940670000000,
+    "state_reason": "",
+    "repeats": 0,
+    "first": {
+     "preview": "Should I keep the invented fixture or regenerate it?",
+     "bytes": 52,
+     "truncated": false
+    },
+    "latest": {
+     "preview": "Shall I go ahead with option B and push the invented branch now, or wait for the review that is still running? Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail. Invented detail.",
+     "bytes": 451,
+     "truncated": true
+    },
+    "session": {
+     "name": "Harp",
+     "name_source": "saved"
+    },
+    "terminal": {
+     "relation": "origin",
+     "address": "t7",
+     "core_id": "0b1c2d3e4f5a69788796a5b4c3d2e1f0",
+     "witness": {
+      "terminal_pid": 4321,
+      "label": "9e8d7c6b5a4938270123456789abcdef"
+     }
+    },
+    "terminal_reason": ""
+   },
+   {
+    "id": "18",
+    "revision": "c9eb4b55d87591ed0ed2de14d1fb65e91eb48a561f623c6e810cb8d099bc8da3",
+    "state": "probably-done",
+    "section": "probably_done",
+    "provider": "codex",
+    "conversation_id": "b2000000-1111-4222-8333-000000000002",
+    "workspace": "/invented/other",
+    "raised_at_ms": 1940666400000,
+    "state_at_ms": 1940671800000,
+    "state_reason": "answered",
+    "repeats": 0,
+    "first": {
+     "preview": "Run the invented migration?",
+     "bytes": 27,
+     "truncated": false
+    },
+    "latest": {
+     "preview": "Run the invented migration?",
+     "bytes": 27,
+     "truncated": false
+    },
+    "session": {
+     "name": "Invented migration",
+     "name_source": "saved"
+    },
+    "terminal": null,
+    "terminal_reason": "no_lease"
+   }
+  ]
+ }
+}

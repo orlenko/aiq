@@ -213,6 +213,7 @@ func (env appEnv) asks(ctx context.Context) appResult {
 		st := w.Status
 		out.Watcher = appWatcher{Known: true, PassAt: appMillis(st.PassAt), ErrorAt: appMillis(st.ErrorAt), LastError: st.LastError, Watched: st.Watched, Waiting: st.Waiting}
 	}
+	names := env.askNames(ctx, w.Items)
 	targets := env.targets(ctx)
 	size, err := appJSONSize(out)
 	if err != nil {
@@ -224,6 +225,9 @@ func (env appEnv) asks(ctx context.Context) appResult {
 			Provider: a.Provider, ConversationID: a.SessionID, Workspace: a.Workspace, RaisedAt: appMillis(a.RaisedAt), StateAt: appMillis(a.StateAt),
 			StateReason: a.StateReason, Repeats: a.Repeats, First: appPreview(a.FirstQuote), Latest: appPreview(a.LastQuote),
 			Session: appSessionName{Source: "none"}}
+		if name, ok := names[a.Provider+"/"+a.SessionID]; ok {
+			row.Session = name
+		}
 		row.Terminal, row.TerminalReason = targets.forAsk(a)
 		n, err := appJSONSize(row)
 		if err != nil {

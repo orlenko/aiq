@@ -105,7 +105,7 @@ test('native client fixtures match the Go bridge contract',()=>{
   // a second independently maintained version of the protocol.
   const root=new URL('../../cmd/aiq/testdata/app/',import.meta.url);
   const hello=readFileSync(new URL('hello.json',root),'utf8');
-  for(const [file,kind] of [['hello','hello'],['asks','asks'],['ask-detail','ask-detail'],['ask-context','ask-context'],['quotas','quotas'],['sessions','sessions'],['conversation','conversation'],['ask-action.ok','ask-action'],['target','target']])decode(readFileSync(new URL(file+'.json',root),'utf8'),kind);
+  for(const [file,kind] of [['hello','hello'],['asks','asks'],['asks.named','asks'],['ask-detail','ask-detail'],['ask-context','ask-context'],['quotas','quotas'],['sessions','sessions'],['conversation','conversation'],['ask-action.ok','ask-action'],['target','target']])decode(readFileSync(new URL(file+'.json',root),'utf8'),kind);
   assert.equal(decode(hello,'hello').schema,1);
 });
 
@@ -121,4 +121,10 @@ test('Copilot quotas do not hide the other configured providers',()=>{
  d.data.accounts.push({...d.data.accounts[0],id:'copilot/invented',provider:'copilot'});
  const result=decode(JSON.stringify(d),'quotas');assert.ok(result.data.accounts.some(a=>a.provider==='copilot'));assert.ok(result.data.accounts.some(a=>a.provider==='claude'));
  const key='m0-100-0123456789abcdef';assert.deepEqual(argsFor('conversation',{provider:'claude',id:'invented-id',anchor:key}),['__app','conversation','--provider','claude','--id','invented-id','--anchor',key]);
+});
+
+test('saved session names label and filter ask groups without replacing their workspace identity',()=>{
+ const d=decode(readFileSync(new URL('../../cmd/aiq/testdata/app/asks.named.json',import.meta.url),'utf8'),'asks');
+ const rows=d.data.rows.map(r=>({...r,host:d.host.id,machine:null}));
+ const g=groups(rows,'Harp');assert.equal(g.length,1);assert.equal(g[0].name,'Harp');assert.equal(g[0].workspace,'/invented/work');assert.equal(g[0].key,sessionKey(rows[0]));
 });

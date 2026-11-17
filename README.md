@@ -702,7 +702,8 @@ configuration or new network service is required. Missing installations and
 unavailable machines have separate status messages; failed refreshes keep
 the last known rows in memory. Closing the mod clears its data cache.
 
-Asks are grouped by session, with a local timestamp above each question.
+Asks are grouped by session, showing saved Claude/Codex names alongside the
+directory when available, with a local timestamp above each question.
 Dismiss an ask or the session's loaded asks directly; Undo restores the
 last dismissal batch. Actions check the source identity and row revision.
 Review stays within the current session until its last pending ask is gone.

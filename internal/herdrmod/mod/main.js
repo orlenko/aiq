@@ -227,7 +227,7 @@ export default class AIQ extends View {
           v_virtual_list("session-groups",list.length,116,i=>list[i].key,range=>list.slice(range.start,range.end).map(g=>
             v_flex().id("group-"+g.key).w(Math.max(1,this.groupsWidth-16)).mx(8).my(3).p(12).gap(5).h(110).rounded(6).border(1).border_color(g.key===this.selection.group?t.accent:t.border).bg(g.key===this.selection.group?t.raised:t.surface).children([
               h_flex().justify_between().children([div().font_semibold().truncate().child(g.workspace.split("/").filter(Boolean).pop()||"Unknown workspace"),label(g.rows.length)]),
-              label(g.name||g.provider+" · "+g.rows[0].conversation_id.slice(0,8),true).truncate(),label((g.machine??"Here")+" · "+localTime(g.updated),true).truncate(),label(g.workspace,true).truncate()
+              label(g.name?g.name+" · "+g.provider:g.provider+" · "+g.rows[0].conversation_id.slice(0,8),true).truncate(),label((g.machine??"Here")+" · "+localTime(g.updated),true).truncate(),label(g.workspace,true).truncate()
             ]))).h(Math.max(1,this.groupsHeight)).w_full().track_scroll(this.groupsScroll).on_item_click((key,cx)=>{const group=list.find(g=>g.key===key);if(group)this.choose(group.rows[0],cx);}),
           Scrollbar.vertical("session-groups").absolute().inset_0()
         ]),
@@ -243,9 +243,10 @@ export default class AIQ extends View {
     const question=v_flex().h_full().flex_1().min_w(0).min_h(0).children([
       v_flex().px(24).py(16).gap(10).border_b(1).border_color(theme().border).children([
         h_flex().gap(8).items_center().children([
-          div().flex_1().font_semibold().child(group.workspace),
+          div().flex_1().min_w(0).font_semibold().truncate().child(group.name||group.workspace),
           button("prev","←",(_e,cx)=>this.choose(group.rows[index-1],cx),false,index<=0),label(`${index+1} / ${group.rows.length}`),button("next","→",(_e,cx)=>this.choose(group.rows[index+1],cx),false,index>=group.rows.length-1)
         ]),
+        ...(group.name?[label(group.workspace,true)]:[]),
         label(`${row.provider} · ${row.conversation_id.slice(0,8)} · ${row.machine??"Here"}`,true),
         ...(dismissable.length?[h_flex().gap(8).children([button("batch",`Dismiss ${dismissable.length} session asks`,(_e,cx)=>this.dismiss(dismissable,cx),false,this.busy)])]:[])
       ]),

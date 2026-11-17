@@ -61,7 +61,7 @@ Arguments come only as `--name value` pairs, each at most once. Values are enums
 - `counts` are exact per section over the whole store, even when rows are omitted. Sections are `asks`, `warnings`, `other_open`, `probably_done` and `closed_dismissed`.
 - Rows come in section order, then newest raised first, as a prefix that fits. `omitted.rows` counts the rest.
 - `first` / `latest` give `preview` (at most 280 characters), `bytes` (full UTF-8 size) and `truncated`. Use `ask-detail` for the full text.
-- `session.name_source` is `none` for now. No transcript is parsed on this poll.
+- `session.name_source` is `saved` for a saved Claude/Codex display name, otherwise `none`. Name lookup reads bounded recent metadata records, once per conversation; it does not parse conversation bodies.
 - `terminal` is null or `{relation, address, core_id, witness:{terminal_pid, label}}`, verified when the reply was built. `terminal_reason` explains a null.
 
 ## ask-detail (`ask-detail.json`)
