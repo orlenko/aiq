@@ -13,10 +13,11 @@ package tier
 // Claude's aliases follow the newest model of each family (Fable 5.1, Opus
 // 5.5, Sonnet 5.5, Haiku 5.5 as of 2026-10-10). The others name versions,
 // checked that day against `codex`'s model list, `agy models` and
-// `copilot help config`; update them when a newer model of a class ships.
+// `copilot help config` (Codex again on 2026-11-17); update them when a
+// newer model of a class ships.
 var Models = map[string][4]string{
 	"claude": {"fable", "opus", "sonnet", "haiku"},
-	"codex":  {"gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-terra", "gpt-6-luna"},
+	"codex":  {"gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-terra", "gpt-6-luna"},
 	// Antigravity's own Gemini Argon is its strongest choice, ahead of the
 	// Claude models it resells; it has nothing of the frontier class. Sonnet
 	// is a "3p" model.
@@ -30,8 +31,13 @@ var Models = map[string][4]string{
 // are restarted. An Antigravity entry names the model without its effort
 // suffix when it comes in several levels.
 var Legacy = map[string]map[string]int{
-	"codex": {"gpt-5.6-sol": 1, "gpt-6-sol": 1, "gpt-5.6-luna": 3},
-	"agy":   {"claude-opus-4-6-thinking": 2, "claude-opus-5-5": 1},
+	"codex": {
+		"gpt-6-astra": 0,
+		"gpt-5.6-sol": 1, "gpt-6-sol": 1, "gpt-6.1-sol": 1,
+		"gpt-5.6-terra": 2,
+		"gpt-5.6-luna":  3,
+	},
+	"agy": {"claude-opus-4-6-thinking": 2, "claude-opus-5-5": 1},
 }
 
 // DefaultEffort is the effort level (high) aiq asks for when it picks a

@@ -88,16 +88,16 @@ func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
 		from, to string
 		in, want []string
 	}{
-		{"claude", "codex", []string{"--dangerously-skip-permissions", "--model", "opus"}, []string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"}},
+		{"claude", "codex", []string{"--dangerously-skip-permissions", "--model", "opus"}, []string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-6.2-sol", "-c", "model_reasoning_effort=high"}},
 		{"claude", "codex", []string{"--permission-mode", "bypassPermissions"}, []string{"--dangerously-bypass-approvals-and-sandbox"}},
 		{"claude", "codex", []string{"--permission-mode=bypassPermissions"}, []string{"--dangerously-bypass-approvals-and-sandbox"}},
 		{"codex", "claude", []string{"--yolo", "-m", "gpt-5"}, []string{"--dangerously-skip-permissions"}},
 		{"codex", "claude", []string{"--dangerously-bypass-approvals-and-sandbox"}, []string{"--dangerously-skip-permissions"}},
 		{"claude", "codex", []string{"--permission-mode", "acceptEdits"}, nil},
 		{"claude", "codex", []string{"--model", "claude-opus-5"}, nil},
-		{"claude", "codex", []string{"--model", "opus"}, []string{"--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"}},
+		{"claude", "codex", []string{"--model", "opus"}, []string{"--model", "gpt-6.2-sol", "-c", "model_reasoning_effort=high"}},
 		{"claude", "codex", []string{"--model=fable", "--effort", "ultracode", "--dangerously-skip-permissions"},
-			[]string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-6-astra", "-c", "model_reasoning_effort=ultra"}},
+			[]string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-6.2-astra", "-c", "model_reasoning_effort=ultra"}},
 		{"codex", "claude", []string{"--model", "gpt-5.6-luna", "-c", "model_reasoning_effort=high", "--yolo"},
 			[]string{"--dangerously-skip-permissions", "--model", "haiku", "--effort", "high"}},
 		{"codex", "claude", []string{"-m", "gpt-5.6-terra", "--config=model_reasoning_effort=\"low\""}, []string{"--model", "sonnet", "--effort", "low"}},
@@ -120,8 +120,8 @@ func TestTranslateArgsCarriesThePermissionBypass(t *testing.T) {
 		// gets the default (high); Antigravity's suffix is its level.
 		{"agy", "claude", []string{"-c", "--model", "claude-opus-4-6-thinking"}, []string{"--model", "sonnet", "--effort", "high"}},
 		{"agy", "claude", []string{"--model", "gemini-3.8-flash-low"}, []string{"--model", "haiku", "--effort", "low"}},
-		{"agy", "codex", []string{"--model", "claude-opus-5-5-medium"}, []string{"--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"}},
-		{"agy", "codex", []string{"--model", "gemini-4-argon-medium"}, []string{"--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"}},
+		{"agy", "codex", []string{"--model", "claude-opus-5-5-medium"}, []string{"--model", "gpt-6.2-sol", "-c", "model_reasoning_effort=medium"}},
+		{"agy", "codex", []string{"--model", "gemini-4-argon-medium"}, []string{"--model", "gpt-6.2-sol", "-c", "model_reasoning_effort=medium"}},
 		{"codex", "claude", []string{"--model", "gpt-5.6-sol"}, []string{"--model", "opus", "--effort", "high"}},
 		{"codex", "agy", []string{"--yolo", "-m", "gpt-5.6-terra", "-c", "model_reasoning_effort=xhigh"},
 			[]string{"--dangerously-skip-permissions", "--model", "claude-sonnet-5-5-high"}},
@@ -276,9 +276,14 @@ func TestReplayUpgradesLegacyModels(t *testing.T) {
 		in, want []string
 	}{
 		{"codex", []string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-sol"},
-			[]string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-6.1-sol"}},
+			[]string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-6.2-sol"}},
 		{"codex", []string{"-m", "gpt-5.6-luna", "--", "--model", "gpt-5.6-sol"}, []string{"-m", "gpt-6-luna", "--", "--model", "gpt-5.6-sol"}},
-		{"codex", []string{"--model=gpt-5.6-terra"}, []string{"--model=gpt-5.6-terra"}},
+		{"codex", []string{"--model=gpt-5.6-terra"}, []string{"--model=gpt-6.1-terra"}},
+		{"codex", []string{"--model", "gpt-6.1-sol"}, []string{"--model", "gpt-6.2-sol"}},
+		{"codex", []string{"-m", "gpt-6-astra"}, []string{"-m", "gpt-6.2-astra"}},
+		{"codex", []string{"--model=gpt-6.1-terra"}, []string{"--model=gpt-6.1-terra"}},
+		// Copilot's table still names these, so they stay.
+		{"copilot", []string{"--model", "gpt-6-astra"}, []string{"--model", "gpt-6-astra"}},
 		{"agy", []string{"--model", "claude-opus-4-6-thinking"}, []string{"--model", "claude-sonnet-5-5-high"}},
 		// Claude Opus left Antigravity's tier 1; the session keeps its level.
 		{"agy", []string{"--model", "claude-opus-5-5-high"}, []string{"--model", "gemini-4-argon-high"}},

@@ -150,7 +150,7 @@ after the workspace:
   The permission bypass carries over in the successor's spelling
   (`--dangerously-skip-permissions` ↔
   `--dangerously-bypass-approvals-and-sandbox`), and so do a tier model
-  (`--model opus` ↔ `--model gpt-6.1-sol`, see the tier table below) and an
+  (`--model opus` ↔ `--model gpt-6.2-sol`, see the tier table below) and an
   effort level (`--effort high` ↔ `-c model_reasoning_effort=high`). Every
   other flag is provider-specific and dropped. Fallback order is
   `long.fallback`, less any provider with no model of the session's tier.
@@ -833,16 +833,17 @@ requiring `-p`. For a supervised session that moves between accounts, use
 
 | Tier | Claude | Codex | Antigravity | Copilot |
 | --- | --- | --- | --- | --- |
-| 0 | Fable 5.1 (`fable`) | Astra (`gpt-6-astra`) | — | Astra (`gpt-6-astra`) |
-| 1 (default for auto) | Opus 5.5 (`opus`) | Sol 6.1 (`gpt-6.1-sol`) | Gemini 4 Argon (`gemini-4-argon-high`) | Sol 5.6 (`gpt-5.6-sol`) |
-| 2 | Sonnet 5.5 (`sonnet`) | Terra (`gpt-5.6-terra`) | Claude Sonnet 5.5 (`claude-sonnet-5-5-high`) | Terra (`gpt-5.6-terra`) |
+| 0 | Fable 5.1 (`fable`) | Astra 6.2 (`gpt-6.2-astra`) | — | Astra (`gpt-6-astra`) |
+| 1 (default for auto) | Opus 5.5 (`opus`) | Sol 6.2 (`gpt-6.2-sol`) | Gemini 4 Argon (`gemini-4-argon-high`) | Sol 5.6 (`gpt-5.6-sol`) |
+| 2 | Sonnet 5.5 (`sonnet`) | Terra 6.1 (`gpt-6.1-terra`) | Claude Sonnet 5.5 (`claude-sonnet-5-5-high`) | Terra (`gpt-5.6-terra`) |
 | 3 | Haiku 5.5 (`haiku`) | Luna 6 (`gpt-6-luna`) | Gemini 3.8 Flash (`gemini-3.8-flash-high`) | Luna (`gpt-5.6-luna`) |
 
 A tier is a class of model, the same on every provider, not a provider's own
 ranking of its models. Claude's aliases follow the newest model of each
 family; the other names are versions, current as of 2026-10-10 (Antigravity's
-Argon as of 2026-11-01), kept in `internal/tier/tier.go`. A model the table used
-to name (`gpt-5.6-sol`, `claude-opus-5-5-high`) keeps its tier, and a long
+Argon as of 2026-11-01, Codex's as of 2026-11-17), kept in
+`internal/tier/tier.go`. A model the table used to name (`gpt-6.1-sol`,
+`claude-opus-5-5-high`) keeps its tier, and a long
 session started on one is restarted on the tier's current model at its next
 same-provider takeover. Antigravity's Claude Opus stays available with an
 explicit `--model`, but a long session started that way moves to Argon at that
