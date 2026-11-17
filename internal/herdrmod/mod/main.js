@@ -2,7 +2,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Popover, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
 import { exec, hc, machines, panes, focused, run, checking, nextCommand } from "herdr";
 import { Bridge, matchesTarget } from "./protocol.js";
-import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText } from "./state.js";
+import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText, omissionNotice } from "./state.js";
 import { appearances, createUI, loadAppearance, saveAppearance, makeProse } from "./ui.js";
 
 // Each card has four 20px lines, three 4px gaps, 24px of padding and a border.
@@ -109,7 +109,7 @@ export default class AIQ extends View {
       const e=await this.bridge.read(row.machine,"ask-context",row,()=>generation===this.selection.generation&&this.context?.token===token);
       if(generation!==this.selection.generation || this.selection.peek!==rowKey(row) || this.context?.token!==token)return;
       if(e.data.id!==row.id || e.data.revision!==row.revision)throw {code:"conflict"};
-      this.context={loading:false,value:e.data};
+      this.context={loading:false,value:e.data,omissions:omissionNotice(e)};
       const index=e.data.messages.findIndex(m=>m.anchor);
       if(index>=0)this.contextScroll.scroll_to_item(index);
     }catch(e){if(generation!==this.selection.generation || this.selection.peek!==rowKey(row) || this.context?.token!==token)return;this.context={loading:false,error:e.code??"unavailable"};}cx.notify();});
@@ -166,7 +166,7 @@ export default class AIQ extends View {
     cx.spawn(async cx=>{try{
       const e=await this.bridge.read(row.machine,"conversation",{provider:row.provider,id:row.id,host:row.host,...options},()=>this.conversation?.token===token);
       if(this.conversation?.token!==token)return;
-      this.conversation={loading:false,value:e.data,row};
+      this.conversation={loading:false,value:e.data,row,omissions:omissionNotice(e)};
       const index=e.data.messages.findIndex(m=>m.anchor);this.scroll.scroll_to_item(index>=0?index:Math.max(0,e.data.messages.length-1));
     }catch(e){if(this.conversation?.token!==token)return;this.conversation={loading:false,error:e.code??"unavailable",row};}cx.notify();});
   }
@@ -193,8 +193,11 @@ export default class AIQ extends View {
   }
   status(s,kind) {
     const c=this.cache(s,kind),name=s.machine??"Here";
-    const status=c.error?errorText(c.error):c.loading?"Refreshing…":kind==="asks"&&c.value?.data.setup==="not_set_up"?"Asks not enabled":c.value?.partial?"Partial data · updated "+localTime(c.value.generated_at_ms):c.value?"Updated "+localTime(c.value.generated_at_ms):s.layout==="unavailable"?"Herdr connection unavailable":"Not loaded";
-    return this.ui.label(name+" · "+status+(c.error&&c.value?" · showing last known data":""),true);
+    const omissions=omissionNotice(c.value),older=c.value?.omitted?.older;
+    const paging=Number.isSafeInteger(older)&&older>0&&c.value?.data.window?.cursor?`${older} more transcripts available`:"";
+    const status=c.error?errorText(c.error):c.loading?"Refreshing…":kind==="asks"&&c.value?.data.setup==="not_set_up"?"Asks not enabled":c.value?.partial&&!omissions&&!paging?"Partial data · updated "+localTime(c.value.generated_at_ms):c.value?"Updated "+localTime(c.value.generated_at_ms):s.layout==="unavailable"?"Herdr connection unavailable":"Not loaded";
+    const text=[name,status,c.error&&c.value?"Showing last known data":"",paging,omissions].filter(Boolean).join(" · ");
+    return omissions||c.error==="too_large"?this.ui.warning(text):this.ui.label(text,true);
   }
   appearancePicker() {
     const t = this.ui.colors();
@@ -289,7 +292,7 @@ export default class AIQ extends View {
         this.detail?.loading?this.ui.label("Loading full ask…",true):null,
         this.detail?.error?this.ui.label(errorText(this.detail.error),true):null,
         this.prose("ask-text-"+row.id,data?.latest.text??row.latest.preview,this.marks),
-        (data?.latest.truncated || !data&&row.latest.truncated)?this.ui.label("This excerpt is truncated.",true):null,
+        (data?.latest.truncated || !data&&row.latest.truncated)?this.ui.warning("Ask excerpt · display limit reached."):null,
         h_flex().gap(8).flex_wrap().children([
           this.ui.button("dismiss",restore?"Restore":"Dismiss",(_e,cx)=>this.dismiss([row],cx,restore?"restore":"dismiss"),true,this.busy),
           ...(row.state==="probably-done"?[this.ui.button("reopen","Reopen ask",(_e,cx)=>this.dismiss([row],cx,"restore"),false,this.busy)]:[]),
@@ -309,7 +312,8 @@ export default class AIQ extends View {
       v_flex().px(24).py(16).gap(10).border_b(1).border_color(t.border).children([
         h_flex().gap(8).items_center().children([div().font_semibold().flex_1().child("Original context"),this.ui.button("refresh-context","Refresh",(_e,cx)=>{this.selection.peek=null;this.peek(row,cx);}),this.ui.button("close-context","Close",(_e,cx)=>{this.selection.peek=null;this.context=null;cx.notify();})]),
         this.ui.input(this.search).rounded(5),
-        this.ui.label(c?.value?.placement?.confidence==="time+text"?"Matched ask highlighted below":c?.value?.placement?.confidence==="time"?"Located by timestamp; check the highlighted message":"Original turn not located",true)
+        this.ui.label(c?.value?.placement?.confidence==="time+text"?"Matched ask highlighted below":c?.value?.placement?.confidence==="time"?"Located by timestamp; check the highlighted message":"Original turn not located",true),
+        c?.omissions?this.ui.warning(c.omissions):null
       ]),
       c?.loading?this.ui.panel("context-loading").child("Loading conversation…"):c?.error?this.ui.panel("context-error").child(errorText(c.error)):this.messageList(c?.value,this.contextScroll,"context-messages"),
       c?.value?this.pageControls(c.value,{machine:row.machine,host:row.host,provider:row.provider,id:row.conversation_id},cx,true):null
@@ -320,7 +324,7 @@ export default class AIQ extends View {
     const t=this.ui.colors();
     return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.map(m=>
       v_flex().id(id+"-"+m.key).p(16).gap(10).border(1).border_color(m.anchor||this.match===m.key?t.accent:t.border).rounded(6).bg(m.anchor||this.match===m.key?t.raised:t.surface).children([
-        this.ui.label(`${m.source||m.role} · ${localTime(m.at_ms)}${m.anchor?" · matching ask":""}`,true),this.prose(id+"-text-"+m.key,m.text,this.marks),...(m.truncated?[this.ui.label("Message excerpt · display limit reached.",true)]:[])
+        this.ui.label(`${m.source||m.role} · ${localTime(m.at_ms)}${m.anchor?" · matching ask":""}`,true),this.prose(id+"-text-"+m.key,m.text,this.marks),...(m.truncated?[this.ui.warning("Message excerpt · display limit reached.")]:[])
       ])));
   }
   pageControls(data,row,cx,context=false) {
@@ -336,6 +340,7 @@ export default class AIQ extends View {
       h_flex().px(24).py(14).gap(12).items_center().children([
         this.ui.button("back","← Back",(_e,cx)=>{this.conversation=null;cx.notify();}),this.ui.label(c.row.name||c.row.cwd||c.row.id),div().flex_1(),this.ui.input(this.search).w(300)
       ]),
+      c.omissions?div().px(24).child(this.ui.warning(c.omissions)):null,
       c.loading?this.ui.panel("conversation-loading").child("Loading conversation…"):c.error?this.ui.panel("conversation-error").child(errorText(c.error)):this.messageList(c.value,this.scroll,"conversation"),
       c.value?this.pageControls(c.value,c.row,cx):null
     ].filter(Boolean));

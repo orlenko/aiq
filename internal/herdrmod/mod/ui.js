@@ -50,6 +50,11 @@ export function createUI(getAppearance) {
       const t = colors();
       return div().text_size(13).text_color(muted ? t.muted : t.foreground).child(String(text ?? ""));
     },
+    warning(text) {
+      const t = colors();
+      return div().min_w(0).border_l(3).border_color(t.ansi3).bg(t.chrome).px(10).py(5)
+        .text_size(13).text_color(t.foreground).child(text);
+    },
     button(id, text, click, active = false, disabled = false) {
       const t = colors();
       return Button.new(id).px(12).py(7).rounded(5).border(1)

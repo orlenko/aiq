@@ -840,3 +840,11 @@ func sessionBytes(s *Session) int64 {
 	}
 	return n
 }
+
+// NewCacheWithFileLimit changes the largest admitted transcript. The other
+// cache bounds, including how many parses can run together, still apply.
+func NewCacheWithFileLimit(bytes int64) *Cache {
+	cfg := defaultCacheConfig
+	cfg.ceiling = bytes
+	return newCache(cfg)
+}

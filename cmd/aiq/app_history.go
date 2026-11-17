@@ -20,6 +20,11 @@ type appHistoryFailure string
 
 func (e appHistoryFailure) Error() string { return string(e) }
 
+const (
+	appHistoryFileBytes    = 512 << 20
+	appHistoryMetadataTime = 2 * time.Second
+)
+
 type appHistoryOutput struct {
 	Data    any
 	Partial bool
@@ -44,7 +49,7 @@ func appHistoryRunWithInput(ctx context.Context, in navFactoryInput, kind string
 	if err != nil {
 		return appHistoryOutput{}, appHistoryFailure("unavailable")
 	}
-	d := appHistoryDeps{input: in, cache: transcript.NewCache(), source: transcript.NewIndex(roots), readAsk: readAsk}
+	d := appHistoryDeps{input: in, cache: transcript.NewCacheWithFileLimit(appHistoryFileBytes), source: transcript.NewIndex(roots), readAsk: readAsk}
 	return d.run(ctx, roots, kind, args)
 }
 func (d appHistoryDeps) run(ctx context.Context, roots transcript.Roots, kind string, args []string) (appHistoryOutput, error) {
@@ -98,7 +103,20 @@ func (d appHistoryDeps) run(ctx context.Context, roots transcript.Roots, kind st
 		return appHistoryOutput{}, err
 	}
 	data, partial, err := appHistoryWindowAtKey(ctx, s, at, opts["before"], opts["after"], opts["anchor"])
-	return appHistoryOutput{Data: data, Partial: partial, Omitted: map[string]int{}}, err
+	return appHistoryTranscriptOutput(data, partial, s), err
+}
+
+func appHistoryTranscriptOutput(data any, partial bool, s *transcript.Session) appHistoryOutput {
+	skipped := s.Skipped
+	for _, turn := range s.Turns {
+		skipped += turn.Skipped
+	}
+	out := appHistoryOutput{Data: data, Partial: partial, Omitted: map[string]int{}}
+	if skipped > 0 {
+		out.Partial = true
+		out.Omitted["records"] = skipped
+	}
+	return out
 }
 func appHistoryOptionCount(opts map[string]string, keys ...string) int {
 	n := 0
@@ -217,12 +235,13 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 	summaries := []transcript.Summary{}
 	scanned := 0
 	slow := 0
+	large := 0
 	cursor := ""
 	byID := map[string]int{}
 	parseCtx := ctx
 	parseCancel := func() {}
 	if deadline, ok := ctx.Deadline(); ok {
-		parseCtx, parseCancel = context.WithDeadline(ctx, deadline.Add(-time.Second))
+		parseCtx, parseCancel = context.WithDeadline(ctx, deadline.Add(-appHistoryMetadataTime))
 	}
 	defer parseCancel()
 	parseSummary := d.summary
@@ -233,7 +252,7 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 		if parseCtx.Err() != nil {
 			break
 		}
-		one, cancelOne := context.WithTimeout(parseCtx, 2*time.Second)
+		one, cancelOne := context.WithTimeout(parseCtx, 4*time.Second)
 		row, err := parseSummary(one, candidate.candidate.Path)
 		cancelOne()
 		if errors.Is(err, transcript.ErrBudget) {
@@ -247,6 +266,10 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 		}
 		scanned++
 		cursor = fmt.Sprintf("%d.%s", candidate.at, candidate.key)
+		if errors.Is(err, transcript.ErrTooLarge) {
+			large++
+			continue
+		}
 		if err != nil {
 			unreadable++
 			continue
@@ -273,10 +296,11 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 	}
 	// Leave a little time for launch metadata and ask counts. A timed-out parse
 	// still returns the completed recent window and a cursor to continue it.
-	metaCtx, cancel := context.WithTimeout(ctx, time.Second)
+	metaCtx, cancel := context.WithTimeout(ctx, appHistoryMetadataTime)
 	defer cancel()
-	f := &navFactory{input: d.input, policy: navProductionPolicy(), askSlots: make(chan struct{}, 1)}
-	run := &navListRun{limit: 4 << 20, needed: map[string]struct{}{}, cancel: cancel}
+	policy := navProductionPolicy()
+	f := &navFactory{input: d.input, policy: policy, askSlots: make(chan struct{}, 1)}
+	run := &navListRun{limit: policy.sessions.rowBytes, needed: map[string]struct{}{}, cancel: cancel}
 	extras, extraErr := f.listExtras(metaCtx, roots, navListQuery{all: true, workers: true}, summaries, run)
 	rows := []map[string]any{}
 	for i, s := range summaries {
@@ -304,8 +328,19 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 	if older == 0 {
 		cursor = ""
 	}
-	partial := older > 0 || unreadable > 0 || slow > 0 || extraErr != nil || extras.partial
-	return appHistoryOutput{Data: map[string]any{"window": map[string]any{"limit": limit, "scanned": scanned, "of": total, "cursor": cursor}, "activity": map[string]any{"known": extraErr == nil && extras.summary.Known, "live": extras.summary.Live}, "rows": rows}, Partial: partial, Omitted: map[string]int{"older": older, "unreadable": unreadable, "slow": slow}}, nil
+	omitted := map[string]int{"older": older, "unreadable": unreadable, "slow": slow}
+	if large > 0 {
+		omitted["too_large"] = large
+	}
+	if errors.Is(extraErr, errNavAuxTooLarge) {
+		omitted["metadata_limit"] = 1
+	} else if errors.Is(extraErr, context.DeadlineExceeded) {
+		omitted["metadata_timeout"] = 1
+	} else if extraErr != nil || extras.partial {
+		omitted["metadata_incomplete"] = 1
+	}
+	partial := older > 0 || unreadable > 0 || slow > 0 || large > 0 || extraErr != nil || extras.partial
+	return appHistoryOutput{Data: map[string]any{"window": map[string]any{"limit": limit, "scanned": scanned, "of": total, "cursor": cursor}, "activity": map[string]any{"known": extraErr == nil && extras.summary.Known, "live": extras.summary.Live}, "rows": rows}, Partial: partial, Omitted: omitted}, nil
 }
 
 func (d appHistoryDeps) session(ctx context.Context, provider, id string) (*transcript.Session, error) {
@@ -577,7 +612,7 @@ func (d appHistoryDeps) askContext(ctx context.Context, opts map[string]string) 
 		return appHistoryOutput{}, appHistoryFailure("unavailable")
 	}
 	if at == nil {
-		return appHistoryOutput{Data: data, Omitted: map[string]int{}}, nil
+		return appHistoryTranscriptOutput(data, false, s), nil
 	}
 	all, err := appHistoryMessagesWithQuote(ctx, s, []string{ask.LastQuote, ask.FirstQuote})
 	if err != nil {
@@ -617,7 +652,7 @@ func (d appHistoryDeps) askContext(ctx context.Context, opts map[string]string) 
 		}
 	}
 	if anchor < 0 {
-		return appHistoryOutput{Data: data, Omitted: map[string]int{}}, nil
+		return appHistoryTranscriptOutput(data, false, s), nil
 	}
 	all[anchor].Anchor = true
 	window, partial, err := appHistorySlice(s, all, anchor, "", "")
@@ -636,7 +671,7 @@ func (d appHistoryDeps) askContext(ctx context.Context, opts map[string]string) 
 	data["placement"] = map[string]any{"confidence": confidence, "anchor_ms": anchorAt}
 	data["messages"] = messages
 	data["cursor"] = window["cursor"]
-	return appHistoryOutput{Data: data, Partial: partial, Omitted: map[string]int{}}, nil
+	return appHistoryTranscriptOutput(data, partial, s), nil
 }
 func appHistoryQuote(raw string) map[string]any {
 	text, cut := appHistoryText(raw, 256<<10)
