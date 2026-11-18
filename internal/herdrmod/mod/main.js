@@ -204,7 +204,8 @@ export default class AIQ extends View {
       ready = "Last quota read · "+localTime(latest);
     }
     const status=c.error?errorText(c.error):c.loading?"Refreshing…":kind==="asks"&&c.value?.data.setup==="not_set_up"?"Asks not enabled":c.value?.partial&&!omissions&&!paging?"Partial data · updated "+localTime(c.value.generated_at_ms):c.value?ready:s.layout==="unavailable"?"Herdr connection unavailable":"Not loaded";
-    const text=[name,status,c.error&&c.value?"Showing last known data":"",paging,omissions].filter(Boolean).join(" · ");
+    const quotaRead = kind === "quotas" && (c.error || c.loading) ? ready : "";
+    const text=[name,status,c.error&&c.value?"Showing last known data":"",quotaRead,paging,omissions].filter(Boolean).join(" · ");
     return omissions||c.error==="too_large"?this.ui.warning(text):this.ui.label(text,true);
   }
   appearancePicker() {
