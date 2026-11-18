@@ -26,6 +26,47 @@ test('a failed refresh retains last known rows and exposes the failure',async()=
   view.load(view.sources.get(''),'asks',cx);await cx.drain();
   const c=view.sources.get('').asks;assert.equal(c.error,'busy');assert.equal(c.value.data.rows[0].id,'1');assert.equal(c.loading,false);
 });
+test('quota TODO refreshes and copies renewal commands across the machine filter',async()=>{
+  const {cx,view}=setup([row(1)]);
+  const remote={machine:'invented-remote',layout:'ready'};
+  view.sources.set(remote.machine,remote);
+  view.tab='quotas';
+  view.machine='';
+  assert.equal(view.quotaTodo(),null);
+
+  const cli={id:'codex/demo',provider:'codex',login:{cli:'out'}};
+  const grant={id:'claude/demo',provider:'claude',poll_error:'grant expired'};
+  let accounts=[cli,grant,{...cli,id:'codex/disabled',enabled:false}];
+  const reads=[];
+  view.bridge={read:async(machine,kind,_options,keepGoing)=>{
+    assert.equal(kind,'quotas');
+    assert.ok(keepGoing());
+    reads.push(machine);
+    return {data:{accounts:machine===remote.machine?accounts:[]}};
+  }};
+  view.refresh(cx);
+  await cx.drain();
+  assert.deepEqual(reads,[null,remote.machine]);
+
+  const copied=[];
+  const todo=view.quotaTodo();
+  const groups=todo.handlers.children[1].handlers.children;
+  assert.equal(groups.length,1);
+  const commands=groups[0].handlers.children.slice(1);
+  for (const command of commands) {
+    const button=command.handlers.children[1];
+    button.handlers.click({},{
+      write_to_clipboard:text=>copied.push(text),
+      notify(){},
+      timer:{after(){}},
+    });
+  }
+  assert.deepEqual(copied,['aiq account login codex/demo','aiq account authorize claude/demo']);
+  accounts=[];
+  view.refresh(cx);
+  await cx.drain();
+  assert.equal(view.quotaTodo(),null);
+});
 test('dismiss batch stops at uncertainty and never repeats a write',async()=>{
   const a=row(1),b=row(2),c=row(3),{cx,view}=setup([a,b,c]);const actions=[];let rows=[a,b,c];
   view.bridge={action:async(_machine,r)=>{actions.push(r.id);if(r.id==='2')throw {code:'unknown_outcome'};rows=rows.map(x=>x.id===r.id?{...x,state:'dismissed',revision:'2'.repeat(64)}:x);return {data:{id:r.id,state:'dismissed',revision:'2'.repeat(64)}};},read:async()=>asks(rows)};
