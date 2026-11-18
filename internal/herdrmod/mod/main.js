@@ -62,14 +62,15 @@ export default class AIQ extends View {
       if(!this.sources.has(key))this.sources.set(key,{machine:m.name,layout:m.layout});
       this.sources.get(key).layout=m.layout;
     }
-    for(const s of this.sourceList())this.load(s,this.tab,cx);
+    const sources = this.tab === "quotas" ? this.sources.values() : this.sourceList();
+    for(const s of sources)this.load(s,this.tab,cx);
   }
   load(s,kind,cx,options={},append=false) {
     const old=this.cache(s,kind);if(old.loading || checking())return;
     const token={};s[kind]={...old,loading:true,error:null,token};cx.notify();
     cx.spawn(async cx=>{
       try {
-        const e=await this.bridge.read(s.machine,kind,options,()=>s[kind]?.token===token&&this.tab===kind&&this.sourceList().includes(s));
+        const e=await this.bridge.read(s.machine,kind,options,()=>s[kind]?.token===token&&this.tab===kind&&(kind==="quotas"||this.sourceList().includes(s)));
         if(s[kind]?.token!==token)return;
         if(append && old.value) e.data.rows=mergeSessionRows(old.value.data.rows,e.data.rows);
         s[kind]={value:e,loading:false,error:null};
@@ -447,9 +448,47 @@ export default class AIQ extends View {
         ? this.ui.label("Latest quota read failed.",true) : null
     ].filter(Boolean));
   }
+  quotaTodo() {
+    const t = this.ui.colors();
+    const machines = [];
+    for (const {machine, quotas} of this.sources.values()) {
+      const items = (quotas?.value?.data.accounts ?? []).flatMap(account =>
+        quotaRenewals(account).map(hint => ({...hint, account: account.id}))
+      );
+      if (!items.length) continue;
+      machines.push(v_flex().w(420).max_w_full().min_w(0).gap(4).children([
+        div().font_semibold().child(machine === null ? "On this machine" : `On ${machine}`),
+        quotas.error ? this.ui.label("Showing last known data",true) : null,
+        ...items.map(({account, kind, text, command}) => {
+          if (!command) return this.ui.label(`${account} · ${text}`,true).whitespace_normal();
+          const id = JSON.stringify([machine,account,kind]);
+          return h_flex().w_full().min_w(0).items_center().gap(8).children([
+            this.ui.label(command).font_family("Menlo").flex_1().min_w(0).whitespace_normal(),
+            this.ui.button("quota-copy-"+id,this.copiedQuotaCommand?.id===id?"Copied":"Copy",(_e,cx)=>{
+              cx.write_to_clipboard(command);
+              const copied = {id};
+              this.copiedQuotaCommand = copied;
+              cx.notify();
+              cx.timer.after(1800,cx=>{
+                if (this.copiedQuotaCommand !== copied) return;
+                this.copiedQuotaCommand = null;
+                cx.notify();
+              });
+            }).w(66).px(6).py(3).flex_shrink_0()
+          ]);
+        })
+      ].filter(Boolean)));
+    }
+    if (!machines.length) return null;
+    return v_flex().id("quota-todo").w_full().min_w(0).gap(8).p(12)
+      .rounded(6).border(1).border_color(t.border).bg(t.chrome).children([
+        div().text_size(16).font_semibold().child("TODO · Account access"),
+        h_flex().w_full().min_w(0).items_start().gap(20).flex_wrap().children(machines)
+      ]);
+  }
   quotasView() {
     const t=this.ui.colors();
-    return v_flex().id("quotas-scroll").h(Math.max(300,this.size.height-150)).flex_1().min_h(0).overflow_y_scrollbar().px(24).py(10).gap(18).children(this.sourceList().map(s=>{
+    return v_flex().id("quotas-scroll").h(Math.max(300,this.size.height-150)).flex_1().min_h(0).overflow_y_scrollbar().px(24).py(10).gap(18).children([this.quotaTodo(),...this.sourceList().map(s=>{
       const e=s.quotas?.value;
       return v_flex().gap(8).children([
         div().font_semibold().text_size(18).child(s.machine??"Here"),
@@ -458,6 +497,6 @@ export default class AIQ extends View {
           ...e.data.accounts.filter(a=>a.provider===provider).map(account=>this.quotaCard(account))
         ])))]:[this.ui.label("No quota snapshot available.",true)])
       ]);
-    }));
+    })].filter(Boolean));
   }
 }
