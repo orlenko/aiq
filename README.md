@@ -731,7 +731,8 @@ link its registered conversation; other providers keep the terminal link on
 the workspace row until an exact conversation identity is available.
 It parses a recent candidate window first; Older continues through history.
 Partial results and unknown ask counts remain labelled. Quotas keeps separate
-machine sections and provider columns, with per-account observation times.
+machine sections and provider columns, and shows the latest quota read time
+once per machine.
 The existing browser navigator remains available as a fallback.
 
 ## Local session navigator
