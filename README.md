@@ -717,9 +717,9 @@ the loaded messages; paging reads another bounded window. Escape closes a
 peek. Cmd+Shift+M toggles Markdown symbols within the mod.
 
 Go to terminal checks the running terminal afresh before focusing it or
-opening Herdr's terminal peek. A current-workspace terminal is labelled as
-such when the ask belongs to an earlier conversation. Historical, ended or
-unmapped sessions remain readable without inventing a terminal mapping.
+opening Herdr's terminal peek. **Current workspace terminal** appears for
+an earlier conversation or a live workspace terminal created before
+child-generation linking. Historical, ended or unmapped sessions remain readable.
 The native reader renders a small formatting subset from escaped text;
 document HTML and remote images do not execute or load. Replies and session
 control remain in Herdr's existing terminal.

@@ -87,7 +87,16 @@ The bridge exports a terminal only after these checks:
 2. Its child is observed Running.
 3. The child's pinned core, read-only, still has the same core ID, a live terminal at the recorded address, the recorded root pid, and the witness label `aiq.target`. The runner writes that label at each child's registration; it is generation-specific.
 
-The app then requires `hc get <machine/address> --json` to show `state:"live"`, `pid == terminal_pid` and `labels["aiq.target"] == label` before it focuses. A kept replacement shell keeps the label but fails the pid check.
+The app then requires `hc get <machine/address> --json` to show `state:"live"`,
+the expected address (which may be machine-qualified), `pid == terminal_pid`,
+and `labels["aiq.target"] == label` before it focuses. A kept replacement
+shell keeps the label but fails the pid check.
+
+For a legacy terminal with no `aiq.target` label, the bridge can return
+`relation:"workspace_current"` with an empty label and a positive
+`witness.terminal_created_ms`. The core, address, pid, and the runner's
+ownership must still agree. The app also compares `created_ms` and requires
+the terminal to remain unlabelled when it checks it before focus.
 
 Interactive sessions (`aiq claude` and the like, not `aiq long`) are targets too, with fewer witnesses:
 - At launch, aiq records the terminal only when the current Herdr core answers and the terminal's root process shares aiq's TTY. It writes nothing into that terminal, so there is no label: `witness.label` is `""`.

@@ -12,10 +12,9 @@ import (
 	"github.com/orlenko/aiq/internal/transcript"
 )
 
-// appTerminal is a verified exact terminal: the app focuses only a terminal
-// on that Herdr machine with this live address, this root pid and this label,
-// after asking for a fresh target. Nothing here is a directory, a name or
-// a focus guess.
+// appTerminal is a verified terminal. Before focusing, the app asks for a
+// fresh target and checks the address, root pid and child label or legacy
+// creation time on that Herdr machine.
 type appTerminal struct {
 	Relation string     `json:"relation"` // origin or workspace_current
 	Address  string     `json:"address"`
@@ -23,8 +22,9 @@ type appTerminal struct {
 	Witness  appWitness `json:"witness"`
 }
 type appWitness struct {
-	TerminalPID int    `json:"terminal_pid"`
-	Label       string `json:"label"`
+	TerminalPID       int    `json:"terminal_pid"`
+	Label             string `json:"label"`
+	TerminalCreatedMS int64  `json:"terminal_created_ms,omitempty"`
 }
 
 // Reasons a row has no terminal.
@@ -150,6 +150,9 @@ func (t *appTargets) resolve(l *state.NavigatorLease, relation string) (*appTerm
 	}
 	out := *r.terminal
 	out.Relation = relation
+	if out.Witness.TerminalCreatedMS > 0 {
+		out.Relation = "workspace_current"
+	}
 	return &out, ""
 }
 
@@ -178,7 +181,7 @@ func (t *appTargets) check(l *state.NavigatorLease) appTargetResult {
 	if reason != "" {
 		return appTargetResult{reason: reason}
 	}
-	return appTargetResult{terminal: &appTerminal{Address: target.Terminal, CoreID: target.CoreID, Witness: appWitness{TerminalPID: target.PID, Label: target.Label}}}
+	return appTargetResult{terminal: &appTerminal{Address: target.Terminal, CoreID: target.CoreID, Witness: appWitness{TerminalPID: target.PID, Label: target.Label, TerminalCreatedMS: target.CreatedMS}}}
 }
 
 type appTargetReply struct {

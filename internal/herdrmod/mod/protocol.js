@@ -85,8 +85,26 @@ export function argsFor(kind, options={}) {
   }
   throw new BridgeError("invalid_request");
 }
-export function validTarget(t) { return object(t) && ["origin","workspace_current"].includes(t.relation) && /^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$/.test(t.address) && str(t.core_id,128) && object(t.witness) && Number.isSafeInteger(t.witness.terminal_pid) && t.witness.terminal_pid>0 && (t.witness.label==="" || /^[a-f0-9]{32}$/.test(t.witness.label)); }
-export function matchesTarget(target,live) { return validTarget(target) && object(live) && live.pid===target.witness.terminal_pid && live.address===target.address && (!target.witness.label || live.labels?.["aiq.target"]===target.witness.label) && live.state==="live"; }
+export function validTarget(t) {
+  if (!object(t) || !["origin","workspace_current"].includes(t.relation) ||
+      !/^t[1-9][0-9bcdfghjkmnpqrstvwxyz]*$/.test(t.address) || !str(t.core_id,128) || !object(t.witness)) return false;
+  const w=t.witness;
+  if (!Number.isSafeInteger(w.terminal_pid) || w.terminal_pid<=0) return false;
+  if (w.terminal_created_ms !== undefined) {
+    return t.relation==="workspace_current" && w.label==="" &&
+      Number.isSafeInteger(w.terminal_created_ms) && w.terminal_created_ms>0;
+  }
+  return /^[a-f0-9]{32}$/.test(w.label) || t.relation==="origin" && w.label==="";
+}
+export function matchesTarget(target,live,machine=null) {
+  if (!validTarget(target) || !object(live) || live.state!=="live" ||
+      live.pid!==target.witness.terminal_pid) return false;
+  const address=machine ? machine+"/"+target.address : target.address;
+  if (live.address!==target.address && live.address!==address) return false;
+  const w=target.witness, label=live.labels?.["aiq.target"];
+  if (w.terminal_created_ms) return live.created_ms===w.terminal_created_ms && label===undefined;
+  return !w.label || label===w.label;
+}
 export class Bridge {
   constructor(exec) { this.exec=exec; this.sources=new Map(); this.active=0; this.waiters=[]; }
   async slot(fn) {

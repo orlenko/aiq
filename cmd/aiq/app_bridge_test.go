@@ -246,6 +246,36 @@ func TestAppTargetReasons(t *testing.T) {
 	}
 }
 
+func TestAppLegacyAskLinksToCurrentWorkspaceTerminal(t *testing.T) {
+	env, _ := appTestEnv(t)
+	env.resolve = func(ref string) (herdr.Target, string) {
+		if ref != appTestRef {
+			t.Fatalf("resolved wrong fixture ref %q", ref)
+		}
+		return herdr.Target{CoreID: appTestCore, Terminal: "t7", PID: 4321, CreatedMS: 123456}, ""
+	}
+	rows := appData(t, appCall(t, env, "asks"))["rows"].([]any)
+	for _, item := range rows {
+		row := item.(map[string]any)
+		if row["id"] != "17" {
+			continue
+		}
+		got := appData(t, appCall(t, env, "target", "--ask", "17", "--revision", row["revision"].(string)))
+		for _, value := range []any{row["terminal"], got["terminal"]} {
+			term, ok := value.(map[string]any)
+			if !ok || term["relation"] != "workspace_current" {
+				t.Fatalf("want a current workspace terminal, got %v", value)
+			}
+			witness := term["witness"].(map[string]any)
+			if witness["label"] != "" || witness["terminal_created_ms"] != float64(123456) {
+				t.Fatalf("wrong legacy terminal witness: %v", witness)
+			}
+		}
+		return
+	}
+	t.Fatal("invented ask missing")
+}
+
 func TestAppAsksStayUnderCap(t *testing.T) {
 	env, x := appTestEnv(t)
 	db, err := sql.Open("sqlite", x.asksPath)
