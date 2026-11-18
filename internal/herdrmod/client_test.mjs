@@ -3,11 +3,38 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {documentBlocks} from './mod/markdown.js';
-import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows,omissionNotice} from './mod/state.js';
+import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows,omissionNotice,quotaResets,quotaResetGrant,quotaRenewals} from './mod/state.js';
 import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget,validTarget} from './mod/protocol.js';
 const host='3f0c9a1e5b7d24680aceb13579bdf024',revision='1'.repeat(64);
 const row=(id,session='first')=>({id:String(id),host,machine:null,revision,provider:'claude',conversation_id:session,workspace:'/invented/'+session,raised_at_ms:id,state:'open',first:{preview:'Question',bytes:8,truncated:false},latest:{preview:'Question',bytes:8,truncated:false}});
 const envelope=(kind,data,source=host)=>({schema:1,ok:true,kind,host:{id:source,name:'invented'},aiq:'invented',generated_at_ms:123,partial:false,omitted:{},data:kind==='hello'?{...data,commands:['hello','asks','ask-detail','ask-action','target','quotas','sessions','conversation','ask-context']}:data});
+test('quota cards distinguish reset grants from their quota windows',()=>{
+  const time=Date.UTC(2031,6,1,11,0);
+  assert.equal(quotaResets([{label:'Weekly',resets_at_ms:time},{label:'Fable',resets_at_ms:time}]),
+    'Weekly, Fable reset '+localTime(time).slice(5));
+  const d=JSON.parse(readFileSync(new URL('../../cmd/aiq/testdata/app/quotas.json',import.meta.url),'utf8'));
+  d.data.accounts[0].reset_credit_expires_at=time/1000;
+  const a=decode(JSON.stringify(d),'quotas').data.accounts[0];
+  assert.equal(quotaResetGrant(a),'1 reset grant · next expires '+localTime(time).slice(5));
+  assert.equal(quotaResetGrant({...a,reset_credits:0}),'No reset grants');
+  assert.equal(quotaResetGrant({...a,provider:'codex',reset_credits:2,reset_credit_expires_at_ms:0}),'2 reset credits');
+});
+test('quota renewal hints use fixed commands and a literal account argument',()=>{
+  const a={id:'claude/demo',provider:'claude',enabled:true,login:{has_credential:true,cli:'in'},eligible:true};
+  for(const poll_error of ['grant expired and invented refresh failure','no poll grant — invented','usage: HTTP 401 — invented']) {
+    assert.deepEqual(quotaRenewals({...a,poll_error}),[
+      {kind:'authorize',text:'Quota authorization required',command:'aiq account authorize claude/demo'}
+    ]);
+  }
+  const loggedOut={...a,id:"claude/demo'quote",login:{has_credential:false,cli:'out'}};
+  assert.equal(quotaRenewals(loggedOut)[0].command,"aiq account login 'claude/demo'\\''quote'");
+  assert.equal(quotaRenewals({...loggedOut,id:'claude/demo\nmore'})[0].command,'');
+  assert.equal(quotaRenewals({...a,provider:'codex',id:'codex/demo',ineligible:'authentication required'})[0].command,
+    'aiq account login codex/demo');
+  assert.deepEqual(quotaRenewals({...a,poll_error:'invented HTTP 500'}),[]);
+  assert.deepEqual(quotaRenewals({...a,login:{has_credential:false,cli:'unreadable'}}),[]);
+  assert.deepEqual(quotaRenewals({...loggedOut,enabled:false}),[]);
+});
 test('history omission notices give actionable reasons while older pages stay ordinary',()=>{
   assert.equal(omissionNotice({omitted:{older:100,too_large:0}}),'');
   assert.equal(omissionNotice({omitted:{too_large:2,slow:1,metadata_limit:1}}),

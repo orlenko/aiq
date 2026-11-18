@@ -42,6 +42,7 @@ export function decode(stdout, kind, expectedHost=null) {
     for (const a of d.accounts) {
       require(object(a) && str(a.id,512) && (PROVIDERS.has(a.provider)||a.provider==="copilot") && Array.isArray(a.windows) && a.windows.length<=128 && Array.isArray(a.leases) && a.leases.length<=10000);
       if(a.observed_at_ms===undefined)a.observed_at_ms=wireSeconds(a.observed_at);
+      a.reset_credit_expires_at_ms=wireSeconds(a.reset_credit_expires_at??null);
       for(const w of a.windows) {
         require(object(w) && str(w.label,512) && (w.used_pct===null || typeof w.used_pct === "number" && Number.isFinite(w.used_pct)));
         if(w.resets_at_ms===undefined)w.resets_at_ms=wireSeconds(w.resets_at);
