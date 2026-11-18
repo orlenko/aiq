@@ -195,7 +195,15 @@ export default class AIQ extends View {
     const c=this.cache(s,kind),name=s.machine??"Here";
     const omissions=omissionNotice(c.value),older=c.value?.omitted?.older;
     const paging=Number.isSafeInteger(older)&&older>0&&c.value?.data.window?.cursor?`${older} more transcripts available`:"";
-    const status=c.error?errorText(c.error):c.loading?"Refreshing…":kind==="asks"&&c.value?.data.setup==="not_set_up"?"Asks not enabled":c.value?.partial&&!omissions&&!paging?"Partial data · updated "+localTime(c.value.generated_at_ms):c.value?"Updated "+localTime(c.value.generated_at_ms):s.layout==="unavailable"?"Herdr connection unavailable":"Not loaded";
+    let ready = c.value ? "Updated "+localTime(c.value.generated_at_ms) : "";
+    if (kind === "quotas" && c.value) {
+      let latest = 0;
+      for (const account of c.value.data.accounts) {
+        if (Number.isSafeInteger(account.observed_at_ms)) latest = Math.max(latest, account.observed_at_ms);
+      }
+      ready = "Last quota read · "+localTime(latest);
+    }
+    const status=c.error?errorText(c.error):c.loading?"Refreshing…":kind==="asks"&&c.value?.data.setup==="not_set_up"?"Asks not enabled":c.value?.partial&&!omissions&&!paging?"Partial data · updated "+localTime(c.value.generated_at_ms):c.value?ready:s.layout==="unavailable"?"Herdr connection unavailable":"Not loaded";
     const text=[name,status,c.error&&c.value?"Showing last known data":"",paging,omissions].filter(Boolean).join(" · ");
     return omissions||c.error==="too_large"?this.ui.warning(text):this.ui.label(text,true);
   }
@@ -412,7 +420,6 @@ export default class AIQ extends View {
             a.reset_credits?this.ui.label(a.reset_credits+" reset credits",true):null,
             !a.eligible?this.ui.label(a.ineligible||a.reason||"Currently ineligible",true):null,
             ...a.leases.map(l=>this.ui.label(`${l.mode} · ${l.workspace||l.cwd}`,true)),
-            this.ui.label("Read "+localTime(a.observed_at_ms),true),
             a.poll_error?this.ui.label("Latest quota read failed.",true):null
           ].filter(Boolean)))
         ])))]:[this.ui.label("No quota snapshot available.",true)])
