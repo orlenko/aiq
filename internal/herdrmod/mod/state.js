@@ -7,6 +7,50 @@ export function mergeSessionRows(before,after) {
   return [...rows.values()];
 }
 export function localTime(ms) { if(!ms) return "Unknown"; const d=new Date(ms),pad=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+export function quotaResets(windows) {
+  const byTime = new Map();
+  for (const {label, key, resets_at_ms: time} of windows) {
+    if (!time) continue;
+    if (!byTime.has(time)) byTime.set(time, []);
+    byTime.get(time).push(label || key);
+  }
+  return [...byTime].map(([time, labels]) => `${labels.join(", ")} reset ${localTime(time).slice(5)}`).join(" · ");
+}
+
+export function quotaResetGrant(account) {
+  if (account.provider !== "claude" && account.provider !== "codex") return "";
+  const noun = account.provider === "claude" ? "reset grant" : "reset credit";
+  const count = account.reset_credits;
+  if (!Number.isSafeInteger(count) || count < 0) return "";
+  if (count === 0) return `No ${noun}s`;
+  const expiry = account.reset_credit_expires_at_ms;
+  return `${count} ${noun}${count === 1 ? "" : "s"}${expiry ? " · next expires "+localTime(expiry).slice(5) : ""}`;
+}
+
+export function quotaRenewals(account) {
+  if (account.enabled === false) return [];
+  // Build command hints from the account identifier. Provider error text is
+  // only used to recognize the fixed Claude poll failure messages.
+  const {id, provider, login} = account;
+  const prefix = provider + "/";
+  const name = id.startsWith(prefix) ? id.slice(prefix.length) : "";
+  let argument = "";
+  if (name && !name.startsWith(".") && !name.startsWith("-") && !/[/\u0000-\u001f\u007f-\u009f\s]/.test(name)) {
+    argument = /^[A-Za-z0-9_./@+:=,%-]+$/.test(id) ? id : "'" + id.replaceAll("'", "'\\''") + "'";
+  }
+  const hints = [];
+  const add = (kind, text) => hints.push({kind, text, command: argument ? `aiq account ${kind} ${argument}` : ""});
+  const missingLogin = login?.has_credential === false && login.cli !== "unreadable";
+  const codexAuthRequired = provider === "codex" && account.ineligible === "authentication required";
+  if (login?.cli === "out" || login?.cli_mismatch === true || missingLogin || codexAuthRequired) {
+    add("login", "CLI login required");
+  }
+  if (provider === "claude" && /^(no poll grant|grant expired|usage: HTTP 401)\b/.test(account.poll_error ?? "")) {
+    add("authorize", "Quota authorization required");
+  }
+  return hints;
+}
+
 export function omissionNotice(reply) {
   const omitted = reply?.omitted;
   if (!omitted) return "";

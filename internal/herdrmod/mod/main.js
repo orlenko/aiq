@@ -2,7 +2,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Popover, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
 import { exec, hc, machines, panes, focused, run, checking, nextCommand } from "herdr";
 import { Bridge, matchesTarget } from "./protocol.js";
-import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText, omissionNotice } from "./state.js";
+import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText, omissionNotice, quotaResets, quotaResetGrant, quotaRenewals } from "./state.js";
 import { appearances, createUI, loadAppearance, saveAppearance, makeProse } from "./ui.js";
 
 // Each card has four 20px lines, three 4px gaps, 24px of padding and a border.
@@ -247,7 +247,7 @@ export default class AIQ extends View {
         ]),
         h_flex().px(24).py(4).gap(18).flex_wrap().children(this.sourceList().map(s=>this.status(s,this.tab))),
         this.notice||this.undo.length?h_flex().px(24).py(8).gap(12).items_center().children([this.ui.label(this.notice||`${this.undo.length} dismissal${this.undo.length===1?"":"s"} can be undone.`),...(this.undo.length?[this.ui.button("undo","Undo",(_e,cx)=>this.dismiss(this.undo,cx,"restore"),false,this.busy)]:[])]):null,
-        this.conversation?this.conversationView(cx):this.tab==="asks"?this.asksView(cx):this.tab==="sessions"?this.sessionsView(cx):this.quotasView(cx)
+        this.conversation?this.conversationView(cx):this.tab==="asks"?this.asksView(cx):this.tab==="sessions"?this.sessionsView(cx):this.quotasView()
       ].filter(Boolean));
   }
   asksView(cx) {
@@ -402,27 +402,59 @@ export default class AIQ extends View {
         ]))
     ]);
   }
-  quotasView(cx) {
+  quotaCard(account) {
+    const t = this.ui.colors();
+    const identity = [account.plan, account.label || account.identity].filter(Boolean).join(" · ");
+    const resets = quotaResets(account.windows);
+    const grant = quotaResetGrant(account);
+    const renewals = quotaRenewals(account);
+    return v_flex().min_w(0).p(12).gap(6).rounded(6).border(1).border_color(t.border).children([
+      h_flex().justify_between().items_start().gap(10).children([
+        h_flex().min_w(0).gap(7).flex_wrap().children([
+          div().font_semibold().child(account.id.startsWith(account.provider+"/") ? account.id : account.provider+"/"+account.id),
+          identity ? this.ui.label(identity,true) : null
+        ].filter(Boolean)),
+        this.ui.label(account.rank && account.score !== null
+          ? `#${account.rank} · ${Number(account.score).toFixed(1)}/h` : "Unranked",true).flex_shrink_0()
+      ]),
+      ...account.windows.map(w => {
+        const name = w.label || w.key;
+        const used = w.used_pct === null || w.used_pct < 0 ? null : w.used_pct;
+        return h_flex().items_center().gap(8).children([
+          this.ui.label(name,w.binding===false).min_w(0).w("33%").truncate().tooltip(name),
+          div().flex_1().min_w(0).h(6).rounded(3).bg(t.raised).child(
+            div().h(6).rounded(3).w(Math.min(100,used??0)+"%").bg(used>=95?t.ansi1:used>=80?t.ansi3:t.ansi2)
+          ),
+          this.ui.label(used===null?"Unknown":used.toFixed(0)+"%").w(60).text_right().flex_shrink_0()
+        ]);
+      }),
+      resets || grant ? h_flex().gap(12).flex_wrap().children([
+        resets ? this.ui.label(resets,true) : null,
+        grant ? this.ui.label(grant,true).text_color(account.reset_credits>0?t.ansi2:t.muted) : null
+      ].filter(Boolean)) : null,
+      !account.eligible && !renewals.some(hint=>hint.kind==="login")
+        ? this.ui.label(account.ineligible || account.reason || "Currently ineligible",true) : null,
+      ...account.leases.map(l => {
+        const text = `${l.mode} · ${l.workspace || l.cwd}`;
+        return this.ui.label(text,true).min_w(0).truncate().tooltip(text);
+      }),
+      ...renewals.map(hint => h_flex().items_baseline().gap(8).flex_wrap().children([
+        this.ui.label(hint.text).text_color(t.ansi1).font_semibold(),
+        hint.command ? this.ui.label(hint.command).font_family("Menlo") : null
+      ].filter(Boolean))),
+      account.poll_error && !renewals.some(hint=>hint.kind==="authorize") && account.ineligible!=="authentication required"
+        ? this.ui.label("Latest quota read failed.",true) : null
+    ].filter(Boolean));
+  }
+  quotasView() {
     const t=this.ui.colors();
-    return v_flex().id("quotas-scroll").h(Math.max(300,this.size.height-150)).flex_1().min_h(0).overflow_y_scrollbar().px(24).py(16).gap(24).children(this.sourceList().map(s=>{
+    return v_flex().id("quotas-scroll").h(Math.max(300,this.size.height-150)).flex_1().min_h(0).overflow_y_scrollbar().px(24).py(10).gap(18).children(this.sourceList().map(s=>{
       const e=s.quotas?.value;
-      return v_flex().gap(12).children([
+      return v_flex().gap(8).children([
         div().font_semibold().text_size(18).child(s.machine??"Here"),
-        ...(e?[h_flex().gap(16).items_start().children(["agy","claude","codex",...(e.data.accounts.some(a=>a.provider==="copilot")?["copilot"]:[])].map(provider=>v_flex().flex_1().min_w(0).gap(10).children([
+        ...(e?[h_flex().gap(16).items_start().children(["agy","claude","codex",...(e.data.accounts.some(a=>a.provider==="copilot")?["copilot"]:[])].map(provider=>v_flex().flex_1().min_w(0).gap(8).children([
           div().text_color(t.muted).font_semibold().child(provider.toUpperCase()),
-          ...e.data.accounts.filter(a=>a.provider===provider).map(a=>v_flex().p(16).gap(10).rounded(6).border(1).border_color(t.border).children([
-            h_flex().justify_between().children([div().font_semibold().child(a.id.startsWith(provider+"/")?a.id:provider+"/"+a.id),this.ui.label(a.rank&&a.score!==null?`#${a.rank} · ${Number(a.score).toFixed(1)}/h`:"Unranked",true)]),
-            this.ui.label([a.plan,a.label||a.identity].filter(Boolean).join(" · "),true),
-            ...a.windows.map(w=>v_flex().gap(5).children([
-              h_flex().justify_between().children([this.ui.label(w.label),this.ui.label(w.used_pct===null||w.used_pct<0?"Unknown":w.used_pct.toFixed(0)+"%")]),
-              div().h(6).rounded(3).bg(t.raised).child(div().h(6).rounded(3).w(Math.max(0,Math.min(100,w.used_pct))+"%").bg(w.used_pct>=95?t.ansi1:w.used_pct>=80?t.ansi3:t.ansi2)),
-              this.ui.label("Resets "+localTime(w.resets_at_ms),true)
-            ])),
-            a.reset_credits?this.ui.label(a.reset_credits+" reset credits",true):null,
-            !a.eligible?this.ui.label(a.ineligible||a.reason||"Currently ineligible",true):null,
-            ...a.leases.map(l=>this.ui.label(`${l.mode} · ${l.workspace||l.cwd}`,true)),
-            a.poll_error?this.ui.label("Latest quota read failed.",true):null
-          ].filter(Boolean)))
+          ...e.data.accounts.filter(a=>a.provider===provider).map(account=>this.quotaCard(account))
         ])))]:[this.ui.label("No quota snapshot available.",true)])
       ]);
     }));
