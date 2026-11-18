@@ -25,7 +25,7 @@ export function omissionNotice(reply) {
   if (omitted.metadata_incomplete === 1) notices.push("Some session details are unavailable");
   return notices.join(" · ");
 }
-export function terminalText(reason){return ({no_lease:"No running terminal is linked to this conversation.",ended:"The session terminal has ended.",not_herdr:"This session uses another terminal backend.",ambiguous:"More than one terminal matches; choose it in Herdr.",label_missing:"This session predates terminal linking; open its terminal in Herdr.",interactive_unmapped:"This session has no recorded terminal link."})[reason]??"The terminal could not be verified.";}
+export function terminalText(reason){return ({no_lease:"No running terminal is linked to this conversation.",ended:"The session terminal has ended.",not_herdr:"This session uses another terminal backend.",ambiguous:"More than one terminal matches; choose it in Herdr.",label_missing:"The terminal link could not be verified. Open the workspace in Herdr.",interactive_unmapped:"This session has no recorded terminal link."})[reason]??"The terminal could not be verified.";}
 export function groups(rows,query="",section="pending") {
   const result=new Map(), q=query.toLowerCase();
   for(const row of rows) {

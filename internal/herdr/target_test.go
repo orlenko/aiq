@@ -18,6 +18,8 @@ type targetCore struct {
 	id, address, state string
 	pid                int
 	labels             map[string]string
+	createdMS          int64
+	onGet              func()
 }
 
 func serveTargetCore(t *testing.T, socket string, core *targetCore) {
@@ -49,7 +51,10 @@ func serveTargetCore(t *testing.T, socket string, core *targetCore) {
 				case "hello":
 					result = map[string]any{"generation": 1, "core": map[string]any{"id": core.id}}
 				case "terminal.get":
-					result = map[string]any{"address": core.address, "state": core.state, "pid": core.pid, "labels": core.labels}
+					if core.onGet != nil {
+						core.onGet()
+					}
+					result = map[string]any{"address": core.address, "state": core.state, "pid": core.pid, "labels": core.labels, "created_ms": core.createdMS}
 				default:
 					t.Errorf("target check sent %q; it must stay read-only", q.Method)
 				}
@@ -87,11 +92,18 @@ func TestResolveTarget(t *testing.T) {
 		core       func(*targetCore)
 		generation uint64
 		reason     string
+		legacy     bool
+		replaced   bool
 	}{
 		{name: "verified", generation: 2},
 		{name: "kept replacement shell keeps the label, not the pid", core: func(c *targetCore) { c.pid = 999 }, generation: 2, reason: TargetEnded},
 		{name: "label missing", core: func(c *targetCore) { c.labels = map[string]string{"aiq.status": "idle"} }, generation: 2, reason: TargetLabelMissing},
-		{name: "other generation's label", core: func(c *targetCore) { c.labels[TargetLabel] = "0123456789abcdef0123456789abcdef" }, generation: 2, reason: TargetLabelMissing},
+		{name: "legacy terminal", generation: 2, legacy: true},
+		{name: "legacy terminal rolls over during verification", generation: 2, legacy: true, replaced: true, reason: TargetUnknown},
+		{name: "other generation's label", core: func(c *targetCore) {
+			c.labels[TargetLabel] = "0123456789abcdef0123456789abcdef"
+			c.createdMS = 123456
+		}, generation: 2, reason: TargetLabelMissing},
 		{name: "another core at the socket", core: func(c *targetCore) { c.id = "other-core" }, generation: 2, reason: TargetUnknown},
 		{name: "terminal finished", core: func(c *targetCore) { c.state = "finished" }, generation: 2, reason: TargetEnded},
 		{name: "child replaced since", generation: 1, reason: TargetEnded},
@@ -119,6 +131,21 @@ func TestResolveTarget(t *testing.T) {
 			if tc.core != nil {
 				tc.core(core)
 			}
+			want := Target{CoreID: core.id, Terminal: "t7", PID: 456, Label: WitnessLabel(ref, 2)}
+			if tc.legacy {
+				delete(core.labels, TargetLabel)
+				core.createdMS = 123456
+				want.Label, want.CreatedMS = "", core.createdMS
+			}
+			if tc.replaced {
+				core.onGet = func() {
+					replacement := r
+					replacement.Generation++
+					if err := save(replacement); err != nil {
+						t.Error(err)
+					}
+				}
+			}
 			serveTargetCore(t, socket, core)
 			target := ref
 			if tc.generation > 0 {
@@ -128,8 +155,8 @@ func TestResolveTarget(t *testing.T) {
 			if reason != tc.reason {
 				t.Fatalf("reason %q, want %q (%+v)", reason, tc.reason, got)
 			}
-			if reason == "" && (got != Target{CoreID: "fixture-core", Terminal: "t7", PID: 456, Label: WitnessLabel(ref, 2)}) {
-				t.Fatalf("target %+v", got)
+			if reason == "" && got != want {
+				t.Fatalf("target %+v, want %+v", got, want)
 			}
 			if reason != "" && got != (Target{}) {
 				t.Fatalf("unverified target leaked %+v", got)

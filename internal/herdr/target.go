@@ -22,13 +22,15 @@ func WitnessLabel(ref string, generation uint64) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// Target is a verified, exact terminal for one child: what the native app
-// compares before it focuses anything. Socket paths never leave this package.
+// Target is a verified terminal. A label identifies a child generation.
+// CreatedMS identifies an older workspace terminal that has no child label.
+// Socket paths never leave this package.
 type Target struct {
-	CoreID   string
-	Terminal string
-	PID      int
-	Label    string
+	CoreID    string
+	Terminal  string
+	PID       int
+	Label     string
+	CreatedMS int64
 }
 
 // Reasons a target is not exported.
@@ -39,9 +41,9 @@ const (
 )
 
 // ResolveTarget verifies through ref's pinned core, read-only, that the exact
-// child generation in ref still runs in a live terminal at the recorded
-// address, with the recorded root pid and its witness label. It starts no
-// core and changes nothing. On failure it returns one of the reasons above.
+// child generation in ref owns a live terminal at the recorded address with
+// the recorded root pid. Legacy terminals without a witness label can be
+// identified by creation time for workspace navigation. It changes nothing.
 func ResolveTarget(ref string) (Target, string) {
 	family, generation, err := ParseRef(ref)
 	if err != nil || generation == 0 {
@@ -60,7 +62,18 @@ func ResolveTarget(ref string) (Target, string) {
 	if r.State != "running" || !terminalID.MatchString(r.Core.Terminal) || r.Core.ID == "" || r.Core.PID <= 0 {
 		return Target{}, TargetUnknown
 	}
-	return verifyTarget(r.Core, WitnessLabel(family, generation))
+	target, reason := verifyTarget(r.Core, WitnessLabel(family, generation))
+	if target.CreatedMS > 0 {
+		// A terminal can outlive a child. Do not publish a legacy target if the
+		// ownership descriptor changed while the core query was in flight.
+		current, err := load(family)
+		if err != nil || current.State != "running" || current.Generation != generation ||
+			current.PID != r.PID || current.Core != r.Core ||
+			current.LeaseID != r.LeaseID || current.LaunchID != r.LaunchID {
+			return Target{}, TargetUnknown
+		}
+	}
+	return target, reason
 }
 
 func verifyTarget(c Core, label string) (Target, string) {
@@ -78,7 +91,8 @@ func verifyTarget(c Core, label string) (Target, string) {
 	}
 	var t struct {
 		coreTerminal
-		Labels map[string]string `json:"labels"`
+		Labels    map[string]string `json:"labels"`
+		CreatedMS int64             `json:"created_ms"`
 	}
 	if err := exchange(c.Socket, "terminal.get", map[string]any{"terminal": c.Terminal}, &t, coreTimeout); err != nil {
 		return Target{}, TargetUnknown
@@ -86,10 +100,21 @@ func verifyTarget(c Core, label string) (Target, string) {
 	if t.State != "live" || t.Address != c.Terminal || t.PID != c.PID {
 		return Target{}, TargetEnded
 	}
-	if label != "" && t.Labels[TargetLabel] != label {
-		return Target{}, TargetLabelMissing
+	target := Target{CoreID: c.ID, Terminal: c.Terminal, PID: c.PID, Label: label}
+	if label != "" {
+		actual, present := t.Labels[TargetLabel]
+		if present && actual != label {
+			return Target{}, TargetLabelMissing
+		}
+		if !present {
+			if t.CreatedMS <= 0 || t.CreatedMS > (1<<53)-1 {
+				return Target{}, TargetLabelMissing
+			}
+			target.Label = ""
+			target.CreatedMS = t.CreatedMS
+		}
 	}
-	return Target{CoreID: c.ID, Terminal: c.Terminal, PID: c.PID, Label: label}, ""
+	return target, ""
 }
 
 // labelTarget writes this child's witness label. Labels merge in core, so the

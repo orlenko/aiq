@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {documentBlocks} from './mod/markdown.js';
 import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows,omissionNotice} from './mod/state.js';
-import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget} from './mod/protocol.js';
+import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget,validTarget} from './mod/protocol.js';
 const host='3f0c9a1e5b7d24680aceb13579bdf024',revision='1'.repeat(64);
 const row=(id,session='first')=>({id:String(id),host,machine:null,revision,provider:'claude',conversation_id:session,workspace:'/invented/'+session,raised_at_ms:id,state:'open',first:{preview:'Question',bytes:8,truncated:false},latest:{preview:'Question',bytes:8,truncated:false}});
 const envelope=(kind,data,source=host)=>({schema:1,ok:true,kind,host:{id:source,name:'invented'},aiq:'invented',generated_at_ms:123,partial:false,omitted:{},data:kind==='hello'?{...data,commands:['hello','asks','ask-detail','ask-action','target','quotas','sessions','conversation','ask-context']}:data});
@@ -14,6 +14,18 @@ test('history omission notices give actionable reasons while older pages stay or
     '2 transcripts skipped by the file size limit · 1 transcript skipped by the read time limit · Session details omitted by the metadata limit');
   assert.equal(omissionNotice({omitted:{records:3}}),'3 transcript records skipped by the record size limit');
   assert.equal(omissionNotice({omitted:{rows:1}}),'1 ask omitted by the list limit');
+});
+test('a legacy workspace target requires the same unlabelled terminal creation time',()=>{
+  const witness={terminal_pid:123,label:'',terminal_created_ms:456};
+  const target={relation:'workspace_current',address:'t7',core_id:'made-up-core',witness};
+  const live={state:'live',address:'t7',pid:123,created_ms:456,labels:{'aiq.status':'idle'}};
+  assert.ok(matchesTarget(target,live));
+  assert.ok(matchesTarget(target,{...live,address:'invented/t7'},'invented'));
+  assert.equal(matchesTarget(target,{...live,address:'another/t7'},'invented'),false);
+  for(const change of [{created_ms:457},{created_ms:undefined},{pid:124},{state:'finished'},{address:'t8'},{labels:{'aiq.target':'8'.repeat(32)}}])
+    assert.equal(matchesTarget(target,{...live,...change}),false);
+  assert.equal(validTarget({...target,relation:'origin'}),false);
+  assert.equal(validTarget({...target,witness:{terminal_pid:123,label:''}}),false);
 });
 test('dismissing stays within the selected session until its last ask',()=>{
   const a=row(1),b=row(2),other=row(9,'other'),s=new Selection();s.choose(a);

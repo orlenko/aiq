@@ -180,10 +180,10 @@ export default class AIQ extends View {
       const r=await hc(["get",address,"--json"]);
       if(r.code!==0)throw {code:"unavailable"};
       let live;try{live=JSON.parse(r.stdout);}catch{throw {code:"internal"};}
-      if(!matchesTarget(target,live))throw {code:"not_found"};
+      if(!matchesTarget(target,live,row.machine))throw {code:"not_found"};
       const visible=panes().find(p=>p.terminal===address);
       run(visible?"pane.focus":"terminal.peek",{terminal:address});
-      this.notice=target.relation==="workspace_current"?"Opened the workspace’s current terminal; this ask is from an earlier conversation.":"Opened the session terminal.";
+      this.notice=target.relation==="workspace_current"?"Opened the workspace’s current terminal.":"Opened the session terminal.";
     }catch(e){this.notice=e.terminalReason?terminalText(e.terminalReason):errorText(e.code??"unavailable");}this.busy=false;cx.notify();});
   }
   showSessionAsks(row,cx){
