@@ -428,9 +428,10 @@ export default class AIQ extends View {
           this.ui.label(used===null?"Unknown":used.toFixed(0)+"%").w(60).text_right().flex_shrink_0()
         ]);
       }),
-      resets || grant ? h_flex().gap(12).flex_wrap().children([
-        resets ? this.ui.label(resets,true) : null,
-        grant ? this.ui.label(grant,true).text_color(account.reset_credits>0?t.ansi2:t.muted) : null
+      resets || grant ? h_flex().w_full().min_w(0).gap(12).flex_wrap().children([
+        resets ? this.ui.label(resets,true).min_w(0).max_w_full().whitespace_normal() : null,
+        grant ? this.ui.label(grant,true).min_w(0).max_w_full().whitespace_normal()
+          .text_color(account.reset_credits>0?t.ansi2:t.muted) : null
       ].filter(Boolean)) : null,
       !account.eligible && !renewals.some(hint=>hint.kind==="login")
         ? this.ui.label(account.ineligible || account.reason || "Currently ineligible",true) : null,
