@@ -1201,7 +1201,7 @@ func replayArgs(provider string, args []string) []string {
 }
 
 // upgradeModel replaces a model a tier table once named with the tier's
-// current model (gpt-5.6-sol → gpt-6.1-sol), so a session restarted on the
+// current model (gpt-6.1-sol → gpt-6.2-sol), so a session restarted on the
 // same provider does not stay on the old one for good.
 func upgradeModel(provider string, args []string) []string {
 	out := append([]string{}, args...)
@@ -1280,7 +1280,7 @@ func modelTier(provider, model string) int {
 // mean the same thing on every CLI: the permission bypass (Claude's and
 // Antigravity's --dangerously-skip-permissions or Claude's --permission-mode
 // bypassPermissions, Codex's --dangerously-bypass-approvals-and-sandbox or
-// --yolo), a model named by an aiq tier (opus ↔ gpt-6.1-sol; dropped when
+// --yolo), a model named by an aiq tier (opus ↔ gpt-6.2-sol; dropped when
 // the target has no model of that tier), and an effort level (Claude,
 // Antigravity and Copilot --effort, Codex -c model_reasoning_effort;
 // tier.DefaultEffort when a tier model is named without one). Any
