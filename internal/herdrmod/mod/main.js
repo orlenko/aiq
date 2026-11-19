@@ -332,10 +332,19 @@ export default class AIQ extends View {
   messageList(data,scroll,id) {
     if(!data?.messages.length)return this.ui.panel(id).child(this.ui.label("No messages in this window.",true));
     const t=this.ui.colors();
-    return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.map(m=>
-      v_flex().id(id+"-"+m.key).p(16).gap(10).border(1).border_color(m.anchor||this.match===m.key?t.accent:t.border).rounded(6).bg(m.anchor||this.match===m.key?t.raised:t.surface).children([
-        this.ui.label(`${m.source||m.role} · ${localTime(m.at_ms)}${m.anchor?" · matching ask":""}`,true),this.prose(id+"-text-"+m.key,m.text,this.marks),...(m.truncated?[this.ui.warning("Message excerpt · display limit reached.")]:[])
-      ])));
+    return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.map(m=>{
+      const user = m.role === "user";
+      const highlighted = m.anchor || this.match === m.key;
+      const header = this.ui.label(`${m.source || m.role} · ${localTime(m.at_ms)}${m.anchor ? " · matching ask" : ""}`,!user);
+      const card = v_flex().id(id+"-"+m.key).min_w(0).p(16).gap(10).rounded(6)
+        .border(1).border_color(highlighted ? t.accent : t.border)
+        .bg(user || highlighted ? t.raised : t.surface);
+      return (user ? card.ml(24) : card).children([
+        user ? header.font_semibold() : header,
+        this.prose(id+"-text-"+m.key,m.text,this.marks),
+        ...(m.truncated ? [this.ui.warning("Message excerpt · display limit reached.")] : [])
+      ]);
+    }));
   }
   pageControls(data,row,cx,context=false) {
     return h_flex().px(24).py(12).gap(8).children([
