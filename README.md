@@ -2,7 +2,7 @@
 
 <img src="docs/ike.webp" alt="Ike Broflovski" width="110" align="right">
 
-Pronounced "Ike", like [Ike Broflovski](https://southpark.fandom.com/wiki/Ike_Broflovski):
+Pronounced "Ike", like Ike Broflovski:
 small, Canadian, and a lot smarter than he looks. Spelling it out, A-I-Q, is
 fine too.
 
