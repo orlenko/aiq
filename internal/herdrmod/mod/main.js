@@ -324,7 +324,7 @@ export default class AIQ extends View {
         this.ui.input(this.search).rounded(5),
         this.ui.label(c?.value?.placement?.confidence==="time+text"?"Matched ask highlighted below":c?.value?.placement?.confidence==="time"?"Located by timestamp; check the highlighted message":"Original turn not located",true),
         c?.omissions?this.ui.warning(c.omissions):null
-      ]),
+      ].filter(Boolean)),
       c?.loading?this.ui.panel("context-loading").child("Loading conversation…"):c?.error?this.ui.panel("context-error").child(errorText(c.error)):this.messageList(c?.value,this.contextScroll,"context-messages"),
       c?.value?this.pageControls(c.value,{machine:row.machine,host:row.host,provider:row.provider,id:row.conversation_id},cx,true):null
     ].filter(Boolean));
