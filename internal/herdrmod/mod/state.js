@@ -7,14 +7,30 @@ export function mergeSessionRows(before,after) {
   return [...rows.values()];
 }
 export function localTime(ms) { if(!ms) return "Unknown"; const d=new Date(ms),pad=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
-export function quotaResets(windows) {
-  const byTime = new Map();
-  for (const {label, key, resets_at_ms: time} of windows) {
-    if (!time) continue;
-    if (!byTime.has(time)) byTime.set(time, []);
-    byTime.get(time).push(label || key);
+const minute = 60;
+const hour = 60 * minute;
+const day = 24 * hour;
+
+export function quotaCountdown(window, now) {
+  const reset = window.resets_at_ms;
+  if (!Number.isSafeInteger(reset) || reset <= 0) return null;
+
+  const remaining = Math.max(0, (reset - now) / 1000);
+  const seconds = Math.max(1, Math.floor(remaining));
+  const pad = value => String(value).padStart(2, "0");
+  let text = "Reset due";
+  if (seconds >= day) {
+    text = `${Math.floor(seconds / day)}d ${pad(Math.floor(seconds / hour) % 24)}h`;
+  } else if (seconds >= hour) {
+    text = `${Math.floor(seconds / hour)}h ${pad(Math.floor(seconds / minute) % 60)}m`;
+  } else if (remaining > 0) {
+    text = `${Math.floor(seconds / minute)}m ${pad(seconds % 60)}s`;
   }
-  return [...byTime].map(([time, labels]) => `${labels.join(", ")} reset ${localTime(time).slice(5)}`).join(" · ");
+
+  const reported = window.window_seconds;
+  const duration = Number.isSafeInteger(reported) && reported > 0
+    ? reported : window.kind === "weekly" ? 7 * day : null;
+  return {text, fraction: duration === null ? null : Math.min(1, remaining / duration)};
 }
 
 export function quotaResetGrant(account) {
