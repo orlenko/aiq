@@ -1,5 +1,11 @@
 # aiq
 
+<img src="docs/ike.webp" alt="Ike Broflovski" width="110" align="right">
+
+Pronounced "Ike", like [Ike Broflovski](https://southpark.fandom.com/wiki/Ike_Broflovski):
+small, Canadian, and a lot smarter than he looks. Spelling it out, A-I-Q, is
+fine too.
+
 `aiq` pools several paid Claude Code and Codex subscriptions, plus an
 Antigravity CLI (`agy`) login, and routes every `claude`, `codex` and `agy`
 invocation to the account that is about to waste the most quota. Interactive
