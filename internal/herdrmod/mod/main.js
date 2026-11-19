@@ -2,7 +2,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Popover, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
 import { exec, hc, machines, panes, focused, run, checking, nextCommand } from "herdr";
 import { Bridge, matchesTarget } from "./protocol.js";
-import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText, omissionNotice, quotaResets, quotaResetGrant, quotaRenewals } from "./state.js";
+import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText, omissionNotice, quotaCountdown, quotaResetGrant, quotaRenewals } from "./state.js";
 import { appearances, createUI, loadAppearance, saveAppearance, makeProse } from "./ui.js";
 
 // Each card has four 20px lines, three 4px gaps, 24px of padding and a border.
@@ -28,6 +28,7 @@ export default class AIQ extends View {
       this.refresh(cx);
       cx.timer.every(30000,cx=>{if(this.visible() && !this.busy && this.tab==="asks")this.refresh(cx);});
       cx.timer.every(60000,cx=>{if(this.visible() && !this.busy && this.tab==="quotas")this.refresh(cx);});
+      cx.timer.every(1000,cx=>{if(this.tab==="quotas" && this.visible())cx.notify();});
       cx.spawn(async cx=>{for(;;){const command=await nextCommand();if(command==="activate"){
         const pane=panes().find(p=>p.mod==="aiq");if(pane)run("pane.focus",{pane:pane.pane});this.handle.focus();cx.notify();
       }else if(command==="focus"){this.handle.focus();}}});
@@ -412,10 +413,9 @@ export default class AIQ extends View {
         ]))
     ]);
   }
-  quotaCard(account) {
+  quotaCard(account, now) {
     const t = this.ui.colors();
     const identity = [account.plan, account.label || account.identity].filter(Boolean).join(" · ");
-    const resets = quotaResets(account.windows);
     const grant = quotaResetGrant(account);
     const renewals = quotaRenewals(account);
     return v_flex().min_w(0).p(12).gap(6).rounded(6).border(1).border_color(t.border).children([
@@ -430,19 +430,19 @@ export default class AIQ extends View {
       ...account.windows.map(w => {
         const name = w.label || w.key;
         const used = w.used_pct === null || w.used_pct < 0 ? null : w.used_pct;
+        const countdown = quotaCountdown(w, now);
+        const resetTooltip = countdown ? `${name} resets ${localTime(w.resets_at_ms)} (local time)` : `${name} reset time unavailable`;
         return h_flex().items_center().gap(8).children([
           this.ui.label(name,w.binding===false).min_w(0).w("33%").truncate().tooltip(name),
           div().flex_1().min_w(0).h(6).rounded(3).bg(t.raised).child(
             div().h(6).rounded(3).w(Math.min(100,used??0)+"%").bg(used>=95?t.ansi1:used>=80?t.ansi3:t.ansi2)
           ),
-          this.ui.label(used===null?"Unknown":used.toFixed(0)+"%").w(60).text_right().flex_shrink_0()
+          this.ui.label(used===null?"Unknown":used.toFixed(0)+"%").w(52).text_right().flex_shrink_0(),
+          this.ui.countdown(countdown, resetTooltip)
         ]);
       }),
-      resets || grant ? h_flex().w_full().min_w(0).gap(12).flex_wrap().children([
-        resets ? this.ui.label(resets,true).min_w(0).max_w_full().whitespace_normal() : null,
-        grant ? this.ui.label(grant,true).min_w(0).max_w_full().whitespace_normal()
-          .text_color(account.reset_credits>0?t.ansi2:t.muted) : null
-      ].filter(Boolean)) : null,
+      grant ? this.ui.label(grant,true).min_w(0).max_w_full().whitespace_normal()
+        .text_color(account.reset_credits>0?t.ansi2:t.muted) : null,
       !account.eligible && !renewals.some(hint=>hint.kind==="login")
         ? this.ui.label(account.ineligible || account.reason || "Currently ineligible",true) : null,
       ...account.leases.map(l => {
@@ -497,13 +497,14 @@ export default class AIQ extends View {
   }
   quotasView() {
     const t=this.ui.colors();
+    const now=Date.now();
     return v_flex().id("quotas-scroll").h(Math.max(300,this.size.height-150)).flex_1().min_h(0).overflow_y_scrollbar().px(24).py(10).gap(18).children([this.quotaTodo(),...this.sourceList().map(s=>{
       const e=s.quotas?.value;
       return v_flex().gap(8).children([
         div().font_semibold().text_size(18).child(s.machine??"Here"),
         ...(e?[h_flex().gap(16).items_start().children(["agy","claude","codex",...(e.data.accounts.some(a=>a.provider==="copilot")?["copilot"]:[])].map(provider=>v_flex().flex_1().min_w(0).gap(8).children([
           div().text_color(t.muted).font_semibold().child(provider.toUpperCase()),
-          ...e.data.accounts.filter(a=>a.provider===provider).map(account=>this.quotaCard(account))
+          ...e.data.accounts.filter(a=>a.provider===provider).map(account=>this.quotaCard(account,now))
         ])))]:[this.ui.label("No quota snapshot available.",true)])
       ]);
     })].filter(Boolean));

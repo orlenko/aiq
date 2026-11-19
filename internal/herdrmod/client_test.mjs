@@ -3,15 +3,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {documentBlocks} from './mod/markdown.js';
-import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows,omissionNotice,quotaResets,quotaResetGrant,quotaRenewals} from './mod/state.js';
+import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows,omissionNotice,quotaCountdown,quotaResetGrant,quotaRenewals} from './mod/state.js';
 import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget,validTarget} from './mod/protocol.js';
 const host='3f0c9a1e5b7d24680aceb13579bdf024',revision='1'.repeat(64);
 const row=(id,session='first')=>({id:String(id),host,machine:null,revision,provider:'claude',conversation_id:session,workspace:'/invented/'+session,raised_at_ms:id,state:'open',first:{preview:'Question',bytes:8,truncated:false},latest:{preview:'Question',bytes:8,truncated:false}});
 const envelope=(kind,data,source=host)=>({schema:1,ok:true,kind,host:{id:source,name:'invented'},aiq:'invented',generated_at_ms:123,partial:false,omitted:{},data:kind==='hello'?{...data,commands:['hello','asks','ask-detail','ask-action','target','quotas','sessions','conversation','ask-context']}:data});
+test('quota countdown switches units and measures the remaining share of each window',()=>{
+  const now=Date.UTC(2031,6,1,11,0);
+  const at=(seconds,fields={})=>quotaCountdown({resets_at_ms:now+seconds*1000, ...fields},now);
+  assert.deepEqual(at(3*86400+2*3600,{kind:'weekly'}),
+    {text:'3d 02h',fraction:(3*24+2)/(7*24)});
+  assert.deepEqual(at(3600,{kind:'short',window_seconds:5*3600}),{text:'1h 00m',fraction:0.2});
+  assert.equal(at(86400).text,'1d 00h');
+  assert.equal(at(86399).text,'23h 59m');
+  assert.deepEqual(at(3599),{text:'59m 59s',fraction:null});
+  assert.equal(at(9).text,'0m 09s');
+  assert.equal(at(0.1).text,'0m 01s');
+  assert.deepEqual(at(0,{kind:'weekly'}),{text:'Reset due',fraction:0});
+  assert.deepEqual(at(-120,{kind:'weekly'}),{text:'Reset due',fraction:0});
+  assert.equal(at(5*3600+60,{window_seconds:5*3600}).fraction,1);
+  assert.equal(quotaCountdown({resets_at_ms:0,kind:'weekly'},now),null);
+});
 test('quota cards distinguish reset grants from their quota windows',()=>{
   const time=Date.UTC(2031,6,1,11,0);
-  assert.equal(quotaResets([{label:'Weekly',resets_at_ms:time},{label:'Fable',resets_at_ms:time}]),
-    'Weekly, Fable reset '+localTime(time).slice(5));
   const d=JSON.parse(readFileSync(new URL('../../cmd/aiq/testdata/app/quotas.json',import.meta.url),'utf8'));
   d.data.accounts[0].reset_credit_expires_at=time/1000;
   const a=decode(JSON.stringify(d),'quotas').data.accounts[0];

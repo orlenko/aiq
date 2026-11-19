@@ -1,5 +1,6 @@
 import { div } from "gpui-kit";
-import { Button, TextView, Input, v_flex, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
+import * as gpui from "gpui-kit";
+import { Button, TextView, Input, h_flex, v_flex, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
 import { theme } from "herdr";
 import { documentBlocks } from "./markdown.js";
 export const appearances = ["Herdr", "Light", "Dark"];
@@ -37,6 +38,27 @@ export function saveAppearance(value) {
   }
 }
 
+function countdownRing(fraction, colors) {
+  const painter = globalThis.window;
+  if (fraction === null || !gpui.PathBuilder || typeof painter?.paint_path !== "function") return null;
+
+  const radius = 7;
+  const center = 8;
+  const ring = div().size(16).relative().flex_shrink_0().child(
+    div().absolute().inset_0().rounded_full().border(2).border_color(colors.border)
+  );
+  if (fraction > 0) {
+    const angle = 2 * Math.PI * fraction;
+    const path = gpui.PathBuilder.stroke(2).move_to(center, center - radius);
+    // Two arcs also cover a full circle, whose endpoints coincide.
+    if (fraction > 0.5) path.arc_to(radius, radius, 0, false, true, center, center + radius);
+    path.arc_to(radius, radius, 0, false, true,
+      center + radius * Math.sin(angle), center - radius * Math.cos(angle));
+    ring.child(painter.paint_path(path.build(), colors.accent).absolute().inset_0());
+  }
+  return ring;
+}
+
 export function createUI(getAppearance) {
   const colors = () => {
     const appearance = getAppearance();
@@ -49,6 +71,13 @@ export function createUI(getAppearance) {
     label(text, muted = false) {
       const t = colors();
       return div().text_size(13).text_color(muted ? t.muted : t.foreground).child(String(text ?? ""));
+    },
+    countdown(value, tooltip) {
+      const row = h_flex().w(96).flex_shrink_0().items_center().justify_end().gap(6).tooltip(tooltip);
+      if (!value) return row.child(this.label("—",true));
+      const ring = countdownRing(value.fraction, colors());
+      if (ring) row.child(ring);
+      return row.child(this.label(value.text,true));
     },
     warning(text) {
       const t = colors();
