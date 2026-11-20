@@ -415,3 +415,31 @@ func TestResumeTranscriptFlagStaysOutOfTheCLIArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestPredecessorFlagsNameTheSessionATakeoverContinues(t *testing.T) {
+	dir := t.TempDir()
+	own := filepath.Join(dir, "0000-aaaa.jsonl")
+	other := filepath.Join(dir, "0000-bbbb.jsonl")
+	for _, p := range []string{own, other} {
+		if err := os.WriteFile(p, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	realOwn, _ := filepath.EvalSymlinks(own)
+	f := parseRunFlags([]string{"--long", "--predecessor", "claude:0000-aaaa", "--predecessor-transcript", own, "--", "--model", "opus"})
+	if f.flagsErr != nil || f.predecessor != "claude:0000-aaaa" || strings.Contains(strings.Join(f.rest, " "), "jsonl") {
+		t.Fatalf("parsed %+v", f)
+	}
+	if p, id, tr := predecessorOf(f); p != "claude" || id != "0000-aaaa" || tr != realOwn {
+		t.Fatalf("predecessorOf = %q %q %q", p, id, tr)
+	}
+	f.predecessorTranscript = other
+	if _, _, tr := predecessorOf(f); tr != "" {
+		t.Fatalf("another session's transcript kept: %q", tr)
+	}
+	for _, bad := range []string{"claude", "nobody:0000-aaaa", "claude:../x"} {
+		if f := parseRunFlags([]string{"--long", "--predecessor", bad, "--"}); f.flagsErr == nil {
+			t.Errorf("--predecessor %q accepted", bad)
+		}
+	}
+}

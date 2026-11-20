@@ -60,6 +60,8 @@ Search includes folded continuation text; a match hidden by the rendering keeps 
 snippet on the status line. Search pauses following; G returns to following afterward.
 With --follow the newest message selected moves on to each new one; moved up, the screen
 stays put and G goes back to following.
+Sessions an aiq long rollover went on from show first, each under a divider; --last
+counts prompts across them.
 
 tmux key bindings to open it (add them to ~/.tmux.conf yourself; aiq never installs them):
   # prefix a: the conversation of the pane you are in, in a popup
@@ -267,7 +269,7 @@ func cmdConvo(args []string) error {
 	}
 	if keyboard != nil {
 		// Signals stay caught: the screen puts the terminal back before aiq exits.
-		return showConvo(keyboard, tgt, o.last, stop)
+		return showConvo(keyboard, tgt, r.earlier(tgt), o.last, stop)
 	}
 	// The snapshot leaves signals to their defaults again, as before, but
 	// one that came in on the way here still ends it.
@@ -289,7 +291,7 @@ func cmdConvo(args []string) error {
 	if !tgt.stale && s.Unfinished && time.Since(mod) < convoQuiet {
 		holdLastTurn(s) // see convoFollow.quiet
 	}
-	text := renderConvo(s, tgt, o.last, tty, time.Now())
+	text := renderConvoChain(s, tgt, r.earlier(tgt), o.last, tty, time.Now())
 	if !tty {
 		fmt.Print(text)
 		return nil
@@ -1628,15 +1630,7 @@ func workingLabel(s *transcript.Session, now time.Time) string {
 // renderConvo is the snapshot: the header, the turns --last keeps, and a
 // line saying the agent is still at it.
 func renderConvo(s *transcript.Session, t convoTarget, last int, color bool, now time.Time) string {
-	from := convoStart(s.Turns, last)
-	p := newConvoPrinter(s.Provider, color, false)
-	p.width = termWidth(100) // read before the pager takes the terminal
-	p.skip(s.Turns[:from])
-	out := convoHeader(s, t, from, color) + p.emit(s)
-	if w := workingLabel(s, now); w != "" {
-		out += "\n" + p.paint(pal.accent, w) + "\n"
-	}
-	return out
+	return renderConvoChain(s, t, nil, last, color, now)
 }
 
 // convoFollow prints a conversation as it grows, for a side split. Output
@@ -1671,6 +1665,11 @@ type convoUpdate struct {
 	from  int       // with begin, the first turn shown
 	moved time.Time // with begin, when the pane moved to s; zero for the first
 	hold  bool      // the last turn's reply is held back (see followEmit)
+	// divider, earlier and cut are as on convoPart: with begin, a session aiq long
+	// went on from, or the one after it.
+	divider string
+	earlier bool
+	cut     bool
 	// status is the status line, when s is nil.
 	status string
 }
@@ -1714,12 +1713,17 @@ func (f *convoFollow) loop(stop <-chan struct{}) error {
 		return err
 	}
 	p := f.printer(s)
-	from := convoStart(s.Turns, f.last)
+	chain := newConvoChain(f.r.earlier(f.tgt), s, f.tgt, f.last)
+	cur := chain.current()
+	from := cur.from
 	p.skip(s.Turns[:from])
 	if f.send != nil {
-		f.hand(p, s, mod, convoUpdate{begin: true, from: from})
+		for _, pt := range chain.parts[:len(chain.parts)-1] {
+			f.send(convoUpdate{s: pt.s, t: pt.t, begin: true, from: pt.from, divider: pt.divider, earlier: true, cut: pt.cut})
+		}
+		f.hand(p, s, mod, convoUpdate{begin: true, from: from, divider: cur.divider})
 	} else {
-		f.print(convoHeader(s, f.tgt, from, f.tty) + f.emit(p, s, mod))
+		f.print(convoHeader(s, f.tgt, chain.hidden(), f.tty) + chain.earlierText(f.tty, termWidth(80)) + f.emit(p, s, mod))
 	}
 
 	lastParse, lastResolve := time.Now(), time.Now()
@@ -1815,16 +1819,7 @@ func (f *convoFollow) movedLine(p *convoPrinter, t convoTarget, s *transcript.Se
 // convoMovedLine is movedLine for a terminal width cells wide.
 func convoMovedLine(p *convoPrinter, t convoTarget, s *transcript.Session, now time.Time, hidden, width int) string {
 	what := fmt.Sprintf("moved to %s · session %s · %s", t.label(), shortID(s.ID), now.Format("15:04"))
-	earlier := ""
-	if hidden > 0 {
-		earlier = fmt.Sprintf("\n(%d earlier turn%s not shown)", hidden, plural(hidden))
-	}
-	if !p.color {
-		return "── " + sanitize(what) + " ──" + earlier
-	}
-	th := kitThemeFor(false)
-	bar := kitBar(" "+strings.ToUpper(what)+" ", sgrBold+th.accent, kitMarksFor(os.Getenv).bar, width)
-	return kitLine(bar, "", width) + p.paint(th.dim, earlier)
+	return convoDivider(p, what, hidden, width)
 }
 
 // emit prints what s adds, holding the last reply while the transcript,

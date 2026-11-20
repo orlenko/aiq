@@ -63,8 +63,13 @@ type runFlags struct {
 	resumeSession string
 	// resumeTranscript is the transcript of resumeSession, for its lease.
 	resumeTranscript string
-	sessionName      string
-	nudge            string
+	// predecessor ("<provider>:<session-id>") and predecessorTranscript name
+	// the session an aiq long takeover continues, so the chain of rollovers
+	// can be shown as one conversation.
+	predecessor           string
+	predecessorTranscript string
+	sessionName           string
+	nudge                 string
 
 	// memoryDir points a Claude overlay launch's auto memory at the real
 	// ~/.claude/projects folder (see claude.OverlayMemoryDir).
@@ -161,6 +166,17 @@ func parseRunFlags(args []string) runFlags {
 			i++
 		case a == "--resume-transcript" && i+1 < len(args):
 			f.resumeTranscript = args[i+1]
+			i++
+		case a == "--predecessor" && i+1 < len(args):
+			f.predecessor = args[i+1]
+			if prov, id, ok := strings.Cut(f.predecessor, ":"); !ok || !knownProvider(prov) {
+				f.flagsErr = configErr("bad-flags", "--predecessor wants <provider>:<session-id>, got %q", f.predecessor)
+			} else if err := checkSessionID(id); err != nil {
+				f.flagsErr = err
+			}
+			i++
+		case a == "--predecessor-transcript" && i+1 < len(args):
+			f.predecessorTranscript = args[i+1]
 			i++
 		case a == "--session-name" && i+1 < len(args):
 			f.sessionName = args[i+1]
@@ -443,6 +459,7 @@ func cmdRun(provider string, args []string) error {
 			lease.Launcher = f.launcher
 			// baseFlags, not f: a Codex named thread replaced f's id with a new, empty one.
 			lease.SessionID, lease.Transcript = resumedSession(provider, baseFlags)
+			lease.PrevProvider, lease.PrevSessionID, lease.PrevTranscript = predecessorOf(baseFlags)
 			rest := f.rest
 			if rest == nil {
 				rest = []string{}
@@ -577,6 +594,21 @@ func refusalToken(err error) string {
 		return ee.token
 	}
 	return ""
+}
+
+// predecessorOf is the session a long takeover continues, as --predecessor
+// names it, with its transcript when that file checks out as the session's own.
+func predecessorOf(f runFlags) (provider, id, transcript string) {
+	provider, id, ok := strings.Cut(f.predecessor, ":")
+	if !ok {
+		return "", "", ""
+	}
+	if f.predecessorTranscript != "" {
+		if p, err := longrun.ResumeTranscript(provider, id, f.predecessorTranscript); err == nil {
+			transcript = p
+		}
+	}
+	return provider, id, transcript
 }
 
 // resumedSession is the session a long launch resumes, and its transcript, for

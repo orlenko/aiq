@@ -33,6 +33,11 @@ type convoPart struct {
 	from  int       // the first turn shown (--last)
 	moved time.Time // when the pane moved to it; zero for the first
 	hold  bool      // the last reply is held back
+	// divider is drawn above a part of an aiq long chain: an earlier session, or
+	// the one the chain went on in.
+	divider string
+	earlier bool // a session the one asked for went on from
+	cut     bool // --last leaves out all of this earlier session
 }
 
 // convoRow is one row of the conversation: rendered text, and the message it belongs to.
@@ -87,12 +92,24 @@ func (c *convoScreen) layout() {
 	}
 	width := max(c.w-convoGutter, convoMinWidth-convoGutter)
 	for i, pt := range c.parts {
+		if pt.cut {
+			continue
+		}
 		p := newConvoPrinter(pt.s.Provider, true, false)
 		p.width, p.live, p.hold, p.track = width, c.live, pt.hold, true
 		p.searchRows = true
-		if !pt.moved.IsZero() {
-			c.rows = append(c.rows, convoRow{msg: -1})
-			for _, l := range strings.Split(convoMovedLine(p, pt.t, pt.s, pt.moved, pt.from, width), "\n") {
+		line := ""
+		switch {
+		case !pt.moved.IsZero():
+			line = convoMovedLine(p, pt.t, pt.s, pt.moved, pt.from, width)
+		case pt.divider != "":
+			line = convoDivider(p, pt.divider, 0, width)
+		}
+		if line != "" {
+			if len(c.rows) > 0 {
+				c.rows = append(c.rows, convoRow{msg: -1})
+			}
+			for _, l := range strings.Split(line, "\n") {
 				c.rows = append(c.rows, convoRow{text: convoExpandTabs(l), msg: -1})
 			}
 		}
@@ -101,7 +118,7 @@ func (c *convoScreen) layout() {
 	}
 	// The header names the conversation shown now.
 	last := c.parts[len(c.parts)-1]
-	c.head = strings.Split(strings.TrimSuffix(convoHeader(last.s, last.t, last.from, true), "\n"), "\n")
+	c.head = strings.Split(strings.TrimSuffix(convoHeader(last.s, last.t, chainHidden(c.parts), true), "\n"), "\n")
 }
 
 // convoWrap breaks a rendered line into rows of at most w cells, where the stream left the
@@ -315,7 +332,7 @@ func (c *convoScreen) apply(u convoUpdate) {
 		c.status = u.status
 		return
 	}
-	pt := convoPart{s: u.s, t: u.t, from: u.from, moved: u.moved, hold: u.hold}
+	pt := convoPart{s: u.s, t: u.t, from: u.from, moved: u.moved, hold: u.hold, divider: u.divider, earlier: u.earlier, cut: u.cut}
 	if u.begin || len(c.parts) == 0 {
 		c.parts = append(c.parts, pt)
 	} else {
@@ -651,7 +668,7 @@ func (c *convoScreen) draw(out io.Writer) error {
 }
 
 // showConvo shows the conversation as it is now.
-func showConvo(in *devTTY, tgt convoTarget, last int, stop <-chan struct{}) error {
+func showConvo(in *devTTY, tgt convoTarget, earlier []convoEarlier, last int, stop <-chan struct{}) error {
 	_, mod := statFile(tgt.path)
 	s, err := loadConvo(tgt)
 	if err != nil {
@@ -662,7 +679,9 @@ func showConvo(in *devTTY, tgt convoTarget, last int, stop <-chan struct{}) erro
 	}
 	c := newConvoScreen(false)
 	c.last = last
-	c.apply(convoUpdate{s: s, t: tgt, begin: true, from: convoStart(s.Turns, last)})
+	for _, pt := range newConvoChain(earlier, s, tgt, last).parts {
+		c.apply(convoUpdate{s: pt.s, t: pt.t, begin: true, from: pt.from, divider: pt.divider, earlier: pt.earlier, cut: pt.cut})
+	}
 	c.status = workingLabel(s, time.Now())
 	return runConvoScreen(c, newConvoTTY(in, os.Stdout), nil, nil, stop)
 }
