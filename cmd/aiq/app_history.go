@@ -70,7 +70,7 @@ func (d appHistoryDeps) run(ctx context.Context, roots transcript.Roots, kind st
 	case "sessions":
 		allowed = map[string]bool{"limit": true, "before": true}
 	case "conversation":
-		allowed = map[string]bool{"provider": true, "id": true, "at": true, "anchor": true, "before": true, "after": true}
+		allowed = map[string]bool{"provider": true, "id": true, "at": true, "anchor": true, "before": true, "after": true, "chain": true}
 	case "ask-context":
 		allowed = map[string]bool{"id": true, "revision": true}
 	default:
@@ -89,6 +89,17 @@ func (d appHistoryDeps) run(ctx context.Context, roots transcript.Roots, kind st
 	}
 	if !transcript.IsFullID(opts["provider"], opts["id"]) || appHistoryOptionCount(opts, "at", "anchor", "before", "after") > 1 {
 		return appHistoryOutput{}, appHistoryFailure("invalid_request")
+	}
+	if opts["chain"] != "" {
+		// The whole aiq long chain, paged by message: no place in it by time or anchor.
+		if opts["chain"] != "1" || appHistoryOptionCount(opts, "at", "anchor") > 0 {
+			return appHistoryOutput{}, appHistoryFailure("invalid_request")
+		}
+		s, err := d.session(ctx, opts["provider"], opts["id"])
+		if err != nil {
+			return appHistoryOutput{}, err
+		}
+		return d.chainConversation(ctx, opts["provider"], opts["id"], s, opts["before"], opts["after"])
 	}
 	var at int64
 	if opts["at"] != "" {
@@ -302,6 +313,7 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 	f := &navFactory{input: d.input, policy: policy, askSlots: make(chan struct{}, 1)}
 	run := &navListRun{limit: policy.sessions.rowBytes, needed: map[string]struct{}{}, cancel: cancel}
 	extras, extraErr := f.listExtras(metaCtx, roots, navListQuery{all: true, workers: true}, summaries, run)
+	chains := d.links(metaCtx)
 	rows := []map[string]any{}
 	for i, s := range summaries {
 		r := map[string]any{"kind": "session", "provider": s.Provider, "id": s.ID, "cwd": s.Cwd, "name": appHistoryLabel(s.Label), "title": appHistoryLabel(s.Title), "model": s.Model, "branch": s.Branch, "started_ms": appHistoryMillis(s.Started), "updated_ms": appHistoryMillis(s.Updated), "turns": s.Turns, "tools": s.Tools, "worker": s.Worker, "workspace": "", "workspace_known": false, "pending_asks": 0, "pending_asks_known": false, "live": "unknown", "account": "", "launcher": "", "terminal": nil, "terminal_reason": "unknown"}
@@ -314,6 +326,9 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 			r["account"] = extras.activity[i].Account
 			r["launcher"] = extras.activity[i].Launcher
 			r["lease_id"] = extras.activity[i].LeaseID
+		}
+		if c, ok := chains.of(s.Provider, s.ID); ok {
+			r["chain"] = c
 		}
 		rows = append(rows, r)
 	}
@@ -378,6 +393,8 @@ type appHistoryMessage struct {
 	FullBytes int    `json:"full_bytes"`
 	Truncated bool   `json:"truncated"`
 	Anchor    bool   `json:"anchor,omitempty"`
+	// Session is the message's place in a chain conversation's sessions.
+	Session *int `json:"session,omitempty"`
 }
 
 func appHistoryMessages(ctx context.Context, s *transcript.Session) ([]appHistoryMessage, error) {

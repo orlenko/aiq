@@ -113,3 +113,28 @@ test('appearance choice is remembered and leaves ask selection intact',t=>{
   assert.equal(view.current().id,a.id);
   assert.equal(setup([a]).view.appearance,'Light');
 });
+
+test('a collapsed chain reads the whole chain and marks where each session begins',async()=>{
+  const {cx,view}=setup([row(1)]);
+  const id='00000002-0000-4000-8000-000000000000';
+  const sessions=[{provider:'claude',conversation_id:'00000000-0000-4000-8000-000000000000',started_ms:1,available:false},
+    {provider:'codex',conversation_id:'00000001-0000-4000-8000-000000000000',started_ms:2,available:true},
+    {provider:'claude',conversation_id:id,started_ms:3,available:true}];
+  const msg=(session,n)=>({key:`s${session}-m${n}-0-${'a'.repeat(16)}`,role:'user',text:'t',at_ms:n,session});
+  const seen=[];
+  view.bridge={read:async(_machine,kind,options)=>{seen.push(options);return {data:{sessions,messages:[msg(1,0),msg(1,1),msg(2,2)],cursor:{before:'',after:''}},omitted:{sessions:1}};}};
+  const chained={kind:'session',host,machine:null,provider:'claude',id,readChain:true,chain:{key:'a'.repeat(16),seq:3,size:3,members:[]}};
+  view.openConversation(chained,cx);await cx.drain();
+  view.openConversation(chained,cx,{before:'s1-m0-0-'+'a'.repeat(16)});await cx.drain();
+  view.openConversation({...chained,readChain:false},cx);await cx.drain();
+  assert.equal(seen[0].chain,true);assert.equal(seen[1].chain,true);assert.equal(seen[1].before,'s1-m0-0-'+'a'.repeat(16));assert.equal(seen[2].chain,undefined);
+  assert.equal(view.conversation.omissions,'1 earlier session could not be read');
+  // At the start of the chain: dividers for the unread first session, the codex one and
+  // the last; a later window names only the sessions it holds.
+  const list=view.messageList({sessions,messages:[msg(1,0),msg(1,1),msg(2,2)],cursor:{before:''}},view.scroll,'conversation');
+  assert.equal(list.handlers.children.length,3+3);
+  const later=view.messageList({sessions,messages:[msg(1,1),msg(2,2)],cursor:{before:'s1-m0-0-'+'a'.repeat(16)}},view.scroll,'conversation');
+  assert.equal(later.handlers.children.length,2+2);
+  const single=view.messageList({messages:[{key:'m0-0-'+'a'.repeat(16),role:'user',text:'t',at_ms:1}]},view.scroll,'conversation');
+  assert.equal(single.handlers.children.length,1);
+});

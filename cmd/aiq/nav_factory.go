@@ -52,12 +52,14 @@ func navProductionPolicy() navFactoryPolicy {
 }
 
 type navFactoryInput struct {
-	roots          func(context.Context) (transcript.Roots, error)
-	metadata       func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error)
-	witness        func(context.Context, string, state.NavigatorLease) (bool, error)
-	observe        func(context.Context, terminal.ObservationTarget) terminal.Observation
-	workspace      func(context.Context, string) (string, bool)
-	notes          func(context.Context, string, state.NavigatorSnapshotLimits) (navLongNote, error)
+	roots     func(context.Context) (transcript.Roots, error)
+	metadata  func(context.Context, state.NavigatorSnapshotLimits) (*state.NavigatorSnapshot, error)
+	witness   func(context.Context, string, state.NavigatorLease) (bool, error)
+	observe   func(context.Context, terminal.ObservationTarget) terminal.Observation
+	workspace func(context.Context, string) (string, bool)
+	notes     func(context.Context, string, state.NavigatorSnapshotLimits) (navLongNote, error)
+	// links reads this host's aiq long rollover links; nil reads none.
+	links          func(context.Context) ([]state.SessionLinkRow, error)
 	quotas         *navQuotaDeps // nil: the quota read answers unavailable
 	asksPath       string
 	asksKeyPresent func() bool
@@ -356,6 +358,7 @@ func navProductionInputWithIdentity(identity func(context.Context) (string, erro
 	parents := []string{paths.ClaudeHomesDir(), paths.CodexHomesDir()}
 	return navFactoryInput{asksPath: filepath.Join(paths.DataDir(), asksDBName), now: time.Now, location: time.Local, asksKeyPresent: func() bool { return asksKey() != "" },
 		metadata: navProductionMetadata(paths.StateDB(), identity), witness: navProductionWitness(paths.StateDB()), observe: terminal.Observe,
+		links:     navProductionLinks(paths.StateDB(), identity),
 		workspace: navWorkspaceAt, notes: navProductionNoteMetadata,
 		roots: func(ctx context.Context) (transcript.Roots, error) {
 			r := transcript.Roots{ClaudeProjects: []string{filepath.Join(claude, "projects")}, CodexSessions: []string{filepath.Join(codex, "sessions")}, CodexIndex: []string{filepath.Join(codex, "session_index.jsonl")}, AgyAppData: []string{agyHome}}
@@ -433,6 +436,25 @@ func navProductionMetadata(path string, identity func(context.Context) (string, 
 			}
 		}()
 		return store.ReadNavigatorSnapshot(ctx, host, limits)
+	}
+}
+
+// navProductionLinks reads this host's rollover links from state.db, read-only.
+func navProductionLinks(path string, identity func(context.Context) (string, error)) func(context.Context) ([]state.SessionLinkRow, error) {
+	return func(ctx context.Context) ([]state.SessionLinkRow, error) {
+		if identity == nil {
+			return nil, state.ErrNavigatorSnapshotUnavailable
+		}
+		host, err := identity(ctx)
+		if err != nil {
+			return nil, err
+		}
+		store, err := state.OpenReadOnly(path)
+		if err != nil {
+			return nil, err
+		}
+		defer store.Close()
+		return store.ReadSessionLinks(ctx, host, appChainLinks)
 	}
 }
 

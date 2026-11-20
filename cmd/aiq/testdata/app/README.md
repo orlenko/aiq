@@ -20,6 +20,7 @@ aiq __app target     --provider claude|codex|agy --conversation ID
 aiq __app quotas
 aiq __app sessions [--limit N] [--before CURSOR]
 aiq __app conversation --provider claude|codex|agy --id ID [--anchor KEY | --at MS | --before KEY | --after KEY]
+aiq __app conversation --provider claude|codex|agy --id ID --chain 1 [--before KEY | --after KEY]
 aiq __app ask-context --id N --revision HEX64
 ```
 
@@ -132,6 +133,12 @@ open-ask counts are separate observations; unavailable counts stay unknown.
 Times ending in `_ms` are milliseconds. Workspace-only rows have no conversation
 ID and do not fabricate a transcript.
 
+A session in an `aiq long` rollover chain (a takeover that started a fresh
+session rather than resuming one) has `chain: {key, seq, size, members}`: the
+chain's 16-hex key, the session's place from 1, the chain's length, and its
+members (`provider`, `id`) oldest first. Rows outside a chain have no `chain`.
+Links are this machine's only; transcript paths are never sent.
+
 ## conversation and ask-context (`conversation.json`, `ask-context.json`)
 
 Messages have stable opaque keys, raw text, source attribution, timestamp,
@@ -139,6 +146,14 @@ original and displayed byte counts, and a truncation flag. A display window
 contains at most 40 messages and a conservative 3 MiB text allowance; each
 message is capped at 256 KiB. Cursors page earlier or later messages without
 overlap. A changed or missing cursor returns `conflict`.
+
+With `--chain 1` the window spans the session's whole rollover chain:
+`sessions` lists each member (`provider`, `conversation_id`, `started_ms`,
+`available`) oldest first, each message carries `session`, its index there,
+and keys gain an `s<index>-` prefix so cursors cross sessions. A member that
+cannot be read has `available:false` and is counted in `omitted.sessions`. A
+session with no chain reads as a chain of one. `--anchor` and `--at` are not
+accepted with `--chain`.
 
 Ask context first checks the ask revision, then locates its quote in the
 conversation. `placement.confidence` is `time+text`, `time` or `none`; the

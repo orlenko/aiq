@@ -2,7 +2,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Popover, ScrollHandle, VirtualListScrollHandle, v_virtual_list, Scrollbar, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "gpui-base";
 import { exec, hc, machines, panes, focused, run, checking, nextCommand } from "herdr";
 import { Bridge, matchesTarget } from "./protocol.js";
-import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText, omissionNotice, quotaCountdown, quotaResetGrant, quotaRenewals } from "./state.js";
+import { Selection, machineKey, sessionKey, rowKey, groups, localTime, errorText, mergeSessionRows, terminalText, omissionNotice, quotaCountdown, quotaResetGrant, quotaRenewals, collapseChains, sessionDivider } from "./state.js";
 import { appearances, createUI, loadAppearance, saveAppearance, makeProse } from "./ui.js";
 
 // Each card has four 20px lines, three 4px gaps, 24px of padding and a border.
@@ -16,7 +16,7 @@ export default class AIQ extends View {
     this.ui = createUI(() => this.appearance);
     this.prose = makeProse(this.ui.colors);
     this.bridge=new Bridge(exec);this.sources=new Map();this.selection=new Selection();
-    this.tab="asks";this.machine="all";this.section="pending";this.query="";this.marks=false;this.hasAsks=false;this.liveOnly=false;this.workers=false;this.tablePage=0;
+    this.tab="asks";this.machine="all";this.section="pending";this.query="";this.marks=false;this.hasAsks=false;this.liveOnly=false;this.workers=false;this.splitChains=false;this.tablePage=0;
     this.detail=null;this.context=null;this.conversation=null;this.busy=false;this.notice="";this.undo=[];this.sort="updated_ms";this.desc=true;this.size={width:1200,height:800};
     this.scroll=ScrollHandle.new();this.contextScroll=ScrollHandle.new();this.handle=cx.focus_handle();
     this.gridScroll=VirtualListScrollHandle.new();this.groupsScroll=VirtualListScrollHandle.new();this.gridFocus=cx.focus_handle();this.gridHeight=400;this.gridWidth=800;this.groupsHeight=400;this.groupsWidth=320;this.tableSelected=null;
@@ -166,7 +166,7 @@ export default class AIQ extends View {
     if(checking())return;
     const token={};this.conversation={loading:true,token,row};this.match=null;cx.notify();
     cx.spawn(async cx=>{try{
-      const e=await this.bridge.read(row.machine,"conversation",{provider:row.provider,id:row.id,host:row.host,...options},()=>this.conversation?.token===token);
+      const e=await this.bridge.read(row.machine,"conversation",{provider:row.provider,id:row.id,host:row.host,...(row.readChain?{chain:true}:{}),...options},()=>this.conversation?.token===token);
       if(this.conversation?.token!==token)return;
       this.conversation={loading:false,value:e.data,row,omissions:omissionNotice(e)};
       const index=e.data.messages.findIndex(m=>m.anchor);this.scroll.scroll_to_item(index>=0?index:Math.max(0,e.data.messages.length-1));
@@ -333,18 +333,23 @@ export default class AIQ extends View {
   messageList(data,scroll,id) {
     if(!data?.messages.length)return this.ui.panel(id).child(this.ui.label("No messages in this window.",true));
     const t=this.ui.colors();
-    return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.map(m=>{
+    // A chain conversation names each session where its messages begin, and any it could not read.
+    const sessions=data.sessions,dividers=[];let shown=-1;
+    const divider=k=>{const s=sessions[k];return div().id(id+"-session-"+k).px(4).pt(8).border_b(1).border_color(t.accent).child(this.ui.label(sessionDivider(s,k,sessions.length)).font_semibold());};
+    return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.flatMap(m=>{
+      const before=[];
+      if(sessions&&Number.isSafeInteger(m.session)&&m.session!==shown){for(let k=shown>=0?shown+1:data.cursor?.before?m.session:0;k<=m.session;k++)before.push(divider(k));shown=m.session;}
       const user = m.role === "user";
       const highlighted = m.anchor || this.match === m.key;
       const header = this.ui.label(`${m.source || m.role} · ${localTime(m.at_ms)}${m.anchor ? " · matching ask" : ""}`,!user);
       const card = v_flex().id(id+"-"+m.key).min_w(0).p(16).gap(10).rounded(6)
         .border(1).border_color(highlighted ? t.accent : t.border)
         .bg(user || highlighted ? t.raised : t.surface);
-      return (user ? card.ml(24) : card).children([
+      return [...before,(user ? card.ml(24) : card).children([
         user ? header.font_semibold() : header,
         this.prose(id+"-text-"+m.key,m.text,this.marks),
         ...(m.truncated ? [this.ui.warning("Message excerpt · display limit reached.")] : [])
-      ]);
+      ])];
     }));
   }
   pageControls(data,row,cx,context=false) {
@@ -370,6 +375,7 @@ export default class AIQ extends View {
     for(const s of this.sourceList()){const e=s.sessions?.value;if(!e||seen.has(e.host.id))continue;seen.add(e.host.id);rows.push(...e.data.rows.map(r=>({...r,machine:s.machine,host:e.host.id})));}
     rows=rows.filter(r=>[r.name,r.cwd,r.provider,r.machine??"Here",r.live].join(" ").toLowerCase().includes(q));
     rows=rows.filter(r=>(this.workers||!r.worker)&&(!this.hasAsks||r.pending_asks_known&&r.pending_asks>0)&&(!this.liveOnly||r.live==="live"));
+    if(!this.splitChains)rows=collapseChains(rows);
     const direction=this.desc?-1:1,key=this.sort;rows.sort((a,b)=>direction*(typeof a[key]==="number"?a[key]-b[key]:String(a[key]??"").localeCompare(String(b[key]??""))));
     const keyFor=r=>[r.host,r.provider,r.kind,r.id||r.lease_id||r.cwd].join("\u001f");
     const selected=rows.find(r=>keyFor(r)===this.tableSelected);
@@ -378,7 +384,7 @@ export default class AIQ extends View {
     return v_flex().h(Math.max(300,this.size.height-150)).flex_1().min_h(0).px(24).py(16).gap(14).children([
       h_flex().gap(8).items_center().flex_wrap().children([
         this.ui.input(this.filter).w(320),
-        ...[["hasAsks","Has asks"],["liveOnly","Live only"],["workers","Include workers"]].map(([key,text])=>this.ui.button("filter-"+key,text,(_e,cx)=>{this[key]=!this[key];this.tablePage=0;cx.notify();},this[key])),
+        ...[["hasAsks","Has asks"],["liveOnly","Live only"],["workers","Include workers"],["splitChains","Each session"]].map(([key,text])=>this.ui.button("filter-"+key,text,(_e,cx)=>{this[key]=!this[key];this.tablePage=0;cx.notify();},this[key])),
         this.ui.label(`${rows.length} loaded rows`,true),div().flex_1(),
         ...this.sourceList().filter(s=>s.sessions?.value?.data.window.cursor).map(s=>this.ui.button("older-"+machineKey(s.machine),"Older · "+(s.machine??"Here"),(_e,cx)=>this.load(s,"sessions",cx,{before:s.sessions.value.data.window.cursor},true),false,s.sessions.loading))
       ]),
@@ -398,7 +404,7 @@ export default class AIQ extends View {
               const current=rows.find(r=>keyFor(r)===this.tableSelected);if(event.keystroke==="enter"&&current?.id){this.openConversation(current,cx);cx.stop_propagation();}
             }).children([
             v_virtual_list("session-rows",rows.length,40,i=>keyFor(rows[i]),range=>rows.slice(range.start,range.end).map((r,i)=>TableRow.new("session-"+keyFor(r),range.start+i+2).flex().flex_row().items_center().h(40).w(Math.max(1,this.gridWidth)).bg(keyFor(r)===this.tableSelected?this.ui.colors().raised:this.ui.colors().surface).children(cols.map(([key],j)=>{
-            let value=key==="name"?(r.name||r.id.slice(0,8)||"Workspace history"):key==="machine"?(r.machine??"Here"):key==="pending_asks"?(r.pending_asks_known?String(r.pending_asks):"Unknown"):key==="updated_ms"?localTime(r.updated_ms):r[key];
+            let value=key==="name"?(r.name||r.id.slice(0,8)||"Workspace history")+(r.readChain?` · ${r.chain.size} sessions`:""):key==="machine"?(r.machine??"Here"):key==="pending_asks"?(r.pending_asks_known?String(r.pending_asks):"Unknown"):key==="updated_ms"?localTime(r.updated_ms):r[key];
             if(key==="name"&&!r.id)value="Recorded workspace";
             if(key==="terminal")value=r.terminal?"Linked":"—";
             const child=this.ui.label(value).truncate();
