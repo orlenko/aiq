@@ -155,10 +155,12 @@ With `--chain 1` the window spans the session's whole rollover chain:
 `available`) oldest first, each message carries `session`, its index there,
 and keys gain an `s<index>-` prefix so cursors cross sessions. A member that
 cannot be read has `available:false` and is counted in `omitted.sessions`. The
-whole chain is read from any member, at most its last 50 sessions; any before
-those are counted in `omitted.chain_limit`. A session with no chain reads as a
+whole chain is read from any member, at most 50 sessions: its last ones, or
+the 50 starting at the session asked for when that one is earlier. The rest are
+counted in `omitted.chain_limit`. Message keys count sessions from the chain's
+first, so a cursor survives a later rollover. A session with no chain reads as a
 chain of one; when this machine's links could not be read, `omitted.chain_unknown`
-is 1, as the session may have earlier ones. `--anchor` and `--at` are not
+is 1, as the session may belong to a longer chain. `--anchor` and `--at` are not
 accepted with `--chain`.
 
 Ask context first checks the ask revision, then locates its quote in the

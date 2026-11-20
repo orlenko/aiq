@@ -144,13 +144,18 @@ func (d appHistoryDeps) chainConversation(ctx context.Context, provider, id stri
 	if !ok {
 		chain = appChain{Members: []appChainMember{{provider, id}}}
 	}
-	// The whole chain is read, whichever member was asked for, up to its last
-	// state.MaxChain sessions; the rest are counted as left out.
-	members, left := chain.Members, 0
+	// The whole chain is read, whichever member was asked for, up to
+	// state.MaxChain sessions: its last ones, moved back only as far as needed to
+	// keep provider/id. The rest are counted as left out.
+	members, start := chain.Members, 0
 	if len(members) > state.MaxChain {
-		left = len(members) - state.MaxChain
-		members = members[left:]
+		start = len(members) - state.MaxChain
+		if chain.Seq > 0 {
+			start = min(start, chain.Seq-1)
+		}
+		members = members[start : start+state.MaxChain]
 	}
+	left := len(chain.Members) - len(members)
 	var all []appHistoryMessage
 	sessions := make([]appChainSession, 0, len(members))
 	skipped := 0
@@ -172,8 +177,10 @@ func (d appHistoryDeps) chainConversation(ctx context.Context, provider, id stri
 			return appHistoryOutput{}, err
 		}
 		for i := range msgs {
+			// Keys count from the chain's first session, which a rollover leaves in
+			// place, so a cursor still names its message after the window moves.
 			place := k
-			msgs[i].Key = fmt.Sprintf("s%d-%s", k, msgs[i].Key)
+			msgs[i].Key = fmt.Sprintf("s%d-%s", start+k, msgs[i].Key)
 			msgs[i].Session = &place
 		}
 		all = append(all, msgs...)

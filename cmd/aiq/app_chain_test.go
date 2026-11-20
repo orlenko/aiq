@@ -242,6 +242,27 @@ func TestAppChainsKeepOneIdentityPastTheCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An early member past the cap is read with its own messages, and keys count
+	// from the chain's first session.
+	members = append([]appChainMember{{"claude", ids[1]}}, members...)
+	early, err := d.run(context.Background(), roots, "conversation", []string{"--provider", "claude", "--id", ids[1], "--chain", "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	em := appChainJSON(t, early.Data)["messages"].([]any)
+	if first := em[0].(map[string]any); first["text"] != "Invented first request." || !strings.HasPrefix(first["key"].(string), "s0-") ||
+		early.Omitted["chain_limit"] != len(members)-state.MaxChain {
+		t.Fatalf("early member: first %v, omitted %v", first, early.Omitted)
+	}
+	members = members[1:]
+	got, err = d.run(context.Background(), roots, "conversation", []string{"--provider", "claude", "--id", ids[3], "--chain", "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lm := appChainJSON(t, got.Data)["messages"].([]any)
+	if key := lm[len(lm)-1].(map[string]any)["key"].(string); !strings.HasPrefix(key, fmt.Sprintf("s%d-", len(members)-1)) {
+		t.Fatalf("last key %s does not count from the chain's first session", key)
+	}
 	// The last MaxChain sessions are read and the four before them are left out;
 	// the invented ones among those read have no transcript.
 	if sessions := appChainJSON(t, got.Data)["sessions"].([]any); len(sessions) != state.MaxChain ||

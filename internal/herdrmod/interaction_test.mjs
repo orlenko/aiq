@@ -129,6 +129,13 @@ test('a collapsed chain reads the whole chain and marks where each session begin
   view.openConversation({...chained,readChain:false},cx);await cx.drain();
   assert.equal(seen[0].chain,true);assert.equal(seen[1].chain,true);assert.equal(seen[1].before,'s1-m0-0-'+'a'.repeat(16));assert.equal(seen[2].chain,undefined);
   assert.equal(view.conversation.omissions,'1 earlier session could not be read');
+  // Refresh rereads a chain from its tail: --at is not accepted with --chain.
+  view.openConversation(chained,cx);await cx.drain();
+  let refresh=null;const button=view.ui.button;
+  view.ui.button=(bid,text,click,...rest)=>{if(bid==='refresh')refresh=click;return button(bid,text,click,...rest);};
+  view.toolbar(cx);view.ui.button=button;
+  refresh({},cx);await cx.drain();
+  assert.equal(seen.at(-1).chain,true);assert.equal(seen.at(-1).at,undefined);assert.equal(view.conversation.error,undefined);
   // At the start of the chain: dividers for the unread first session, the codex one and
   // the last; a later window names only the sessions it holds.
   // One list child per message, so scroll indexes stay message indexes; dividers ride inside.

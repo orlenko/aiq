@@ -232,7 +232,7 @@ export default class AIQ extends View {
       div().flex_1(),
       this.appearancePicker(),
       this.ui.button("marks",this.marks?"Markdown symbols ✓":"Markdown symbols",(_e,cx)=>{this.marks=!this.marks;cx.notify();},this.marks),
-      this.ui.button("refresh",this.conversation?"Refresh conversation":"Refresh",(_e,cx)=>this.conversation?this.openConversation(this.conversation.row,cx,{at:this.conversation.value?.messages.find(m=>m.anchor)?.at_ms||this.conversation.value?.messages[0]?.at_ms}):this.refresh(cx))
+      this.ui.button("refresh",this.conversation?"Refresh conversation":"Refresh",(_e,cx)=>this.conversation?this.openConversation(this.conversation.row,cx,this.conversation.row.readChain?{}:{at:this.conversation.value?.messages.find(m=>m.anchor)?.at_ms||this.conversation.value?.messages[0]?.at_ms}):this.refresh(cx))
     ]);
   }
   render(cx) {
