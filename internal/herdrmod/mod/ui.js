@@ -48,12 +48,22 @@ function countdownRing(fraction, colors) {
     div().absolute().inset_0().rounded_full().border(2).border_color(colors.border)
   );
   if (fraction > 0) {
-    const angle = 2 * Math.PI * fraction;
+    const sweep = 2 * Math.PI * fraction;
+    const quarter = Math.PI / 2;
+    const point = angle => [center + radius * Math.sin(angle), center - radius * Math.cos(angle)];
     const path = gpui.PathBuilder.stroke(2).move_to(center, center - radius);
-    // Two arcs also cover a full circle, whose endpoints coincide.
-    if (fraction > 0.5) path.arc_to(radius, radius, 0, false, true, center, center + radius);
-    path.arc_to(radius, radius, 0, false, true,
-      center + radius * Math.sin(angle), center - radius * Math.cos(angle));
+    // Herdr's endpoint arcs distort at half a circle and can disappear near a
+    // full one. Draw one continuous stroke with curves of at most a quarter turn.
+    for (let start = 0; start < sweep; start += quarter) {
+      const end = Math.min(start + quarter, sweep);
+      const tangent = (4 / 3) * radius * Math.tan((end - start) / 4);
+      const [x0, y0] = point(start);
+      const [x1, y1] = point(end);
+      path.cubic_bezier_to(x1, y1,
+        x0 + tangent * Math.cos(start), y0 + tangent * Math.sin(start),
+        x1 - tangent * Math.cos(end), y1 - tangent * Math.sin(end));
+    }
+    if (fraction === 1) path.close();
     ring.child(painter.paint_path(path.build(), colors.accent).absolute().inset_0());
   }
   return ring;
