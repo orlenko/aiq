@@ -82,6 +82,23 @@ func TestSessionChainSkipsAResumeThatKeptItsID(t *testing.T) {
 	}
 }
 
+// A link a busy database kept from being written is written when the next
+// hook reports the same id, and the predecessor is cleared then.
+func TestSettleWritesALinkTheFirstHookMissed(t *testing.T) {
+	st := openTemp(t)
+	b := longLease(st, t, Lease{Provider: "codex", PrevProvider: "claude", PrevSessionID: "aaaa"})
+	// The first hook's session id landed, its link did not.
+	st.db.Exec(`UPDATE leases SET session_id = 'bbbb' WHERE id = ?`, b)
+	st.SettleLeasePredecessor(b)
+	if got := chainIDs(t, st, "here", "codex", "bbbb"); len(got) != 1 || got[0] != "claude:aaaa" {
+		t.Fatalf("bbbb chain = %v", got)
+	}
+	st.SetLeaseSession(b, "cccc")
+	if got := chainIDs(t, st, "here", "codex", "cccc"); len(got) != 0 {
+		t.Fatalf("cleared session linked: %v", got)
+	}
+}
+
 // /clear in a fresh successor starts a new conversation: it is not linked to
 // the session the takeover continued.
 func TestSessionChainIgnoresAClearAfterTheTakeover(t *testing.T) {
