@@ -81,7 +81,7 @@ func TestAppSessionsMarkRolloverChains(t *testing.T) {
 			key = c["key"].(string)
 		}
 		want := map[string]float64{ids[1]: 2, ids[2]: 3, ids[3]: 4}[r["id"].(string)]
-		if c["key"] != key || c["size"] != float64(4) || c["seq"] != want || len(c["members"].([]any)) != 4 {
+		if c["key"] != key || c["size"] != float64(4) || c["seq"] != want || c["members"] != nil {
 			t.Fatalf("chain of %v = %v", r["id"], c)
 		}
 	}
@@ -153,24 +153,77 @@ func TestAppConversationReadsTheWholeChain(t *testing.T) {
 	}
 }
 
-// Links that loop or fork still make finite chains, and a successor that
-// names another predecessor does not extend this one.
+// Links that loop or fork still make finite chains; a second successor of one
+// session is no link, so both successors cannot claim the same chain.
 func TestAppChainsCutLoopsAndForks(t *testing.T) {
 	id := func(i int) string { return appHistoryFixtureID(8, i) }
-	c := newAppChains([]state.SessionLinkRow{
-		{Provider: "claude", SessionID: id(1), PrevProvider: "codex", PrevSessionID: id(2)},
-		{Provider: "codex", SessionID: id(2), PrevProvider: "claude", PrevSessionID: id(1)},
-		{Provider: "claude", SessionID: id(3), PrevProvider: "claude", PrevSessionID: id(4)},
+	c := newAppChains([]state.SessionLinkRow{ // newest first
 		{Provider: "claude", SessionID: id(5), PrevProvider: "claude", PrevSessionID: id(4)},
+		{Provider: "claude", SessionID: id(3), PrevProvider: "claude", PrevSessionID: id(4)},
+		{Provider: "codex", SessionID: id(2), PrevProvider: "claude", PrevSessionID: id(1)},
+		{Provider: "claude", SessionID: id(1), PrevProvider: "codex", PrevSessionID: id(2)},
 	})
-	if loop, ok := c.of("claude", id(1)); !ok || loop.Size != 2 {
-		t.Fatalf("loop = %+v", loop)
+	a, okA := c.of("claude", id(1))
+	b, okB := c.of("codex", id(2))
+	if !okA || !okB || a.Size != 2 || b.Size != 2 || a.Key != b.Key {
+		t.Fatalf("loop = %+v / %+v", a, b)
 	}
-	fork, ok := c.of("claude", id(4))
-	if !ok || fork.Size != 2 || fork.Seq != 1 {
-		t.Fatalf("fork = %+v", fork)
+	kept, ok := c.of("claude", id(3))
+	if !ok || kept.Size != 2 || kept.Seq != 2 || kept.Members[0].ID != id(4) {
+		t.Fatalf("first successor = %+v", kept)
+	}
+	if second, ok := c.of("claude", id(5)); ok {
+		t.Fatalf("second successor joined the chain: %+v", second)
 	}
 	if _, ok := c.of("claude", id(9)); ok {
 		t.Fatal("a session no link names has a chain")
+	}
+}
+
+// A chain longer than the reader reads has one key from every member, and its
+// conversation counts the sessions left out.
+func TestAppChainsKeepOneIdentityPastTheCap(t *testing.T) {
+	id := func(i int) string { return appHistoryFixtureID(7, i) }
+	n := state.MaxChain + 2
+	var links []state.SessionLinkRow
+	for i := n - 1; i >= 1; i-- {
+		links = append(links, state.SessionLinkRow{Provider: "claude", SessionID: id(i), PrevProvider: "claude", PrevSessionID: id(i - 1)})
+	}
+	c := newAppChains(links)
+	keys := map[string]bool{}
+	for _, i := range []int{0, n - 2, n - 1} {
+		ch, ok := c.of("claude", id(i))
+		if !ok || ch.Size != n || ch.Seq != i+1 {
+			t.Fatalf("session %d: %+v", i, ch)
+		}
+		keys[ch.Key] = true
+	}
+	if len(keys) != 1 {
+		t.Fatalf("keys differ by member: %v", keys)
+	}
+
+	d, roots, ids := appChainFixture(t)
+	// n invented sessions, then the fixture's codex and claude ones: n+2 in all.
+	var members []appChainMember
+	for i := 0; i < n; i++ {
+		members = append(members, appChainMember{[]string{"claude", "codex"}[i%2], id(i)})
+	}
+	members = append(members, appChainMember{"codex", ids[2]}, appChainMember{"claude", ids[3]})
+	d.input.links = func(context.Context) ([]state.SessionLinkRow, error) {
+		var out []state.SessionLinkRow
+		for i := len(members) - 1; i >= 1; i-- {
+			out = append(out, state.SessionLinkRow{Provider: members[i].Provider, SessionID: members[i].ID,
+				PrevProvider: members[i-1].Provider, PrevSessionID: members[i-1].ID})
+		}
+		return out, nil
+	}
+	got, err := d.run(context.Background(), roots, "conversation", []string{"--provider", "claude", "--id", ids[3], "--chain", "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The last MaxChain sessions are read; the two before them are left out, and the
+	// invented ones among those read have no transcript.
+	if sessions := appChainJSON(t, got.Data)["sessions"].([]any); len(sessions) != state.MaxChain || got.Omitted["sessions"] != n {
+		t.Fatalf("read %d sessions, omitted %v", len(sessions), got.Omitted)
 	}
 }

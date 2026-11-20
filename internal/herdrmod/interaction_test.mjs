@@ -123,7 +123,7 @@ test('a collapsed chain reads the whole chain and marks where each session begin
   const msg=(session,n)=>({key:`s${session}-m${n}-0-${'a'.repeat(16)}`,role:'user',text:'t',at_ms:n,session});
   const seen=[];
   view.bridge={read:async(_machine,kind,options)=>{seen.push(options);return {data:{sessions,messages:[msg(1,0),msg(1,1),msg(2,2)],cursor:{before:'',after:''}},omitted:{sessions:1}};}};
-  const chained={kind:'session',host,machine:null,provider:'claude',id,readChain:true,chain:{key:'a'.repeat(16),seq:3,size:3,members:[]}};
+  const chained={kind:'session',host,machine:null,provider:'claude',id,readChain:true,chain:{key:'a'.repeat(16),seq:3,size:3}};
   view.openConversation(chained,cx);await cx.drain();
   view.openConversation(chained,cx,{before:'s1-m0-0-'+'a'.repeat(16)});await cx.drain();
   view.openConversation({...chained,readChain:false},cx);await cx.drain();
@@ -131,10 +131,15 @@ test('a collapsed chain reads the whole chain and marks where each session begin
   assert.equal(view.conversation.omissions,'1 earlier session could not be read');
   // At the start of the chain: dividers for the unread first session, the codex one and
   // the last; a later window names only the sessions it holds.
+  // One list child per message, so scroll indexes stay message indexes; dividers ride inside.
+  const labels=[],label=view.ui.label;
+  view.ui.label=(text,...rest)=>{if(String(text).startsWith('Session '))labels.push(text.split(' · ')[0]);return label(text,...rest);};
   const list=view.messageList({sessions,messages:[msg(1,0),msg(1,1),msg(2,2)],cursor:{before:''}},view.scroll,'conversation');
-  assert.equal(list.handlers.children.length,3+3);
+  assert.equal(list.handlers.children.length,3);
+  assert.deepEqual(labels.splice(0),['Session 1 of 3','Session 2 of 3','Session 3 of 3']);
   const later=view.messageList({sessions,messages:[msg(1,1),msg(2,2)],cursor:{before:'s1-m0-0-'+'a'.repeat(16)}},view.scroll,'conversation');
-  assert.equal(later.handlers.children.length,2+2);
+  assert.equal(later.handlers.children.length,2);
+  assert.deepEqual(labels,['Session 2 of 3','Session 3 of 3']);
   const single=view.messageList({messages:[{key:'m0-0-'+'a'.repeat(16),role:'user',text:'t',at_ms:1}]},view.scroll,'conversation');
   assert.equal(single.handlers.children.length,1);
 });

@@ -20,16 +20,19 @@ type appChainMember struct {
 }
 
 // appChain is where a session sits in its chain: the chain's key, its place
-// (1 is the first session), and the members, oldest first.
+// (1 is the first session) and the chain's length. Members, oldest first, are
+// for the reader; a row does not carry them.
 type appChain struct {
 	Key     string           `json:"key"`
 	Seq     int              `json:"seq"`
 	Size    int              `json:"size"`
-	Members []appChainMember `json:"members"`
+	Members []appChainMember `json:"-"`
 }
 
 // appChains links sessions into chains. Each session has at most one
-// predecessor (a link per session) and is given the successor linked first.
+// predecessor (a link per session), and each predecessor keeps the successor
+// linked first. A link the predecessor does not keep (a second successor) is
+// no link at all, so every member of a chain sees the same chain.
 type appChains struct {
 	prev, next map[appChainMember]appChainMember
 }
@@ -43,18 +46,21 @@ func newAppChains(links []state.SessionLinkRow) appChains {
 		if cur == prev || !transcript.IsFullID(cur.Provider, cur.ID) || !transcript.IsFullID(prev.Provider, prev.ID) {
 			continue
 		}
-		if _, ok := c.prev[cur]; !ok {
-			c.prev[cur] = prev
+		if _, ok := c.prev[cur]; ok {
+			continue
 		}
-		if _, ok := c.next[prev]; !ok {
-			c.next[prev] = cur
+		if _, ok := c.next[prev]; ok {
+			continue // prev already went on in another session
 		}
+		c.prev[cur], c.next[prev] = prev, cur
 	}
 	return c
 }
 
-// of is provider/id's chain, or false when no rollover touches it. Loops and
-// chains past state.MaxChain sessions are cut.
+// of is provider/id's chain, or false when no rollover touches it. The chain is
+// found whole, from its first session to its last, before anything limits what
+// is shown, so its key and members are the same from any member. A loop has no
+// first session; it starts at the session met again.
 func (c appChains) of(provider, id string) (appChain, bool) {
 	self := appChainMember{provider, id}
 	_, hasPrev := c.prev[self]
@@ -62,37 +68,49 @@ func (c appChains) of(provider, id string) (appChain, bool) {
 	if !hasPrev && !hasNext {
 		return appChain{}, false
 	}
-	seen := map[appChainMember]bool{self: true}
-	before := []appChainMember{}
-	for m := self; len(before) < state.MaxChain; {
-		p, ok := c.prev[m]
-		if !ok || seen[p] {
+	first, seen, looped := self, map[appChainMember]bool{self: true}, false
+	for {
+		p, ok := c.prev[first]
+		if !ok {
+			break
+		}
+		if seen[p] {
+			looped = true
 			break
 		}
 		seen[p] = true
-		before = append(before, p)
-		m = p
+		first = p
 	}
-	members := make([]appChainMember, 0, len(before)+1)
-	for i := len(before) - 1; i >= 0; i-- {
-		members = append(members, before[i])
-	}
-	members = append(members, self)
-	seq := len(members)
-	for m := self; len(members) < 2*state.MaxChain+1; {
+	members := []appChainMember{first}
+	at := map[appChainMember]bool{first: true}
+	for m := first; ; {
 		n, ok := c.next[m]
-		// Only a successor that names m as its own predecessor continues it.
-		if !ok || seen[n] || c.prev[n] != m {
+		if !ok || at[n] {
 			break
 		}
-		seen[n] = true
+		at[n] = true
 		members = append(members, n)
 		m = n
 	}
-	if len(members) < 2 {
+	seq := 0
+	for i, m := range members {
+		if m == self {
+			seq = i + 1
+		}
+	}
+	if len(members) < 2 || seq == 0 {
 		return appChain{}, false
 	}
-	sum := sha256.Sum256([]byte(members[0].Provider + "\x00" + members[0].ID))
+	// A loop is keyed by its least member, so every member finds the same key.
+	root := members[0]
+	if looped {
+		for _, m := range members {
+			if m.Provider+"\x00"+m.ID < root.Provider+"\x00"+root.ID {
+				root = m
+			}
+		}
+	}
+	sum := sha256.Sum256([]byte(root.Provider + "\x00" + root.ID))
 	return appChain{Key: hex.EncodeToString(sum[:8]), Seq: seq, Size: len(members), Members: members}, true
 }
 
@@ -124,10 +142,20 @@ func (d appHistoryDeps) chainConversation(ctx context.Context, provider, id stri
 	if !ok {
 		chain = appChain{Members: []appChainMember{{provider, id}}}
 	}
+	// A long chain is read up to provider/id, the last state.MaxChain sessions of
+	// it; the rest are counted as left out.
+	members, left := chain.Members, 0
+	if chain.Seq > 0 {
+		members = members[:chain.Seq]
+	}
+	if len(members) > state.MaxChain {
+		left = len(members) - state.MaxChain
+		members = members[left:]
+	}
 	var all []appHistoryMessage
-	sessions := make([]appChainSession, 0, len(chain.Members))
+	sessions := make([]appChainSession, 0, len(members))
 	skipped := 0
-	for k, m := range chain.Members {
+	for k, m := range members {
 		one := s
 		if m.Provider != provider || m.ID != id {
 			var err error
@@ -167,9 +195,14 @@ func (d appHistoryDeps) chainConversation(ctx context.Context, provider, id stri
 	}
 	for _, one := range sessions {
 		if !one.Available {
-			out.Partial = true
 			out.Omitted["sessions"]++
 		}
+	}
+	out.Omitted["sessions"] += left
+	if out.Omitted["sessions"] == 0 {
+		delete(out.Omitted, "sessions")
+	} else {
+		out.Partial = true
 	}
 	return out, nil
 }

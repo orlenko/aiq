@@ -134,10 +134,13 @@ Times ending in `_ms` are milliseconds. Workspace-only rows have no conversation
 ID and do not fabricate a transcript.
 
 A session in an `aiq long` rollover chain (a takeover that started a fresh
-session rather than resuming one) has `chain: {key, seq, size, members}`: the
-chain's 16-hex key, the session's place from 1, the chain's length, and its
-members (`provider`, `id`) oldest first. Rows outside a chain have no `chain`.
-Links are this machine's only; transcript paths are never sent.
+session rather than resuming one) has `chain: {key, seq, size}`: the chain's
+16-hex key, the session's place from 1, and the chain's length. The chain is
+found whole before any limit, so every member reports the same key and size.
+A session continues at most one predecessor, and a predecessor keeps only the
+successor linked first; a second successor is outside the chain. Rows outside a
+chain have no `chain`. Links are this machine's only; transcript paths are never
+sent.
 
 ## conversation and ask-context (`conversation.json`, `ask-context.json`)
 
@@ -151,8 +154,10 @@ With `--chain 1` the window spans the session's whole rollover chain:
 `sessions` lists each member (`provider`, `conversation_id`, `started_ms`,
 `available`) oldest first, each message carries `session`, its index there,
 and keys gain an `s<index>-` prefix so cursors cross sessions. A member that
-cannot be read has `available:false` and is counted in `omitted.sessions`. A
-session with no chain reads as a chain of one. `--anchor` and `--at` are not
+cannot be read has `available:false` and is counted in `omitted.sessions`. The
+chain is read up to the session asked for, at most its last 50 sessions; any
+before those are counted in `omitted.sessions` too. A session with no chain
+reads as a chain of one. `--anchor` and `--at` are not
 accepted with `--chain`.
 
 Ask context first checks the ask revision, then locates its quote in the

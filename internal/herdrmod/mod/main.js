@@ -336,7 +336,7 @@ export default class AIQ extends View {
     // A chain conversation names each session where its messages begin, and any it could not read.
     const sessions=data.sessions,dividers=[];let shown=-1;
     const divider=k=>{const s=sessions[k];return div().id(id+"-session-"+k).px(4).pt(8).border_b(1).border_color(t.accent).child(this.ui.label(sessionDivider(s,k,sessions.length)).font_semibold());};
-    return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.flatMap(m=>{
+    return v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().track_scroll(scroll).p(24).gap(16).children(data.messages.map(m=>{
       const before=[];
       if(sessions&&Number.isSafeInteger(m.session)&&m.session!==shown){for(let k=shown>=0?shown+1:data.cursor?.before?m.session:0;k<=m.session;k++)before.push(divider(k));shown=m.session;}
       const user = m.role === "user";
@@ -345,11 +345,14 @@ export default class AIQ extends View {
       const card = v_flex().id(id+"-"+m.key).min_w(0).p(16).gap(10).rounded(6)
         .border(1).border_color(highlighted ? t.accent : t.border)
         .bg(user || highlighted ? t.raised : t.surface);
-      return [...before,(user ? card.ml(24) : card).children([
+      const item=(user ? card.ml(24) : card).children([
         user ? header.font_semibold() : header,
         this.prose(id+"-text-"+m.key,m.text,this.marks),
         ...(m.truncated ? [this.ui.warning("Message excerpt · display limit reached.")] : [])
-      ])];
+      ]);
+      // Dividers ride with the message they precede: one list child per message keeps
+      // message indexes valid for scrolling.
+      return before.length ? v_flex().id(id+"-with-"+m.key).gap(16).children([...before,item]) : item;
     }));
   }
   pageControls(data,row,cx,context=false) {

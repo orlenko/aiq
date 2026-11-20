@@ -231,7 +231,7 @@ test('saved session names label and filter ask groups without replacing their wo
 });
 
 const chainID=i=>`0000000${i}-0000-4000-8000-000000000000`;
-const chainOf=(seq,size=3,key='a'.repeat(16))=>({key,seq,size,members:Array.from({length:size},(_,i)=>({provider:i%2?'codex':'claude',id:chainID(i)}))});
+const chainOf=(seq,size=3,key='a'.repeat(16))=>({key,seq,size});
 test('a rollover chain shows as its latest loaded session, read as the whole chain',()=>{
   const r=(id,chain,h=host)=>({kind:'session',host:h,provider:'claude',id,updated_ms:1,...(chain?{chain}:{})});
   const rows=collapseChains([r('a',chainOf(1)),r('c',chainOf(3)),r('b',chainOf(2)),r('alone'),r('x',chainOf(1),'2'.repeat(32)),r('y',chainOf(2,2,'b'.repeat(16)))]);
@@ -241,7 +241,7 @@ test('a rollover chain shows as its latest loaded session, read as the whole cha
 test('chain fields decode only when well formed, and the chain read takes no anchor',()=>{
   const sessions={window:{cursor:''},rows:[{kind:'session',provider:'claude',id:chainID(2),cwd:'/w',name:'n',updated_ms:1,chain:chainOf(3)}]};
   assert.equal(decode(JSON.stringify(envelope('sessions',sessions)),'sessions').data.rows[0].chain.seq,3);
-  for(const bad of [{...chainOf(3),seq:4},{...chainOf(3),key:'x'},{...chainOf(3),members:[]},{...chainOf(2),members:[{provider:'other',id:chainID(0)},{provider:'claude',id:chainID(1)}]}])
+  for(const bad of [{...chainOf(3),seq:4},{...chainOf(3),key:'x'},{...chainOf(3),size:1},{...chainOf(3),seq:0}])
     assert.throws(()=>decode(JSON.stringify(envelope('sessions',{...sessions,rows:[{...sessions.rows[0],chain:bad}]})),'sessions'));
   const list=[{provider:'claude',conversation_id:chainID(0),started_ms:0,available:false},{provider:'codex',conversation_id:chainID(1),started_ms:5,available:true}];
   const message=(session)=>({key:'s'+session+'-m0-0-'+'a'.repeat(16),role:'user',text:'x',at_ms:1,session});

@@ -15,11 +15,10 @@ function messages(rows, sessions=null) {
     if (row.session !== undefined) require(sessions && Number.isSafeInteger(row.session) && row.session >= 0 && row.session < sessions.length);
   }
 }
-const chainMember = m => object(m) && PROVIDERS.has(m.provider) && ID.test(m.id);
 // An aiq long rollover chain: on a session row, and the sessions of a chain conversation.
 function chain(c) {
-  require(object(c) && /^[a-f0-9]{16}$/.test(c.key) && Number.isSafeInteger(c.size) && c.size >= 2 && c.size <= 101 &&
-    Number.isSafeInteger(c.seq) && c.seq >= 1 && c.seq <= c.size && Array.isArray(c.members) && c.members.length === c.size && c.members.every(chainMember));
+  require(object(c) && /^[a-f0-9]{16}$/.test(c.key) && Number.isSafeInteger(c.size) && c.size >= 2 &&
+    Number.isSafeInteger(c.seq) && c.seq >= 1 && c.seq <= c.size);
 }
 function chainSessions(list) {
   require(Array.isArray(list) && list.length >= 1 && list.length <= 101);
