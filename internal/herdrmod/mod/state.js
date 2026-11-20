@@ -92,6 +92,8 @@ export function omissionNotice(reply) {
   count("unreadable", "transcript", "transcripts", "could not be read");
   count("records", "transcript record skipped", "transcript records skipped", "by the record size limit");
   count("sessions", "earlier session", "earlier sessions", "could not be read");
+  count("chain_limit", "earlier session", "earlier sessions", "not shown, by the session limit");
+  if (omitted.chain_unknown === 1) notices.push("Earlier sessions could not be looked up");
   if (omitted.metadata_limit === 1) notices.push("Session details omitted by the metadata limit");
   if (omitted.metadata_timeout === 1) notices.push("Session details omitted by the read time limit");
   if (omitted.metadata_incomplete === 1) notices.push("Some session details are unavailable");

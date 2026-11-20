@@ -313,7 +313,7 @@ func (d appHistoryDeps) sessions(ctx context.Context, roots transcript.Roots, op
 	f := &navFactory{input: d.input, policy: policy, askSlots: make(chan struct{}, 1)}
 	run := &navListRun{limit: policy.sessions.rowBytes, needed: map[string]struct{}{}, cancel: cancel}
 	extras, extraErr := f.listExtras(metaCtx, roots, navListQuery{all: true, workers: true}, summaries, run)
-	chains := d.links(metaCtx)
+	chains, _ := d.links(metaCtx) // without links every row stands alone
 	rows := []map[string]any{}
 	for i, s := range summaries {
 		r := map[string]any{"kind": "session", "provider": s.Provider, "id": s.ID, "cwd": s.Cwd, "name": appHistoryLabel(s.Label), "title": appHistoryLabel(s.Title), "model": s.Model, "branch": s.Branch, "started_ms": appHistoryMillis(s.Started), "updated_ms": appHistoryMillis(s.Updated), "turns": s.Turns, "tools": s.Tools, "worker": s.Worker, "workspace": "", "workspace_known": false, "pending_asks": 0, "pending_asks_known": false, "live": "unknown", "account": "", "launcher": "", "terminal": nil, "terminal_reason": "unknown"}

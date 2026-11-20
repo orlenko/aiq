@@ -142,6 +142,27 @@ func TestAppConversationReadsTheWholeChain(t *testing.T) {
 			t.Errorf("%v accepted", bad)
 		}
 	}
+	// An early member reads the whole chain too: a filter that left only that row
+	// still shows where the conversation went on.
+	early, err := d.run(context.Background(), roots, "conversation", []string{"--provider", "codex", "--id", ids[2], "--chain", "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	em := appChainJSON(t, early.Data)["messages"].([]any)
+	if got := em[len(em)-1].(map[string]any); got["text"] != "Invented last reply." || len(appChainJSON(t, early.Data)["sessions"].([]any)) != 4 {
+		t.Fatalf("early member's chain ends at %v", got)
+	}
+	// Links that cannot be read leave a chain of one, marked as possibly incomplete.
+	links := d.input.links
+	d.input.links = func(context.Context) ([]state.SessionLinkRow, error) { return nil, context.DeadlineExceeded }
+	unknown, err := d.run(context.Background(), roots, "conversation", []string{"--provider", "claude", "--id", ids[3], "--chain", "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unknown.Partial || unknown.Omitted["chain_unknown"] != 1 {
+		t.Fatalf("failed links read not reported: %v %v", unknown.Partial, unknown.Omitted)
+	}
+	d.input.links = links
 	// A session with no chain reads as a chain of one.
 	d.input.links = nil
 	alone, err := d.run(context.Background(), roots, "conversation", []string{"--provider", "claude", "--id", ids[3], "--chain", "1"})
@@ -221,9 +242,10 @@ func TestAppChainsKeepOneIdentityPastTheCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The last MaxChain sessions are read; the two before them are left out, and the
-	// invented ones among those read have no transcript.
-	if sessions := appChainJSON(t, got.Data)["sessions"].([]any); len(sessions) != state.MaxChain || got.Omitted["sessions"] != n {
+	// The last MaxChain sessions are read and the four before them are left out;
+	// the invented ones among those read have no transcript.
+	if sessions := appChainJSON(t, got.Data)["sessions"].([]any); len(sessions) != state.MaxChain ||
+		got.Omitted["chain_limit"] != n+2-state.MaxChain || got.Omitted["sessions"] != state.MaxChain-2 || !got.Partial {
 		t.Fatalf("read %d sessions, omitted %v", len(sessions), got.Omitted)
 	}
 }

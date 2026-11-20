@@ -114,16 +114,17 @@ func (c appChains) of(provider, id string) (appChain, bool) {
 	return appChain{Key: hex.EncodeToString(sum[:8]), Seq: seq, Size: len(members), Members: members}, true
 }
 
-// links reads this host's rollover links; nil without a reader.
-func (d appHistoryDeps) links(ctx context.Context) appChains {
+// links reads this host's rollover links; none without a reader. ok is false
+// when a reader failed, so a chain read can say its chain may be incomplete.
+func (d appHistoryDeps) links(ctx context.Context) (appChains, bool) {
 	if d.input.links == nil {
-		return newAppChains(nil)
+		return newAppChains(nil), true
 	}
 	links, err := d.input.links(ctx)
 	if err != nil {
-		return newAppChains(nil)
+		return newAppChains(nil), false
 	}
-	return newAppChains(links)
+	return newAppChains(links), true
 }
 
 // appChainSession is one session of a chain conversation, for the reader.
@@ -138,16 +139,14 @@ type appChainSession struct {
 // session's messages in order, each marked with its session and keyed with
 // its session's place so cursors work across them.
 func (d appHistoryDeps) chainConversation(ctx context.Context, provider, id string, s *transcript.Session, before, after string) (appHistoryOutput, error) {
-	chain, ok := d.links(ctx).of(provider, id)
+	chains, linked := d.links(ctx)
+	chain, ok := chains.of(provider, id)
 	if !ok {
 		chain = appChain{Members: []appChainMember{{provider, id}}}
 	}
-	// A long chain is read up to provider/id, the last state.MaxChain sessions of
-	// it; the rest are counted as left out.
+	// The whole chain is read, whichever member was asked for, up to its last
+	// state.MaxChain sessions; the rest are counted as left out.
 	members, left := chain.Members, 0
-	if chain.Seq > 0 {
-		members = members[:chain.Seq]
-	}
 	if len(members) > state.MaxChain {
 		left = len(members) - state.MaxChain
 		members = members[left:]
@@ -198,10 +197,16 @@ func (d appHistoryDeps) chainConversation(ctx context.Context, provider, id stri
 			out.Omitted["sessions"]++
 		}
 	}
-	out.Omitted["sessions"] += left
+	if left > 0 {
+		out.Omitted["chain_limit"] = left
+	}
+	if !linked {
+		out.Omitted["chain_unknown"] = 1
+	}
 	if out.Omitted["sessions"] == 0 {
 		delete(out.Omitted, "sessions")
-	} else {
+	}
+	if len(out.Omitted) > 0 {
 		out.Partial = true
 	}
 	return out, nil

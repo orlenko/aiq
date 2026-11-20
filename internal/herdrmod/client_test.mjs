@@ -254,4 +254,5 @@ test('chain fields decode only when well formed, and the chain read takes no anc
   assert.equal(sessionDivider(list[0],0,2),'Session 1 of 2 · claude · session 00000000 · transcript not available');
   assert.equal(sessionDivider(list[1],1,2),'Session 2 of 2 · codex · session 00000001 · started '+localTime(5));
   assert.equal(omissionNotice({omitted:{sessions:1}}),'1 earlier session could not be read');
+  assert.equal(omissionNotice({omitted:{chain_limit:3,chain_unknown:1}}),'3 earlier sessions not shown, by the session limit · Earlier sessions could not be looked up');
 });
