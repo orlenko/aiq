@@ -59,7 +59,8 @@ func TestSessionChainFollowsFreshSuccessors(t *testing.T) {
 	}
 }
 
-// A resume that kept its id is the same conversation: no link to itself.
+// A resume that kept its id is the same conversation: no link to itself. Only
+// the first id a lease reports is the session the takeover started.
 func TestSessionChainSkipsAResumeThatKeptItsID(t *testing.T) {
 	st := openTemp(t)
 	b := longLease(st, t, Lease{Provider: "claude", SessionID: "aaaa", PrevProvider: "claude", PrevSessionID: "aaaa"})
@@ -67,10 +68,31 @@ func TestSessionChainSkipsAResumeThatKeptItsID(t *testing.T) {
 	if got := chainIDs(t, st, "here", "claude", "aaaa"); len(got) != 0 {
 		t.Fatalf("self link: %v", got)
 	}
-	// A resume the CLI gave a new id does continue the old one.
+	// /clear in the resumed session: a new conversation, not a rollover.
 	st.SetLeaseSession(b, "a2a2")
-	if got := chainIDs(t, st, "here", "claude", "a2a2"); len(got) != 1 || got[0] != "claude:aaaa" {
+	if got := chainIDs(t, st, "here", "claude", "a2a2"); len(got) != 0 {
+		t.Fatalf("cleared session linked: %v", got)
+	}
+	// A resume the CLI gave a new id from the start does continue the old one.
+	f := longLease(st, t, Lease{Provider: "claude", SessionID: "aaaa", PrevProvider: "claude", PrevSessionID: "aaaa"})
+	st.SetLeaseSession(f, "fork")
+	if got := chainIDs(t, st, "here", "claude", "fork"); len(got) != 1 || got[0] != "claude:aaaa" {
 		t.Fatalf("forked resume chain = %v", got)
+	}
+}
+
+// /clear in a fresh successor starts a new conversation: it is not linked to
+// the session the takeover continued.
+func TestSessionChainIgnoresAClearAfterTheTakeover(t *testing.T) {
+	st := openTemp(t)
+	b := longLease(st, t, Lease{Provider: "codex", PrevProvider: "claude", PrevSessionID: "aaaa"})
+	st.SetLeaseSession(b, "bbbb")
+	st.SetLeaseSession(b, "cccc")
+	if got := chainIDs(t, st, "here", "codex", "cccc"); len(got) != 0 {
+		t.Fatalf("cleared session linked: %v", got)
+	}
+	if got := chainIDs(t, st, "here", "codex", "bbbb"); len(got) != 1 || got[0] != "claude:aaaa" {
+		t.Fatalf("bbbb chain = %v", got)
 	}
 }
 

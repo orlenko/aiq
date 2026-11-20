@@ -871,22 +871,36 @@ func (s *Store) SetLeaseSession(id int64, sessionID string) error {
 }
 
 // linkLeaseSession records that lease id's session, now known as sessionID,
-// continues the session the lease names as its predecessor. A resumed session
-// that kept its id is no link. The first link recorded for a session stands.
+// continues the session the lease names as its predecessor. Only the first id a
+// lease reports is the session the takeover started: the predecessor is cleared
+// then, so a later /clear in that session starts no false link. A resumed
+// session that kept its id is no link. The first link recorded for a session stands.
 func (s *Store) linkLeaseSession(id int64, sessionID string) {
-	query := `INSERT INTO session_links (hostname, provider, session_id, prev_provider, prev_session_id, prev_transcript, workspace, linked_at_ms)
-		SELECT COALESCE(hostname,''), provider, ?, prev_provider, prev_session_id, COALESCE(prev_transcript,''), COALESCE(workspace,''), ?
-		FROM leases WHERE id = ? AND COALESCE(provider,'') != '' AND COALESCE(prev_provider,'') != '' AND COALESCE(prev_session_id,'') != ''
-		AND NOT (prev_provider = provider AND prev_session_id = ?)`
-	args := []any{sessionID, time.Now().UnixMilli(), id, sessionID}
+	guard, guardArgs := "", []any{}
 	if l := s.leaseGuard; l != nil {
 		if l.ID != id {
 			return
 		}
-		query += " AND started_at = ? AND pid = ? AND pane = ?"
-		args = append(args, l.StartedAt, l.PID, l.Pane)
+		guard = " AND started_at = ? AND pid = ? AND pane = ?"
+		guardArgs = []any{l.StartedAt, l.PID, l.Pane}
 	}
-	s.db.Exec(query+" ON CONFLICT DO NOTHING", args...)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+	query := `INSERT INTO session_links (hostname, provider, session_id, prev_provider, prev_session_id, prev_transcript, workspace, linked_at_ms)
+		SELECT COALESCE(hostname,''), provider, ?, prev_provider, prev_session_id, COALESCE(prev_transcript,''), COALESCE(workspace,''), ?
+		FROM leases WHERE id = ? AND COALESCE(provider,'') != '' AND COALESCE(prev_provider,'') != '' AND COALESCE(prev_session_id,'') != ''
+		AND NOT (prev_provider = provider AND prev_session_id = ?)` + guard + " ON CONFLICT DO NOTHING"
+	if _, err := tx.Exec(query, append([]any{sessionID, time.Now().UnixMilli(), id, sessionID}, guardArgs...)...); err != nil {
+		return
+	}
+	if _, err := tx.Exec(`UPDATE leases SET prev_provider = '', prev_session_id = '', prev_transcript = ''
+		WHERE id = ? AND COALESCE(prev_session_id,'') != ''`+guard, append([]any{id}, guardArgs...)...); err != nil {
+		return
+	}
+	tx.Commit()
 }
 
 // SessionLink is one session in a chain of aiq long rollovers.
