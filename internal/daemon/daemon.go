@@ -529,6 +529,7 @@ func (s *Server) housekeeping() {
 		s.pool.St.PruneLeases(pool.Hostname(), proc.Alive)
 		s.pool.St.TrimEvents(2000)
 		s.pool.St.TrimLaunches(50000)
+		s.pool.St.TrimSessionLinks(50000)
 		sup.PruneNotes(time.Now())
 		sup.Tick()
 	}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -106,6 +107,18 @@ CREATE TABLE IF NOT EXISTS launches (
 );
 CREATE INDEX IF NOT EXISTS launches_cwd ON launches(cwd, started_at_ms);
 CREATE INDEX IF NOT EXISTS launches_session ON launches(session_id);
+
+CREATE TABLE IF NOT EXISTS session_links (
+    hostname            TEXT NOT NULL,
+    provider            TEXT NOT NULL,
+    session_id          TEXT NOT NULL,
+    prev_provider       TEXT NOT NULL,
+    prev_session_id     TEXT NOT NULL,
+    prev_transcript     TEXT NOT NULL DEFAULT '',
+    workspace           TEXT NOT NULL DEFAULT '',
+    linked_at_ms        INTEGER NOT NULL,
+    PRIMARY KEY(hostname, provider, session_id)
+);
 
 CREATE TABLE IF NOT EXISTS events (
     id                  INTEGER PRIMARY KEY,
@@ -297,6 +310,14 @@ type Lease struct {
 	// DrainManual marks a drain the user asked for (aiq long drain). The
 	// supervisor cancels its own drains when quota comes back, never these.
 	DrainManual bool
+	// PrevProvider and PrevSessionID name the session this one took over
+	// from, when aiq long started it fresh rather than resuming that session;
+	// PrevTranscript is that session's transcript. Once a hook reports this
+	// session's own id, SetLeaseSession records the link in session_links.
+	// AddLease writes them; lease reads leave them empty.
+	PrevProvider   string
+	PrevSessionID  string
+	PrevTranscript string
 }
 
 // InTurn reports whether the agent is in the middle of a turn.
@@ -370,7 +391,8 @@ func Open(path string) (*Store, error) {
 	for _, col := range []string{"workspace TEXT", "pane TEXT", "session_id TEXT", "provider TEXT", "fallback TEXT",
 		"drain TEXT", "drain_at INTEGER", "turn_started_at INTEGER", "turn_ended_at INTEGER", "takeover_of INTEGER",
 		"launcher TEXT", "transcript TEXT", "drain_manual INTEGER", "why TEXT",
-		"term_socket TEXT", "term_core TEXT", "term_address TEXT", "term_pid INTEGER"} {
+		"term_socket TEXT", "term_core TEXT", "term_address TEXT", "term_pid INTEGER",
+		"prev_provider TEXT", "prev_session_id TEXT", "prev_transcript TEXT"} {
 		db.Exec(`ALTER TABLE leases ADD COLUMN ` + col)
 	}
 	db.Exec(`ALTER TABLE launches ADD COLUMN args TEXT`)
@@ -743,9 +765,11 @@ func (s *Store) AddLease(l Lease) (int64, error) {
 		want = l.ID
 	}
 	cols := `id, account_id, pid, hostname, mode, cwd, depth, parent_account, root_id, args, started_at,
- workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of, launcher, drain_manual, transcript`
+ workspace, pane, session_id, provider, fallback, drain, drain_at, takeover_of, launcher, drain_manual, transcript,
+ prev_provider, prev_session_id, prev_transcript`
 	args := []any{want, l.AccountID, l.PID, l.Hostname, l.Mode, l.Cwd, l.Depth, l.ParentAccount, l.RootID, l.Args, l.StartedAt,
-		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf, l.Launcher, l.DrainManual, l.Transcript}
+		l.Workspace, l.Pane, l.SessionID, l.Provider, l.Fallback, l.Drain, l.DrainAt, l.TakeoverOf, l.Launcher, l.DrainManual, l.Transcript,
+		l.PrevProvider, l.PrevSessionID, l.PrevTranscript}
 	if strings.HasPrefix(l.Pane, "herdr:") {
 		// Adoption must become visible conservatively busy in this INSERT.
 		cols += ", turn_started_at, turn_ended_at"
@@ -841,8 +865,76 @@ func (s *Store) SetLeaseSession(id int64, sessionID string) error {
 		} else {
 			s.db.Exec(`UPDATE launches SET session_id = ? WHERE lease_id = ? AND COALESCE(session_id,'') = ''`, sessionID, id)
 		}
+		s.linkLeaseSession(id, sessionID)
 	}
 	return err
+}
+
+// linkLeaseSession records that lease id's session, now known as sessionID,
+// continues the session the lease names as its predecessor. A resumed session
+// that kept its id is no link. The first link recorded for a session stands.
+func (s *Store) linkLeaseSession(id int64, sessionID string) {
+	query := `INSERT INTO session_links (hostname, provider, session_id, prev_provider, prev_session_id, prev_transcript, workspace, linked_at_ms)
+		SELECT COALESCE(hostname,''), provider, ?, prev_provider, prev_session_id, COALESCE(prev_transcript,''), COALESCE(workspace,''), ?
+		FROM leases WHERE id = ? AND COALESCE(provider,'') != '' AND COALESCE(prev_provider,'') != '' AND COALESCE(prev_session_id,'') != ''
+		AND NOT (prev_provider = provider AND prev_session_id = ?)`
+	args := []any{sessionID, time.Now().UnixMilli(), id, sessionID}
+	if l := s.leaseGuard; l != nil {
+		if l.ID != id {
+			return
+		}
+		query += " AND started_at = ? AND pid = ? AND pane = ?"
+		args = append(args, l.StartedAt, l.PID, l.Pane)
+	}
+	s.db.Exec(query+" ON CONFLICT DO NOTHING", args...)
+}
+
+// SessionLink is one session in a chain of aiq long rollovers.
+type SessionLink struct {
+	Provider   string
+	SessionID  string
+	Transcript string // as the successor recorded it; may be empty or gone
+	Workspace  string
+	LinkedAt   time.Time // when the successor of this session reported its id
+}
+
+// MaxChain caps how many earlier sessions SessionChain returns.
+const MaxChain = 50
+
+// SessionChain returns the sessions that provider/sessionID on hostname
+// continues, oldest first, not counting the session itself. It stops at a
+// session with no recorded predecessor, at a repeat, or after MaxChain.
+func (s *Store) SessionChain(hostname, provider, sessionID string) ([]SessionLink, error) {
+	var chain []SessionLink
+	seen := map[string]bool{provider + "\x00" + sessionID: true}
+	for len(chain) < MaxChain {
+		var l SessionLink
+		var at int64
+		err := s.db.QueryRow(`SELECT prev_provider, prev_session_id, prev_transcript, workspace, linked_at_ms FROM session_links
+			WHERE hostname = ? AND provider = ? AND session_id = ?`, hostname, provider, sessionID).
+			Scan(&l.Provider, &l.SessionID, &l.Transcript, &l.Workspace, &at)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		key := l.Provider + "\x00" + l.SessionID
+		if seen[key] {
+			break
+		}
+		seen[key] = true
+		l.LinkedAt = time.UnixMilli(at)
+		chain = append(chain, l)
+		provider, sessionID = l.Provider, l.SessionID
+	}
+	slices.Reverse(chain)
+	return chain, nil
+}
+
+// TrimSessionLinks keeps only the newest keep links.
+func (s *Store) TrimSessionLinks(keep int) {
+	s.db.Exec(`DELETE FROM session_links WHERE rowid NOT IN (SELECT rowid FROM session_links ORDER BY linked_at_ms DESC LIMIT ?)`, keep)
 }
 
 // SetLeaseTranscript records the transcript file a hook reported.
