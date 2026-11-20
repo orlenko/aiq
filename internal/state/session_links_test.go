@@ -60,11 +60,12 @@ func TestSessionChainFollowsFreshSuccessors(t *testing.T) {
 }
 
 // A resume that kept its id is the same conversation: no link to itself. Only
-// the first id a lease reports is the session the takeover started.
+// the first id a lease reports is the session the takeover started. The hook
+// reports a kept id with SettleLeasePredecessor, not SetLeaseSession.
 func TestSessionChainSkipsAResumeThatKeptItsID(t *testing.T) {
 	st := openTemp(t)
 	b := longLease(st, t, Lease{Provider: "claude", SessionID: "aaaa", PrevProvider: "claude", PrevSessionID: "aaaa"})
-	st.SetLeaseSession(b, "aaaa")
+	st.SettleLeasePredecessor(b)
 	if got := chainIDs(t, st, "here", "claude", "aaaa"); len(got) != 0 {
 		t.Fatalf("self link: %v", got)
 	}

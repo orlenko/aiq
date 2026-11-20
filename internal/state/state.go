@@ -903,6 +903,18 @@ func (s *Store) linkLeaseSession(id int64, sessionID string) {
 	tx.Commit()
 }
 
+// SettleLeasePredecessor ends lease id's claim to a predecessor once its first
+// session id is known without a change: a resume that kept the id. A later id
+// (a /clear) is then a new conversation, not the session the takeover started.
+// It writes only while there is a predecessor to clear.
+func (s *Store) SettleLeasePredecessor(id int64) {
+	var prev string
+	if err := s.db.QueryRow(`SELECT COALESCE(prev_session_id,'') FROM leases WHERE id = ?`, id).Scan(&prev); err != nil || prev == "" {
+		return
+	}
+	s.leaseExec(`UPDATE leases SET prev_provider = '', prev_session_id = '', prev_transcript = '' WHERE id = ?`, id)
+}
+
 // SessionLink is one session in a chain of aiq long rollovers.
 type SessionLink struct {
 	Provider   string
