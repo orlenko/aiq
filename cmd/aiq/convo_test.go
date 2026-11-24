@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/tmux"
 	"github.com/orlenko/aiq/internal/transcript"
 )
@@ -1550,5 +1552,110 @@ func TestConvoLooksLikeAsksOnlyWithColor(t *testing.T) {
 	newConvoPrinter("claude", false, false).answer(&b, pal.agent, "▌ claude · 1m", "", "text")
 	if b.String() != "\n▌ claude · 1m\ntext\n" {
 		t.Errorf("plain answer: %q", b.String())
+	}
+}
+
+// A Codex subagent rollout or an empty rollout returns nil from ParseCodex;
+// loadConvo must report an error rather than returning a nil session that makes
+// --follow panic, and convoResolver and --follow ignore a subagent rollout on
+// a lease in favour of the parent interactive session.
+func TestConvoFollowSurvivesSubagentAndEmptyCodexRollouts(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexRoot := filepath.Join(dir, "codex", "sessions", "2026", "11", "24")
+	if err := os.MkdirAll(codexRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(dir, "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(codexRoot, "rollout-2026-11-24T10-00-00-019a0000-0000-7000-8000-000000000001.jsonl")
+	sub := filepath.Join(codexRoot, "rollout-2026-11-24T10-01-00-019a0000-0000-7000-8000-000000000002.jsonl")
+	empty := filepath.Join(codexRoot, "rollout-2026-11-24T10-02-00-019a0000-0000-7000-8000-000000000003.jsonl")
+	parentLines := []string{
+		`{"timestamp":"2026-11-24T10:00:00Z","type":"session_meta","payload":{"id":"019a0000-0000-7000-8000-000000000001","cwd":` + strconv.Quote(work) + `,"source":"cli"}}`,
+		`{"timestamp":"2026-11-24T10:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`,
+		`{"timestamp":"2026-11-24T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"ship it","turn_id":"t1"}}`,
+		`{"timestamp":"2026-11-24T10:00:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"Shipped."}}`,
+	}
+	if err := os.WriteFile(parent, []byte(strings.Join(parentLines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sub, []byte(`{"timestamp":"2026-11-24T10:01:00Z","type":"session_meta","payload":{"id":"019a0000-0000-7000-8000-000000000002","cwd":`+strconv.Quote(work)+`,"source":{"subagent":{"other":"guardian"}}}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{sub, empty} {
+		for _, stale := range []bool{false, true} {
+			if s, err := loadConvo(convoTarget{provider: "codex", path: path, stale: stale}); err == nil || s != nil {
+				t.Fatalf("loadConvo(%s, stale=%v) = (%+v, %v), want nil and an error", filepath.Base(path), stale, s, err)
+			}
+		}
+	}
+
+	// If a pane resolves to an empty rollout before its session_meta is flushed,
+	// --follow notes the error without panicking and keeps the current session.
+	var b bytes.Buffer
+	r := &convoResolver{
+		roots:    transcript.Roots{CodexSessions: []string{filepath.Join(dir, "codex", "sessions")}},
+		host:     func() string { return "here" },
+		home:     dir,
+		claude:   func() []claudeLive { return nil },
+		paneInfo: func(p string) (tmux.Pane, error) { return tmux.Pane{ID: p, PID: 100}, nil },
+		parents:  func() map[int]int { return map[int]int{100: 1} },
+		alive:    func(pid int) bool { return pid == 100 },
+		now:      time.Now,
+		warn:     io.Discard,
+	}
+	st, err := state.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	r.st = st
+	leaseID, err := st.AddLease(state.Lease{
+		AccountID: "codex/a", Provider: "codex", Mode: state.ModeLong, PID: 100, Hostname: "here",
+		Workspace: work, Cwd: work, Pane: "%4", SessionID: "019a0000-0000-7000-8000-000000000002",
+		Transcript: sub, StartedAt: time.Now().Add(-time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A lease whose Transcript was overwritten by a subagent rollout still
+	// resolves to the parent interactive session in the workspace.
+	if tgt, err := r.resolvePane("%4"); err != nil || canonicalPath(tgt.path) != canonicalPath(parent) {
+		t.Fatalf("resolvePane with subagent transcript: got %+v, %v; want %s", tgt, err, parent)
+	}
+	if tgt, err := r.resolveDir(work); err != nil || canonicalPath(tgt.path) != canonicalPath(parent) {
+		t.Fatalf("resolveDir with subagent transcript: got %+v, %v; want %s", tgt, err, parent)
+	}
+
+	// Point the lease at an empty rollout while --follow runs: the loop must
+	// not panic when resolvePane returns the empty file.
+	if err := st.SetLeaseTranscript(leaseID, empty); err != nil {
+		t.Fatal(err)
+	}
+	f := &convoFollow{
+		r: r, tgt: convoTarget{provider: "codex", path: parent, account: "codex/a", pane: "%4"}, w: &b,
+		statEvery: 10 * time.Millisecond, parseGap: 10 * time.Millisecond, resolveEvery: 15 * time.Millisecond, quiet: time.Millisecond,
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := f.loop(stop); err != nil {
+			t.Errorf("loop: %v", err)
+		}
+	}()
+	time.Sleep(60 * time.Millisecond)
+	close(stop)
+	<-done
+	if !strings.Contains(b.String(), "Shipped.") {
+		t.Fatalf("follow output missing parent reply:\n%s", b.String())
 	}
 }

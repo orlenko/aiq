@@ -455,7 +455,7 @@ func (r *convoResolver) resolvePane(pane string) (convoTarget, error) {
 		return t, nil
 	}
 	if leased {
-		path := lease.Transcript
+		path := leaseTranscript(lease)
 		if path == "" {
 			path = r.unreported([]state.Lease{lease})[lease.ID]
 		}
@@ -521,11 +521,12 @@ func (r *convoResolver) resolveDir(dir string) (convoTarget, error) {
 			if l.Hostname != r.host() || !r.alive(l.PID) {
 				continue
 			}
-			if l.Transcript == "" {
+			path := leaseTranscript(l)
+			if path == "" {
 				bare = append(bare, l)
 				continue
 			}
-			add(l.Cwd, convoTarget{provider: leaseProvider(l), path: l.Transcript, account: l.AccountID, pane: l.Pane})
+			add(l.Cwd, convoTarget{provider: leaseProvider(l), path: path, account: l.AccountID, pane: l.Pane})
 		}
 		guessed := r.unreported(bare)
 		for _, l := range bare {
@@ -579,8 +580,8 @@ func (r *convoResolver) unreported(bare []state.Lease) map[int64]string {
 	held := map[string]bool{}
 	if leases, err := r.st.ListLeases(); err == nil {
 		for _, l := range leases {
-			if l.Transcript != "" && l.Hostname == r.host() && r.alive(l.PID) {
-				held[canonicalPath(l.Transcript)] = true
+			if p := leaseTranscript(l); p != "" && l.Hostname == r.host() && r.alive(l.PID) {
+				held[canonicalPath(p)] = true
 			}
 		}
 	}
@@ -707,6 +708,9 @@ func loadConvo(t convoTarget) (*transcript.Session, error) {
 		default:
 			return nil, fmt.Errorf("aiq convo cannot read %s transcripts", t.provider)
 		}
+		if err == nil && s == nil {
+			return nil, fmt.Errorf("transcript %s has no session", oneLine(t.path))
+		}
 	}
 	if err == nil && t.stale && len(s.Turns) > 0 && s.Turns[len(s.Turns)-1].Open {
 		// The turn ended with the CLI: its last answer is its reply.
@@ -726,6 +730,20 @@ func leaseProvider(l state.Lease) string {
 	}
 	p, _, _ := strings.Cut(l.AccountID, "/")
 	return p
+}
+
+// leaseTranscript is the transcript a hook reported for l, or "" when it names
+// a Codex subagent or non-interactive rollout.
+func leaseTranscript(l state.Lease) string {
+	if l.Transcript == "" {
+		return ""
+	}
+	if leaseProvider(l) == "codex" {
+		if known, interactive := transcript.CodexInteractive(l.Transcript); known && !interactive {
+			return ""
+		}
+	}
+	return l.Transcript
 }
 
 // sessionIDOf is the session id in a transcript's file name: Claude's
