@@ -575,6 +575,15 @@ the agent has been working. When the pane moves to a new transcript
 and the new one goes on below it. What you type into it never reaches the
 session.
 
+When `aiq long` hands a session to another provider, or starts it afresh because a
+resume failed, the new session has its own transcript. aiq records which session it
+went on from, and `aiq convo` shows those earlier sessions above it, oldest first, each
+under a divider that names its agent and session; a divider says where the
+conversation rolled over to the session you asked for. `--last N` counts your prompts
+across all of them. A resumed session already continues its own transcript. Only
+rollovers made with this version or later are recorded, on the machine they ran on,
+and an earlier transcript that is gone shows as a divider marked not available.
+
 Opening search pauses following while new output refreshes the matching snippets.
 After focusing a result or canceling search, `G` goes back to following.
 

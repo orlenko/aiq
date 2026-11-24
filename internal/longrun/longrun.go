@@ -1083,6 +1083,14 @@ func (s *Supervisor) successorArgs(l state.Lease, acc state.Account, launcher, t
 	if launcher != "" {
 		args = append(args, "--launcher", launcher)
 	}
+	if l.SessionID != "" && badSessionID(l) == "" {
+		// A fresh successor reports its own id later; this lets aiq link it
+		// to the session it continues. A resume that keeps the id links nothing.
+		args = append(args, "--predecessor", l.Provider+":"+l.SessionID)
+		if l.Transcript != "" {
+			args = append(args, "--predecessor-transcript", l.Transcript)
+		}
+	}
 	if resume {
 		args = append(args, "--resume-session", l.SessionID)
 		if p, err := ResumeTranscript(l.Provider, l.SessionID, l.Transcript); err == nil {

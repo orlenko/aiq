@@ -104,6 +104,10 @@ func processHook(provider, event string, input []byte, leaseID int64, pane strin
 	now := time.Now()
 	if payload.SessionID != "" && payload.SessionID != l.SessionID {
 		st.SetLeaseSession(l.ID, payload.SessionID)
+	} else if payload.SessionID != "" {
+		// A resumed takeover reports the id it already had: that session, and
+		// not a later /clear, is the one that continues the predecessor.
+		st.SettleLeasePredecessor(l.ID)
 	}
 	if payload.TranscriptPath != "" && payload.TranscriptPath != l.Transcript {
 		st.SetLeaseTranscript(l.ID, payload.TranscriptPath)

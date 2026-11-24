@@ -633,6 +633,39 @@ func TestSuccessorArgsNameOnlyTheSessionsOwnTranscript(t *testing.T) {
 	}
 }
 
+// Every successor names the session it continues, resumed or fresh, so a fresh
+// one can be linked to it once its own id is known.
+func TestSuccessorArgsNameThePredecessor(t *testing.T) {
+	s := &Supervisor{Pool: &pool.Pool{Cfg: config.Default()}, AiqBin: "aiq"}
+	tr := codexRollout(t, "0000-aaaa", true)
+	l := state.Lease{ID: 3, Provider: "codex", SessionID: "0000-aaaa", Transcript: tr}
+	claudeAcc := state.Account{Provider: "claude", Name: "acct-b"}
+	flag := func(args []string, name string) string {
+		for i, a := range args {
+			if a == "--" {
+				break
+			}
+			if a == name && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+		return ""
+	}
+	for _, resume := range []bool{true, false} {
+		args := s.successorArgs(l, claudeAcc, "", "", resume, "go on")
+		if flag(args, "--predecessor") != "codex:0000-aaaa" || flag(args, "--predecessor-transcript") != tr {
+			t.Fatalf("resume=%v: %q", resume, args)
+		}
+	}
+	for _, bad := range []string{"", "../x"} {
+		l2 := l
+		l2.SessionID = bad
+		if args := s.successorArgs(l2, claudeAcc, "", "", false, "go on"); flag(args, "--predecessor") != "" {
+			t.Fatalf("session id %q named: %q", bad, args)
+		}
+	}
+}
+
 func TestWaitForSuccessorAfterTheWrapUp(t *testing.T) {
 	h := newHoldPool(t, false, false)
 	l := h.lease(t, func(l *state.Lease) { l.Drain = state.DrainReady })
