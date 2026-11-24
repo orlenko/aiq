@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {documentBlocks} from './mod/markdown.js';
-import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows,omissionNotice,quotaCountdown,quotaResetGrant,quotaRenewals} from './mod/state.js';
+import {Selection,groups,rowKey,sessionKey,localTime,mergeSessionRows,omissionNotice,quotaCountdown,quotaResetGrant,quotaRenewals,collapseChains,sessionDivider} from './mod/state.js';
 import {Bridge,argsFor,decode,MAX_REPLY,matchesTarget,validTarget} from './mod/protocol.js';
 const host='3f0c9a1e5b7d24680aceb13579bdf024',revision='1'.repeat(64);
 const row=(id,session='first')=>({id:String(id),host,machine:null,revision,provider:'claude',conversation_id:session,workspace:'/invented/'+session,raised_at_ms:id,state:'open',first:{preview:'Question',bytes:8,truncated:false},latest:{preview:'Question',bytes:8,truncated:false}});
@@ -228,4 +228,31 @@ test('saved session names label and filter ask groups without replacing their wo
  const d=decode(readFileSync(new URL('../../cmd/aiq/testdata/app/asks.named.json',import.meta.url),'utf8'),'asks');
  const rows=d.data.rows.map(r=>({...r,host:d.host.id,machine:null}));
  const g=groups(rows,'Harp');assert.equal(g.length,1);assert.equal(g[0].name,'Harp');assert.equal(g[0].workspace,'/invented/work');assert.equal(g[0].key,sessionKey(rows[0]));
+});
+
+const chainID=i=>`0000000${i}-0000-4000-8000-000000000000`;
+const chainOf=(seq,size=3,key='a'.repeat(16))=>({key,seq,size});
+test('a rollover chain shows as its latest loaded session, read as the whole chain',()=>{
+  const r=(id,chain,h=host)=>({kind:'session',host:h,provider:'claude',id,updated_ms:1,...(chain?{chain}:{})});
+  const rows=collapseChains([r('a',chainOf(1)),r('c',chainOf(3)),r('b',chainOf(2)),r('alone'),r('x',chainOf(1),'2'.repeat(32)),r('y',chainOf(2,2,'b'.repeat(16)))]);
+  assert.deepEqual(rows.map(x=>x.id),['c','alone','x','y']);
+  assert.equal(rows[0].readChain,true);assert.equal(rows[1].readChain,undefined);
+});
+test('chain fields decode only when well formed, and the chain read takes no anchor',()=>{
+  const sessions={window:{cursor:''},rows:[{kind:'session',provider:'claude',id:chainID(2),cwd:'/w',name:'n',updated_ms:1,chain:chainOf(3)}]};
+  assert.equal(decode(JSON.stringify(envelope('sessions',sessions)),'sessions').data.rows[0].chain.seq,3);
+  for(const bad of [{...chainOf(3),seq:4},{...chainOf(3),key:'x'},{...chainOf(3),size:1},{...chainOf(3),seq:0}])
+    assert.throws(()=>decode(JSON.stringify(envelope('sessions',{...sessions,rows:[{...sessions.rows[0],chain:bad}]})),'sessions'));
+  const list=[{provider:'claude',conversation_id:chainID(0),started_ms:0,available:false},{provider:'codex',conversation_id:chainID(1),started_ms:5,available:true}];
+  const message=(session)=>({key:'s'+session+'-m0-0-'+'a'.repeat(16),role:'user',text:'x',at_ms:1,session});
+  assert.equal(decode(JSON.stringify(envelope('conversation',{sessions:list,messages:[message(1)],cursor:{}})),'conversation').data.sessions.length,2);
+  assert.throws(()=>decode(JSON.stringify(envelope('conversation',{sessions:list,messages:[message(2)],cursor:{}})),'conversation'));
+  assert.throws(()=>decode(JSON.stringify(envelope('conversation',{messages:[message(0)],cursor:{}})),'conversation'));
+  assert.deepEqual(argsFor('conversation',{provider:'claude',id:chainID(2),chain:true,before:'s1-m0-0-'+'a'.repeat(16)}),
+    ['__app','conversation','--provider','claude','--id',chainID(2),'--before','s1-m0-0-'+'a'.repeat(16),'--chain','1']);
+  assert.throws(()=>argsFor('conversation',{provider:'claude',id:chainID(2),chain:true,at:5}));
+  assert.equal(sessionDivider(list[0],0,2),'Session 1 of 2 · claude · session 00000000 · transcript not available');
+  assert.equal(sessionDivider(list[1],1,2),'Session 2 of 2 · codex · session 00000001 · started '+localTime(5));
+  assert.equal(omissionNotice({omitted:{sessions:1}}),'1 earlier session could not be read');
+  assert.equal(omissionNotice({omitted:{chain_limit:3,chain_unknown:1}}),'3 earlier sessions not shown, by the session limit · Other sessions of this chain could not be looked up');
 });

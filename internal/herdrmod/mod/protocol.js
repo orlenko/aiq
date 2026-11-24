@@ -8,9 +8,21 @@ const object = x => !!x && typeof x === "object" && !Array.isArray(x);
 const str = (x,n=262144) => typeof x === "string" && x.length <= n;
 export class BridgeError extends Error { constructor(code) { super(code); this.code=code; } }
 function require(ok) { if (!ok) throw new BridgeError("internal"); }
-function messages(rows) {
+function messages(rows, sessions=null) {
   require(Array.isArray(rows) && rows.length <= 40);
-  for (const row of rows) require(object(row) && str(row.key,512) && str(row.text) && ["user","assistant","system","tool"].includes(row.role) && Number.isSafeInteger(row.at_ms));
+  for (const row of rows) {
+    require(object(row) && str(row.key,512) && str(row.text) && ["user","assistant","system","tool"].includes(row.role) && Number.isSafeInteger(row.at_ms));
+    if (row.session !== undefined) require(sessions && Number.isSafeInteger(row.session) && row.session >= 0 && row.session < sessions.length);
+  }
+}
+// An aiq long rollover chain: on a session row, and the sessions of a chain conversation.
+function chain(c) {
+  require(object(c) && /^[a-f0-9]{16}$/.test(c.key) && Number.isSafeInteger(c.size) && c.size >= 2 &&
+    Number.isSafeInteger(c.seq) && c.seq >= 1 && c.seq <= c.size);
+}
+function chainSessions(list) {
+  require(Array.isArray(list) && list.length >= 1 && list.length <= 101);
+  for (const s of list) require(object(s) && PROVIDERS.has(s.provider) && ID.test(s.conversation_id) && typeof s.available === "boolean" && Number.isSafeInteger(s.started_ms));
 }
 export function decode(stdout, kind, expectedHost=null) {
   require(typeof stdout === "string" && stdout.length <= MAX_REPLY+1 && utf8Bytes(stdout) <= MAX_REPLY+1);
@@ -33,10 +45,16 @@ export function decode(stdout, kind, expectedHost=null) {
     if(object(d.first)&&d.first.text===undefined)d.first.text="";
     require(/^\d+$/.test(d.id) && HEX64.test(d.revision) && object(d.latest) && str(d.latest.text) && object(d.first) && str(d.first.text));
     if (kind === "ask-context") { messages(d.messages); require(object(d.placement)); }
-  } else if (kind === "conversation") { messages(d.messages); }
+  } else if (kind === "conversation") {
+    if (d.sessions !== undefined) chainSessions(d.sessions);
+    messages(d.messages, d.sessions ?? null);
+  }
   else if (kind === "sessions") {
     require(Array.isArray(d.rows) && d.rows.length<=10000 && object(d.window));
-    for (const r of d.rows) require(object(r) && PROVIDERS.has(r.provider) && str(r.id,128) && str(r.cwd,8192) && str(r.name,2048) && Number.isSafeInteger(r.updated_ms));
+    for (const r of d.rows) {
+      require(object(r) && PROVIDERS.has(r.provider) && str(r.id,128) && str(r.cwd,8192) && str(r.name,2048) && Number.isSafeInteger(r.updated_ms));
+      if (r.chain !== undefined) chain(r.chain);
+    }
   } else if (kind === "quotas") {
     require(Array.isArray(d.accounts) && d.accounts.length<=10000);
     for (const a of d.accounts) {
@@ -80,6 +98,7 @@ export function argsFor(kind, options={}) {
   if(kind === "conversation") {
     push("provider",options.provider,PROVIDERS.has(options.provider)); push("id",options.id,ID.test(options.id));
     for(const key of ["before","after"]) if(options[key]) push(key,options[key],str(options[key],512)&&/^[a-zA-Z0-9._:-]+$/.test(options[key]));
+    if(options.chain) { push("chain","1",!options.anchor&&!options.at); return out; }
     if(options.anchor)push("anchor",options.anchor,/^m[0-9]+-[0-9]+-[a-f0-9]{16}$/.test(options.anchor));
     else if(options.at) push("at",options.at,Number.isSafeInteger(options.at)&&options.at>0);
     return out;

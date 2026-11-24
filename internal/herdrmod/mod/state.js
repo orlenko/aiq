@@ -6,6 +6,17 @@ export function mergeSessionRows(before,after) {
   for(const row of after){const old=rows.get(key(row));if(!old||row.updated_ms>=old.updated_ms)rows.set(key(row),row);}
   return [...rows.values()];
 }
+// collapseChains shows each aiq long rollover chain as one row: its latest session
+// loaded, read as the whole chain. Rows outside a chain stay as they are.
+export function collapseChains(rows) {
+  const best=new Map();
+  for(const r of rows){if(!r.chain)continue;const key=r.host+"\u001f"+r.chain.key,old=best.get(key);if(!old||r.chain.seq>old.chain.seq)best.set(key,r);}
+  return rows.filter(r=>!r.chain||best.get(r.host+"\u001f"+r.chain.key)===r).map(r=>r.chain?{...r,readChain:true}:r);
+}
+// sessionDivider names one session of a chain conversation above its messages.
+export function sessionDivider(s,k,n) {
+  return [`Session ${k+1} of ${n}`,s.provider,"session "+s.conversation_id.slice(0,8),...(s.started_ms?["started "+localTime(s.started_ms)]:[]),...(s.available?[]:["transcript not available"])].join(" · ");
+}
 export function localTime(ms) { if(!ms) return "Unknown"; const d=new Date(ms),pad=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 const minute = 60;
 const hour = 60 * minute;
@@ -80,6 +91,9 @@ export function omissionNotice(reply) {
   count("slow", "transcript skipped", "transcripts skipped", "by the read time limit");
   count("unreadable", "transcript", "transcripts", "could not be read");
   count("records", "transcript record skipped", "transcript records skipped", "by the record size limit");
+  count("sessions", "earlier session", "earlier sessions", "could not be read");
+  count("chain_limit", "earlier session", "earlier sessions", "not shown, by the session limit");
+  if (omitted.chain_unknown === 1) notices.push("Other sessions of this chain could not be looked up");
   if (omitted.metadata_limit === 1) notices.push("Session details omitted by the metadata limit");
   if (omitted.metadata_timeout === 1) notices.push("Session details omitted by the read time limit");
   if (omitted.metadata_incomplete === 1) notices.push("Some session details are unavailable");

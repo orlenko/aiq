@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
@@ -148,5 +149,28 @@ func TestSessionChainStopsOnLoopsAndLength(t *testing.T) {
 	}
 	if got := chainIDs(t, st, "here", "claude", "n"+strconv.Itoa(MaxChain+10)); len(got) != MaxChain {
 		t.Fatalf("long chain has %d members, want %d", len(got), MaxChain)
+	}
+}
+
+// The cross-machine reader gets this host's links, newest first, without
+// transcript paths, and none from a database that predates them.
+func TestReadSessionLinks(t *testing.T) {
+	st := openTemp(t)
+	b := longLease(st, t, Lease{Provider: "codex", PrevProvider: "claude", PrevSessionID: "aaaa", PrevTranscript: "/t/aaaa.jsonl"})
+	st.SetLeaseSession(b, "bbbb")
+	c := longLease(st, t, Lease{Provider: "claude", PrevProvider: "codex", PrevSessionID: "bbbb"})
+	st.SetLeaseSession(c, "cccc")
+	st.db.Exec(`UPDATE session_links SET linked_at_ms = 1 WHERE session_id = 'bbbb'`)
+	st.db.Exec(`INSERT INTO session_links (hostname, provider, session_id, prev_provider, prev_session_id, linked_at_ms) VALUES ('there','claude','x','claude','y',9)`)
+	got, err := st.ReadSessionLinks(context.Background(), "here", 10)
+	if err != nil || len(got) != 2 || got[0].SessionID != "cccc" || got[1].PrevSessionID != "aaaa" {
+		t.Fatalf("links = %+v, %v", got, err)
+	}
+	if got, _ := st.ReadSessionLinks(context.Background(), "here", 1); len(got) != 1 {
+		t.Fatalf("limit ignored: %+v", got)
+	}
+	st.db.Exec(`DROP TABLE session_links`)
+	if got, err := st.ReadSessionLinks(context.Background(), "here", 10); err != nil || got != nil {
+		t.Fatalf("old database: %+v, %v", got, err)
 	}
 }

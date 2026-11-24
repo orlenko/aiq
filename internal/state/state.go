@@ -4,6 +4,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -958,6 +959,40 @@ func (s *Store) SessionChain(hostname, provider, sessionID string) ([]SessionLin
 	}
 	slices.Reverse(chain)
 	return chain, nil
+}
+
+// SessionLinkRow is one recorded rollover, without the transcript path or
+// workspace: what a reader across machines may see.
+type SessionLinkRow struct {
+	Provider, SessionID, PrevProvider, PrevSessionID string
+	LinkedAtMS                                       int64
+}
+
+// ReadSessionLinks returns hostname's links, newest first, at most limit of
+// them. A database from before links were recorded has none.
+func (s *Store) ReadSessionLinks(ctx context.Context, hostname string, limit int) ([]SessionLinkRow, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_links'`).Scan(&n); err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT provider, session_id, prev_provider, prev_session_id, linked_at_ms FROM session_links
+		WHERE hostname = ? ORDER BY linked_at_ms DESC LIMIT ?`, hostname, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionLinkRow
+	for rows.Next() {
+		var l SessionLinkRow
+		if err := rows.Scan(&l.Provider, &l.SessionID, &l.PrevProvider, &l.PrevSessionID, &l.LinkedAtMS); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 // TrimSessionLinks keeps only the newest keep links.
