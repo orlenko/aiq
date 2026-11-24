@@ -14,6 +14,7 @@ import (
 	"github.com/orlenko/aiq/internal/paths"
 	"github.com/orlenko/aiq/internal/state"
 	"github.com/orlenko/aiq/internal/terminal"
+	"github.com/orlenko/aiq/internal/transcript"
 )
 
 // Hooks attached to long sessions. They must never break the session:
@@ -42,6 +43,13 @@ func cmdHook(provider string, args []string) {
 		return
 	}
 	input, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	if provider == "codex" {
+		if p := parseHookPayload(input); p.TranscriptPath != "" {
+			if known, interactive := transcript.CodexInteractive(p.TranscriptPath); known && !interactive {
+				return
+			}
+		}
+	}
 	if ref := terminal.Current(); herdr.IsRef(ref) {
 		generation, _ := strconv.ParseUint(os.Getenv("AIQ_TERMINAL_GENERATION"), 10, 64)
 		pid, _ := strconv.Atoi(os.Getenv("AIQ_TERMINAL_PID"))
@@ -54,23 +62,30 @@ func cmdHook(provider string, args []string) {
 	processHook(provider, event, input, leaseID, terminal.Current(), 0, 0, os.Stdout)
 }
 
+type hookPayload struct {
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	StopHookActive bool   `json:"stop_hook_active"`
+	ConversationID string `json:"conversationId"`
+	Transcript     string `json:"transcriptPath"`
+}
+
+func parseHookPayload(input []byte) hookPayload {
+	var p hookPayload
+	json.Unmarshal(input, &p)
+	if p.SessionID == "" {
+		p.SessionID = p.ConversationID
+	}
+	if p.TranscriptPath == "" {
+		p.TranscriptPath = p.Transcript
+	}
+	return p
+}
+
 // Native callbacks execute inside the runner's serialized generation boundary;
 // guarded SQL also excludes external pruning and numeric lease-id reuse.
 func processHook(provider, event string, input []byte, leaseID int64, pane string, wantPID int, launchID int64, output io.Writer) {
-	var payload struct {
-		SessionID      string `json:"session_id"`
-		TranscriptPath string `json:"transcript_path"`
-		StopHookActive bool   `json:"stop_hook_active"`
-		ConversationID string `json:"conversationId"`
-		Transcript     string `json:"transcriptPath"`
-	}
-	json.Unmarshal(input, &payload)
-	if payload.SessionID == "" {
-		payload.SessionID = payload.ConversationID
-	}
-	if payload.TranscriptPath == "" {
-		payload.TranscriptPath = payload.Transcript
-	}
+	payload := parseHookPayload(input)
 
 	open := state.Open
 	if wantPID > 0 {
@@ -100,6 +115,22 @@ func processHook(provider, event string, input []byte, leaseID int64, pane strin
 	}
 	if l.Provider != "" && l.Provider != provider {
 		return // a hook of one CLI inherited a lease of another (nested launch)
+	}
+	if provider == "codex" {
+		// In-process subagents (spawn_agent, Guardian review) share the long
+		// session's hook config and environment; their rollouts are not the
+		// lease's session.
+		if payload.TranscriptPath != "" {
+			known, interactive := transcript.CodexInteractive(payload.TranscriptPath)
+			if known && !interactive {
+				return
+			}
+			if !known && l.SessionID != "" && payload.SessionID != "" && payload.SessionID != l.SessionID {
+				return
+			}
+		} else if l.SessionID != "" && payload.SessionID != "" && payload.SessionID != l.SessionID {
+			return
+		}
 	}
 	now := time.Now()
 	if payload.SessionID != "" && payload.SessionID != l.SessionID {

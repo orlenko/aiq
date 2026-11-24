@@ -57,6 +57,9 @@ func TestHeldSessionGetsItsWrapUpFromTheNextPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := st.MarkTurn(id, true, time.Now().Add(-30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("AIQ_LONG", "1")
 	t.Setenv("AIQ_LEASE", strconv.FormatInt(id, 10))
 
@@ -118,5 +121,68 @@ func TestHookLinksOnlyTheSessionATakeoverStarted(t *testing.T) {
 	runHook(t, "claude", "sessionstart", `{"session_id":"0000-dddd"}`)
 	if chain("0000-bbbb") != 1 || chain("0000-dddd") != 0 {
 		t.Fatalf("fresh: bbbb links %d, dddd links %d; want 1 and 0", chain("0000-bbbb"), chain("0000-dddd"))
+	}
+}
+
+// A Codex subagent (spawn_agent or Guardian review) shares the long session's
+// hook config and environment; its hooks must not overwrite the lease's
+// session id or transcript, end the parent turn, or consume a pending drain.
+func TestCodexSubagentHooksLeaveTheParentLeaseAlone(t *testing.T) {
+	t.Setenv("AIQ_DATA_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "")
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "rollout-2026-11-24T10-00-00-parent.jsonl")
+	subSpawn := filepath.Join(dir, "rollout-2026-11-24T10-01-00-sub.jsonl")
+	subGuardian := filepath.Join(dir, "rollout-2026-11-24T10-02-00-guardian.jsonl")
+	subEmpty := filepath.Join(dir, "rollout-2026-11-24T10-03-00-empty.jsonl")
+	if err := os.WriteFile(parent, []byte(`{"timestamp":"2026-11-24T10:00:00Z","type":"session_meta","payload":{"id":"0000-parent","cwd":"/home/me/proj","source":"cli"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subSpawn, []byte(`{"timestamp":"2026-11-24T10:01:00Z","type":"session_meta","payload":{"id":"0000-sub","cwd":"/home/me/proj","source":{"subagent":{"thread_spawn":{"parent_thread_id":"0000-parent"}}}}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subGuardian, []byte(`{"timestamp":"2026-11-24T10:02:00Z","type":"session_meta","payload":{"id":"0000-guardian","cwd":"/home/me/proj","source":{"subagent":{"other":"guardian"}}}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subEmpty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := state.Open(paths.StateDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	id, err := st.AddLease(state.Lease{AccountID: "codex/acct-a", Mode: state.ModeLong, Hostname: pool.Hostname(), Provider: "codex",
+		Workspace: "/home/me/proj", Pane: "%1", SessionID: "0000-parent", Transcript: parent, Drain: state.DrainRequested,
+		DrainAt: time.Now().Add(-time.Minute).Unix(), TurnStartedAt: time.Now().Add(-30 * time.Second).Unix(),
+		StartedAt: time.Now().Add(-2 * time.Minute).Unix(), PID: os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkTurn(id, true, time.Now().Add(-30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AIQ_LONG", "1")
+	t.Setenv("AIQ_LEASE", strconv.FormatInt(id, 10))
+
+	for _, payload := range []string{
+		`{"session_id":"0000-sub","transcript_path":` + strconv.Quote(subSpawn) + `}`,
+		`{"session_id":"0000-guardian","transcript_path":` + strconv.Quote(subGuardian) + `}`,
+		`{"session_id":"0000-empty","transcript_path":` + strconv.Quote(subEmpty) + `}`,
+		`{"session_id":"0000-ephemeral"}`,
+	} {
+		for _, ev := range []string{"sessionstart", "userpromptsubmit", "stop"} {
+			if out := runHook(t, "codex", ev, payload); out != "" {
+				t.Fatalf("%s on %s printed %q", ev, payload, out)
+			}
+			l, err := st.GetLease(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l.SessionID != "0000-parent" || l.Transcript != parent || !l.InTurn() || l.Drain != state.DrainRequested {
+				t.Fatalf("after %s on %s: session=%q transcript=%q inTurn=%v drain=%q", ev, payload, l.SessionID, l.Transcript, l.InTurn(), l.Drain)
+			}
+		}
 	}
 }

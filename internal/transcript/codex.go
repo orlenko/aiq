@@ -70,6 +70,11 @@ func codexFilesWithMeta(ctx context.Context, roots []string, dir string, since t
 }
 
 func codexMeta(path string) (codexPayload, bool) {
+	p, ok := codexHeadMeta(path)
+	return p, ok && p.Cwd != ""
+}
+
+func codexHeadMeta(path string) (codexPayload, bool) {
 	f, err := OpenRegular(path)
 	if err != nil {
 		return codexPayload{}, false
@@ -88,8 +93,10 @@ func codexMeta(path string) (codexPayload, bool) {
 		return codexPayload{}, false
 	}
 	var p codexPayload
-	json.Unmarshal(rec.Payload, &p)
-	return p, p.Cwd != ""
+	if json.Unmarshal(rec.Payload, &p) != nil {
+		return codexPayload{}, false
+	}
+	return p, true
 }
 
 type codexRecord struct {

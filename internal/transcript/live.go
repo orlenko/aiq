@@ -63,6 +63,17 @@ func (w directWalk) Written(ctx context.Context, provider, dir string, since tim
 	return newestWritten(paths, since)
 }
 
+// CodexInteractive reports whether path starts with a session_meta record and
+// whether that record is for an interactive session (not codex exec, not a
+// subagent).
+func CodexInteractive(path string) (known, ok bool) {
+	meta, ok := codexHeadMeta(path)
+	if !ok {
+		return false, false
+	}
+	return true, interactive(meta)
+}
+
 // interactive says a rollout's head is a session someone typed into: not
 // codex exec, not a subagent.
 func interactive(meta codexPayload) bool {

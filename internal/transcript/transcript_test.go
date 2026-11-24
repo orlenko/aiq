@@ -291,4 +291,20 @@ func TestWritten(t *testing.T) {
 	if got := Written(DefaultRoots(filepath.Join(root, "claude"), codexHome, "", ""), "claude", work, since); len(got) != 0 {
 		t.Fatalf("claude: got %v", got)
 	}
+	for _, c := range []struct {
+		path               string
+		known, interactive bool
+	}{
+		{older, true, true},
+		{newer, true, true},
+		{filepath.Join(day, "rollout-exec.jsonl"), true, false},
+		{filepath.Join(day, "rollout-sub.jsonl"), true, false},
+		{write("rollout-guardian.jsonl", since, meta("g", `,"source":{"subagent":{"other":"guardian"}}`)), true, false},
+		{write("rollout-empty.jsonl", since), false, false},
+		{filepath.Join(day, "rollout-missing.jsonl"), false, false},
+	} {
+		if k, ok := CodexInteractive(c.path); k != c.known || ok != c.interactive {
+			t.Errorf("CodexInteractive(%s) = (%v, %v), want (%v, %v)", filepath.Base(c.path), k, ok, c.known, c.interactive)
+		}
+	}
 }
